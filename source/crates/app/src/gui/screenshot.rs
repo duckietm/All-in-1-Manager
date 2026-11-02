@@ -3,7 +3,8 @@
 //! deploy, explorer, sql, debug, tools, status, doctor, history, monitor, terminal, settings, about, login); `AIO_SCREENSHOT_THEME=dark|light`
 //! forces the theme, `AIO_SCREENSHOT_LOOK=hotel|professional` the look and `AIO_SCREENSHOT_LANG` the language.
 //! `AIO_SCREENSHOT_CONNECT=1` logs in to the dry-run recorder first, so the pages show their logged-in state, and
-//! `AIO_SCREENSHOT_STEP=<n>` opens the n-th step of the page's wizard.
+//! `AIO_SCREENSHOT_STEP=<n>` opens the n-th step of the page's wizard, and `AIO_SCREENSHOT_LANGUAGES=1` opens the
+//! language list at the top right.
 
 use eframe::egui;
 
@@ -44,6 +45,9 @@ impl Screenshot {
             if let Some(look) = var("SCREENSHOT_LOOK") {
                 super::theme::set_hotel(!look.eq_ignore_ascii_case("professional"));
                 super::theme::install_fonts(ctx);
+            }
+            if var("SCREENSHOT_LANGUAGES").is_some() {
+                super::language_picker::open(ctx);
             }
             match var("SCREENSHOT_THEME").as_deref() {
                 Some("dark") => ctx.set_theme(egui::Theme::Dark),

@@ -9,6 +9,7 @@ pub mod dialogs;
 pub mod dry_run;
 pub mod flags;
 pub mod icons;
+pub mod language_picker;
 pub mod log_view;
 pub mod screenshot;
 pub mod step;
@@ -585,6 +586,8 @@ impl App {
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
                 let session = self.shared.session();
+                language_picker::picker(ui, palette);
+                ui.add_space(10.0);
                 day_night::switch(ui);
                 ui.add_space(4.0);
                 if session.is_some() && ui.add(widgets::secondary_button(t("Disconnect"))).on_hover_text(t("Close the connection to the server; log in again (to this or another server) with the button next to it")).clicked() {

@@ -19,7 +19,8 @@ stars and an isometric hotel), so no picture of the game is shipped. The layout 
 log) comes from the [All-in-1 Converter](https://github.com/duckietm/all-in-1-converter).
 
 The window speaks **English, Italiano, Français, Deutsch, Nederlands, Español, Português, Türkçe and Suomi**
-(**Settings → Language**; the first start follows the system language). The logs of the steps stay in English: they
+(the **flag at the top right**, next to the day / night switch, or **Settings → Language**; the first start follows
+the system language). A choice applies at once and is remembered. The logs of the steps stay in English: they
 are what the server prints, and what you paste into a question.
 
 > This is the Rust version of the installer (2.x). It does the same as the C# installer 1.0.x, command for command
@@ -1387,7 +1388,7 @@ no output, so the steps take the path of a fresh server. Use it to read exactly 
 `AIO_SCREENSHOT=<file.png>` saves one screenshot of the window and closes it; `AIO_SCREENSHOT_PAGE` picks the page
 (`dashboard`, `install`, `cms`, `customcms`, `epicnext`, `gitea`, `fail2ban`, `crowdsec`, `deploy`, `explorer`, `sql`,
 `debug`, `tools`, `status`, `doctor`, `history`, `monitor`, `terminal`, `settings`, `about`, `login`),
-`AIO_SCREENSHOT_STEP=<n>` the n-th step of that page's wizard, `AIO_SCREENSHOT_CONNECT=1` logs in to the dry run
+`AIO_SCREENSHOT_STEP=<n>` the n-th step of that page's wizard, `AIO_SCREENSHOT_LANGUAGES=1` opens the language list, `AIO_SCREENSHOT_CONNECT=1` logs in to the dry run
 first (the health check then finds a sample server), and `AIO_SCREENSHOT_THEME=dark|light`,
 `AIO_SCREENSHOT_LOOK=hotel|professional` and `AIO_SCREENSHOT_LANG=<code>` set the rest. For example:
 

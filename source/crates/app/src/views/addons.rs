@@ -77,5 +77,5 @@ pub fn grid(ui: &mut egui::Ui, palette: &Palette, entries: &[Entry], height: f32
 /// The Addons page.
 pub fn show(ui: &mut egui::Ui, palette: &Palette) -> Option<Page> {
     ui.add_space(4.0);
-    grid(ui, palette, &entries(), 168.0, palette.surface)
+    grid(ui, palette, &entries(), 140.0, palette.surface)
 }

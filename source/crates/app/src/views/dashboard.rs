@@ -447,7 +447,7 @@ fn wide_tile(ui: &mut egui::Ui, palette: &Palette, title: &str, description: &st
 /// Buttons in columns: in the Hotel look the picture buttons, otherwise the plain cards.
 fn entry_grid(ui: &mut egui::Ui, palette: &Palette, entries: &[addons::Entry]) -> Option<Page> {
     if theme::hotel() {
-        return addons::grid(ui, palette, entries, 150.0, palette.surface);
+        return addons::grid(ui, palette, entries, 132.0, palette.surface);
     }
     let tiles: Vec<(&str, String, Icon, Color32, Page)> = entries.iter().map(|e| (e.title.as_str(), e.description.clone(), e.icon, e.color, e.page)).collect();
     tile_grid(ui, palette, &tiles)

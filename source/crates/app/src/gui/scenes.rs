@@ -357,6 +357,8 @@ pub fn button(
     // The hard shadow under it, as under the cards.
     painter.rect_filled(rect.translate(vec2(0.0, 3.0)), radius, with_alpha(palette.outline, 0x40));
     paint(painter, rect, scene, dark, accent);
+    // The picture stays in the background: a wash of the card colour over it leaves a tint of the scene.
+    painter.rect_filled(rect, 0.0, with_alpha(palette.card, if dark { 0xB4 } else { 0x9C }));
     round_corners(painter, rect, radius, outside);
     if !enabled {
         painter.rect_filled(rect, radius, with_alpha(palette.surface, 150));
@@ -368,9 +370,9 @@ pub fn button(
         Layout::Card => Rect::from_min_size(rect.min + vec2(10.0, 10.0), vec2(badge_size, badge_size)),
         Layout::Side => Rect::from_min_size(pos2(rect.left() + 10.0, rect.center().y - badge_size / 2.0), vec2(badge_size, badge_size)),
     };
-    painter.rect_filled(badge.translate(vec2(0.0, 2.0)), 8.0, with_alpha(Fixed::outline(), 0x60));
-    painter.rect_filled(badge, 8.0, Color32::WHITE);
-    painter.rect_stroke(badge, 8.0, Stroke::new(1.5_f32, Fixed::outline()), egui::StrokeKind::Inside);
+    painter.rect_filled(badge.translate(vec2(0.0, 1.5)), 8.0, with_alpha(Fixed::outline(), 0x30));
+    painter.rect_filled(badge, 8.0, palette.card);
+    painter.rect_stroke(badge, 8.0, Stroke::new(1.0_f32, with_alpha(palette.outline, 0x66)), egui::StrokeKind::Inside);
     let icon_size = badge_size * 0.55;
     icons::image(icon, icon_size, accent).paint_at(ui, Rect::from_center_size(badge.center(), vec2(icon_size, icon_size)));
 
@@ -400,7 +402,7 @@ pub fn button(
         Layout::Side => Rect::from_min_max(pos2(plate_left, rect.top() + 7.0), pos2(plate_right, rect.bottom() - 7.0)),
     };
     painter.rect_filled(plate, 6.0, palette.card);
-    painter.rect_stroke(plate, 6.0, Stroke::new(1.0_f32, with_alpha(palette.outline, 0x55)), egui::StrokeKind::Inside);
+    painter.rect_stroke(plate, 6.0, Stroke::new(1.0_f32, with_alpha(palette.outline, 0x22)), egui::StrokeKind::Inside);
     let top = plate.center().y - text_height / 2.0;
     let elided = title_galley.elided || text_galley.elided;
     let title_height = title_galley.size().y;

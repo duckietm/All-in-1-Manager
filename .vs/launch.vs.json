@@ -1,0 +1,20 @@
+{
+  // Visual Studio (File → Open → Folder): pick "All-in-1 Installer" as the startup item, build (Ctrl+Shift+B), then F5.
+  "version": "0.2.1",
+  "defaults": {},
+  "configurations": [
+    {
+      "type": "native",
+      "name": "All-in-1 Installer",
+      "project": "target\\debug\\all-in-1-installer.exe",
+      "currentDir": "${workspaceRoot}"
+    },
+    {
+      "type": "native",
+      "name": "All-in-1 Installer (dry run: no server)",
+      "project": "target\\debug\\all-in-1-installer.exe",
+      "args": [ "--dry-run" ],
+      "currentDir": "${workspaceRoot}"
+    }
+  ]
+}

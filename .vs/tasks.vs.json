@@ -1,0 +1,49 @@
+{
+  // Visual Studio (File → Open → Folder): Build → Build All (Ctrl+Shift+B) builds the installer.
+  // Right-click Cargo.toml in Solution Explorer for the other tasks.
+  "version": "0.2.1",
+  "tasks": [
+    {
+      "taskLabel": "Build (debug)",
+      "appliesTo": "Cargo.toml",
+      "type": "launch",
+      "contextType": "build",
+      "command": "cargo",
+      "args": [ "build", "-p", "aio-app" ],
+      "workingDirectory": "${workspaceRoot}"
+    },
+    {
+      "taskLabel": "Clean",
+      "appliesTo": "Cargo.toml",
+      "type": "launch",
+      "contextType": "clean",
+      "command": "cargo",
+      "args": [ "clean" ],
+      "workingDirectory": "${workspaceRoot}"
+    },
+    {
+      "taskLabel": "Check (errors only, fast)",
+      "appliesTo": "Cargo.toml",
+      "type": "launch",
+      "command": "cargo",
+      "args": [ "check", "-p", "aio-app" ],
+      "workingDirectory": "${workspaceRoot}"
+    },
+    {
+      "taskLabel": "Test",
+      "appliesTo": "Cargo.toml",
+      "type": "launch",
+      "command": "cargo",
+      "args": [ "test", "--workspace" ],
+      "workingDirectory": "${workspaceRoot}"
+    },
+    {
+      "taskLabel": "Build release into public/release",
+      "appliesTo": "Cargo.toml",
+      "type": "launch",
+      "command": "python",
+      "args": [ "source/tools/build.py", "release" ],
+      "workingDirectory": "${workspaceRoot}"
+    }
+  ]
+}

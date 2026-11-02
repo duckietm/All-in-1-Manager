@@ -653,6 +653,7 @@ pub fn default_catalog(
     version: String,
     language: Option<aio_remote::furniture_language::FurniLanguage>,
     switched: Option<aio_remote::furniture_language::SwitchResult>,
+    texts: Option<(usize, usize)>,
     steps: Steps,
 ) -> Box<dyn FinishPage> {
     Page::boxed(move |ui, palette| {
@@ -702,6 +703,16 @@ pub fn default_catalog(
                         ),
                         12.0,
                         palette.subtle,
+                    );
+                }
+                if let Some((count, kept)) = texts {
+                    widgets::text(
+                        ui,
+                        &tf(
+                            "ExternalTexts.json is in that language too: {count} texts ({kept} of the hotel's own kept).",
+                            &[("count", &count.to_string()), ("kept", &kept.to_string())],
+                        ),
+                        13.0,
                     );
                 }
                 colored(ui, t("Another language later: Tools → Furniture language."), 12.0, palette.subtle);

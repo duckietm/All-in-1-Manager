@@ -18,6 +18,7 @@ pub mod doctor;
 pub mod emulator;
 pub mod emulator_assets;
 pub mod emulator_monitor;
+pub mod external_texts;
 pub mod epicnext;
 pub mod fail2ban;
 pub mod furniture_language;

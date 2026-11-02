@@ -1057,7 +1057,15 @@ installer does what the [All-in-1 Converter](https://github.com/duckietm/all-in-
   stopped for the import (one stop and one start for the whole step); Tools → Furniture language stops and starts it
   itself.
 
-Switching later, without importing the catalogue again: **Tools → Furniture language**.
+**ExternalTexts.json** (optional): tick **Also ExternalTexts.json (the client's texts)** in the step, or answer
+**Furniture and texts** in the tool, and the same hotel's `external_flash_texts` (`https://<hotel>/gamedata/external_flash_texts/1`)
+is downloaded and converted like the converter's `Flash_Texts.cs` (`key=value` lines; blank lines and `#` comments
+skipped; split at the first `=`). Texts the hotel has but the official file does not stay (the emulator writes the
+names of custom badges there, hotels add their own). It goes to `gamedata/config/ExternalTexts.json` while the
+emulator is stopped (the old file kept as `.bak-<time>`), and comes back when the emulator does not load afterwards.
+
+Switching later, without importing the catalogue again: **Tools → Furniture language** (download first, then one stop
+of the emulator, the database, `FurnitureData.json` and optionally `ExternalTexts.json`, and one start).
 
 A marker in `gamedata/config/.all-in-1-catalog` remembers the installed version, so the step shows **Skip (already
 installed)** for the same catalogue. Meant for a new hotel: furniture players already own keeps its `items_base`

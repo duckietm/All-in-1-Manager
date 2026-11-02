@@ -55,13 +55,17 @@ pub fn marker() -> String {
 
 /// Downloads the hotel's furnidata XML (on this computer).
 pub async fn download_xml(language: FurniLanguage) -> Result<String> {
-    let url = xml_url(language);
+    download(&xml_url(language)).await
+}
+
+/// A text file from a Habbo hotel, with the converter's browser identity (on this computer).
+pub(crate) async fn download(url: &str) -> Result<String> {
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| ServerError(e.to_string()))?;
-    let response = client.get(&url).send().await.map_err(|e| ServerError(format!("Could not download {url}: {e}")))?;
+    let response = client.get(url).send().await.map_err(|e| ServerError(format!("Could not download {url}: {e}")))?;
     if !response.status().is_success() {
         return Err(ServerError(format!("{url} answered {}", response.status())).into());
     }
@@ -510,14 +514,6 @@ pub async fn prepare(language: FurniLanguage, hotel: Option<&Value>, log: Log<'_
     Ok(Prepared { language, furni, custom_kept })
 }
 
-/// The whole switch on its own (Tools → Furniture language): prepared with the FurnitureData.json on the server for the
-/// hotel's own furni, then put in place with one stop and start of the emulator.
-pub async fn switch_to(server: &dyn Server, language: FurniLanguage, log: Log<'_>) -> Result<SwitchResult> {
-    let hotel = current_furniture_data(server).await?;
-    let prepared = prepare(language, hotel.as_ref(), log).await?;
-    finish(server, prepared, true, log).await
-}
-
 /// Works out the database fixes for a prepared furnidata and puts both in place (see `apply` for `manage_emulator`).
 pub async fn finish(server: &dyn Server, prepared: Prepared, manage_emulator: bool, log: Log<'_>) -> Result<SwitchResult> {
     let Prepared { language, mut furni, custom_kept } = prepared;
@@ -555,6 +551,38 @@ pub async fn mark(server: &dyn Server, language: FurniLanguage) -> Result<()> {
     let marker = shell_quote(&marker());
     server.run_as_root(&format!("printf '%s\\n' {} > {marker} && chown www-data:www-data {marker}", language.code)).await?;
     Ok(())
+}
+
+const RESTORE: &str = r#"set -o pipefail
+safety={{Safety}}
+config={{Gamedata}}/config
+[ -s "$safety" ] || fail "The safety backup $safety is missing: import a backup with Tools → Import full database."
+echo "> Putting the database back as it was ($(basename "$safety"))"
+gunzip -c "$safety" | mariadb || fail "Restoring failed: import $safety with Tools → Import full database."
+old={{Old}}
+if [ -n "$old" ] && [ -f "$old" ]; then
+  cp -p "$old" "$config/FurnitureData.json"
+  echo "  FurnitureData.json as it was ($(basename "$old"))"
+fi
+previous={{Previous}}
+if [ -n "$previous" ]; then printf '%s\n' "$previous" > {{Marker}}; else rm -f {{Marker}}; fi
+true"#;
+
+/// Puts the database (from `safety`), FurnitureData.json (the `old` copy) and the language marker (`previous`) back as
+/// they were before a switch, when the emulator does not load afterwards.
+pub async fn restore(server: &dyn Server, safety: &str, old: Option<&str>, previous: Option<&str>, log: Log<'_>) -> Result<()> {
+    let previous: String = previous.unwrap_or("").chars().filter(char::is_ascii_lowercase).collect();
+    let body = fill(
+        RESTORE,
+        &[
+            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Marker", &shell_quote(&marker())),
+            ("Old", &shell_quote(old.unwrap_or(""))),
+            ("Previous", &shell_quote(&previous)),
+            ("Safety", &shell_quote(safety)),
+        ],
+    );
+    script::run(server, &script::with_prelude(&body), log, "Putting the furniture language back failed", None).await
 }
 
 /// The furniture language this installer put on the server last (its code), if any.

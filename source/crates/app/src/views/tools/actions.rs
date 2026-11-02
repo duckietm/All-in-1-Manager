@@ -559,6 +559,7 @@ async fn import_plus(job: &Job) -> Result<()> {
 
 /// Tools → Furniture language: another hotel's furnidata, and the database brought in line with it.
 async fn furniture_language_tool(job: &Job) -> Result<()> {
+    use aio_remote::external_texts;
     use aio_remote::furniture_language::{self, LANGUAGES};
     let server = job.server();
     let current = furniture_language::installed(server).await?;
@@ -588,24 +589,119 @@ async fn furniture_language_tool(job: &Job) -> Result<()> {
         return Ok(());
     };
     let language = furniture_language::language(code).unwrap_or(LANGUAGES[0]);
-    let run = job.start_run(&[n("Furniture language")]);
+    let name = crate::views::default_catalog::native_name(language);
+    let Some(with_texts) = job
+        .shared
+        .dialogs
+        .choose(
+            t("Furniture language"),
+            &tf("Also ExternalTexts.json (the client's texts) in {language}?", &[("language", name)]),
+            &tf(
+                "Downloaded from {domain}; texts the hotel has but {domain} does not (custom badges and the like) stay. The old file is kept as .bak-<time>.",
+                &[("domain", language.domain)],
+            ),
+            None,
+            vec![
+                Choice::new(t("Furniture and texts"), t("FurnitureData.json and ExternalTexts.json."), Some(true)).primary(),
+                Choice::new(t("Only the furniture"), t("ExternalTexts.json stays as it is."), Some(false)),
+                Choice::new(t("Cancel"), t("Change nothing."), None),
+            ],
+        )
+        .await
+    else {
+        return Ok(());
+    };
+
+    let mut stages = vec![n("Download"), n("Stop the emulator"), n("Furniture language")];
+    if with_texts {
+        stages.push(n("ExternalTexts.json"));
+    }
+    stages.push(n("Start the emulator"));
+    let run = job.start_run(&stages);
     let log = run.logger();
-    let switched = furniture_language::switch_to(server, language, &log).await?;
-    run.done(crate::views::default_catalog::native_name(language));
+    // Downloaded first, while the hotel still runs: a failed download changes nothing.
+    let hotel = furniture_language::current_furniture_data(server).await?;
+    let prepared = furniture_language::prepare(language, hotel.as_ref(), &log).await?;
+    let texts = if with_texts { Some(external_texts::prepare(server, language, &log).await?) } else { None };
+    run.done(language.domain);
+
+    // One stop of the emulator, and one start at the end.
+    let stopped = server_tools::stop_emulator(server, &log).await?;
+    run.done(if stopped { t("stopped") } else { t("not installed") });
+    let work = async {
+        let switched = furniture_language::finish(server, prepared, false, &log).await?;
+        run.done(name);
+        let old_texts = match &texts {
+            Some(texts) => {
+                let old = external_texts::put(server, texts, &log).await?;
+                run.done(&tf("{count} texts", &[("count", &texts.count().to_string())]));
+                Some(old)
+            }
+            None => None,
+        };
+        anyhow::Ok((switched, old_texts))
+    }
+    .await;
+    let (switched, old_texts) = match work {
+        Ok(done) => done,
+        Err(error) => {
+            if stopped {
+                if let Err(start) = server_tools::start_emulator(server, &log).await {
+                    log(&format!("! {start}"));
+                }
+            }
+            return Err(error);
+        }
+    };
+    if stopped {
+        if let Err(error) = server_tools::start_emulator(server, &log).await {
+            log("> The emulator does not start with the new furniture data");
+            furniture_language::restore(
+                server,
+                &switched.applied.safety_backup,
+                switched.applied.old_furniture_data.as_deref(),
+                current.as_deref(),
+                &log,
+            )
+            .await?;
+            if let Some(old) = &old_texts {
+                external_texts::restore(server, old.as_deref(), &log).await?;
+            }
+            server_tools::start_emulator(server, &log).await?;
+            return Err(anyhow::anyhow!(
+                "{}",
+                tf(
+                    "The emulator does not start with the new furniture data ({error}). The database, FurnitureData.json and ExternalTexts.json are as they were before.",
+                    &[("error", &error.to_string())],
+                )
+            ));
+        }
+    }
+    run.done(if stopped { t("loaded") } else { t("not installed") });
+    let texts_line = match &texts {
+        Some(texts) => format!(
+            " {}",
+            tf("ExternalTexts.json is in that language too: {count} texts ({kept} of the hotel's own kept).", &[("count", &texts.count().to_string()), ("kept", &texts.kept.to_string())])
+        ),
+        None => String::new(),
+    };
     run.result(
         ResultKind::Success,
-        &tf("The furniture is in {language} now", &[("language", crate::views::default_catalog::native_name(language))]),
-        &tf(
-            "From {domain}: {furni} furni ({custom} of the hotel's own kept). Changed in the database: {sprites} sprite ids, {items} catalogue items, {offers} offer ids. Players see it after they reload the hotel. The database as it was is in {backup}.",
-            &[
-                ("domain", language.domain),
-                ("furni", &switched.furni.to_string()),
-                ("custom", &switched.custom_kept.to_string()),
-                ("sprites", &switched.plan.sprite_ids.len().to_string()),
-                ("items", &switched.plan.item_ids.len().to_string()),
-                ("offers", &switched.plan.offer_ids.len().to_string()),
-                ("backup", &switched.applied.safety_backup),
-            ],
+        &tf("The furniture is in {language} now", &[("language", name)]),
+        &format!(
+            "{}{texts_line}",
+            tf(
+                "From {domain}: {furni} furni ({custom} of the hotel's own kept). Changed in the database: {sprites} sprite ids, {items} catalogue items, {offers} offer ids. Players see it after they reload the hotel. The database as it was is in {backup}.",
+                &[
+                    ("domain", language.domain),
+                    ("furni", &switched.furni.to_string()),
+                    ("custom", &switched.custom_kept.to_string()),
+                    ("sprites", &switched.plan.sprite_ids.len().to_string()),
+                    ("items", &switched.plan.item_ids.len().to_string()),
+                    ("offers", &switched.plan.offer_ids.len().to_string()),
+                    ("backup", &switched.applied.safety_backup),
+                ],
+            )
         ),
     );
     Ok(())

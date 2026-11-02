@@ -5,6 +5,7 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use aio_remote::default_catalog::{self, CatalogResult};
+use aio_remote::external_texts::{self, PreparedTexts};
 use aio_remote::furniture_language::{self, FurniLanguage, SwitchResult};
 use aio_remote::{fail, server_tools, Server};
 use async_trait::async_trait;
@@ -87,11 +88,13 @@ struct Form {
     has_catalog: bool,
     /// The furniture language (furniture_language::LANGUAGES code).
     language: String,
+    /// Also ExternalTexts.json in that language.
+    texts: bool,
 }
 
 impl Default for Form {
     fn default() -> Self {
-        Self { confirmed: false, has_catalog: false, language: PACKED_LANGUAGE.into() }
+        Self { confirmed: false, has_catalog: false, language: PACKED_LANGUAGE.into(), texts: false }
     }
 }
 
@@ -101,6 +104,8 @@ struct Output {
     version: String,
     language: Option<FurniLanguage>,
     switched: Option<SwitchResult>,
+    /// ExternalTexts.json: (texts, of which the hotel's own).
+    texts: Option<(usize, usize)>,
 }
 
 /// The name of a furniture language in its own language, as on the language button (Español, Suomi ...).
@@ -144,6 +149,10 @@ impl DefaultCatalogStep {
 
     pub fn language(&self) -> Option<FurniLanguage> {
         self.output.lock().unwrap().language
+    }
+
+    pub fn texts(&self) -> Option<(usize, usize)> {
+        self.output.lock().unwrap().texts
     }
 
     pub fn switched(&self) -> Option<SwitchResult> {
@@ -222,6 +231,22 @@ impl InstallStep for DefaultCatalogStep {
             )
         };
         ui.add(egui::Label::new(egui::RichText::new(hint).size(12.0).color(palette.subtle)).wrap());
+        let language = furniture_language::language(&form.language).unwrap_or(furniture_language::LANGUAGES[0]);
+        ui.add_space(4.0);
+        ui.checkbox(&mut form.texts, tf("Also ExternalTexts.json (the client's texts) in {language}", &[("language", native_name(language))]));
+        if form.texts {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(tf(
+                        "Downloaded from {domain}; texts the hotel has but {domain} does not (custom badges and the like) stay.",
+                        &[("domain", language.domain)],
+                    ))
+                    .size(12.0)
+                    .color(palette.subtle),
+                )
+                .wrap(),
+            );
+        }
         if form.has_catalog {
             ui.add_space(8.0);
             ui.checkbox(&mut form.confirmed, t("Yes, replace the catalogue and furniture list on the server (a backup is made first)"));
@@ -295,6 +320,8 @@ impl InstallStep for DefaultCatalogStep {
             let packed: serde_json::Value = serde_json::from_slice(strip_bom(&catalog.furniture_data))?;
             Some(furniture_language::prepare(language, Some(&packed), &log).await?)
         };
+        let texts: Option<PreparedTexts> =
+            if self.form.lock().unwrap().texts { Some(external_texts::prepare(server, language, &log).await?) } else { None };
 
         // Through files on this computer, because the upload sends files.
         let directory = server_tools::backup_directory();
@@ -339,13 +366,22 @@ impl InstallStep for DefaultCatalogStep {
                     self.output.lock().unwrap().switched = Some(switched);
                 }
             }
+            // The emulator writes to ExternalTexts.json too, so it goes in while the emulator is stopped.
+            let old_texts = match &texts {
+                Some(texts) => {
+                    let old = external_texts::put(server, texts, &log).await?;
+                    self.output.lock().unwrap().texts = Some((texts.count(), texts.kept));
+                    Some(old)
+                }
+                None => None,
+            };
             ui.done(native_name(language));
-            anyhow::Ok(result)
+            anyhow::Ok((result, old_texts))
         }
         .await;
         // Whatever happened above, the hotel runs again.
-        let result = match work {
-            Ok(result) => result,
+        let (result, old_texts) = match work {
+            Ok(done) => done,
             Err(error) => {
                 if stopped {
                     if let Err(start) = server_tools::start_emulator(server, &log).await {
@@ -360,6 +396,9 @@ impl InstallStep for DefaultCatalogStep {
                 // It does not load with the new catalogue: the database and FurnitureData.json go back to before it.
                 log("> The emulator does not start with the new catalogue");
                 default_catalog::restore(server, &result.safety_backup, result.old_furniture_data.as_deref(), &log).await?;
+                if let Some(old) = &old_texts {
+                    external_texts::restore(server, old.as_deref(), &log).await?;
+                }
                 server_tools::start_emulator(server, &log).await?;
                 fail!("The emulator does not start with the new catalogue ({error}). The database and FurnitureData.json are as they were before.");
             }
@@ -400,7 +439,14 @@ pub fn wizard(shared: &Shared) -> Wizard {
         vec![step as Arc<dyn InstallStep>],
         false,
         Arc::new(move |info| {
-            super::finished::default_catalog(finish_step.result(), finish_step.version(), finish_step.language(), finish_step.switched(), info.steps)
+            super::finished::default_catalog(
+                finish_step.result(),
+                finish_step.version(),
+                finish_step.language(),
+                finish_step.switched(),
+                finish_step.texts(),
+                info.steps,
+            )
         }),
         t("Catalogue installed"),
         t("Completed"),

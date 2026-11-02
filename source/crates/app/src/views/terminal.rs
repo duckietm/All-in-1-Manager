@@ -366,6 +366,14 @@ fn key_action(key: egui::Key, m: egui::Modifiers, application_cursor: bool, rows
     keys::key_action(key, modifiers(m), application_cursor, rows as i32)
 }
 
+/// The size of one cell. The width is what text really advances per character: egui rounds every glyph to whole
+/// pixels, so `glyph_width` alone drifts from the drawn text (the cursor then stood a space behind what was typed).
+fn cell_size(fonts: &egui::text::Fonts, font: &FontId) -> egui::Vec2 {
+    const SAMPLE: usize = 200;
+    let width = fonts.layout_no_wrap("M".repeat(SAMPLE), font.clone(), Color32::WHITE).size().x / SAMPLE as f32;
+    egui::vec2(width.max(1.0), fonts.row_height(font).ceil().max(1.0))
+}
+
 /// The cell under a point of the grid (PositionAt).
 #[allow(clippy::too_many_arguments)]
 fn position_at(
@@ -476,8 +484,7 @@ impl TerminalView {
         let id = ui.id().with("terminal-grid");
         let response = ui.interact(rect, id, egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::Text);
         let font = FontId::monospace(self.font_size);
-        let (cell_w, cell_h) = ui.fonts(|f| (f.glyph_width(&font, 'M'), f.row_height(&font).ceil()));
-        let cell = egui::vec2(cell_w.max(1.0), cell_h.max(1.0));
+        let cell = ui.fonts(|f| cell_size(f, &font));
         let columns = ((rect.width() / cell.x) as usize).max(20);
         let rows = ((rect.height() / cell.y) as usize).max(5);
         if rect.width() >= 10.0 && rect.height() >= 10.0 {
@@ -1001,5 +1008,28 @@ mod tests {
         let r = runs(&wide, 3);
         assert_eq!((r[0].start, r[0].end, r[0].text.as_str()), (0, 2, "中"));
         assert_eq!(r[1].text, "a");
+    }
+}
+
+
+#[cfg(test)]
+mod cell_tests {
+    use super::*;
+
+    #[test]
+    fn the_grid_follows_the_drawn_text() {
+        for ppp in [1.0_f32, 1.25, 1.5, 2.0] {
+            let ctx = egui::Context::default();
+            crate::gui::theme::install_fonts(&ctx);
+            ctx.set_pixels_per_point(ppp);
+            let _ = ctx.run(Default::default(), |_| {});
+            for size in [12.0_f32, 13.0, 14.0, 15.0, 18.0] {
+                let font = FontId::monospace(size);
+                let line = "root@test1:/var/www# chown -R www-data:www-data atomcms/ && ls -la --color=auto /var/www/gamedata/";
+                let (cell, drawn) = ctx.fonts(|f| (cell_size(f, &font), f.layout_no_wrap(line.into(), font.clone(), Color32::WHITE).size().x));
+                let drift = (cell.x * line.chars().count() as f32 - drawn).abs();
+                assert!(drift < cell.x / 4.0, "ppp {ppp} size {size}: {drift} px apart");
+            }
+        }
     }
 }

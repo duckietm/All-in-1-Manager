@@ -246,6 +246,11 @@ Before every `apt-get update` the installer checks the **server clock** against 
 on, because apt refuses repository files that seem to come from the future
 (`Release file ... is not valid yet`).
 
+Every `apt-get` (and `dpkg -i`) also **waits while another apt runs**, instead of stopping with
+`Could not get lock /var/lib/dpkg/lock-frontend`: on a fresh Ubuntu, `unattended-upgrades` installs updates for a
+while after the first boot. The log says it is waiting (a line every minute); after 30 minutes the step stops and
+asks to wait or reboot. The locks are read from `/proc/locks`, so a quiet server never waits.
+
 ### Step 3 – PHP 8.5 with PHP-FPM
 
 After NGINX, **Next: PHP** installs:

@@ -42,6 +42,34 @@ fix_clock() {
 }
 apt_update() { fix_clock; apt-get update; }
 
+# Another apt holds its locks (Ubuntu's unattended-upgrades runs right after an install or a boot, apt-daily later):
+# without waiting, apt-get stops with "Could not get lock /var/lib/dpkg/lock-frontend". The locks are read from
+# /proc/locks (by inode), not guessed from process names. DPkg::Lock::Timeout covers one starting just after the check.
+apt_locked() {
+  for lock in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+    [ -e "$lock" ] || continue
+    awk -v inode="$(stat -c %i "$lock")" '{ split($6, id, ":"); if (id[3] == inode) found = 1 } END { exit !found }' /proc/locks 2>/dev/null && return 0
+  done
+  return 1
+}
+wait_for_apt() {
+  apt_locked || return 0
+  echo "  Another apt is busy (often Ubuntu's automatic updates after a boot): waiting until it is done ..."
+  waited=0
+  while apt_locked; do
+    [ "$waited" -ge 1800 ] && fail "apt is still busy after 30 minutes (another process holds its lock). Wait until it is done, or reboot the server, then try again."
+    sleep 5
+    waited=$((waited + 5))
+    [ $((waited % 60)) -eq 0 ] && echo "  still waiting ($((waited / 60)) min)"
+  done
+  echo "  apt is free again"
+}
+apt-get() { wait_for_apt; command apt-get -o DPkg::Lock::Timeout=600 "$@"; }
+dpkg() {
+  case "$1" in -i|--install|--configure|-r|--remove|-P|--purge|--unpack) wait_for_apt ;; esac
+  command dpkg "$@"
+}
+
 # download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
 # themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
 download() {

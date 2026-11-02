@@ -2,6 +2,7 @@
 //! (`clone` exports `steps()`); every addon module exports `wizard(shared)`, which builds its steps and finish page.
 
 pub mod about;
+pub mod addons;
 pub mod asset_explorer;
 pub mod atom_cms;
 pub mod clone;

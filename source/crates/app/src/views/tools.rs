@@ -606,6 +606,12 @@ impl View for ToolsView {
 /// A tool tile, 268 x 66 like the C# button: icon, bold title, a caption of up to two lines. True when clicked.
 fn tile(ui: &mut egui::Ui, palette: &Palette, icon: Icon, title: &str, caption: &str, enabled: bool) -> bool {
     let size = egui::vec2(268.0, 66.0);
+    // The Hotel look: a picture of its own behind every tool (the same one for the same tool), the text on a plate.
+    if theme::hotel() {
+        let scene = crate::gui::scenes::for_key(title);
+        let response = crate::gui::scenes::button(ui, palette, size, scene, Fixed::brand(), icon, title, caption, crate::gui::scenes::Layout::Side, palette.card, enabled);
+        return response.clicked();
+    }
     let (rect, response) = ui.allocate_exact_size(size, if enabled { egui::Sense::click() } else { egui::Sense::hover() });
     let hovered = enabled && response.hovered();
     let fill = if hovered { palette.hover } else { palette.card };

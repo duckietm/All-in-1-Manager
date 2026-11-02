@@ -8,8 +8,10 @@ use aio_core::ServerLayout;
 use aio_remote::server_status::{self, RepositoryUpdate, RepositoryVersion};
 use eframe::egui::{self, Color32, RichText};
 
+use super::addons;
 use super::tools::{Component, ToolsView};
 use crate::gui::icons::{self, Icon};
+use crate::gui::scenes::{self, Scene};
 use crate::gui::theme::{self, hex, with_alpha, Fixed, Palette};
 use crate::gui::{banner, widgets, Page, Request, Shared};
 use crate::i18n::{n, t, tf};
@@ -91,52 +93,57 @@ impl Dashboard {
             ui.add_space(18.0);
         }
         if session.is_none()
-            && tile(
+            && wide_tile(
                 ui,
                 palette,
                 t("Log in"),
                 t("Log in to your server: with a password or your SSH key. The login is used for everything below and stays open until you close the program."),
                 Icon::Account,
                 hex("#16A34A"),
+                Scene::Sky,
             )
         {
             click = Some(Click::Login);
         }
-        if tile(
+        if wide_tile(
             ui,
             palette,
             t("Install New Server"),
             t("Install the full hotel stack on the server you are logged in to: a fresh Ubuntu Server / Debian machine."),
             Icon::ServerPlus,
             Fixed::brand(),
+            Scene::Hotel,
         ) {
             click = Some(Click::Page(Page::Install));
         }
         self.components_card(ui, palette, shared, tools);
         ui.add_space(18.0);
 
-        let gamedata = aio_remote::octane::gamedata();
         section(ui, palette, t("ADDONS"));
-        let addons: Vec<(&str, String, Icon, &str, Page)> = vec![
-            ("CMS", t("AtomCMS or your own CMS as the hotel's website; Octane moves to /client.").into(), Icon::Puzzle, "#E8590C", Page::AtomCms),
-            ("Gitea", t("Your own Git server (like a small GitHub) on git.yourdomain, in Docker behind Traefik.").into(), Icon::Git, "#609926", Page::Gitea),
-            ("Fail2Ban", t("Bans addresses that guess SSH passwords; a whitelist for your own IPs (Tools → Fail2Ban).").into(), Icon::Shield, "#DC2626", Page::Fail2Ban),
-            ("CrowdSec", t("Blocks attackers on every route through Traefik, with the community's blocklist. Cloudflare aware.").into(), Icon::Shield, "#7C3AED", Page::CrowdSec),
-            (t("Default catalogue"), t("A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.").into(), Icon::Shopping, "#D97706", Page::DefaultCatalog),
-            (t("Deploy Assets"), tf("The All-in-1 downloader's assets and the UI texts to {gamedata}.", &[("gamedata", &gamedata)]), Icon::Download, "#8B5CF6", Page::DeployAssets),
-            ("Asset Explorer", tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]), Icon::FolderSync, "#2563EB", Page::AssetExplorer),
-            ("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Page::SqlEditor),
-        ];
-        if let Some(page) = tile_grid(ui, palette, &addons) {
+        if let Some(page) = entry_grid(ui, palette, &addons::entries()) {
             click = Some(Click::Page(page));
         }
         ui.add_space(6.0);
         section(ui, palette, t("TOOLS"));
-        let tool_tiles: Vec<(&str, String, Icon, &str, Page)> = vec![
-            (t("Tools"), t("Restarts, database backup and import, updates, settings backup.").into(), Icon::Wrench, "#0E9F9E", Page::Tools),
-            ("Debug", t("Live logs: the emulator, NGINX, Traefik, the firewall, Fail2Ban and CrowdSec.").into(), Icon::Bug, "#DC2626", Page::Debug),
+        let tool_tiles = vec![
+            addons::Entry {
+                title: t("Tools").into(),
+                description: t("Restarts, database backup and import, updates, settings backup.").into(),
+                icon: Icon::Wrench,
+                color: hex("#0E9F9E"),
+                scene: Scene::Parquet,
+                page: Page::Tools,
+            },
+            addons::Entry {
+                title: "Debug".into(),
+                description: t("Live logs: the emulator, NGINX, Traefik, the firewall, Fail2Ban and CrowdSec.").into(),
+                icon: Icon::Bug,
+                color: hex("#DC2626"),
+                scene: Scene::Hearts,
+                page: Page::Debug,
+            },
         ];
-        if let Some(page) = tile_grid(ui, palette, &tool_tiles) {
+        if let Some(page) = entry_grid(ui, palette, &tool_tiles) {
             click = Some(Click::Page(page));
         }
         click
@@ -426,6 +433,26 @@ fn tile_frame(ui: &mut egui::Ui, palette: &Palette, margin: egui::Margin, add: i
     response
 }
 
+/// A wide button: in the Hotel look the picture button, otherwise the plain card.
+fn wide_tile(ui: &mut egui::Ui, palette: &Palette, title: &str, description: &str, icon: Icon, color: Color32, scene: Scene) -> bool {
+    if !theme::hotel() {
+        return tile(ui, palette, title, description, icon, color);
+    }
+    let clicked = scenes::button(ui, palette, egui::vec2(ui.available_width(), 92.0), scene, color, icon, title, description, scenes::Layout::Side, palette.surface, true)
+        .clicked();
+    ui.add_space(14.0);
+    clicked
+}
+
+/// Buttons in columns: in the Hotel look the picture buttons, otherwise the plain cards.
+fn entry_grid(ui: &mut egui::Ui, palette: &Palette, entries: &[addons::Entry]) -> Option<Page> {
+    if theme::hotel() {
+        return addons::grid(ui, palette, entries, 150.0, palette.surface);
+    }
+    let tiles: Vec<(&str, String, Icon, Color32, Page)> = entries.iter().map(|e| (e.title.as_str(), e.description.clone(), e.icon, e.color, e.page)).collect();
+    tile_grid(ui, palette, &tiles)
+}
+
 fn tile(ui: &mut egui::Ui, palette: &Palette, title: &str, description: &str, icon: Icon, color: Color32) -> bool {
     let clicked = tile_frame(ui, palette, egui::Margin::symmetric(22, 20), |ui| {
         ui.horizontal(|ui| {
@@ -447,7 +474,7 @@ fn tile(ui: &mut egui::Ui, palette: &Palette, title: &str, description: &str, ic
 }
 
 /// Tiles in columns: the column count of the width (1, 2 or 4; never 3).
-fn tile_grid(ui: &mut egui::Ui, palette: &Palette, tiles: &[(&str, String, Icon, &str, Page)]) -> Option<Page> {
+fn tile_grid(ui: &mut egui::Ui, palette: &Palette, tiles: &[(&str, String, Icon, Color32, Page)]) -> Option<Page> {
     let width = ui.available_width();
     let mut columns = ((width / 250.0) as usize).clamp(1, 4);
     if columns == 3 {
@@ -465,7 +492,7 @@ fn tile_grid(ui: &mut egui::Ui, palette: &Palette, tiles: &[(&str, String, Icon,
                     let response = tile_frame(ui, palette, egui::Margin::symmetric(16, 14), |ui| {
                         ui.set_min_height(86.0);
                         ui.horizontal(|ui| {
-                            small_badge(ui, *icon, hex(color), 40.0, 20.0);
+                            small_badge(ui, *icon, *color, 40.0, 20.0);
                             ui.add_space(6.0);
                             ui.label(widgets::title_text(title, 16.0));
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

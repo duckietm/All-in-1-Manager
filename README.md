@@ -70,7 +70,7 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
    [releases](https://github.com/duckietm/All-in-1-installer/releases) and start it (on Linux: `chmod +x` first).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
 3. **Install New Server** and follow the steps. Each one explains what it does; **Skip** leaves it out.
-4. Optional: a CMS, Gitea, Fail2Ban or CrowdSec under **ADDONS**, then **Deploy Assets** for the game's files.
+4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Deploy Assets** for the game's files.
 5. Afterwards **Tools** runs the hotel: **Health check** first when something seems wrong.
 
 To look around first: `all-in-1-installer --dry-run` logs in to nothing and only shows the commands.
@@ -702,7 +702,10 @@ A new step implements `InstallStep` (`source/crates/app/src/gui/step.rs`) and is
 
 ## Addons
 
-The sidebar has an **ADDONS** section for things that go on top of a finished server installation.
+**Addons** (in the sidebar under SERVER) opens a menu with one button per addon, for things that go on top of a
+finished server installation. In the Hotel look every button (the addons, the dashboard and Tools) has its own
+Habbo-style picture behind it (a room, the lido, a disco, bricks, a garden, space ...), with the text on a solid
+plate so it reads the same on every picture; the Professional look keeps the plain tiles.
 The addons and Tools use the login from the start of the program: there is no separate login per page. **Back**
 returns to the dashboard and keeps the login (and the SQL Editor's database connection) open.
 

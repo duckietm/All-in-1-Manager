@@ -78,6 +78,11 @@ pub fn title_family() -> FontFamily {
     if hotel() { FontFamily::Name("pixel".into()) } else { FontFamily::Proportional }
 }
 
+/// Pixelify Sans in the Hotel look, the bold UI font in the other: for titles painted by hand.
+pub fn title_family_or_bold() -> FontFamily {
+    if hotel() { FontFamily::Name("pixel".into()) } else { FontFamily::Name("bold".into()) }
+}
+
 /// The light/dark tokens.
 #[derive(Clone, Copy)]
 pub struct Palette {

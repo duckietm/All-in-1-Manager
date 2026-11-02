@@ -132,6 +132,7 @@ pub async fn perform(tool: Tool, job: &Job) -> Result<()> {
         Tool::BackupDatabase => backup_database(job).await,
         Tool::ImportDatabase => import_database(job).await,
         Tool::ImportPlus => import_plus(job).await,
+        Tool::FurnitureLanguage => furniture_language_tool(job).await,
         Tool::RecoverSqlPassword => recover_sql_password(job).await,
         Tool::CheckUpdates => check_updates(job).await,
         Tool::UpdateSystem => update_system(job).await,
@@ -553,6 +554,60 @@ async fn import_plus(job: &Job) -> Result<()> {
         &[("backup", &result.safety_backup)],
     );
     run.result(ResultKind::Success, t("The Plus database is imported"), &format!("{added}{catalog}{eggs} {client}"));
+    Ok(())
+}
+
+/// Tools → Furniture language: another hotel's furnidata, and the database brought in line with it.
+async fn furniture_language_tool(job: &Job) -> Result<()> {
+    use aio_remote::furniture_language::{self, LANGUAGES};
+    let server = job.server();
+    let current = furniture_language::installed(server).await?;
+    let current_name = current.as_deref().and_then(furniture_language::language).map(crate::views::default_catalog::native_name);
+    let options: Vec<Choice<Option<&'static str>>> = LANGUAGES
+        .iter()
+        .map(|l| {
+            let name = crate::views::default_catalog::native_name(*l);
+            let choice = Choice::new(name, &tf("The furnidata of {domain}", &[("domain", l.domain)]), Some(l.code));
+            if current.as_deref() == Some(l.code) {
+                choice.primary()
+            } else {
+                choice
+            }
+        })
+        .chain([Choice::new(t("Cancel"), t("Change nothing."), None)])
+        .collect();
+    let message = format!(
+        "{} {}",
+        match current_name {
+            Some(name) => tf("The furniture is in {language} now.", &[("language", name)]),
+            None => t("The installer has not set the furniture language on this server yet.").to_string(),
+        },
+        t("The chosen hotel's furnidata is downloaded on this computer and put in gamedata/config; the database follows it (sprite ids, catalogue items, offer ids). The hotel's own furni keep their names. A backup comes first and the emulator restarts.")
+    );
+    let Some(code) = job.shared.dialogs.choose(t("Furniture language"), t("Which language should the furniture be in?"), &message, None, options).await else {
+        return Ok(());
+    };
+    let language = furniture_language::language(code).unwrap_or(LANGUAGES[0]);
+    let run = job.start_run(&[n("Furniture language")]);
+    let log = run.logger();
+    let switched = furniture_language::switch_to(server, language, None, &log).await?;
+    run.done(crate::views::default_catalog::native_name(language));
+    run.result(
+        ResultKind::Success,
+        &tf("The furniture is in {language} now", &[("language", crate::views::default_catalog::native_name(language))]),
+        &tf(
+            "From {domain}: {furni} furni ({custom} of the hotel's own kept). Changed in the database: {sprites} sprite ids, {items} catalogue items, {offers} offer ids. Players see it after they reload the hotel. The database as it was is in {backup}.",
+            &[
+                ("domain", language.domain),
+                ("furni", &switched.furni.to_string()),
+                ("custom", &switched.custom_kept.to_string()),
+                ("sprites", &switched.plan.sprite_ids.len().to_string()),
+                ("items", &switched.plan.item_ids.len().to_string()),
+                ("offers", &switched.plan.offer_ids.len().to_string()),
+                ("backup", &switched.applied.safety_backup),
+            ],
+        ),
+    );
     Ok(())
 }
 

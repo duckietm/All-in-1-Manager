@@ -1035,6 +1035,23 @@ emulator and Octane); the furniture files and catalogue icons come from [Deploy 
    `.bak-<time>`). The emulator starts again; when the import fails or the emulator does not load, the database and
    the old `FurnitureData.json` go back.
 
+**Furniture language**: the catalogue's own `FurnitureData.json` is Dutch. Choose another language with its flag
+(English, Español, Português, Deutsch, Français, Italiano, Nederlands, Suomi, Türkçe) and, after the import, the
+installer does what the [All-in-1 Converter](https://github.com/duckietm/all-in-1-converter) does:
+
+- downloads that hotel's furnidata on this computer (`https://www.<hotel>/gamedata/furnidata_xml/1`) and converts it to
+  `FurnitureData.json` (`Furnidata.cs`, `FurnitureDataModel.cs`);
+- keeps the hotel's own furni that the official furnidata does not have, with their own names (so they still show);
+- brings the database in line with it (`FixSpriteIDSettings.cs`): `items_base.sprite_id` = the furnidata's id per
+  classname, and `catalog_items.item_ids` for the `*_single` wallpapers, floors and landscapes and by public name; a
+  bundle that sells several furni (`1;2`) keeps them;
+- sets the offer ids (`SetOfferID.cs`): `catalog_items.offer_id` = the furnidata's `offerid` per classname, and a new
+  unique one above 60000 (in the furnidata too) where it is `-1`;
+- puts `FurnitureData.json` in `gamedata/config` (the old one kept as `.bak-<time>`) and runs the updates in batches of
+  100, after a safety backup, with the emulator stopped; when something fails, both go back.
+
+Switching later, without importing the catalogue again: **Tools → Furniture language**.
+
 A marker in `gamedata/config/.all-in-1-catalog` remembers the installed version, so the step shows **Skip (already
 installed)** for the same catalogue. Meant for a new hotel: furniture players already own keeps its `items_base`
 number, so on a hotel with a different furniture list it would turn into other furniture.
@@ -1281,6 +1298,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 | **Whitelist and bans** | for the [Fail2Ban](#fail2ban) addon: edit the whitelist (addresses and networks that are never banned, with **Add my IP**) and tick banned addresses to let them in again. Saving rewrites `/etc/fail2ban/jail.d/all-in-1.local` (checked with `fail2ban-client -t` first) and restarts fail2ban; on a server without fail2ban it points to the addon |
 | **Create full database backup** | `mariadb-dump --single-transaction --routines --triggers --events` of the hotel database into `/var/backups/all-in-1/<db>-<time>.sql.gz` (root only; the newest 10 are kept), then downloads it over SFTP to a file you choose (owner-only on Linux/macOS) |
 | **Import full database** | uploads a `.sql` or `.sql.gz`, makes a safety backup (`<db>-before-import-<time>.sql.gz`), stops the emulator, recreates the database with its character set and imports (database names in `CREATE DATABASE` / `USE` lines become the hotel's), clears AtomCMS' cache, and starts the emulator, which updates the database to its version. A file that is not a SQL dump is refused before anything changes |
+| **Furniture language** | the furniture names and descriptions in another hotel's language (the 9 Habbo hotels): its furnidata is downloaded and converted, the hotel's own furni stay, and `items_base` / `catalog_items` follow it (sprite ids, catalogue items, offer ids), after a safety backup and with the emulator restarted. See [Default catalogue](#default-catalogue) |
 | **Import Plus database** | a PlusEMU dump (such as Plus' fresh install) into the Polaris hotel database: the reverse of [plus-migrator](https://github.com/plus-emulator/plus-migrator). Choose **Furniture and catalog** or **Furniture only**. It uploads the `.sql` / `.sql.gz`, makes a safety backup (`<db>-before-plus-import-<time>.sql.gz`), stops the emulator, loads the dump into a staging database `plus_import` next to the hotel's, converts, drops the staging database and starts the emulator. See [Import Plus database](#import-plus-database) |
 | **Recover SQL password** | gives MariaDB's root a new random 32-character password (asks first) and saves it in `configuration/database/<server>/mariadb.txt`; a changed file is kept as `mariadb.txt.bak-<time>`. Changes `root@localhost` (its socket login stays) and `root@'%'` when it exists. When root cannot log in through the socket any more, MariaDB is restarted for a moment with `--skip-grant-tables --skip-networking` to change it and then started normally. Then it tests the new password over 127.0.0.1 and the socket. Without a saved file, the CMS and emulator accounts are read from AtomCMS' `.env` and the emulator's `config.ini`, so the new file is complete. The emulator and AtomCMS use their own accounts and are not affected |
 | **Check for updates** | `git fetch` of the emulator, Octane, Octane-Renderer and AtomCMS, and per clone how many commits a `git pull` would bring in, with the newest one. The commits are counted against the branch chosen in **Settings → Repository branches**, not against the branch the clone happens to be on, so a clone still on `main` while `dev` is chosen reports what `dev` has and says `main → dev`. AtomCMS has no choice and is counted against its own branch. A fetch only fills the remote branches: no file on the server is changed and the hotel keeps running. The same check runs by itself right after you log in here, and again after an update, so **Update emulator** and **Update Octane** say `3 new commit(s)` or `up to date` before you press them |

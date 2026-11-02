@@ -648,7 +648,13 @@ pub fn fail2ban(settings: Option<Fail2BanSettings>, ssh_ports: Vec<i64>, client_
 }
 
 /// The Default catalogue addon: what is in the hotel now, the backup, and what the client still needs.
-pub fn default_catalog(result: Option<aio_remote::default_catalog::CatalogResult>, version: String, steps: Steps) -> Box<dyn FinishPage> {
+pub fn default_catalog(
+    result: Option<aio_remote::default_catalog::CatalogResult>,
+    version: String,
+    language: Option<aio_remote::furniture_language::FurniLanguage>,
+    switched: Option<aio_remote::furniture_language::SwitchResult>,
+    steps: Steps,
+) -> Box<dyn FinishPage> {
     Page::boxed(move |ui, palette| {
         let ok = clean(&steps);
         let message = match (&result, ok) {
@@ -675,6 +681,30 @@ pub fn default_catalog(result: Option<aio_remote::default_catalog::CatalogResult
                     widgets::text(ui, t("The FurnitureData.json that was there:"), 13.0);
                     code(ui, palette, old);
                 }
+            });
+        }
+        if let Some(language) = language {
+            section(ui, t("Furniture language"), |ui| {
+                widgets::text(ui, &tf("The furniture names and descriptions are in {language}.", &[("language", super::default_catalog::native_name(language))]), 13.0);
+                if let Some(s) = &switched {
+                    colored(
+                        ui,
+                        &tf(
+                            "From {domain}: {furni} furni ({custom} of the hotel's own kept). Changed in the database: {sprites} sprite ids, {items} catalogue items, {offers} offer ids.",
+                            &[
+                                ("domain", language.domain),
+                                ("furni", &s.furni.to_string()),
+                                ("custom", &s.custom_kept.to_string()),
+                                ("sprites", &s.plan.sprite_ids.len().to_string()),
+                                ("items", &s.plan.item_ids.len().to_string()),
+                                ("offers", &s.plan.offer_ids.len().to_string()),
+                            ],
+                        ),
+                        12.0,
+                        palette.subtle,
+                    );
+                }
+                colored(ui, t("Another language later: Tools → Furniture language."), 12.0, palette.subtle);
             });
         }
         section(ui, t("2. The furniture files"), |ui| {

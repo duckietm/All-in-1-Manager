@@ -888,7 +888,7 @@ impl View for SettingsView {
 }
 
 /// A language: the flag of its hotel and its own name. Sized before it is drawn, so the row wraps.
-fn language_button(ui: &mut egui::Ui, palette: &Palette, name: &str, domain: &str, selected: bool) -> egui::Response {
+pub(crate) fn language_button(ui: &mut egui::Ui, palette: &Palette, name: &str, domain: &str, selected: bool) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(name.to_string(), egui::FontId::new(13.0, egui::FontFamily::Name("bold".into())), palette.text);
     let size = egui::vec2(10.0 + 24.0 + 8.0 + galley.size().x + 12.0, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());

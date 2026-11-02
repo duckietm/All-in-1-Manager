@@ -26,6 +26,7 @@ russh.workspace = true
 russh-sftp.workspace = true
 mysql_async.workspace = true
 reqwest.workspace = true
+roxmltree = "0.19"
 
 [dev-dependencies]
 tempfile.workspace = true

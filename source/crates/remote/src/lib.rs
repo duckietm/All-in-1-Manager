@@ -20,6 +20,7 @@ pub mod emulator_assets;
 pub mod emulator_monitor;
 pub mod epicnext;
 pub mod fail2ban;
+pub mod furniture_language;
 pub mod gamedata_files;
 pub mod git_clone;
 pub mod gitea;

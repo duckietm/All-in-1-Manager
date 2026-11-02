@@ -5,6 +5,7 @@ use std::io::Read;
 use std::sync::{Arc, Mutex};
 
 use aio_remote::default_catalog::{self, CatalogResult};
+use aio_remote::furniture_language::{self, FurniLanguage, SwitchResult};
 use aio_remote::{fail, server_tools, Server};
 use async_trait::async_trait;
 use eframe::egui;
@@ -65,17 +66,50 @@ pub fn packed_version() -> String {
     open_catalog().map(|c| c.version).unwrap_or_default()
 }
 
-#[derive(Default)]
+/// The language the packed FurnitureData.json is in: chosen, it is used as it is.
+pub const PACKED_LANGUAGE: &str = "nl";
+
 struct Form {
     /// The catalogue on the server is replaced: asked when it has one.
     confirmed: bool,
     has_catalog: bool,
+    /// The furniture language (furniture_language::LANGUAGES code).
+    language: String,
+}
+
+impl Default for Form {
+    fn default() -> Self {
+        Self { confirmed: false, has_catalog: false, language: PACKED_LANGUAGE.into() }
+    }
 }
 
 #[derive(Default)]
 struct Output {
     result: Option<CatalogResult>,
     version: String,
+    language: Option<FurniLanguage>,
+    switched: Option<SwitchResult>,
+}
+
+/// The name of a furniture language in its own language, as on the language button (Español, Suomi ...).
+pub fn native_name(language: FurniLanguage) -> &'static str {
+    crate::i18n::LANGUAGES.iter().find(|l| l.hotel_domain == language.domain).map(|l| l.native_name).unwrap_or(language.name)
+}
+
+/// The nine furniture languages as flag buttons; returns the one clicked.
+pub(crate) fn language_choice(ui: &mut egui::Ui, palette: &Palette, current: &str) -> Option<&'static str> {
+    let mut clicked = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+        for language in furniture_language::LANGUAGES {
+            let response = super::settings::language_button(ui, palette, native_name(language), language.domain, language.code == current)
+                .on_hover_text(language.domain);
+            if response.clicked() {
+                clicked = Some(language.code);
+            }
+        }
+    });
+    clicked
 }
 
 pub struct DefaultCatalogStep {
@@ -94,6 +128,14 @@ impl DefaultCatalogStep {
 
     pub fn version(&self) -> String {
         self.output.lock().unwrap().version.clone()
+    }
+
+    pub fn language(&self) -> Option<FurniLanguage> {
+        self.output.lock().unwrap().language
+    }
+
+    pub fn switched(&self) -> Option<SwitchResult> {
+        self.output.lock().unwrap().switched.clone()
     }
 }
 
@@ -141,11 +183,31 @@ impl InstallStep for DefaultCatalogStep {
     }
 
     fn checks(&self) -> Vec<String> {
-        vec![t("Check the server").into(), t("Upload the catalogue").into(), t("Backup, import and FurnitureData.json").into()]
+        vec![
+            t("Check the server").into(),
+            t("Upload the catalogue").into(),
+            t("Backup, import and FurnitureData.json").into(),
+            t("Furniture language").into(),
+        ]
     }
 
-    fn options(&self, ui: &mut egui::Ui, _palette: &Palette) {
+    fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
         let mut form = self.form.lock().unwrap();
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(t("Language of the furniture names and descriptions")).size(12.0).strong().color(palette.muted));
+        if let Some(code) = language_choice(ui, palette, &form.language) {
+            form.language = code.into();
+        }
+        let hint = if form.language == PACKED_LANGUAGE {
+            t("The catalogue's own FurnitureData.json (Dutch), as it is.").to_string()
+        } else {
+            let language = furniture_language::language(&form.language).unwrap_or(furniture_language::LANGUAGES[0]);
+            tf(
+                "Downloaded from {domain} on this computer; the database is brought in line with it (sprite ids and offer ids). Furni the hotel has but {domain} does not keep their Dutch names.",
+                &[("domain", language.domain)],
+            )
+        };
+        ui.add(egui::Label::new(egui::RichText::new(hint).size(12.0).color(palette.subtle)).wrap());
         if form.has_catalog {
             ui.add_space(8.0);
             ui.checkbox(&mut form.confirmed, t("Yes, replace the catalogue and furniture list on the server (a backup is made first)"));
@@ -238,6 +300,19 @@ impl InstallStep for DefaultCatalogStep {
             output.result = Some(result.clone());
             output.version = catalog.version.clone();
         }
+
+        let code = self.form.lock().unwrap().language.clone();
+        let language = furniture_language::language(&code).unwrap_or(furniture_language::LANGUAGES[0]);
+        self.output.lock().unwrap().language = Some(language);
+        if language.code == PACKED_LANGUAGE {
+            furniture_language::mark(server, language).await?;
+            log(&format!("> Furniture language: {} (the catalogue's own FurnitureData.json)", language.name));
+        } else {
+            let packed: serde_json::Value = serde_json::from_slice(strip_bom(&catalog.furniture_data))?;
+            let switched = furniture_language::switch_to(server, language, Some(packed), &log).await?;
+            self.output.lock().unwrap().switched = Some(switched);
+        }
+        ui.done(native_name(language));
         Ok(ui.succeeded(
             &tf("The default catalogue ({version}) is installed", &[("version", &catalog.version)]),
             &tf(
@@ -246,6 +321,10 @@ impl InstallStep for DefaultCatalogStep {
             ),
         ))
     }
+}
+
+fn strip_bom(bytes: &[u8]) -> &[u8] {
+    bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes)
 }
 
 /// A new folder for the two files in the system's temp folder.
@@ -268,7 +347,9 @@ pub fn wizard(shared: &Shared) -> Wizard {
         &shared.dialogs,
         vec![step as Arc<dyn InstallStep>],
         false,
-        Arc::new(move |info| super::finished::default_catalog(finish_step.result(), finish_step.version(), info.steps)),
+        Arc::new(move |info| {
+            super::finished::default_catalog(finish_step.result(), finish_step.version(), finish_step.language(), finish_step.switched(), info.steps)
+        }),
         t("Catalogue installed"),
         t("Completed"),
     )

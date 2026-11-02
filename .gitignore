@@ -8,7 +8,6 @@
 # Visual Studio user-specific files
 .vs/*
 !.vs/tasks.vs.json
-!.vs/launch.vs.json
 *.suo
 *.user
 *.userosscache

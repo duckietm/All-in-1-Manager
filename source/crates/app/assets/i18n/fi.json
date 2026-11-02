@@ -1360,6 +1360,7 @@
   "Stop Gitea and remove its route": "Pysäytä Gitea ja poista sen reitti",
   "Stop and remove fail2ban": "Pysäytä ja poista fail2ban",
   "Stop and uninstall": "Pysäytä ja poista asennus",
+  "Stop the emulator": "Pysäytä emulaattori",
   "Stopped: attackers are not blocked in Traefik.": "Pysäytetty: hyökkääjiä ei estetä Traefikissa.",
   "Stopped: the hotel cannot be reached from the internet.": "Pysäytetty: hotelliin ei saada yhteyttä internetistä.",
   "Stopped: {message}": "Pysäytetty: {message}",

@@ -1360,6 +1360,7 @@
   "Stop Gitea and remove its route": "Gitea stoppen en de route verwijderen",
   "Stop and remove fail2ban": "fail2ban stoppen en verwijderen",
   "Stop and uninstall": "Stoppen en verwijderen",
+  "Stop the emulator": "De emulator stoppen",
   "Stopped: attackers are not blocked in Traefik.": "Gestopt: aanvallers worden niet geblokkeerd in Traefik.",
   "Stopped: the hotel cannot be reached from the internet.": "Gestopt: het hotel is niet bereikbaar vanaf internet.",
   "Stopped: {message}": "Gestopt: {message}",

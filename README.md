@@ -1029,11 +1029,16 @@ emulator and Octane); the furniture files and catalogue icons come from [Deploy 
    catalogue, a box confirms that it may be replaced.
 2. **Upload** `Catalog_Export.sql` and `FurnitureData.json` (packed into the program, about 1.7 MB) to the backup
    folder.
-3. **Backup and import**: a safety backup of the database (`<db>-before-catalog-<time>.sql.gz`), the emulator stops,
-   the SQL drops and recreates the catalogue tables and `items_base` (and sets the catalogue's item ids in
-   `emulator_settings`), and `FurnitureData.json` goes to `gamedata/config` (an existing one is kept as
-   `.bak-<time>`). The emulator starts again; when the import fails or the emulator does not load, the database and
-   the old `FurnitureData.json` go back.
+3. **Stop the emulator**, once, for everything below (players are disconnected). Another furniture language is
+   downloaded before this, while the hotel still runs, so a failed download changes nothing.
+4. **Backup and import**: a safety backup of the database (`<db>-before-catalog-<time>.sql.gz`), the SQL drops and
+   recreates the catalogue tables and `items_base` (and sets the catalogue's item ids in `emulator_settings`), and
+   `FurnitureData.json` goes to `gamedata/config` (an existing one is kept as `.bak-<time>`). A failed import puts the
+   database back.
+5. **Furniture language** (see below).
+6. **Start the emulator**, once, and wait until it has loaded. It also starts when a step above failed. When it does
+   not load with the new catalogue, the database (from the backup of step 4) and the old `FurnitureData.json` go back
+   and it starts on them.
 
 **Furniture language**: the catalogue's own `FurnitureData.json` is Dutch. Choose another language with its flag
 (English, Español, Português, Deutsch, Français, Italiano, Nederlands, Suomi, Türkçe) and, after the import, the
@@ -1048,7 +1053,9 @@ installer does what the [All-in-1 Converter](https://github.com/duckietm/all-in-
 - sets the offer ids (`SetOfferID.cs`): `catalog_items.offer_id` = the furnidata's `offerid` per classname, and a new
   unique one above 60000 (in the furnidata too) where it is `-1`;
 - puts `FurnitureData.json` in `gamedata/config` (the old one kept as `.bak-<time>`) and runs the updates in batches of
-  100, after a safety backup, with the emulator stopped; when something fails, both go back.
+  100, after a safety backup; when something fails, both go back. In the addon this happens while the emulator is
+  stopped for the import (one stop and one start for the whole step); Tools → Furniture language stops and starts it
+  itself.
 
 Switching later, without importing the catalogue again: **Tools → Furniture language**.
 

@@ -102,6 +102,44 @@ start_emulator
 wait_loaded
 grep -E 'Started (Game|RCON) Server' "$log" | sed 's/^.*| /  /' || true"#;
 
+const STOP_EMULATOR: &str = r#"d={{Directory}}
+log={{LogDirectory}}/emulator.log
+{{ControlFunctions}}
+if [ -x "$d/emulator" ]; then
+  echo "> Stopping the emulator"
+  stop_emulator
+  echo "  stopped"
+  echo "STOPPED=yes"
+else
+  echo "  The emulator is not installed on this server: nothing to stop"
+fi"#;
+
+/// Stops the emulator (players are disconnected) and says whether there was one to stop.
+pub async fn stop_emulator(server: &dyn Server, log: Log<'_>) -> Result<bool> {
+    let body = fill(
+        STOP_EMULATOR,
+        &[("Directory", &emulator::directory()), ("LogDirectory", &emulator::log_directory()), ("ControlFunctions", &emulator::control_functions())],
+    );
+    let values = script::run_capturing(server, &script::with_prelude(&body), log, "Stopping the emulator failed", &["STOPPED"], None).await?;
+    Ok(values.yes("STOPPED"))
+}
+
+const START_EMULATOR: &str = r#"d={{Directory}}
+log={{LogDirectory}}/emulator.log
+{{ControlFunctions}}
+echo "> Starting the emulator"
+start_emulator
+wait_loaded"#;
+
+/// Starts the emulator and waits until it has loaded; fails with its log when it does not.
+pub async fn start_emulator(server: &dyn Server, log: Log<'_>) -> Result<()> {
+    let body = fill(
+        START_EMULATOR,
+        &[("Directory", &emulator::directory()), ("LogDirectory", &emulator::log_directory()), ("ControlFunctions", &emulator::control_functions())],
+    );
+    script::run(server, &script::with_prelude(&body), log, "Starting the emulator failed", None).await
+}
+
 pub async fn restart_emulator(server: &dyn Server, log: Log<'_>) -> Result<()> {
     let body = fill(
         RESTART_EMULATOR,

@@ -144,7 +144,8 @@ d={{Directory}}
 log={{LogDirectory}}/emulator.log
 {{ControlFunctions}}
 emulator=
-if [ -x "$d/emulator" ]; then
+# Without {{Manage}} the caller has stopped the emulator and starts it again afterwards.
+if [ -n "{{Manage}}" ] && [ -x "$d/emulator" ]; then
   emulator=yes
   echo "> Stopping the emulator"
   stop_emulator
@@ -205,7 +206,9 @@ true"#;
 
 /// Imports the uploaded `sql_file` into the hotel database and puts `json_file` in gamedata/config as
 /// FurnitureData.json, after a safety backup; puts everything back when the import or the emulator's start fails.
-pub async fn install(server: &dyn Server, sql_file: &str, json_file: &str, version: &str, log: Log<'_>) -> Result<CatalogResult> {
+/// With `manage_emulator` it stops the emulator first and starts it at the end; without, the caller does both
+/// (`server_tools::stop_emulator` / `start_emulator`), so several steps share one stop and one start.
+pub async fn install(server: &dyn Server, sql_file: &str, json_file: &str, version: &str, manage_emulator: bool, log: Log<'_>) -> Result<CatalogResult> {
     // Only letters, digits, dots and dashes: the version also goes into a log line and the marker unquoted.
     let version: String = version.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-')).take(64).collect();
     let version = if version.is_empty() { "unknown".to_string() } else { version };
@@ -220,6 +223,7 @@ pub async fn install(server: &dyn Server, sql_file: &str, json_file: &str, versi
             ("LogDirectory", &emulator::log_directory()),
             ("VersionText", &version),
             ("Version", &shell_quote(&version)),
+            ("Manage", if manage_emulator { "yes" } else { "" }),
             ("Marker", &shell_quote(&marker())),
             ("ControlFunctions", &emulator::control_functions()),
             ("SqlFile", &shell_quote(sql_file)),
@@ -242,6 +246,37 @@ pub async fn install(server: &dyn Server, sql_file: &str, json_file: &str, versi
         safety_backup: values.or_empty("SAFETY").to_string(),
         old_furniture_data: values.string("OLD"),
     })
+}
+
+const RESTORE: &str = r#"set -o pipefail
+safety={{Safety}}
+config={{Gamedata}}/config
+[ -s "$safety" ] || fail "The safety backup $safety is missing: import a backup with Tools → Import full database."
+echo "> Putting the database back as it was ($(basename "$safety"))"
+gunzip -c "$safety" | mariadb || fail "Restoring failed: import $safety with Tools → Import full database."
+old={{Old}}
+if [ -n "$old" ] && [ -f "$old" ]; then
+  cp -p "$old" "$config/FurnitureData.json"
+  echo "  FurnitureData.json as it was ($(basename "$old"))"
+elif [ -z "$old" ]; then
+  rm -f "$config/FurnitureData.json"
+fi
+rm -f {{Markers}}
+true"#;
+
+/// Puts the database (from `safety`) and FurnitureData.json (the `old` copy, or none) back as they were before the
+/// catalogue, when the emulator does not load at the end.
+pub async fn restore(server: &dyn Server, safety: &str, old: Option<&str>, log: Log<'_>) -> Result<()> {
+    let body = fill(
+        RESTORE,
+        &[
+            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Markers", &format!("{} {}", shell_quote(&marker()), shell_quote(&crate::furniture_language::marker()))),
+            ("Old", &shell_quote(old.unwrap_or(""))),
+            ("Safety", &shell_quote(safety)),
+        ],
+    );
+    script::run(server, &script::with_prelude(&body), log, "Putting the catalogue back failed", None).await
 }
 
 #[cfg(test)]

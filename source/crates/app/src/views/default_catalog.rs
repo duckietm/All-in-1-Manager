@@ -186,8 +186,10 @@ impl InstallStep for DefaultCatalogStep {
         vec![
             t("Check the server").into(),
             t("Upload the catalogue").into(),
+            t("Stop the emulator").into(),
             t("Backup, import and FurnitureData.json").into(),
             t("Furniture language").into(),
+            t("Start the emulator").into(),
         ]
     }
 
@@ -272,6 +274,16 @@ impl InstallStep for DefaultCatalogStep {
         ));
         ui.done(state.database.as_deref().unwrap_or(""));
 
+        // Another furniture language is downloaded first, while the hotel still runs: a failed download changes nothing.
+        let code = self.form.lock().unwrap().language.clone();
+        let language = furniture_language::language(&code).unwrap_or(furniture_language::LANGUAGES[0]);
+        let prepared = if language.code == PACKED_LANGUAGE {
+            None
+        } else {
+            let packed: serde_json::Value = serde_json::from_slice(strip_bom(&catalog.furniture_data))?;
+            Some(furniture_language::prepare(language, Some(&packed), &log).await?)
+        };
+
         // Through files on this computer, because the upload sends files.
         let directory = server_tools::backup_directory();
         let stamp = aio_core::config_dir::timestamp();
@@ -293,26 +305,54 @@ impl InstallStep for DefaultCatalogStep {
         uploaded?;
         ui.done(&size(catalog.sql.len() + catalog.furniture_data.len()));
 
-        let result = default_catalog::install(server, &remote_sql, &remote_json, &catalog.version, &log).await?;
-        ui.done(&tf("{pages} pages", &[("pages", &result.pages.to_string())]));
-        {
-            let mut output = self.output.lock().unwrap();
-            output.result = Some(result.clone());
-            output.version = catalog.version.clone();
+        // One stop of the emulator for everything below, and one start at the end.
+        let stopped = server_tools::stop_emulator(server, &log).await?;
+        ui.done(if stopped { t("stopped") } else { t("not installed") });
+        let work = async {
+            let result = default_catalog::install(server, &remote_sql, &remote_json, &catalog.version, false, &log).await?;
+            ui.done(&tf("{pages} pages", &[("pages", &result.pages.to_string())]));
+            {
+                let mut output = self.output.lock().unwrap();
+                output.result = Some(result.clone());
+                output.version = catalog.version.clone();
+                output.language = Some(language);
+            }
+            match prepared {
+                None => {
+                    furniture_language::mark(server, language).await?;
+                    log(&format!("> Furniture language: {} (the catalogue's own FurnitureData.json)", language.name));
+                }
+                Some(prepared) => {
+                    let switched = furniture_language::finish(server, prepared, false, &log).await?;
+                    self.output.lock().unwrap().switched = Some(switched);
+                }
+            }
+            ui.done(native_name(language));
+            anyhow::Ok(result)
         }
-
-        let code = self.form.lock().unwrap().language.clone();
-        let language = furniture_language::language(&code).unwrap_or(furniture_language::LANGUAGES[0]);
-        self.output.lock().unwrap().language = Some(language);
-        if language.code == PACKED_LANGUAGE {
-            furniture_language::mark(server, language).await?;
-            log(&format!("> Furniture language: {} (the catalogue's own FurnitureData.json)", language.name));
-        } else {
-            let packed: serde_json::Value = serde_json::from_slice(strip_bom(&catalog.furniture_data))?;
-            let switched = furniture_language::switch_to(server, language, Some(packed), &log).await?;
-            self.output.lock().unwrap().switched = Some(switched);
+        .await;
+        // Whatever happened above, the hotel runs again.
+        let result = match work {
+            Ok(result) => result,
+            Err(error) => {
+                if stopped {
+                    if let Err(start) = server_tools::start_emulator(server, &log).await {
+                        log(&format!("! {start}"));
+                    }
+                }
+                return Err(error);
+            }
+        };
+        if stopped {
+            if let Err(error) = server_tools::start_emulator(server, &log).await {
+                // It does not load with the new catalogue: the database and FurnitureData.json go back to before it.
+                log("> The emulator does not start with the new catalogue");
+                default_catalog::restore(server, &result.safety_backup, result.old_furniture_data.as_deref(), &log).await?;
+                server_tools::start_emulator(server, &log).await?;
+                fail!("The emulator does not start with the new catalogue ({error}). The database and FurnitureData.json are as they were before.");
+            }
         }
-        ui.done(native_name(language));
+        ui.done(if stopped { t("loaded") } else { t("not installed") });
         Ok(ui.succeeded(
             &tf("The default catalogue ({version}) is installed", &[("version", &catalog.version)]),
             &tf(

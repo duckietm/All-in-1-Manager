@@ -590,7 +590,7 @@ async fn furniture_language_tool(job: &Job) -> Result<()> {
     let language = furniture_language::language(code).unwrap_or(LANGUAGES[0]);
     let run = job.start_run(&[n("Furniture language")]);
     let log = run.logger();
-    let switched = furniture_language::switch_to(server, language, None, &log).await?;
+    let switched = furniture_language::switch_to(server, language, &log).await?;
     run.done(crate::views::default_catalog::native_name(language));
     run.result(
         ResultKind::Success,

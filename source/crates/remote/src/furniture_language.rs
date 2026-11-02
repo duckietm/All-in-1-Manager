@@ -401,7 +401,8 @@ d={{Directory}}
 log={{LogDirectory}}/emulator.log
 {{ControlFunctions}}
 emulator=
-if [ -x "$d/emulator" ]; then
+# Without {{Manage}} the caller has stopped the emulator and starts it again afterwards.
+if [ -n "{{Manage}}" ] && [ -x "$d/emulator" ]; then
   emulator=yes
   echo "> Stopping the emulator"
   stop_emulator
@@ -448,7 +449,8 @@ true"#;
 
 /// Uploads `json_file` (the new FurnitureData.json, already on the server) into gamedata/config and runs the plan's
 /// SQL, after a safety backup, with the emulator stopped; puts everything back when something fails.
-pub async fn apply(server: &dyn Server, json_file: &str, language: FurniLanguage, plan: &FixPlan, log: Log<'_>) -> Result<LanguageResult> {
+/// With `manage_emulator` it stops the emulator first and starts it at the end; without, the caller does both.
+pub async fn apply(server: &dyn Server, json_file: &str, language: FurniLanguage, plan: &FixPlan, manage_emulator: bool, log: Log<'_>) -> Result<LanguageResult> {
     let summary = format!(
         "{} sprite ids, {} catalogue items, {} offer ids",
         plan.sprite_ids.len(),
@@ -466,6 +468,7 @@ pub async fn apply(server: &dyn Server, json_file: &str, language: FurniLanguage
             ("Summary", &summary),
             ("Language", &format!("{}, {}", language.name, language.domain)),
             ("LanguageCode", language.code),
+            ("Manage", if manage_emulator { "yes" } else { "" }),
             ("Marker", &shell_quote(&marker())),
             ("ControlFunctions", &emulator::control_functions()),
             ("JsonFile", &shell_quote(json_file)),
@@ -485,22 +488,39 @@ pub struct SwitchResult {
     pub applied: LanguageResult,
 }
 
-/// The whole switch: the hotel's furnidata downloaded (on this computer) and converted, the hotel's own furni added
-/// (from `hotel`, else the FurnitureData.json on the server), the database fixes worked out, and both put in place.
-pub async fn switch_to(server: &dyn Server, language: FurniLanguage, hotel: Option<Value>, log: Log<'_>) -> Result<SwitchResult> {
+/// A downloaded and converted furnidata, with the hotel's own furni added: ready to put in place.
+#[derive(Debug, Clone)]
+pub struct Prepared {
+    pub language: FurniLanguage,
+    pub furni: Value,
+    pub custom_kept: usize,
+}
+
+/// Downloads the hotel's furnidata (on this computer), converts it and adds the furni of `hotel` that it does not have.
+/// Nothing on the server changes, so it can run while the hotel is still open.
+pub async fn prepare(language: FurniLanguage, hotel: Option<&Value>, log: Log<'_>) -> Result<Prepared> {
     log(&format!("> Downloading the furnidata of {} ({})", language.domain, xml_url(language)));
     let xml = download_xml(language).await?;
     let mut furni = xml_to_json(&xml)?;
-    let official = all_items(&furni).count();
-    log(&format!("  {official} furni, {:.1} MB", xml.len() as f64 / (1024.0 * 1024.0)));
-    let hotel = match hotel {
-        Some(hotel) => Some(hotel),
-        None => current_furniture_data(server).await?,
-    };
-    let custom_kept = hotel.as_ref().map(|h| keep_custom_furni(&mut furni, h)).unwrap_or(0);
+    log(&format!("  {} furni, {:.1} MB", all_items(&furni).count(), xml.len() as f64 / (1024.0 * 1024.0)));
+    let custom_kept = hotel.map(|h| keep_custom_furni(&mut furni, h)).unwrap_or(0);
     if custom_kept > 0 {
         log(&format!("  {custom_kept} furni of the hotel that {} does not have are kept, with their own names", language.domain));
     }
+    Ok(Prepared { language, furni, custom_kept })
+}
+
+/// The whole switch on its own (Tools → Furniture language): prepared with the FurnitureData.json on the server for the
+/// hotel's own furni, then put in place with one stop and start of the emulator.
+pub async fn switch_to(server: &dyn Server, language: FurniLanguage, log: Log<'_>) -> Result<SwitchResult> {
+    let hotel = current_furniture_data(server).await?;
+    let prepared = prepare(language, hotel.as_ref(), log).await?;
+    finish(server, prepared, true, log).await
+}
+
+/// Works out the database fixes for a prepared furnidata and puts both in place (see `apply` for `manage_emulator`).
+pub async fn finish(server: &dyn Server, prepared: Prepared, manage_emulator: bool, log: Log<'_>) -> Result<SwitchResult> {
+    let Prepared { language, mut furni, custom_kept } = prepared;
     log("> Reading items_base and catalog_items");
     let (base, catalog) = read_tables(server).await?;
     let plan = plan(&mut furni, &base, &catalog, &mut rand::thread_rng());
@@ -526,7 +546,7 @@ pub async fn switch_to(server: &dyn Server, language: FurniLanguage, hotel: Opti
     .await;
     let _ = std::fs::remove_file(&local);
     uploaded?;
-    let applied = apply(server, &remote, language, &plan, log).await?;
+    let applied = apply(server, &remote, language, &plan, manage_emulator, log).await?;
     Ok(SwitchResult { furni: all_items(&furni).count(), custom_kept, plan, applied })
 }
 

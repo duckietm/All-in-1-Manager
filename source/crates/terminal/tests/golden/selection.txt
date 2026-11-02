@@ -1,0 +1,24 @@
+select 0 0 2 9 The quick brown fox jumps
+select 2 4 0 2 e quick brown fox jumps
+select 3 0 4 9 中文字符号码
+select 0 3 0 7  quic
+# dump 1
+size 10x5
+cursor 0,4 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 2 dropped 0
+replies 
+bells 0
+screen
+00 - |jumps     |
+01 w |中 文 字 符 号 |
+     0-0:-1/-1/256 1-1:-1/-1/128 2-2:-1/-1/256 3-3:-1/-1/128 4-4:-1/-1/256 5-5:-1/-1/128 6-6:-1/-1/256 7-7:-1/-1/128 8-8:-1/-1/256 9-9:-1/-1/128
+02 - |码         |
+     0-0:-1/-1/256 1-1:-1/-1/128
+03 - |short     |
+04 - |          |
+scrollback-lines
+0 w |The quick |
+1 w |brown fox |
+text The quick brown fox jumps\u{A}中文字符号码\u{A}short\u{A}

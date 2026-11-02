@@ -1,0 +1,45 @@
+=== root
+d=/var/www/emulator
+if [ -d "$d/.git" ]; then
+  timeout 30 git -c safe.directory="$d" -C "$d" fetch --quiet --prune origin 2>/dev/null
+  want='main'
+  # The chosen branch as the remote really writes it ("dev" there, "Dev" in another repository).
+  ref=$([ -n "$want" ] && git -c safe.directory="$d" -C "$d" for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin | grep -ix "$want" | head -1)
+  # Without a choice, or when the remote has no such branch, count against the branch it follows now.
+  if [ -n "$ref" ]; then target="origin/$ref"; else target='@{u}'; fi
+  echo "repo0 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$ref|$(git -c safe.directory="$d" -C "$d" rev-list --count HEAD..$target 2>/dev/null || echo 0)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' $target 2>/dev/null)"
+fi
+d=/var/www/Octane
+if [ -d "$d/.git" ]; then
+  timeout 30 git -c safe.directory="$d" -C "$d" fetch --quiet --prune origin 2>/dev/null
+  want='main'
+  # The chosen branch as the remote really writes it ("dev" there, "Dev" in another repository).
+  ref=$([ -n "$want" ] && git -c safe.directory="$d" -C "$d" for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin | grep -ix "$want" | head -1)
+  # Without a choice, or when the remote has no such branch, count against the branch it follows now.
+  if [ -n "$ref" ]; then target="origin/$ref"; else target='@{u}'; fi
+  echo "repo1 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$ref|$(git -c safe.directory="$d" -C "$d" rev-list --count HEAD..$target 2>/dev/null || echo 0)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' $target 2>/dev/null)"
+fi
+d=/var/www/Octane-Renderer
+if [ -d "$d/.git" ]; then
+  timeout 30 git -c safe.directory="$d" -C "$d" fetch --quiet --prune origin 2>/dev/null
+  want='main'
+  # The chosen branch as the remote really writes it ("dev" there, "Dev" in another repository).
+  ref=$([ -n "$want" ] && git -c safe.directory="$d" -C "$d" for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin | grep -ix "$want" | head -1)
+  # Without a choice, or when the remote has no such branch, count against the branch it follows now.
+  if [ -n "$ref" ]; then target="origin/$ref"; else target='@{u}'; fi
+  echo "repo2 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$ref|$(git -c safe.directory="$d" -C "$d" rev-list --count HEAD..$target 2>/dev/null || echo 0)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' $target 2>/dev/null)"
+fi
+d=/var/www/atomcms
+if [ -d "$d/.git" ]; then
+  timeout 30 git -c safe.directory="$d" -C "$d" fetch --quiet --prune origin 2>/dev/null
+  want=''
+  # The chosen branch as the remote really writes it ("dev" there, "Dev" in another repository).
+  ref=$([ -n "$want" ] && git -c safe.directory="$d" -C "$d" for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin | grep -ix "$want" | head -1)
+  # Without a choice, or when the remote has no such branch, count against the branch it follows now.
+  if [ -n "$ref" ]; then target="origin/$ref"; else target='@{u}'; fi
+  echo "repo3 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$ref|$(git -c safe.directory="$d" -C "$d" rev-list --count HEAD..$target 2>/dev/null || echo 0)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' $target 2>/dev/null)"
+fi
+true
+result: Emulator (Polaris)|/var/www/emulator|main|Main|3|9f8e7d6  2026-10-31 08:00  Newest commit|no|Main
+result: Octane|/var/www/Octane|dev|-|0|-|no|dev
+result: Octane-Renderer|/var/www/Octane-Renderer|HEAD|main|0|-|yes|main

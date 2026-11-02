@@ -1,0 +1,2 @@
+=== root
+d=/var/www/gamedata; [ -d "$d" ] || d=/var/www; df -P -B1 "$d" | awk 'NR == 2 { print $4 }'

@@ -1,0 +1,10 @@
+=== input
+SELECT 'a\
+b';
+SELECT 2;
+=== statements
+--- line 1
+SELECT 'a\
+b'
+--- line 3
+SELECT 2

@@ -1,0 +1,13 @@
+=== root
+set -e
+umask 077
+f=/root/.ssh/authorized_keys
+install -d -m 700 -o root -g root /root/.ssh
+backup=
+if [ -s "$f" ]; then backup=$(mktemp "$f.bak-$(date +%Y%m%d-%H%M%S)-XXXX"); cp -p "$f" "$backup"; fi
+if ! grep -qF -- 'AAAAC3NzaC1lZDI1NTE5AAAAIB' "$f" 2>/dev/null; then if [ -s "$f" ] && [ -n "$(tail -c1 "$f")" ]; then echo >> "$f"; fi; printf '%s\n' 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB it'\''s me' >> "$f"; fi
+chmod 600 "$f"
+chown root:root "$f"
+if command -v restorecon >/dev/null 2>&1; then restorecon -R /root/.ssh || true; fi
+echo "$backup"
+result: null

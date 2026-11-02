@@ -1,0 +1,64 @@
+# dump 1
+size 10x5
+cursor 4,4 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title title st
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |abcdefghin|
+01 - |A         |
+02 - |B         |
+03 - | C        |
+04 - |xyzz      |
+scrollback-lines
+text abcdefghin\u{A}A\u{A}B\u{A} C\u{A}xyzz
+# dump 2
+size 10x5
+cursor 4,4 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title title st
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |EEEEEEEEEE|
+01 - |EEEEEEEEEE|
+02 - |EEEEEEEEEE|
+03 - |EEEEEEEEEE|
+04 - |EEEEEEEEEE|
+scrollback-lines
+text EEEEEEEEEE\u{A}EEEEEEEEEE\u{A}EEEEEEEEEE\u{A}EEEEEEEEEE\u{A}EEEEEEEEEE
+# dump 3
+size 10x5
+cursor 5,1 visible=1
+modes app_cursor=0 bracketed=1 alternate=0
+title title st
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |EEEEEEEEEE|
+01 - |EsoftEEEEE|
+02 - |EEEEEEEEEE|
+03 - |EEEEEEEEEE|
+04 - |EEEEEEEEEE|
+scrollback-lines
+text EEEEEEEEEE\u{A}EsoftEEEEE\u{A}EEEEEEEEEE\u{A}EEEEEEEEEE\u{A}EEEEEEEEEE
+# dump 4
+size 10x5
+cursor 5,0 visible=0
+modes app_cursor=0 bracketed=0 alternate=0
+title title st
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |reset     |
+01 - |          |
+02 - |          |
+03 - |          |
+04 - |          |
+scrollback-lines
+text reset\u{A}\u{A}\u{A}\u{A}

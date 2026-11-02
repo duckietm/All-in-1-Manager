@@ -1,0 +1,127 @@
+# The hotel website (written by All-in-1 Installer; the web access and Octane steps rewrite it).
+# Traefik (/opt/traefik) answers on ports 80/443 for http://hotel.example.com (and does the TLS) and passes the
+# site to this server on 127.0.0.1:85; /ws and Polaris' /api go straight to Polaris on 127.0.0.1:2096.
+# mycms is the site (its own NGINX site on 127.0.0.1:87); this one serves Octane on /client/ and the assets.
+
+map $http_origin $hotel_cors_origin {
+    default "";
+    "~^https?://(www\.)?hotel\.example\.com$" $http_origin;
+}
+
+server {
+    listen 127.0.0.1:85;
+    server_name hotel.example.com www.hotel.example.com;
+
+    root @ROOT@;
+    index index.html index.php index.htm;
+
+    autoindex     off;
+    server_tokens off;
+
+    # The visitor's address from X-Forwarded-For, read from the right past the trusted proxies: Traefik on
+    # 127.0.0.1 and, behind Cloudflare, Cloudflare's ranges (in the real-IP file).
+    include /etc/nginx/hotel-real-ip.conf;
+    real_ip_header    X-Forwarded-For;
+    real_ip_recursive on;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy        "strict-origin";
+    add_header X-XSS-Protection       "1; mode=block";
+    add_header Permissions-Policy     "accelerometer=(), autoplay=(self), camera=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), sync-xhr=(), usb=()";
+
+    client_header_buffer_size   1k;
+    large_client_header_buffers 4 8k;
+
+    # Text compressed (gamedata JSON such as FurnitureData.json is several MB); .nitro/.hab bundles
+    # and images are compressed already and go as they are.
+    gzip            on;
+    gzip_vary       on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types      application/json application/javascript text/css text/plain text/xml application/xml image/svg+xml font/ttf font/otf application/wasm;
+
+    # The client opens hundreds of gamedata files: keep their file handles and metadata at hand.
+    open_file_cache          max=10000 inactive=60s;
+    open_file_cache_valid    30s;
+    open_file_cache_errors   on;
+
+    access_log /var/log/nginx/hotel/access.log;
+    error_log  /var/log/nginx/hotel/error.log;
+
+    location / {
+        return 404;
+    }
+    location = /client {
+        return 301 /client/;
+    }
+
+    location /client/ {
+        alias /var/www/Octane/dist/;
+        index index.html;
+    }
+
+    location = /client/index.html {
+        alias /var/www/Octane/dist/index.html;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    location = /client/.vite/manifest.json {
+        alias /var/www/Octane/dist/.vite/manifest.json;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+    }
+
+    # Vite only puts files with a hash in their name in assets/: they never change.
+    location ^~ /client/assets/ {
+        alias /var/www/Octane/dist/assets/;
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+    }
+
+    # Octane's runtime configuration: always the current version.
+    location ^~ /client/configuration/ {
+        alias /var/www/Octane/dist/configuration/;
+        add_header Cache-Control "no-store" always;
+    }
+    # The hotel's assets (copied in with the All-in-1 download tool) and the camera photos.
+    location /gamedata/ {
+        alias /var/www/gamedata/;
+
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+            add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+            add_header Access-Control-Max-Age        1728000 always;
+            add_header Vary                          Origin always;
+            add_header Content-Length                0;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+        add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+        add_header Vary                          Origin always;
+
+        try_files $uri $uri/ =404;
+
+        # A nested location does not inherit the preflight above: repeat it.
+        location ~* \.(jpg|jpeg|png|gif|ico|nitro|hab)$ {
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+                add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+                add_header Access-Control-Max-Age        1728000 always;
+                add_header Vary                          Origin always;
+                add_header Content-Length                0;
+                return 204;
+            }
+            expires 30d;
+            add_header Cache-Control               "public, no-transform";
+            add_header Access-Control-Allow-Origin $hotel_cors_origin always;
+            add_header Vary                        Origin            always;
+        }
+    }
+
+    location /custom/ {
+        alias /var/www/gamedata/custom/;
+    }
+}

@@ -1,0 +1,11 @@
+=== input
+SELECT `we;ird``name` FROM `t;1`;
+SELECT `a\`;
+SELECT 3;
+=== statements
+--- line 1
+SELECT `we;ird``name` FROM `t;1`
+--- line 2
+SELECT `a\`
+--- line 3
+SELECT 3

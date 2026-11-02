@@ -1,0 +1,184 @@
+//! Defaults from the Settings page that the login fills in. Stored in configuration/settings.json (the same file and
+//! names as the C# installer wrote) so the settings backup includes them.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use serde::{Deserialize, Serialize};
+
+use crate::config_dir;
+use crate::layout::ServerLayout;
+
+pub const HOTEL_LOOK: &str = "hotel";
+pub const PROFESSIONAL_LOOK: &str = "professional";
+pub const DEFAULT_BRANCH: &str = "main";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct InstallerSettings {
+    /// "host" or "host:port", as typed in the login: the server the login fills in. One of `servers`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_server: Option<String>,
+    /// The servers (IP addresses and DNS names, with :port when needed) the login offers in its list.
+    pub servers: Vec<String>,
+    /// Private key path relative to the configuration folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_key: Option<String>,
+    /// The All-in-1 downloader's executable. Deploy Assets reads Habbo_Default from its folder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloader_path: Option<String>,
+    /// The branch chosen per repository ("duckietm/Octane" to "dev"); a repository that is not in here uses main.
+    pub branches: BTreeMap<String, String>,
+    /// Paths on the server and the emulator's account; None means the defaults. Read once at startup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout: Option<ServerLayout>,
+    /// "hotel" (the default) or "professional". Read once at startup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub look: Option<String>,
+    /// The window language (new in the Rust port; the C# installer ignores it).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    /// "light" or "dark"; none follows the system. New in the Rust port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    /// The sections folded in the window (the sidebar's groups, the Tools page's sections). New in the Rust port.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub collapsed: Vec<String>,
+}
+
+/// A branch to choose from, with the line the lists show behind its name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BranchChoice {
+    pub branch: &'static str,
+    pub caption: &'static str,
+}
+
+impl std::fmt::Display for BranchChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}   ({})", self.branch, self.caption)
+    }
+}
+
+/// What the Settings page and the clone steps offer. One repository writes it as "dev" and another as "Dev"; the
+/// clone step matches the name case-insensitively against the branches the remote has.
+pub const BRANCH_CHOICES: [BranchChoice; 2] = [
+    BranchChoice { branch: DEFAULT_BRANCH, caption: "stable, the version the hotel runs on" },
+    BranchChoice { branch: "dev", caption: "the newest changes, not always stable" },
+];
+
+/// The entry for a branch name, or main.
+pub fn choice_for(branch: &str) -> BranchChoice {
+    BRANCH_CHOICES.iter().copied().find(|b| b.branch == branch).unwrap_or(BRANCH_CHOICES[0])
+}
+
+fn file() -> PathBuf {
+    config_dir::directory().join("settings.json")
+}
+
+impl InstallerSettings {
+    pub fn load() -> Self {
+        Self::load_from(&file())
+    }
+
+    pub fn load_from(path: &Path) -> Self {
+        std::fs::read_to_string(path).ok().and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+    }
+
+    pub fn save(&self) -> std::io::Result<()> {
+        self.save_to(&file())
+    }
+
+    pub fn save_to(&self, path: &Path) -> std::io::Result<()> {
+        std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
+    }
+
+    /// The saved servers, the default first. Settings from before the list only have `default_server`, which then
+    /// is the list. Duplicates (ignoring case) are dropped.
+    pub fn server_list(&self) -> Vec<String> {
+        let mut list: Vec<String> = Vec::new();
+        if let Some(server) = self.default_server.as_deref().filter(|s| !s.is_empty()) {
+            list.push(server.to_string());
+        }
+        for server in self.servers.iter().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            list.push(server.to_string());
+        }
+        let mut seen: Vec<String> = Vec::new();
+        list.retain(|s| {
+            let lower = s.to_lowercase();
+            if seen.contains(&lower) {
+                false
+            } else {
+                seen.push(lower);
+                true
+            }
+        });
+        list
+    }
+
+    /// The default key as a full path, when it still exists.
+    pub fn default_key_path(&self) -> Option<PathBuf> {
+        let key = self.default_key.as_deref().filter(|k| !k.is_empty())?;
+        let path = config_dir::directory().join(key);
+        path.is_file().then_some(path)
+    }
+
+    /// The branch chosen for a repository written as "owner/name", or main.
+    pub fn branch_for(&self, repository: &str) -> String {
+        self.branches.get(repository).filter(|b| !b.is_empty()).cloned().unwrap_or_else(|| DEFAULT_BRANCH.to_string())
+    }
+
+    /// Remembers the branch; main is the default, so it is not written.
+    pub fn set_branch(&mut self, repository: &str, branch: &str) {
+        if branch == DEFAULT_BRANCH {
+            self.branches.remove(repository);
+        } else {
+            self.branches.insert(repository.to_string(), branch.to_string());
+        }
+    }
+
+    pub fn is_professional_look(&self) -> bool {
+        self.look.as_deref() == Some(PROFESSIONAL_LOOK)
+    }
+}
+
+/// A key path relative to the configuration folder, with forward slashes.
+pub fn relative_key(full_path: &Path) -> String {
+    let dir = config_dir::directory();
+    full_path.strip_prefix(&dir).unwrap_or(full_path).to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_the_csharp_file() {
+        let json = r#"{
+  "DefaultServer": "hotel.example.com",
+  "Servers": ["hotel.example.com", "10.0.0.2:2222", "HOTEL.example.com"],
+  "DefaultKey": "keys/hotel.example.com/id_ed25519",
+  "Branches": { "duckietm/Octane": "dev" },
+  "Layout": { "EmulatorRepository": "/srv/emu", "AtomCmsInstalled": "Installed" },
+  "Look": "professional"
+}"#;
+        let settings: InstallerSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.server_list(), vec!["hotel.example.com", "10.0.0.2:2222"]);
+        assert_eq!(settings.branch_for("duckietm/Octane"), "dev");
+        assert_eq!(settings.branch_for("duckietm/Polaris-Emulator"), "main");
+        assert!(settings.is_professional_look());
+        let layout = settings.layout.clone().unwrap();
+        assert_eq!(layout.emulator_repository, "/srv/emu");
+        assert_eq!(layout.gamedata, "/var/www/gamedata");
+    }
+
+    #[test]
+    fn writes_pascal_case_without_nulls() {
+        let mut settings = InstallerSettings::default();
+        settings.set_branch("duckietm/Octane", "dev");
+        settings.set_branch("duckietm/Octane-Renderer", "main");
+        let json = serde_json::to_string(&settings).unwrap();
+        assert_eq!(json, r#"{"Servers":[],"Branches":{"duckietm/Octane":"dev"}}"#);
+        assert_eq!(choice_for("dev").to_string(), "dev   (the newest changes, not always stable)");
+        assert_eq!(choice_for("x").branch, "main");
+    }
+}

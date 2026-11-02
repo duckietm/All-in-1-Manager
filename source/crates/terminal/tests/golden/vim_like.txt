@@ -1,0 +1,43 @@
+# dump 1
+size 30x8
+cursor 0,0 visible=1
+modes app_cursor=1 bracketed=1 alternate=1
+title notes.txt - VIM
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |second line                   |
+01 - |changed                       |
+02 - |~                             |
+     0-0:12/-1/0
+03 - |~                             |
+     0-0:12/-1/0
+04 - |~                             |
+     0-0:12/-1/0
+05 - |~                             |
+     0-0:12/-1/0
+06 - |new bottom                    |
+07 - |"notes.txt" 2L, 23B  1,1  All |
+     0-18:-1/-1/16
+scrollback-lines
+text second line\u{A}changed\u{A}~\u{A}~\u{A}~\u{A}~\u{A}new bottom\u{A}"notes.txt" 2L, 23B  1,1  All
+# dump 2
+size 30x8
+cursor 2,1 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title notes.txt - VIM
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |$ vim notes.txt               |
+01 - |$                             |
+02 - |                              |
+03 - |                              |
+04 - |                              |
+05 - |                              |
+06 - |                              |
+07 - |                              |
+scrollback-lines
+text $ vim notes.txt\u{A}$\u{A}\u{A}\u{A}\u{A}\u{A}\u{A}

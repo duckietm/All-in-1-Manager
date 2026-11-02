@@ -1,0 +1,16 @@
+# dump 1
+size 8x4
+cursor 7,3 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 w |abcdefg |
+01 - | Zx Y   |
+02 - | 👍 🚀 🤖  |
+     1-1:-1/-1/256 2-2:-1/-1/128 3-3:-1/-1/256 4-4:-1/-1/128 5-5:-1/-1/256 6-6:-1/-1/128
+03 - |        |
+scrollback-lines
+text abcdefg  Zx Y\u{A} 👍🚀🤖\u{A}

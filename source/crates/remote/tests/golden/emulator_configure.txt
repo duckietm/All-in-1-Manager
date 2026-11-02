@@ -1,0 +1,171 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+umask 077
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cat > "$work/input"
+awk -v dir="$work" '/^-----OVERRIDES-----$/ {part=1; next} { print > (dir "/" (part ? "overrides" : "sql")) }' "$work/input"
+
+echo "> MariaDB account emulator@localhost (all privileges on habbo)"
+mariadb < "$work/sql"
+
+d=/var/www/emulator/Emulator
+base="$d/config.ini"
+if [ -f "$base" ]; then
+  cp -p "$base" "$base.bak-$(date +%Y%m%d-%H%M%S)"
+  echo "> Updating the database settings in $base (a backup was made)"
+else
+  base="/var/www/emulator/config example/config.ini.example"
+  [ -f "$base" ] || fail "There is no config.ini.example in /var/www/emulator/config example."
+  echo "> Writing $d/config.ini from config.ini.example"
+fi
+awk -F'=' '
+  FNR == NR { soft = ($0 ~ /^\?/); line = soft ? substr($0, 2) : $0; k = substr(line, 1, index(line, "=") - 1)
+              ov[k] = line; isSoft[k] = soft; next }
+  /^[ \t]*#/ || index($0, "=") == 0 { print; next }
+  { k = $1; gsub(/[ \t]+$/, "", k); v = substr($0, index($0, "=") + 1); gsub(/^[ \t]+|[ \t]+$/, "", v)
+    if ((k in ov) && (!isSoft[k] || v == "" || v ~ /change-me/)) { print ov[k]; done[k] = 1 }
+    else { print; if (k in ov) done[k] = 1 } }
+  END { for (k in ov) if (!(k in done)) print ov[k] }
+' "$work/overrides" "$base" > "$work/config.ini"
+install -m 0640 -o emulator -g www-data "$work/config.ini" "$d/config.ini"
+grep -E '^db\.(hostname|port|database|username|params)=' "$d/config.ini" | sed 's/^/  /'
+
+echo "> Writing the start script $d/emulator"
+cat > "$d/emulator" <<'START'
+#!/bin/sh
+# Starts the Polaris emulator; used by emulator.service (written by All-in-1 Installer).
+# The previous log is kept as emulator.log.<time>; kept logs older than 30 days are removed.
+JAVA_HOME=JAVA_HOME_HERE
+MEMORY_MB=MEMORY_HERE
+LOG_DIR=/var/log/emu
+# Logs and backups: writable by the emulator's account, readable by group www-data, not by others.
+umask 027
+cd "$(dirname "$0")"
+jar=$(ls -t target/Polaris-*-jar-with-dependencies.jar target/Habbo-*-jar-with-dependencies.jar 2>/dev/null | head -1)
+[ -n "$jar" ] || { echo "No emulator jar in $(pwd)/target: run ./build.sh first." >&2; exit 1; }
+if [ -f "$LOG_DIR/emulator.log" ]; then
+  mv "$LOG_DIR/emulator.log" "$LOG_DIR/emulator.log.$(date +%H%M_%d-%m-%Y)"
+fi
+find "$LOG_DIR" -name 'emulator.log.*' -mtime +30 -delete 2>/dev/null
+exec "$JAVA_HOME/bin/java" -Dfile.encoding=UTF8 -Xmx${MEMORY_MB}m -jar "$jar" >> "$LOG_DIR/emulator.log" 2>&1
+START
+sed -i -e "s#JAVA_HOME_HERE#/usr/lib/jvm/java-25-openjdk-amd64#" -e "s#MEMORY_HERE#2048#" "$d/emulator"
+chown emulator:www-data "$d/emulator"
+chmod 755 "$d/emulator"
+
+echo "> Writing /etc/systemd/system/emulator.service"
+cat > /etc/systemd/system/emulator.service <<'UNIT'
+[Unit]
+Description=Polaris emulator
+# The database must be running before the emulator starts.
+After=network-online.target mariadb.service
+Wants=network-online.target
+Requires=mariadb.service
+
+[Service]
+User=emulator
+SupplementaryGroups=www-data
+# config.ini, build.sh and the start script live here; target/ only holds the build output.
+WorkingDirectory=/var/www/emulator/Emulator
+ExecStart=/var/www/emulator/Emulator/emulator
+SuccessExitStatus=143
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+chmod 644 /etc/systemd/system/emulator.service
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload
+  systemctl enable emulator
+else
+  echo "  (no systemd on this machine: the emulator is started directly, not at boot)"
+fi
+--- stdin
+CREATE USER IF NOT EXISTS 'emulator'@'localhost' IDENTIFIED BY 'emu\'pw';
+ALTER USER 'emulator'@'localhost' IDENTIFIED BY 'emu\'pw';
+CREATE SCHEMA IF NOT EXISTS `habbo`;
+GRANT ALL PRIVILEGES ON `habbo`.* TO 'emulator'@'localhost';
+FLUSH PRIVILEGES;
+-----OVERRIDES-----
+db.hostname=127.0.0.1
+db.port=3306
+db.database=habbo
+db.username=emulator
+db.password=emu'pw
+db.params=?characterEncoding=utf8&useSSL=false&serverTimezone=Europe/Rome
+?nitro.secure.master_key=<random>
+?login.remember.jwt.secret=<random>

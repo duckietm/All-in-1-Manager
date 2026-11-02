@@ -1,0 +1,228 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root CI=1 NO_COLOR=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NEXT_TELEMETRY_DISABLED=1
+cd /var/www/epicnext
+# Runs a command with its output as it comes (without empty lines), and returns the command's own exit code.
+run() {
+  rc=$(mktemp)
+  ("$@" 2>&1; echo $? > "$rc") | grep --line-buffered -vE '^\s*$' || true
+  code=$(cat "$rc"); rm -f "$rc"
+  return "$code"
+}
+# The hotel's gamedata: EpicNext gets its folder as the gamedata_root setting (below). The
+# /var/www/Gamedata link of earlier versions is no longer needed.
+g=/var/www/gamedata
+if [ -L /var/www/Gamedata ]; then
+  rm -f /var/www/Gamedata
+  echo "> /var/www/Gamedata link removed: EpicNext reads $g"
+fi
+# Free disk space in MB where the CMS is, and what uses the disk when there is too little.
+free_mb() { df -Pm /var/www/epicnext | awk 'NR == 2 {print $4}'; }
+need_disk() {
+  [ "$(free_mb)" -ge "$1" ] && return 0
+  echo "  The disk of /var/www/epicnext:"
+  df -h /var/www/epicnext | sed 's/^/    /'
+  echo "  What uses the most:"
+  du -xsh /var/www/* /root/.cache /root/.local/share/pnpm /var/lib/docker /var/lib/mysql /var/backups /home/* /var/log /var/cache/apt /tmp 2>/dev/null | sort -rh | head -12 | sed 's/^/    /'
+  command -v docker >/dev/null 2>&1 && docker system df 2>/dev/null | sed 's/^/    /'
+  fail "Only $(free_mb) MB free on the disk; $2 needs at least $(( $1 / 1024 )) GB. Make room (old backups, *.bak-* folders, unused Docker images: docker image prune -a, logs: journalctl --vacuum-size=200M) or give the server a bigger disk, then run this step again."
+}
+# Caches that are only downloads: pnpm keeps what node_modules uses.
+apt-get clean 2>/dev/null || true
+corepack pnpm store prune >/dev/null 2>&1 || true
+echo "> Disk: $(free_mb) MB free"
+need_disk 3072 "pnpm install"
+echo "> pnpm install --frozen-lockfile"
+run corepack pnpm install --frozen-lockfile --reporter=append-only || fail "pnpm install stopped (see above)."
+# EpicNext was built on an AtomCMS database: its migrations expect AtomCMS' tables (such as
+# website_housekeeping_permissions). The ones the hotel database lacks come from its own base schema.
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+[ -n "$db" ] || fail "No db.database in /var/www/emulator/Emulator/config.ini: run the Emulator step first."
+draft=drizzle/drafts/0000_premium_spirit.sql
+if [ -f "$draft" ]; then
+  echo "> Base tables from $draft (only the ones $db does not have; the emulator's stay as they are)"
+  tmp=$(mktemp -d)
+  mariadb -N -e 'SHOW TABLES' "$db" > "$tmp/existing"
+  mariadb -N -e 'SELECT migration FROM cms_migrations' "$db" > "$tmp/applied" 2>/dev/null || : > "$tmp/applied"
+  node - "$draft" drizzle/migrations "$tmp/existing" "$tmp/applied" > "$tmp/base.sql" <<'JS' || { rm -rf "$tmp"; fail "Reading $draft failed (see above)."; }
+// Prints the SQL for EpicNext's base tables that the hotel database does not have yet (EpicNext was built on an
+// AtomCMS database), and drops the columns from those new tables that a pending migration adds again.
+const fs = require("fs");
+const [draftFile, migrationsDir, existingFile, appliedFile] = process.argv.slice(2);
+const lines = (file) => new Set(fs.readFileSync(file, "utf8").split("\n").map((l) => l.trim().toLowerCase()).filter(Boolean));
+const existing = lines(existingFile);
+const applied = lines(appliedFile);
+const created = new Map();
+for (const statement of fs.readFileSync(draftFile, "utf8").split("--> statement-breakpoint")) {
+	const table = statement.match(/CREATE TABLE `([^`]+)`/);
+	if (!table || existing.has(table[1].toLowerCase())) continue;
+	created.set(table[1], new Set([...statement.matchAll(/^\s*`([^`]+)`\s/gm)].map((c) => c[1])));
+	// The collation of EpicNext's migrations, so their joins with these tables work.
+	console.log(statement.trim().replace(/;$/, "").replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ") + " ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;");
+}
+for (const file of fs.readdirSync(migrationsDir).filter((f) => f.endsWith(".sql")).sort()) {
+	if (applied.has(file.replace(/\.sql$/, "").toLowerCase())) continue;
+	const sql = fs.readFileSync(migrationsDir + "/" + file, "utf8");
+	for (const alter of sql.matchAll(/ALTER TABLE\s+`?(\w+)`?([^;]*);/g)) {
+		const columns = created.get(alter[1]);
+		if (!columns) continue;
+		for (const add of alter[2].matchAll(/ADD COLUMN\s+(?!IF NOT EXISTS)`?(\w+)`?/g))
+			if (columns.has(add[1])) console.log("ALTER TABLE `" + alter[1] + "` DROP COLUMN `" + add[1] + "`;");
+	}
+}
+console.error("  " + created.size + " base tables to create" + (created.size ? ": " + [...created.keys()].join(", ") : ""));
+JS
+  if [ -s "$tmp/base.sql" ]; then
+    mariadb "$db" < "$tmp/base.sql" || { rm -rf "$tmp"; fail "Creating the base tables in $db failed (see above)."; }
+  fi
+  rm -rf "$tmp"
+else
+  echo "  (no $draft in this version: the migrations make all tables)"
+fi
+# The settings checks the build runs, in seconds instead of after minutes of building.
+echo "> Checking .env against EpicNext's settings (src/env.ts)"
+check=$(mktemp --suffix=.mts)
+cat > "$check" <<'TS'
+await import("/var/www/epicnext/scripts/load-env.ts");
+try {
+	await import("/var/www/epicnext/src/env.ts");
+	console.log("  .env OK");
+} catch (error) {
+	const issues = (error as { issues?: { path: string[]; message: string }[] }).issues;
+	for (const issue of issues ?? []) console.log(`  ${issue.path.join(".")}: ${issue.message}`);
+	if (!issues) console.log(`  ${(error as Error).message}`);
+	process.exit(1);
+}
+TS
+run corepack pnpm exec tsx "$check" || { rm -f "$check"; fail "/var/www/epicnext/.env does not pass EpicNext's checks (see above): fix those settings and run this step again."; }
+rm -f "$check"
+# New passwords are Argon2id hashes of about 97 characters; Polaris (like Arcturus) makes
+# users.password VARCHAR(64), so registration failed. The emulator never reads the password.
+len=$(mariadb -N "$db" -e "SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'password'")
+if [ -n "$len" ] && [ "$len" -lt 255 ]; then
+  mariadb "$db" -e 'ALTER TABLE `users` MODIFY `password` VARCHAR(255) NOT NULL' || fail "Widening users.password failed (see above)."
+  echo "> users.password: VARCHAR($len) -> VARCHAR(255), room for Argon2id hashes"
+fi
+echo "> pnpm db:migrate (only the CMS' own tables; the emulator's stay as they are)"
+run corepack pnpm db:migrate || fail "pnpm db:migrate stopped (see above)."
+# Settings this server decides, unless staff already set them in Admin -> CMS Settings (OLD: values
+# that are replaced too, such as EpicNext's own defaults).
+setting_default() {
+  v=$(printf '%s' "$2" | sed "s/'/''/g")
+  old=$(printf '%s' "$3" | sed "s/'/''/g")
+  mariadb "$db" -e "UPDATE website_settings SET value = '$v' WHERE \`key\` = '$1' AND (value = '' OR value = '$old');
+    INSERT INTO website_settings (\`key\`, value) SELECT '$1', '$v' FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM website_settings WHERE \`key\` = '$1');" ||
+    { echo "  WARNING: could not set $1 (set it in Admin -> CMS Settings: $2)"; return 0; }
+  echo "  $1: $(mariadb -N "$db" -e "SELECT value FROM website_settings WHERE \`key\` = '$1' LIMIT 1" 2>/dev/null)"
+}
+# The /client page frames Octane on /client/ of this site (the hotel site), with ?sso=<ticket>.
+setting_default nitro_client_url /client/index.html /nitro-client/
+# The folder served on /gamedata, which the CMS reads and imports assets into.
+setting_default gamedata_root "$g" /var/www/Gamedata
+# A build is skipped when the code, .env and Node.js are what the current build was made from
+# (a re-run that only changed settings, or an update without new commits).
+if [ -f /var/www/epicnext-src/.all-in-1-source ]; then
+  tree=$(git -c safe.directory=/var/www/epicnext-src -C /var/www/epicnext-src rev-parse "HEAD:$(sed -n 3p /var/www/epicnext-src/.all-in-1-source)" 2>/dev/null || true)
+else
+  tree=$(git -c safe.directory="$PWD" rev-parse 'HEAD^{tree}' 2>/dev/null || true)
+fi
+stamp="$tree $(sha256sum .env | cut -c1-16) $(node -v)"
+if [ -n "$tree" ] && [ -f .next/BUILD_ID ] && [ "$(cat .next/.all-in-1-build 2>/dev/null)" = "$stamp" ]; then
+  echo "> pnpm build skipped: code, .env and Node.js are unchanged since build $(cat .next/BUILD_ID)"
+else
+avail=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' /proc/meminfo)
+if [ -d /run/systemd/system ]; then systemctl stop epicnext-cms 2>/dev/null || true
+else pkill -u www-data -f '/var/www/epicnext/node_modules/next/' 2>/dev/null || true; fi
+# The CMS is stopped: the old build goes. Its cache (.next/cache) stays, so webpack only
+# rebuilds what changed instead of starting from nothing ("No build cache found").
+[ -d .next ] && find .next -mindepth 1 -maxdepth 1 ! -name cache -exec rm -rf {} +
+need_disk 5120 "pnpm build"
+echo "> pnpm build (the CMS is stopped meanwhile; ${avail} MB memory, $(free_mb) MB disk free$([ -d .next/cache ] && echo ", with the cache of the last build"))"
+[ "$avail" -lt 3000 ] && echo "  WARNING: under 3 GB free: the build may run out of memory (add swap, or stop other services for the build)."
+# The build runs in a cgroup of its own (scripts/with-memory-cap.sh): leave 1 GB for MariaDB, the emulator and NGINX.
+if [ -d /run/systemd/system ]; then export CMS_MEMORY_CAP_RESERVE=1g; else export CMS_MEMORY_CAP_BACKEND=none; echo "  (no systemd: the build runs without a memory cap)"; fi
+# The code was type-checked before it was published; the build skips its own check (about 20 s).
+export CMS_SKIP_BUILD_TYPECHECK=1
+run corepack pnpm build || fail "pnpm build stopped (see above). The CMS stays stopped until a build succeeds."
+[ -f .next/BUILD_ID ] || fail "pnpm build did not make .next/BUILD_ID."
+echo "  build $(cat .next/BUILD_ID)"
+[ -n "$tree" ] && echo "$stamp" > .next/.all-in-1-build
+# The build cache only makes the next build faster: on a nearly full disk the space matters more.
+if [ "$(free_mb)" -lt 3072 ]; then
+  echo "  $(du -sh .next/cache 2>/dev/null | cut -f1) build cache removed: under 3 GB disk free ($(free_mb) MB)"
+  rm -rf .next/cache
+fi
+fi
+install -d public/nitro-assets public/swf storage
+chown -R www-data:www-data /var/www/epicnext
+chmod -R u+rwX,g+rX,o-w /var/www/epicnext

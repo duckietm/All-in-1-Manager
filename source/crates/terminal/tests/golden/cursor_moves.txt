@@ -1,0 +1,20 @@
+# dump 1
+size 20x8
+cursor 12,7 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 1 dropped 0
+replies 
+bells 0
+screen
+00 - |saved g7    dn   lft|
+01 w | U  at 3,5         e|
+02 - |nd                  |
+03 - |                    |
+04 - |        dR          |
+05 - |pl                  |
+06 w |nl                 c|
+07 - |laboB5oma2e2        |
+scrollback-lines
+0 - |          up        |
+text           up\u{A}saved g7    dn   lft\u{A} U  at 3,5         end\u{A}\u{A}        dR\u{A}pl\u{A}nl                 claboB5oma2e2

@@ -1,0 +1,56 @@
+### Emulator
+/var/log/emu/emulator.log: what Polaris prints (startup, errors, wired, players)
+/var/log/emu/emulator.log
+setsid bash -c 'tail -n 200 -F /var/log/emu/emulator.log' &
+follower=$!
+wait $ALL_IN_1_WATCH
+kill -- -$follower 2>/dev/null
+true
+### NGINX errors
+/var/log/nginx/hotel/error.log and /var/log/nginx/error.log
+/var/log/nginx/hotel/error.log, /var/log/nginx/error.log
+setsid bash -c 'tail -n 100 -F /var/log/nginx/hotel/error.log /var/log/nginx/error.log' &
+follower=$!
+wait $ALL_IN_1_WATCH
+kill -- -$follower 2>/dev/null
+true
+### NGINX access
+/var/log/nginx/hotel/access.log: every request that reaches the hotel site
+/var/log/nginx/hotel/access.log
+setsid bash -c 'tail -n 100 -F /var/log/nginx/hotel/access.log' &
+follower=$!
+wait $ALL_IN_1_WATCH
+kill -- -$follower 2>/dev/null
+true
+### Traefik
+docker logs of the traefik container: certificates, routing and connection errors
+docker logs traefik
+setsid bash -c 'if command -v docker >/dev/null 2>&1 && docker inspect traefik >/dev/null 2>&1; then docker logs -f --tail 200 traefik; else echo '\''There is no traefik container on this server (Web access step).'\''; sleep infinity; fi' &
+follower=$!
+wait $ALL_IN_1_WATCH
+kill -- -$follower 2>/dev/null
+true
+### Firewall
+/var/log/ufw.log: connections ufw blocked (BLOCK) or let through and logged
+/var/log/ufw.log (or the journal without rsyslog)
+setsid bash -c 'if [ -f /var/log/ufw.log ]; then tail -n 200 -F /var/log/ufw.log; else echo '\''No ufw.log (no rsyslog): following the journal instead.'\''; journalctl -k -f -n 200 -o short-iso | grep --line-buffered UFW; fi' &
+follower=$!
+wait $ALL_IN_1_WATCH
+kill -- -$follower 2>/dev/null
+true
+### Fail2Ban
+/var/log/fail2ban.log: failed SSH logins it counted (Found), bans (Ban) and unbans (Unban)
+/var/log/fail2ban.log (or the journal)
+setsid bash -c 'if ! command -v fail2ban-client >/dev/null 2>&1; then echo '\''Fail2ban is not installed on this server (Addons -> Fail2Ban).'\''; sleep infinity; elif [ -f /var/log/fail2ban.log ]; then tail -n 200 -F /var/log/fail2ban.log; else echo '\''No fail2ban.log: following the journal instead.'\''; journalctl -u fail2ban -f -n 200 -o short-iso; fi' &
+follower=$!
+wait $ALL_IN_1_WATCH
+kill -- -$follower 2>/dev/null
+true
+### CrowdSec
+docker logs of the crowdsec container: bans it decides, the hub, the console and the bouncer's connections
+docker logs crowdsec
+setsid bash -c 'if docker inspect crowdsec >/dev/null 2>&1; then docker logs -f --tail 200 crowdsec; else echo '\''CrowdSec is not installed on this server (Addons -> CrowdSec).'\''; sleep infinity; fi' &
+follower=$!
+wait $ALL_IN_1_WATCH
+kill -- -$follower 2>/dev/null
+true

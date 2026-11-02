@@ -1,0 +1,18 @@
+# dump 1
+size 10x5
+cursor 2,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 2 dropped 0
+replies 
+bells 0
+screen
+00 - |nozzz     |
+01 - |z         |
+02 - |bottom    |
+03 - |          |
+04 - |      x   |
+scrollback-lines
+0 - |abc       |
+1 - | f d      |
+text abc\u{A} f d\u{A}nozzz\u{A}z\u{A}bottom\u{A}\u{A}      x

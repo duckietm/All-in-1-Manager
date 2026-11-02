@@ -1,0 +1,8 @@
+=== root
+echo '== S0'; [ -d '/var/www/emulator/Assets/images' ] && (cd '/var/www/emulator/Assets/images' && find . -type f -name '*' ! -iname 'README*' -printf '%P\n')
+echo '== T0'; [ -d '/var/www/gamedata/images' ] && (cd '/var/www/gamedata/images' && find . -type f -printf '%P\n')
+echo '== S1'; [ -d '/var/www/emulator/Assets/images/reception' ] && (cd '/var/www/emulator/Assets/images/reception' && find . -maxdepth 1 -type f -name '*.png' ! -iname 'README*' -printf '%P\n')
+echo '== T1'; [ -d '/var/www/gamedata/c_images/reception' ] && (cd '/var/www/gamedata/c_images/reception' && find . -maxdepth 1 -type f -printf '%P\n')
+echo '== S2'; [ -d '/var/www/emulator/Assets/badgeparts' ] && (cd '/var/www/emulator/Assets/badgeparts' && find . -maxdepth 1 -type f -name 'badgepart_*.png' ! -iname 'README*' -printf '%P\n')
+echo '== T2'; [ -d '/var/www/gamedata/c_images/groupbadge/badgeparts' ] && (cd '/var/www/gamedata/c_images/groupbadge/badgeparts' && find . -maxdepth 1 -type f -printf '%P\n')
+true

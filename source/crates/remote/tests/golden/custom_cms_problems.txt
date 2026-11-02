@@ -1,0 +1,27 @@
+[name ] -> Enter a folder name.
+[name mycms] -> <ok>
+[name My CMS] -> Use only lower case letters (a-z) and digits, no spaces or other characters, at most 12.
+[name abcdefghijklm] -> Use only lower case letters (a-z) and digits, no spaces or other characters, at most 12.
+[name hotel] -> /var/www/hotel is used by the hotel already: choose another name.
+[name gamedata] -> /var/www/gamedata is used by the hotel already: choose another name.
+[name cms2] -> <ok>
+[root /] -> <ok>
+[root /public] -> <ok>
+[root /public/] -> <ok>
+[root public] -> The root starts with / and has only letters, digits, '.', '_', '-' and '/', for example /public, or just / for the top folder.
+[root /../etc] -> The root starts with / and has only letters, digits, '.', '_', '-' and '/', for example /public, or just / for the top folder.
+[root /a/./b] -> The root starts with / and has only letters, digits, '.', '_', '-' and '/', for example /public, or just / for the top folder.
+[root /a b] -> The root starts with / and has only letters, digits, '.', '_', '-' and '/', for example /public, or just / for the top folder.
+[root //] -> The root starts with / and has only letters, digits, '.', '_', '-' and '/', for example /public, or just / for the top folder.
+[git https://github.com/owner/cms.git] -> <ok>
+[git https://git.example.com:3000/o/c] -> <ok>
+[git http://github.com/o/c] -> Use the https link of the repository, for example https://github.com/owner/cms.git.
+[git git@github.com:o/c.git] -> Use the https link of the repository, for example https://github.com/owner/cms.git.
+[name-from-url https://github.com/owner/My-CMS.git] -> mycms
+[name-from-url https://github.com/owner/Very_Long-Name-Of-CMS.GIT/] -> verylongname
+[name-from-url x] -> x
+[normalize  /public/ ] -> /public /var/www/mycms/public
+[normalize ] -> / /var/www/mycms
+[normalize /] -> / /var/www/mycms
+[normalize a] -> / /var/www/mycms
+[normalize /web/dist//] -> /web/dist /var/www/mycms/web/dist

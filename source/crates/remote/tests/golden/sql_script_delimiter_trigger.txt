@@ -1,0 +1,16 @@
+=== input
+delimiter //
+CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW
+BEGIN
+  SET NEW.a = 1;
+END //
+delimiter ;
+INSERT INTO t VALUES (1);
+=== statements
+--- line 2
+CREATE TRIGGER tr BEFORE INSERT ON t FOR EACH ROW
+BEGIN
+  SET NEW.a = 1;
+END
+--- line 7
+INSERT INTO t VALUES (1)

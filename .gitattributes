@@ -1,0 +1,2 @@
+# Scripts and golden files are compared byte for byte: keep LF everywhere.
+* text=auto eol=lf

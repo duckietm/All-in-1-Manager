@@ -1,0 +1,42 @@
+# dump 1
+size 14x7
+cursor 7,6 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 2 dropped 0
+replies 
+bells 0
+screen
+00 - |line2         |
+01 - |line3         |
+02 - |line4         |
+03 - |line5         |
+04 - |line6         |
+05 - |line7         |
+06 - |prompt$       |
+scrollback-lines
+0 - |line0         |
+1 - |line1         |
+text line0\u{A}line1\u{A}line2\u{A}line3\u{A}line4\u{A}line5\u{A}line6\u{A}line7\u{A}prompt$
+# dump 2
+size 16x9
+cursor 7,6 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 2 dropped 0
+replies 
+bells 0
+screen
+00 - |line2           |
+01 - |line3           |
+02 - |line4           |
+03 - |line5           |
+04 - |line6           |
+05 - |line7           |
+06 - |prompt$         |
+07 - |                |
+08 - |                |
+scrollback-lines
+0 - |line0           |
+1 - |line1           |
+text line0\u{A}line1\u{A}line2\u{A}line3\u{A}line4\u{A}line5\u{A}line6\u{A}line7\u{A}prompt$\u{A}\u{A}

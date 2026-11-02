@@ -1,0 +1,1 @@
+camera.render.mode=auto,camera.url=https://hotel.example.com/gamedata/camera/,imager.location.badgeparts=/var/www/gamedata/c_images/groupbadge/badgeparts/,imager.location.output.badges=/var/www/gamedata/c_images/album1584/,imager.location.output.camera=/var/www/gamedata/camera,imager.location.output.thumbnail=/var/www/gamedata/camera/thumb/

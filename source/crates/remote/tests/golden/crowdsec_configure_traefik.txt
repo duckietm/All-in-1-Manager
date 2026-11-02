@@ -1,0 +1,251 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+t=/opt/traefik
+[ -f "$t/traefik.yml" ] || fail "Traefik is not set up in $t. Run the Web access step first."
+port=$(sed -n 's/^LAPI_PORT=//p' /opt/crowdsec/.env)
+probe() {
+  if [ yes = yes ]; then
+    curl -sk -D - -o /dev/null --max-time 15 --resolve 'www.hotel.example.com:443:127.0.0.1' 'https://www.hotel.example.com/' 2>/dev/null
+  else
+    curl -s -D - -o /dev/null --max-time 15 -H 'Host: www.hotel.example.com' http://127.0.0.1/ 2>/dev/null
+  fi | tr -d '\r' | awk 'NR == 1 {c = $2} tolower($1) == "server:" {s = $2} END {print (c ? c : "000") (s ? " " s : "")}'
+}
+before=$(probe)
+echo "> The hotel through Traefik now: HTTP $before"
+for f in traefik.yml compose.yaml; do cp -p "$t/$f" "$t/$f.before-crowdsec"; done
+had_middleware=$([ -f /opt/traefik/dynamic/crowdsec.yml ] && echo yes || true)
+[ -n "$had_middleware" ] && cp -p /opt/traefik/dynamic/crowdsec.yml "$t/crowdsec.yml.before"
+
+key=$(sed -n 's/^BOUNCER_KEY=//p' /opt/crowdsec/.env)
+[ -n "$key" ] || fail "CrowdSec's bouncer key is missing in /opt/crowdsec/.env: run this addon again."
+cfline=
+if [ no = yes ]; then
+  load_cloudflare_ranges
+  cfline="          forwardedHeadersTrustedIPs: [$(echo "$ranges" | sed 's/.*/"&"/' | paste -sd, -)]"
+fi
+umask 077
+cat > /opt/traefik/dynamic/crowdsec.yml <<EOF
+# CrowdSec's bouncer on every route (written by All-in-1 Installer, Addons → CrowdSec; Tools → CrowdSec).
+http:
+  middlewares:
+    crowdsec:
+      plugin:
+        crowdsec:
+          enabled: true
+          logLevel: INFO
+          crowdsecMode: stream
+          updateIntervalSeconds: 60
+          updateMaxFailure: -1
+          streamStartupBlock: false
+          crowdsecLapiScheme: http
+          crowdsecLapiHost: "127.0.0.1:$port"
+          crowdsecLapiKey: "$key"
+          remediationHeadersCustomName: X-Crowdsec-Remediation
+          clientTrustedIPs: ["127.0.0.1/32", "203.0.113.5", "198.51.100.0/24"]
+$cfline
+EOF
+umask 022
+sed -i '/^$/d' /opt/traefik/dynamic/crowdsec.yml
+echo "> /opt/traefik/dynamic/crowdsec.yml"
+trusted=
+if [ no = yes ]; then
+  load_cloudflare_ranges
+  trusted=$(echo "$ranges" | sed 's/.*/"&"/' | paste -sd, -)
+fi
+if [ -f /opt/traefik/dynamic/crowdsec.yml ]; then
+  echo "> $t/traefik.yml (with CrowdSec)"
+  cat > "$t/traefik.yml" <<'EOF'
+# Traefik static configuration (written by All-in-1 Installer).
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+      middlewares: [crowdsec@file]
+  websecure:
+    address: ":443"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+    http:
+      middlewares: [crowdsec@file]
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+log:
+  level: INFO
+  noColor: true
+# CrowdSec (Addons → CrowdSec): it reads this log; the plugin blocks the addresses it bans.
+accessLog:
+  filePath: /var/log/traefik/access.log
+experimental:
+  plugins:
+    crowdsec:
+      moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+      version: v1.8.1
+EOF
+else
+  echo "> $t/traefik.yml"
+  cat > "$t/traefik.yml" <<'EOF'
+# Traefik static configuration (written by All-in-1 Installer).
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+log:
+  level: INFO
+  noColor: true
+EOF
+fi
+sed -i "s#\[TRUSTED\]#[$trusted]#" "$t/traefik.yml"
+echo "> $t/compose.yaml"
+install -d -m 755 /var/log/traefik "$t/plugins-storage"
+cat > "$t/compose.yaml" <<'EOF'
+# Traefik for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ./letsencrypt:/letsencrypt
+      - ./plugins-storage:/plugins-storage
+      - /var/log/traefik:/var/log/traefik
+EOF
+
+restore() {
+  echo "  Putting the previous Traefik configuration back ..."
+  for f in traefik.yml compose.yaml; do mv -f "$t/$f.before-crowdsec" "$t/$f"; done
+  if [ -n "$had_middleware" ]; then mv -f "$t/crowdsec.yml.before" /opt/traefik/dynamic/crowdsec.yml; else rm -f /opt/traefik/dynamic/crowdsec.yml; fi
+  compose_in "$t" up -d --force-recreate >/dev/null 2>&1
+}
+# From here on a failure puts the previous configuration back first.
+fail() { restore; echo "ERROR: $* The previous Traefik configuration is back."; exit 1; }
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+echo "> Restarting Traefik with the bouncer (players are disconnected for a moment)"
+compose_in "$t" up -d --force-recreate 2>&1 | grep -v '^ *$'
+for i in $(seq 1 20); do
+  [ "$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)" = true ] && ss -Hltn 'sport = :80' | grep -q . && break
+  sleep 1
+done
+[ "$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)" = true ] || { docker logs --tail 20 traefik 2>&1 | sed 's/^/  /'; fail "The Traefik container does not run."; }
+ss -Hltn 'sport = :80' | grep -q . || { docker logs --tail 20 traefik 2>&1 | sed 's/^/  /'; fail "Traefik runs, but does not listen on port 80."; }
+echo "  $(docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print "Traefik " $2}') is running"
+# Traefik downloads the plugin (plugins.traefik.io) when it starts.
+sleep 5
+after=
+for i in $(seq 1 15); do after=$(probe); [ "$after" = "$before" ] && break; sleep 2; done
+problem=$(docker logs --since "$started" traefik 2>&1 | grep -iE 'plugin|crowdsec' | grep -iE 'error|fail|unable|disabled' | tail -3)
+if [ -n "$problem" ] || [ "$after" != "$before" ]; then
+  [ -n "$problem" ] && echo "$problem" | sed 's/^/  /'
+  echo "$problem" | grep -q 'unable to download plugin' &&
+    echo "  Traefik could not download the plugin from plugins.traefik.io: the server needs to reach it (internet, DNS, an outgoing firewall)."
+  echo "  The hotel answers HTTP $after (before: $before)"
+  fail "Traefik does not work with the CrowdSec plugin (see above), so the hotel runs as before."
+fi
+rm -f "$t/traefik.yml.before-crowdsec" "$t/compose.yaml.before-crowdsec" "$t/crowdsec.yml.before"
+echo "  The hotel answers HTTP $after, as before: the bouncer is in front of every route"

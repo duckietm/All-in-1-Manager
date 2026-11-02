@@ -1,0 +1,8 @@
+=== root
+[ -f /opt/traefik/hotel.env ] && sed 's/^/conf_/' /opt/traefik/hotel.env
+echo "docker=$(docker info >/dev/null 2>&1 && echo yes)"
+echo "traefik=$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)"
+[ -f /opt/gitea/.env ] && sed -n 's/^\(DOMAIN\|CLOUDFLARE\|PORT\)=/gitea_\1=/p' /opt/gitea/.env
+echo "running=$(docker inspect -f '{{.State.Running}}' gitea 2>/dev/null)"
+echo "version=$(docker exec gitea gitea --version 2>/dev/null | awk '{print $3}')"
+site=https://example.com docker=yes traefik=yes domain=git.example.com cloudflare=no port=89 running=yes version=1.25.1 installed=yes

@@ -1,0 +1,14 @@
+=== input
+SELECT 1;<CR>
+SELECT<CR>
+  2;<CR>
+<CR>
+SELECT 3
+=== statements
+--- line 1
+SELECT 1
+--- line 2
+SELECT<CR>
+  2
+--- line 5
+SELECT 3

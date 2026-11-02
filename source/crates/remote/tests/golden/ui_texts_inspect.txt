@@ -1,0 +1,14 @@
+=== root
+dir=/var/www/Octane/public/configuration
+target=/var/www/gamedata/config/UITexts.jsonc
+langs=""
+for f in "$dir"/UITexts_*.jsonc.example; do
+  [ -f "$f" ] || continue
+  l=${f##*/UITexts_}; langs="$langs ${l%.jsonc.example}"
+done
+echo "LANGS=$langs"
+if [ -f "$target" ]; then
+  current=custom
+  for l in $langs; do cmp -s "$target" "$dir/UITexts_$l.jsonc.example" && { current=$l; break; }; done
+  echo "CURRENT=$current"
+fi

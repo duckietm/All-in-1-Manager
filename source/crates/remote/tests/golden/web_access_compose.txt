@@ -1,0 +1,17 @@
+echo "> $t/compose.yaml"
+install -d -m 755 /var/log/traefik "$t/plugins-storage"
+cat > "$t/compose.yaml" <<'EOF'
+# Traefik for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ./letsencrypt:/letsencrypt
+      - ./plugins-storage:/plugins-storage
+      - /var/log/traefik:/var/log/traefik
+EOF

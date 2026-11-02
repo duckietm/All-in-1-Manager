@@ -1,0 +1,15 @@
+# dump 1
+size 24x4
+cursor 1,2 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 w |a   x   b       x      e|
+01 w |nd                     l|
+02 - |3st                    1|
+03 - |                        |
+scrollback-lines
+text a   x   b       x      end                     l3st                    1\u{A}

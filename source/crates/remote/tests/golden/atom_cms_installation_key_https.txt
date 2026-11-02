@@ -1,0 +1,105 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+cd /var/www/atomcms
+db=$(grep -E '^DB_DATABASE=' .env | cut -d= -f2)
+key() { mariadb -N "$db" -e "SELECT installation_key FROM website_installation ORDER BY id LIMIT 1" 2>/dev/null; }
+url="https://www.example.com"
+# A cached "installed" flag would hide the web installer while the database has no finished installation.
+if ! mariadb -N "$db" -e "SELECT 1 FROM website_installation WHERE completed = 1" 2>/dev/null | grep -q 1; then
+  runuser -u www-data -- php artisan cache:forget app_installed >/dev/null 2>&1 || true
+  runuser -u www-data -- php artisan cache:forget installation_record >/dev/null 2>&1 || true
+fi
+if [ -z "$(key)" ]; then
+  echo "> $url/installation (AtomCMS creates its installation key on the first visit)"
+  curl -s --noproxy '*' -k --max-time 20 --resolve "www.example.com:443:127.0.0.1" -o /dev/null -w '  HTTP %{http_code}\n' "$url/installation" || true
+fi
+if [ -z "$(key)" ]; then
+  echo "  No key yet: adding one to website_installation"
+  mariadb "$db" -e "INSERT INTO website_installation (step, completed, installation_key, created_at, updated_at)
+    SELECT 0, 0, UUID(), NOW(), NOW() FROM DUAL WHERE NOT EXISTS (SELECT 1 FROM website_installation)"
+fi
+k=$(key)
+[ -n "$k" ] || fail "AtomCMS has no installation key (SELECT installation_key FROM website_installation; is empty)."
+completed=$(mariadb -N "$db" -e "SELECT 1 FROM website_installation WHERE completed = 1 LIMIT 1" 2>/dev/null)
+echo ""
+if [ "$completed" = 1 ]; then
+  echo "  AtomCMS' web installer is already finished (installation key $k)."
+else
+  echo "  ============================================================"
+  echo "  AtomCMS installation key:  $k"
+  echo "  Open $url and paste it in the web installer."
+  echo "  ============================================================"
+fi
+echo "KEY=$k"
+echo "COMPLETED=$completed"
+key=abc-123 completed=yes

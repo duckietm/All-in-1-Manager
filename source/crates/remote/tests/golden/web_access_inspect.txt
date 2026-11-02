@@ -1,0 +1,11 @@
+=== root
+echo "docker=$(dpkg-query -W -f='${db:Status-Abbrev}${Version}' docker-ce 2>/dev/null | awk '/^ii/{print substr($0,4)}')"
+echo "dockerorg=$(apt-cache policy docker-ce 2>/dev/null | grep -q download.docker.com && echo yes)"
+echo "conflicts=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc 2>/dev/null | awk '/^ii/{printf "%s ", substr($0,4)}')"
+echo "dockerrunning=$(docker info >/dev/null 2>&1 && echo yes)"
+echo "traefik=$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)"
+echo "site=$([ -L /etc/nginx/sites-enabled/hotel ] && grep -qs 'listen 127.0.0.1:85' /etc/nginx/sites-available/hotel && echo yes)"
+[ -f /opt/traefik/hotel.env ] && sed 's/^/conf_/' /opt/traefik/hotel.env
+echo "port80=$(ss -Hltnp 'sport = :80' 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2)"
+echo "port443=$(ss -Hltnp 'sport = :443' 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2)"
+echo "emulator=$(ss -Hltn 'sport = :2096' 2>/dev/null | grep -q . && echo yes)"

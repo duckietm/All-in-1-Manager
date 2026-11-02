@@ -1,0 +1,227 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+set -o pipefail
+g=/opt/gitea
+docker info >/dev/null 2>&1 || fail "Docker does not run. Run the Web access step first."
+[ -d /opt/traefik/dynamic ] || fail "Traefik is not set up. Run the Web access step first."
+install -d -m 755 "$g"
+install -d -m 750 -o 1000 -g 1000 "$g/data"
+
+port_container() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker ps -aq 2>/dev/null | xargs -r docker inspect -f '{{.Name}} {{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostPort}} {{end}}{{end}}' 2>/dev/null | grep -E " $1( |$)" | head -1 | awk '{print $1}' | tr -d /
+}
+port_taken() {
+  container=$(port_container "$1")
+  # This app's own port (a run again) is not taken.
+  [ -n "${self_container:-}" ] && [ "$container" = "$self_container" ] && return 1
+  who=$(ss -Hltnp "sport = :$1" 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2)
+  if ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; then
+    [ -n "${self_file:-}" ] && [ "$who" = nginx ] && grep -qsE "listen[[:space:]]+([^;[:space:]]*:)?$1([[:space:]]|;)" "$self_file" && return 1
+    echo "in use by ${who:-a program}"; return 0
+  fi
+  other=$(grep -rlsE "^[^#]*listen[[:space:]]+([^;[:space:]]*:)?$1([[:space:]]|;)" /etc/nginx 2>/dev/null | grep -vx "${self_file:-/nonexistent}" | head -1)
+  [ -n "$other" ] && { echo "used by $other"; return 0; }
+  [ -n "$container" ] && { echo "published by the Docker container $container"; return 0; }
+  return 1
+}
+pick_port() {
+  port=$1
+  if [ -n "$port" ] && reason=$(port_taken "$port"); then
+    echo "  Port $port, which this had, is $reason now: choosing another one"
+    port=
+  fi
+  if [ -z "$port" ]; then
+    for p in $(seq 85 95); do
+      if reason=$(port_taken "$p"); then echo "  Port $p: $reason"; continue; fi
+      port=$p; break
+    done
+  fi
+  [ -n "$port" ] || fail "Ports 85 to 95 are all in use on this server: free one and try again."
+}
+self_container=gitea
+pick_port "$(sed -n 's/^PORT=//p' "$g/.env" 2>/dev/null)"
+echo "> Gitea on 127.0.0.1:$port"
+
+# Gitea's own proxies: 127.0.0.1 and, once its network exists, the Docker network Traefik reaches it through.
+trusted=$(sed -n 's/^TRUSTED=//p' "$g/.env" 2>/dev/null) || trusted=
+write_env() {
+  cat > "$g/.env" <<EOF
+# Gitea (written by All-in-1 Installer, Addons → Gitea).
+DOMAIN=git.example.org
+ROOT_URL=http://git.example.org/
+CLOUDFLARE=no
+PORT=$port
+TRUSTED=${trusted:-127.0.0.0/8,::1/128}
+LIMIT=1
+EOF
+  chmod 600 "$g/.env"
+}
+write_env
+echo "> $g/compose.yaml"
+cat > "$g/compose.yaml" <<'EOF'
+# Gitea for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# Its own network, not the host's: the image always starts an SSH server (port 22 inside), which must not
+# meet the server's SSH. Only the web port is published, on 127.0.0.1, for Traefik.
+services:
+  gitea:
+    image: gitea/gitea:1
+    container_name: gitea
+    restart: unless-stopped
+    networks: [gitea]
+    ports:
+      - "127.0.0.1:${PORT}:3000"
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      - GITEA__server__DOMAIN=${DOMAIN}
+      - GITEA__server__ROOT_URL=${ROOT_URL}
+      - GITEA__server__HTTP_PORT=3000
+      - GITEA__server__DISABLE_SSH=true
+      - GITEA__server__START_SSH_SERVER=false
+      - GITEA__database__DB_TYPE=sqlite3
+      - GITEA__security__INSTALL_LOCK=true
+      - GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES=${TRUSTED}
+      - GITEA__security__REVERSE_PROXY_LIMIT=${LIMIT}
+      # No sign-ups: the admin makes the accounts. Visitors land on the repositories.
+      - GITEA__service__DISABLE_REGISTRATION=true
+      - GITEA__service__SHOW_REGISTRATION_BUTTON=false
+      - GITEA__server__LANDING_PAGE=/explore/repos
+    volumes:
+      - ./data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+networks:
+  gitea:
+    name: gitea
+EOF
+
+echo "> docker compose pull (gitea/gitea:1)"
+pulled=
+for i in 1 2 3; do
+  if docker compose -f "$g/compose.yaml" pull -q 2>"$g/pull.log"; then pulled=yes; break; fi
+  tail -1 "$g/pull.log" | sed 's/^/  /'
+  [ $i -lt 3 ] && { echo "  Trying again in $((i * 20)) seconds ..."; sleep $((i * 20)); }
+done
+rm -f "$g/pull.log"
+if [ -z "$pulled" ]; then
+  docker image inspect gitea/gitea:1 >/dev/null 2>&1 || fail "Could not download the Gitea image from Docker Hub (see above). Try again later."
+  echo "  Docker Hub did not answer: using the gitea/gitea:1 image that is already on this server"
+fi
+echo "> docker compose up -d"
+docker compose -f "$g/compose.yaml" up -d 2>&1 | grep -v '^ *$'
+subnets=$(docker network inspect gitea -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' 2>/dev/null | xargs | tr ' ' ',')
+if [ -n "$subnets" ] && [ "$trusted" != "127.0.0.0/8,::1/128,$subnets" ]; then
+  trusted="127.0.0.0/8,::1/128,$subnets"
+  write_env
+  echo "  Gitea trusts the proxy headers from 127.0.0.1 and its Docker network ($subnets)"
+  docker compose -f "$g/compose.yaml" up -d 2>&1 | grep -v '^ *$'
+fi
+for i in $(seq 1 60); do
+  curl -fs --noproxy '*' --max-time 3 "http://127.0.0.1:$port/api/healthz" >/dev/null 2>&1 && break
+  sleep 2
+done
+curl -fs --noproxy '*' --max-time 3 "http://127.0.0.1:$port/api/healthz" >/dev/null 2>&1 ||
+  { docker logs --tail 20 gitea 2>&1 | sed 's/^/  /'; fail "Gitea does not answer on 127.0.0.1:$port (see its log above)."; }
+echo "  $(docker exec gitea gitea --version 2>/dev/null | awk '{print "Gitea " $3}') answers"
+
+echo "> /opt/traefik/dynamic/gitea.yml: http://git.example.org to Gitea"
+cat > /opt/traefik/dynamic/gitea.yml <<EOF
+# Gitea (written by All-in-1 Installer, Addons → Gitea). Traefik picks it up without a restart.
+http:
+  routers:
+    gitea:
+      rule: "Host(\`git.example.org\`)"
+      entryPoints: [web]
+      service: gitea
+  services:
+    gitea:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:$port"
+EOF
+
+# The admin, once: the first run creates it with a random password; later runs keep the users.
+if docker exec -u git gitea gitea admin user list --admin 2>/dev/null | awk 'NR > 1' | grep -q .; then
+  echo "> Gitea has an admin already: kept"
+  echo "ADMIN=existed"
+else
+  echo "> Creating the admin o'neil"
+  out=$(docker exec -u git gitea gitea admin user create --admin --username 'o'\''neil' \
+    --email 'o'\''neil@example.org' --random-password --must-change-password=false 2>&1) ||
+    { echo "$out" | sed 's/^/  /'; fail "Creating the admin failed (see above)."; }
+  echo "  $(echo "$out" | grep -i 'successfully created' | tail -1)"
+  echo "PASSWORD=$(echo "$out" | sed -n "s/.*generated random password is '\(.*\)'.*/\1/p")"
+fi
+echo "PORT=$port"
+port=87 password=<none> existed=yes cert=no

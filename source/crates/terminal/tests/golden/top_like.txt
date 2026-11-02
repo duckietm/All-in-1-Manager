@@ -1,0 +1,25 @@
+# dump 1
+size 40x10
+cursor 0,9 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 w |top - 1010:00:03p 3 days,  1 user,  load|
+01 - |Tasks: 120 total,   1 running           |
+     0-5:-1/-1/1 17-21:-1/-1/1
+02 - |                                        |
+03 w |  PID USER      %CPU COMMAND            |
+     0-39:-1/-1/16
+04 - |    1 root       0.0 0.3temd            |
+05 - |  842 www-data   5.112.4nx              |
+     0-19:-1/-1/1 24-25:-1/-1/1
+06 - |                                        |
+07 - |  900 mysql      1.0 mysqld             |
+     0-26:2/-1/0
+08 - |                                        |
+09 - |                                        |
+scrollback-lines
+text top - 1010:00:03p 3 days,  1 user,  loadTasks: 120 total,   1 running\u{A}\u{A}  PID USER      %CPU COMMAND                1 root       0.0 0.3temd\u{A}  842 www-data   5.112.4nx\u{A}\u{A}  900 mysql      1.0 mysqld\u{A}\u{A}

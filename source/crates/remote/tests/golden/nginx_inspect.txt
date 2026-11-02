@@ -1,0 +1,8 @@
+=== root
+. /etc/os-release
+echo "codename=${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+echo "version=$(dpkg-query -W -f='${db:Status-Abbrev}${Version}' nginx 2>/dev/null | awk '/^ii/{print substr($0,4)}')"
+echo "distro=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' nginx-common nginx-core nginx-full nginx-light nginx-extras 2>/dev/null | awk '/^ii/{printf "%s ", substr($0,4)}')"
+echo "port80=$(ss -Hltnp 'sport = :80' 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2)"
+echo "layout=$(grep -qs 'include /etc/nginx/sites-enabled/' /etc/nginx/nginx.conf && [ -d /etc/nginx/sites-available ] && echo yes)"
+echo "running=$(pgrep -x nginx >/dev/null && echo yes)"

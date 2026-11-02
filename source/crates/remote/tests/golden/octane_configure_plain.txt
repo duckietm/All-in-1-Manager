@@ -1,0 +1,228 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1 NO_COLOR=1 FORCE_COLOR=0 HOME=/root
+# The emulator's timezone (config.ini) for timezone.settings in a new renderer-config.json.
+tz=$(grep -oE 'serverTimezone=[^&[:space:]]+' /var/www/emulator/Emulator/config.ini 2>/dev/null | head -1 | cut -d= -f2)
+echo "> /var/www/Octane/public/configuration: client-mode.json, hotlooks.json, infostand_backgrounds.json, news.json, renderer-config.json, ui-config.json"
+SITE_URL='http://192.0.2.10' CLIENT_URL='http://192.0.2.10/' CLIENT_PATH='/' ATOM='' LOGIN_SCREEN='' SOCKET_URL='ws://192.0.2.10/ws' CONFIG_DIR='/var/www/Octane/public/configuration' GAMEDATA_DIR='/var/www/gamedata' \
+  FILES='client-mode hotlooks infostand_backgrounds news renderer-config ui-config' TIMEZONE="$tz" node - <<'JS'
+const fs = require('fs');
+const path = require('path');
+const { SITE_URL: site, CLIENT_URL: client, CLIENT_PATH: clientPath, ATOM: atom, LOGIN_SCREEN: loginScreen, SOCKET_URL: socket, CONFIG_DIR: dir, GAMEDATA_DIR: gamedata, TIMEZONE: timezone } = process.env;
+
+// Always set: the hotel's URLs. Only in a file created from the .example: the folder layout and modes.
+const urls = {
+    'renderer-config': {
+        'socket.url': socket,
+        'api.url': site,
+        'asset.url': `${site}/gamedata`,
+        'image.library.url': `${site}/gamedata/c_images/`,
+        'hof.furni.url': site,
+        'furni.asset.icon.url': `${site}/gamedata/icons/%libname%%param%_icon.png`,
+        'badge.asset.group.url': `${site}/gamedata/c_images/groupbadge/badge/%badgedata%`,
+        'badge.asset.grouparts.url': `${site}/gamedata/c_images/groupbadge/badgeparts/badgepart_%part%.png`,
+        'group.badge.url': '%imagerdata%',
+        // Octane's own public/habbicons, so under /client/ with AtomCMS.
+        'habbicons.asset.root': `${clientPath}habbicons`,
+        // With a CMS the CMS logs in and opens the client with an SSO ticket. Without one again (the CMS was
+        // removed), Octane's own login screen comes back.
+        ...(atom ? { 'login.screen.enabled': false } : loginScreen ? { 'login.screen.enabled': true } : {})
+    },
+    'ui-config': {
+        'camera.url': `${site}/gamedata/camera`,
+        'thumbnails.url': `${site}/gamedata/camera/thumb/%thumbnail%.png`,
+        'camera.render.mode': 'upload'
+    },
+    'client-mode': {
+        'apiBaseUrl': site,
+        'plainConfigBaseUrl': `${client}configuration/`,
+        'plainGamedataBaseUrl': `${site}/gamedata/`
+    }
+};
+const defaults = {
+    'renderer-config': {
+        ...(timezone ? { 'timezone.settings': timezone } : {})
+    },
+    'client-mode': { 'distObfuscationEnabled': false, 'secureAssetsEnabled': false, 'secureApiEnabled': false }
+};
+
+// JSON, or JSONC (comments, trailing commas) when the file was edited that way.
+const parse = (file, text) => {
+    try { return JSON.parse(text); } catch { }
+    const stripped = text
+        .replace(/("(?:[^"\\]|\\.)*")|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, (m, s) => s ?? '')
+        .replace(/,(\s*[}\]])/g, '$1');
+    try { return JSON.parse(stripped); } catch (e) { throw new Error(`${file} is not valid JSON(C): ${e.message}`); }
+};
+
+const configs = {};
+for (const name of process.env.FILES.split(' ')) {
+    const file = path.join(dir, `${name}.json`);
+    const example = path.join(dir, `${name}.example`);
+    let created = false, config;
+    if (fs.existsSync(file)) config = parse(file, fs.readFileSync(file, 'utf8'));
+    else if (fs.existsSync(example)) { config = parse(example, fs.readFileSync(example, 'utf8')); created = true; }
+    else { console.log(`  ${name}.json: no ${name}.example in this Octane version, skipped`); continue; }
+
+    const changes = [];
+    for (const [key, value] of Object.entries({ ...(created ? defaults[name] : {}), ...urls[name] })) {
+        if (config[key] !== value) { changes.push(`${key} = ${JSON.stringify(value)}`); config[key] = value; }
+    }
+    if (created || changes.length > 0) {
+        if (!created) fs.copyFileSync(file, `${file}.bak-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`);
+        fs.writeFileSync(file, JSON.stringify(config, null, 4) + '\n');
+    }
+    console.log(`  ${name}.json: ${created ? `created from ${name}.example` : changes.length ? 'updated (old file kept as .bak-<time>)' : 'already up to date'}`);
+    for (const change of changes) console.log(`    ${change}`);
+    configs[name] = config;
+}
+
+// Every folder the asset URLs point to, e.g. ${asset.url}/furniture/%libname%.hab -> furniture.
+const settings = { ...configs['renderer-config'], ...configs['ui-config'] };
+const expand = (value, depth = 0) => depth > 8 ? value
+    : value.replace(/\$\{([^}]+)\}/g, (m, key) => typeof settings[key] === 'string' ? expand(settings[key], depth + 1) : m);
+const folders = new Set();
+const visit = value => {
+    if (Array.isArray(value)) return value.forEach(visit);
+    if (value && typeof value === 'object') return Object.values(value).forEach(visit);
+    if (typeof value !== 'string' || !value) return;
+    let url = expand(value);
+    for (const prefix of [`${site}/gamedata/`, '/gamedata/']) {
+        if (!url.startsWith(prefix)) continue;
+        const parts = url.slice(prefix.length).split(/[?#]/)[0].split('/').filter(Boolean);
+        const cut = parts.findIndex(p => p.includes('%') || p.includes('${'));
+        const kept = cut < 0 ? parts : parts.slice(0, cut);
+        if (cut < 0 && kept.length && kept[kept.length - 1].includes('.')) kept.pop();
+        if (kept.length) folders.add(kept.join('/'));
+        break;
+    }
+};
+visit(settings);
+let made = 0;
+for (const folder of [...folders].sort()) {
+    const full = path.join(gamedata, folder);
+    if (!full.startsWith(gamedata + '/')) continue;
+    if (!fs.existsSync(full)) { fs.mkdirSync(full, { recursive: true }); made++; }
+}
+fs.mkdirSync(gamedata, { recursive: true });
+console.log(`> ${gamedata}: ${folders.size} asset folders (${made} new): ${[...folders].sort().join(', ')}`);
+JS
+echo "> /var/www/Octane/package.json: vite without --base (Octane on /)"
+cd /var/www/Octane
+sed -i -E -e 's#("(start|build)": "vite) --base=[^ "]+#\1#' package.json
+grep -E '"(start|build)": ' package.json | sed 's/^ */  /'
+# The emulator, in group www-data, writes custom badges to c_images/album1584 and edits config/*.json.
+# Default ACLs keep files copied in later, by the download tool or WinSCP, writable for it too.
+command -v setfacl >/dev/null 2>&1 || { echo "> Installing acl (setfacl)"; apt_update >/dev/null; apt-get install -y acl >/dev/null; }
+cat > /usr/local/sbin/gamedata-permissions <<'PERMS'
+#!/bin/sh
+# Read/write access to /var/www/gamedata for the www-data group (written by All-in-1 Installer).
+# The emulator (a member of www-data) writes custom badges to c_images/album1584 and edits config/*.json;
+# NGINX reads everything. The default ACLs give files and folders created later the same rights, also when
+# they are copied in as root or another user. Run this again when an upload changed the permissions.
+set -e
+d=/var/www/gamedata
+[ -d "$d" ] || exit 0
+chgrp -R www-data "$d"
+find "$d" -type d -exec chmod 2775 {} +
+find "$d" -type f -exec chmod ug+rw,o+r {} +
+setfacl -R -m g:www-data:rwX -m d:g:www-data:rwX -m d:u::rwX -m d:o::rX "$d"
+echo "  $d: group www-data can read and write (also new files: default ACL), others can read"
+PERMS
+chmod 755 /usr/local/sbin/gamedata-permissions
+echo "> /usr/local/sbin/gamedata-permissions"
+/usr/local/sbin/gamedata-permissions
+
+# A welcome message for the login screen news (login.news.url). Existing news is never overwritten.
+install -d -m 2775 -o www-data -g www-data /var/www/gamedata/news
+if [ -f /var/www/gamedata/news/news.json ]; then
+  echo "> /var/www/gamedata/news/news.json: already there, kept"
+else
+  cat > /var/www/gamedata/news/news.json <<'NEWS'
+{
+    "news": [
+        {
+            "id": 1,
+            "title": "Welcome to 192.0.2.10!",
+            "body": "The doors are open! Octane is the brand-new client of this hotel: create your avatar, decorate your own room, meet new friends and explore everything the hotel has to offer. Grab a drink in the lobby, say hello and make yourself at home. Have fun, and see you in the hotel!",
+            "image": "",
+            "link": "",
+            "linkText": "Read more"
+        }
+    ]
+}
+NEWS
+  chown www-data:www-data /var/www/gamedata/news/news.json
+  chmod 664 /var/www/gamedata/news/news.json
+  echo "> /var/www/gamedata/news/news.json: welcome message created"
+fi

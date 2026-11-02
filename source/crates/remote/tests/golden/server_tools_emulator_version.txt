@@ -1,0 +1,7 @@
+=== root
+d=/var/www/emulator
+echo "commit=$(git -c safe.directory="$d" -C "$d" rev-parse --short HEAD 2>/dev/null)"
+jar=$(ls -t /var/www/emulator/Emulator/target/Polaris-*-jar-with-dependencies.jar /var/www/emulator/Emulator/target/Habbo-*-jar-with-dependencies.jar 2>/dev/null | head -1)
+echo "version=$(basename "$jar" -jar-with-dependencies.jar 2>/dev/null)"
+echo "java=$(ls -d /usr/lib/jvm/java-25-openjdk-* /usr/lib/jvm/temurin-25-jdk-* 2>/dev/null | head -1)"
+result: a1b2c3d|Polaris-4.2.0

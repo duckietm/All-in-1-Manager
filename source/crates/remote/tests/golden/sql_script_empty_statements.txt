@@ -1,0 +1,11 @@
+=== input
+;;;
+  ;
+SELECT 1;;;SELECT 2;
+
+;
+=== statements
+--- line 3
+SELECT 1
+--- line 3
+SELECT 2

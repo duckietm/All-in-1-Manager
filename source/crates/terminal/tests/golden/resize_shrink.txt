@@ -1,0 +1,32 @@
+# dump 1
+size 8x4
+cursor 2,1 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 1 dropped 0
+replies 
+bells 0
+screen
+00 - |row2    |
+01 - |row3    |
+02 w |row4 lon|
+03 - |xt here!|
+scrollback-lines
+0 - |row1    |
+text row1\u{A}row2\u{A}row3\u{A}row4 lonxt here!
+# dump 2
+size 6x2
+cursor 2,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 3 dropped 0
+replies 
+bells 0
+screen
+00 w |row4 l|
+01 - |xt her|
+scrollback-lines
+0 - |row1  |
+1 - |row2  |
+2 - |row3  |
+text row1\u{A}row2\u{A}row3\u{A}row4 lxt her

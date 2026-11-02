@@ -1,0 +1,147 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+
+echo "> Starting PHP-FPM"
+if [ -d /run/systemd/system ]; then
+  systemctl enable php8.5-fpm
+  systemctl restart php8.5-fpm
+else
+  service php8.5-fpm restart
+fi
+for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /run/php/php8.5-fpm.sock ] && break; sleep 0.5; done
+[ -S /run/php/php8.5-fpm.sock ] || fail "PHP-FPM is not listening on /run/php/php8.5-fpm.sock."
+echo "  listening on /run/php/php8.5-fpm.sock"
+
+if ! command -v nginx >/dev/null 2>&1; then
+  echo "  NGINX is not installed: skipping the NGINX + PHP test"
+  echo "NGINX=no"
+  exit 0
+fi
+
+# nginx.org's NGINX runs as 'nginx', but the PHP-FPM socket belongs to www-data with mode 660.
+if id nginx >/dev/null 2>&1 && ! id -nG nginx | grep -qw www-data; then
+  usermod -aG www-data nginx
+  echo "  user nginx added to group www-data (for the PHP-FPM socket)"
+fi
+
+install -d -m 755 /etc/nginx/snippets
+if [ ! -f /etc/nginx/snippets/fastcgi-php.conf ]; then
+  cat > /etc/nginx/snippets/fastcgi-php.conf <<'SNIPPET'
+# regex to split $uri to $fastcgi_script_name and $fastcgi_path
+fastcgi_split_path_info ^(.+?\.php)(/.*)$;
+
+# Check that the PHP script exists before passing it
+try_files $fastcgi_script_name =404;
+
+# Bypass the fact that try_files resets $fastcgi_path_info
+set $path_info $fastcgi_path_info;
+fastcgi_param PATH_INFO $path_info;
+
+fastcgi_index index.php;
+include fastcgi_params;
+fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+SNIPPET
+  echo "  /etc/nginx/snippets/fastcgi-php.conf created"
+fi
+
+reload() {
+  if [ -d /run/systemd/system ]; then systemctl reload nginx; else nginx -s reload 2>/dev/null || nginx; fi
+}
+
+echo "> Testing PHP through NGINX"
+# Temporary site on 127.0.0.1:8085. PHP-FPM has a private /tmp, so the test file lives in /var/www.
+root=$(mktemp -d /var/www/aio-php-test.XXXXXX 2>/dev/null || { install -d -m 755 /var/www; mktemp -d /var/www/aio-php-test.XXXXXX; })
+conf=/etc/nginx/conf.d/zz-aio-php-test.conf
+cleanup() { rm -rf "$root"; rm -f "$conf"; reload >/dev/null 2>&1 || true; }
+trap cleanup EXIT
+chmod 755 "$root"
+echo '<?php echo "PHP-OK " . PHP_VERSION;' > "$root/index.php"
+chmod 644 "$root/index.php"
+cat > "$conf" <<SITE
+server {
+    listen 127.0.0.1:8085;
+    root $root;
+    location ~ \.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.5-fpm.sock;
+    }
+}
+SITE
+nginx -t
+reload
+sleep 1
+answer=$(curl -s --noproxy '*' http://127.0.0.1:8085/index.php || true)
+echo "  answer: $answer"
+case "$answer" in "PHP-OK "*) ;; *) fail "NGINX could not run PHP through PHP-FPM (answer: '$answer')." ;; esac
+echo "NGINX=yes"
+result: True

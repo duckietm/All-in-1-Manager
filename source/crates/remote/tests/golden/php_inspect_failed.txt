@@ -1,0 +1,14 @@
+=== root
+. /etc/os-release
+echo "codename=${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+echo "php=$(command -v php8.5 >/dev/null 2>&1 && php8.5 -r 'echo PHP_VERSION;')"
+missing=""
+for p in php8.5-fpm php8.5 php8.5-common php8.5-mysql php8.5-xml php8.5-xmlrpc php8.5-curl php8.5-gd php8.5-imagick php8.5-cli php8.5-mbstring php8.5-soap php8.5-zip php8.5-intl php8.5-bcmath unzip; do
+  dpkg-query -W -f='${db:Status-Abbrev}' "$p" 2>/dev/null | grep -q '^ii' || missing="$missing $p"
+done
+echo "missing=$missing"
+echo "others=$(ls /etc/php 2>/dev/null | grep -vx '8.5' | tr '\n' ' ')"
+echo "repo=$(grep -qs 'packages.sury.org/php' /etc/apt/sources.list.d/*.list && echo yes)"
+# [r] keeps pgrep from matching this script's own command line
+echo "fpm=$(pgrep -f 'php-fpm: maste[r] process \(/etc/php/8\.5/' >/dev/null && echo yes)"
+!!! Could not inspect PHP on the server: permission denied

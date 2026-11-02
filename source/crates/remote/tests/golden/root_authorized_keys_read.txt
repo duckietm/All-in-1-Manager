@@ -1,0 +1,3 @@
+=== root
+if [ -f /root/.ssh/authorized_keys ]; then cat /root/.ssh/authorized_keys; fi
+result: ssh-rsa AAAAB3NzaC1yc2EAAAADAQAB

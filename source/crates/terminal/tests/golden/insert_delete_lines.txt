@@ -1,0 +1,51 @@
+# dump 1
+size 10x6
+cursor 0,1 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |L1        |
+01 - |          |
+02 - |          |
+03 - |L2        |
+04 - |L3        |
+05 - |L4        |
+scrollback-lines
+text L1\u{A}\u{A}\u{A}L2\u{A}L3\u{A}L4
+# dump 2
+size 10x6
+cursor 0,4 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |L1        |
+01 - |          |
+02 - |L2        |
+03 - |L3        |
+04 - |          |
+05 - |          |
+scrollback-lines
+text L1\u{A}\u{A}L2\u{A}L3\u{A}\u{A}
+# dump 3
+size 10x6
+cursor 0,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |L1        |
+01 - |          |
+02 - |          |
+03 - |L2        |
+04 - |L3        |
+05 - |          |
+scrollback-lines
+text L1\u{A}\u{A}\u{A}L2\u{A}L3\u{A}

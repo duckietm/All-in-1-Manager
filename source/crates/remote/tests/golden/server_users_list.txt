@@ -1,0 +1,7 @@
+=== root
+echo "www=$(getent group www-data | cut -d: -f4)"
+getent passwd | awk -F: '{ print "user=" $1 ":" $3 ":" $6 ":" $7 }'
+result: root|0|/root|/bin/bash|no|no|yes
+result: emulator|998|/var/lib/emulator|/usr/sbin/nologin|yes|yes|no
+result: simone|1000|/home/simone|/bin/bash|yes|no|yes
+result: zoe|1001|/home/zoe|/bin/bash|no|no|yes

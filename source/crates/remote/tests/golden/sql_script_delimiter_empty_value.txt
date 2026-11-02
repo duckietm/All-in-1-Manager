@@ -1,0 +1,6 @@
+=== input
+DELIMITER 
+SELECT 1;
+=== statements
+--- line 2
+SELECT 1

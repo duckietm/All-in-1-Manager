@@ -1,0 +1,7 @@
+=== input
+SELECT 1;
+/* never closed;
+SELECT 2;
+=== statements
+--- line 1
+SELECT 1

@@ -1,0 +1,14 @@
+=== input
+SELECT 5--3;
+SELECT 5 - -3;
+SELECT 1 --
+SELECT 2;
+--
+=== statements
+--- line 1
+SELECT 5--3
+--- line 2
+SELECT 5 - -3
+--- line 3
+SELECT 1 --
+SELECT 2

@@ -1,0 +1,35 @@
+# dump 1
+size 10x6
+cursor 2,3 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |r1        |
+01 - |r4        |
+02 - |          |
+03 - |in        |
+04 - |r5        |
+05 - |r6        |
+scrollback-lines
+text r1\u{A}r4\u{A}\u{A}in\u{A}r5\u{A}r6
+# dump 2
+size 10x6
+cursor 5,5 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 1 dropped 0
+replies 
+bells 0
+screen
+00 - |          |
+01 - |r4        |
+02 - |          |
+03 - |r5        |
+04 - |r6        |
+05 - |after     |
+scrollback-lines
+0 - |r1        |
+text r1\u{A}\u{A}r4\u{A}\u{A}r5\u{A}r6\u{A}after

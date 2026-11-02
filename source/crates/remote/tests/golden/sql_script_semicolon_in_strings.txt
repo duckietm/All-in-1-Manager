@@ -1,0 +1,8 @@
+=== input
+SELECT 'a;b', "c;d";
+INSERT INTO t VALUES ('x;y');
+=== statements
+--- line 1
+SELECT 'a;b', "c;d"
+--- line 2
+INSERT INTO t VALUES ('x;y')

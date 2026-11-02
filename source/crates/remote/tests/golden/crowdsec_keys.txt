@@ -1,0 +1,13 @@
+[sudo cscli console enroll -e context cm1abcdefghijklmnop] key=cm1abcdefghijklmnop enrolled=null new=null
+[  'cm1abcdefghijklmnop'
+] key=cm1abcdefghijklmnop enrolled=null new=null
+["cm1abcdefghijklmnop"] key=cm1abcdefghijklmnop enrolled=null new=null
+[short] key=null enrolled=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net. new=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net.
+[-e] key=null enrolled=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net. new=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net.
+[] key=null enrolled=null new=Paste the enrollment key from the CrowdSec console (see 1 and 2 above): it is required.
+[  ] key=null enrolled=null new=Paste the enrollment key from the CrowdSec console (see 1 and 2 above): it is required.
+[cm1abcdefghijklmnop --name x] key=null enrolled=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net. new=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net.
+[cm1abc-defghijklmnop] key=null enrolled=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net. new=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net.
+[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa] key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa enrolled=null new=null
+[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa] key=null enrolled=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net. new=That is not an enrollment key: copy the key (or the whole cscli console enroll command) from app.crowdsec.net.
+[cm1abcdefghijklmnop -e] key=cm1abcdefghijklmnop enrolled=null new=null

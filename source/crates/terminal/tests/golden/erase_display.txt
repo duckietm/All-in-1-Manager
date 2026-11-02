@@ -1,0 +1,70 @@
+# dump 1
+size 10x5
+cursor 4,2 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |aaaaaaaaaa|
+01 - |bbbbbbbbbb|
+02 - |cccc      |
+03 - |          |
+04 - |          |
+scrollback-lines
+text aaaaaaaaaa\u{A}bbbbbbbbbb\u{A}cccc\u{A}\u{A}
+# dump 2
+size 10x5
+cursor 4,1 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |          |
+     0-9:-1/4/0
+01 - |     bbbbb|
+     0-4:-1/4/0
+02 - |cccc      |
+03 - |          |
+04 - |          |
+scrollback-lines
+text \u{A}     bbbbb\u{A}cccc\u{A}\u{A}
+# dump 3
+size 10x5
+cursor 0,2 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 3 dropped 0
+replies 
+bells 0
+screen
+00 - |          |
+01 - |          |
+02 - |          |
+03 - |          |
+04 - |          |
+scrollback-lines
+0 - |line1     |
+     5-9:-1/4/0
+1 - |line2bbbbb|
+2 - |cccc      |
+text line1\u{A}line2bbbbb\u{A}cccc\u{A}\u{A}\u{A}\u{A}\u{A}
+# dump 4
+size 10x5
+cursor 0,2 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 3
+replies 
+bells 0
+screen
+00 - |          |
+01 - |          |
+02 - |          |
+03 - |          |
+04 - |          |
+scrollback-lines
+text \u{A}\u{A}\u{A}\u{A}

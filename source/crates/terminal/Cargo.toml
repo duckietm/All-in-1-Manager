@@ -1,0 +1,8 @@
+[package]
+name = "aio-terminal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "All-in-1 Installer: the SSH terminal's xterm-compatible screen model and the keys-to-bytes mapping"
+
+[dependencies]

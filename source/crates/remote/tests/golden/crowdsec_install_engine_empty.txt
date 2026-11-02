@@ -1,0 +1,188 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+set -o pipefail
+c=/opt/crowdsec
+docker info >/dev/null 2>&1 || fail "Docker does not run. Run the Web access step first."
+install -d -m 755 "$c" "$c/config" "$c/data" "$c/parsers" /var/log/traefik
+touch /var/log/traefik/access.log
+
+# The port CrowdSec's API listens on for the bouncer (127.0.0.1 only): kept, or the first free one from 8080.
+port=$(sed -n 's/^LAPI_PORT=//p' "$c/.env" 2>/dev/null) || port=
+if [ -z "$port" ]; then
+  for p in $(seq 8080 8099); do ss -Hltn "sport = :$p" | grep -q . || { port=$p; break; }; done
+  [ -n "$port" ] || fail "Ports 8080 to 8099 are all in use: free one for CrowdSec's API."
+fi
+# The bouncer's key: made once, at random; CrowdSec registers it at every start (BOUNCER_KEY_traefik).
+key=$(sed -n 's/^BOUNCER_KEY=//p' "$c/.env" 2>/dev/null) || key=
+[ -n "$key" ] || key=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+enrolled=$(sed -n 's/^ENROLLED=//p' "$c/.env" 2>/dev/null) || enrolled=
+umask 077
+cat > "$c/.env" <<EOF
+# CrowdSec (written by All-in-1 Installer, Addons → CrowdSec).
+LAPI_PORT=$port
+BOUNCER_KEY=$key
+INSTANCE=my-hotel
+WHITELIST=
+ENROLLED=$enrolled
+EOF
+umask 022
+echo "> $c/.env: CrowdSec's API on 127.0.0.1:$port"
+
+cat > "$c/acquis.yaml" <<'EOF'
+# What CrowdSec reads (written by All-in-1 Installer): Traefik's access log, every request to the hotel.
+filenames:
+  - /var/log/traefik/access.log
+labels:
+  type: traefik
+EOF
+
+cat > "$c/parsers/hotel-assets.yaml" <<'EOF'
+# The hotel's own files are not suspicious (written by All-in-1 Installer): a room loads hundreds of furniture
+# files at once, and missing ones answer 404. Without this, players would look like crawlers or scanners.
+name: all-in-1/hotel-assets
+description: "Requests for the hotel's assets (gamedata, client) are never counted"
+whitelist:
+  reason: "hotel assets"
+  expression:
+    - "evt.Meta.http_path startsWith '/gamedata/' || evt.Meta.http_path startsWith '/client/' || evt.Meta.http_path startsWith '/custom/' || evt.Meta.http_path startsWith '/swf/' || evt.Meta.http_path startsWith '/nitro-assets/' || evt.Meta.http_path startsWith '/_next/static/' || evt.Meta.http_path startsWith '/assets/'"
+EOF
+
+cat > "$c/compose.yaml" <<'EOF'
+# CrowdSec for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+services:
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    container_name: crowdsec
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: "crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/whitelist-good-actors"
+      BOUNCER_KEY_traefik: ${BOUNCER_KEY}
+    ports:
+      - "127.0.0.1:${LAPI_PORT}:8080"
+    volumes:
+      - ./acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - ./parsers/hotel-assets.yaml:/etc/crowdsec/parsers/s02-enrich/all-in-1-hotel-assets.yaml:ro
+      - ./config:/etc/crowdsec
+      - ./data:/var/lib/crowdsec/data
+      - /var/log/traefik:/var/log/traefik:ro
+EOF
+echo "> $c/compose.yaml (crowdsecurity/crowdsec:latest): collections crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/whitelist-good-actors"
+
+# Traefik's access log grows with every request: daily, a week kept.
+cat > /etc/logrotate.d/traefik-access <<'EOF'
+/var/log/traefik/access.log {
+  daily
+  rotate 7
+  compress
+  delaycompress
+  missingok
+  notifempty
+  copytruncate
+}
+EOF
+
+echo "> docker compose pull"
+pulled=
+for i in 1 2 3; do
+  if compose_in "$c" pull -q 2>"$c/pull.log"; then pulled=yes; break; fi
+  tail -1 "$c/pull.log" | sed 's/^/  /'
+  [ $i -lt 3 ] && { echo "  Trying again in $((i * 20)) seconds ..."; sleep $((i * 20)); }
+done
+rm -f "$c/pull.log"
+if [ -z "$pulled" ]; then
+  docker image inspect crowdsecurity/crowdsec:latest >/dev/null 2>&1 || fail "Could not download the CrowdSec image from Docker Hub (see above). Try again later."
+  echo "  Docker Hub did not answer: using the image that is already on this server"
+fi
+echo "> docker compose up -d"
+compose_in "$c" up -d 2>&1 | grep -v '^ *$'
+# The first start downloads the collections from CrowdSec's hub: up to a few minutes.
+echo "  Waiting for CrowdSec's API ..."
+ok=
+for i in $(seq 1 90); do
+  [ "$(docker inspect -f '{{.State.Running}}' crowdsec 2>/dev/null)" = true ] || { [ $i -gt 10 ] && break; }
+  docker exec crowdsec cscli lapi status >/dev/null 2>&1 && { ok=yes; break; }
+  sleep 2
+done
+[ -n "$ok" ] || { docker logs --tail 25 crowdsec 2>&1 | sed 's/^/  /'; fail "CrowdSec does not start (see its log above)."; }
+echo "  CrowdSec $(docker exec crowdsec cscli version 2>&1 | awk '/^version:/ {print $2}') runs"
+docker exec crowdsec cscli collections list -o raw 2>/dev/null | awk -F, 'NR > 1 {print "  collection " $1 " (" $2 ")"}'
+docker exec crowdsec cscli bouncers list -o raw 2>/dev/null | grep -q '^traefik,' || fail "CrowdSec did not register the bouncer key (see: docker logs crowdsec)."
+
+cs() { docker exec crowdsec cscli "$@"; }
+cs allowlists delete all-in-1 >/dev/null 2>&1 || true
+cs allowlists create all-in-1 -d "Never banned (All-in-1 Installer)" >/dev/null || fail "Could not make CrowdSec's allowlist."
+for e in ; do
+  cs allowlists add all-in-1 "$e" >/dev/null || fail "CrowdSec does not take $e for the allowlist."
+  case "$e" in */*) cs decisions delete -r "$e" >/dev/null 2>&1 ;; *) cs decisions delete -i "$e" >/dev/null 2>&1 ;; esac
+done
+echo "  whitelist: (empty)"

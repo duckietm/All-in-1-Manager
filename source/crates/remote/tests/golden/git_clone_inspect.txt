@@ -1,0 +1,14 @@
+=== root
+d='/var/www/it'\''s here'
+if [ ! -d "$d" ] || [ -z "$(ls -A "$d" 2>/dev/null)" ]; then echo "kind=missing"; exit 0; fi
+# safe.directory because the folder may belong to another account. The emulator step gives it to "emulator".
+origin=$(git -c safe.directory="$d" -C "$d" remote get-url origin 2>/dev/null)
+echo "origin=$origin"
+if [ -z "$origin" ] || ! git -c safe.directory="$d" -C "$d" rev-parse --show-toplevel 2>/dev/null | grep -qx "$(readlink -f "$d")"; then echo "kind=other"; exit 0; fi
+echo "kind=repo"
+echo "branch=$(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)"
+echo "commit=$(git -c safe.directory="$d" -C "$d" log -1 --format='%h %cd %s' --date=short 2>/dev/null)"
+echo "changed=$(git -c safe.directory="$d" -C "$d" status --porcelain --untracked-files=no 2>/dev/null | wc -l)"
+timeout 30 git -c safe.directory="$d" -C "$d" fetch --quiet origin 2>/dev/null
+echo "behind=$(git -c safe.directory="$d" -C "$d" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)"
+result: SameRepository|git@github.com:objectretros/atomcms|main|abc1234 2026-01-01 Fix|3|2

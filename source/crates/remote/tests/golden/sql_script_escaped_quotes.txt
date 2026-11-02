@@ -1,0 +1,8 @@
+=== input
+SELECT 'it\'s; ok', 'double '' quote;', "say \"hi;\"";
+SELECT 2
+=== statements
+--- line 1
+SELECT 'it\'s; ok', 'double '' quote;', "say \"hi;\""
+--- line 2
+SELECT 2

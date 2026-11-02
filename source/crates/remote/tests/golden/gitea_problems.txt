@@ -1,0 +1,20 @@
+[domain git.example.com] -> <ok>
+[domain example] -> Enter a domain name such as git.example.com (letters, digits, '-' and dots).
+[domain -a.example.com] -> Enter a domain name such as git.example.com (letters, digits, '-' and dots).
+[domain a.b] -> Enter a domain name such as git.example.com (letters, digits, '-' and dots).
+[domain example.com] -> example.com is the hotel's address: Gitea needs a name of its own, such as git.Example.com.
+[domain x.y.example.co.uk] -> <ok>
+[domain aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com] -> Enter a domain name such as git.example.com (letters, digits, '-' and dots).
+[user gitadmin] -> <ok>
+[user Admin] -> Gitea keeps the name "Admin" for itself: choose another, such as gitadmin.
+[user .x] -> The admin name: letters, digits, '-', '_' and '.', starting with a letter or digit, at most 40.
+[user a] -> <ok>
+[user uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu] -> The admin name: letters, digits, '-', '_' and '.', starting with a letter or digit, at most 40.
+[user user.name] -> <ok>
+[email a@b.cd] -> <ok>
+[email a@b] -> Enter the admin's e-mail address.
+[email a b@c.de] -> Enter the admin's e-mail address.
+[suggest ] -> 
+[suggest www.example.com] -> git.example.com
+[suggest example.com] -> git.example.com
+[suggest 192.0.2.10] -> 

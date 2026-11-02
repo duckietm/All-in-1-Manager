@@ -1,0 +1,288 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+[ -d /etc/nginx/sites-available ] || fail "NGINX is not installed with sites-available. Run the NGINX step first."
+if [ -f /etc/nginx/sites-available/hotel ] && ! grep -q 'All-in-1 Installer' /etc/nginx/sites-available/hotel; then
+  cp /etc/nginx/sites-available/hotel "/etc/nginx/sites-available/hotel.bak-$(date +%Y%m%d-%H%M%S)"
+  echo "  The old /etc/nginx/sites-available/hotel is saved as /etc/nginx/sites-available/hotel.bak-<time>"
+fi
+root='/var/www/Octane/dist'
+[ -n "$root" ] || { [ -f /etc/nginx/sites-available/hotel ] && root=$(awk '$1=="root" {gsub(/;/, "", $2); print $2; exit}' /etc/nginx/sites-available/hotel); }
+[ -n "$root" ] && [ "$root" != "@ROOT@" ] || root=/usr/share/nginx/html
+
+install -d -m 755 /var/log/nginx/hotel
+install -d -m 2775 -o www-data -g www-data /var/www/gamedata /var/www/gamedata/custom \
+  /var/www/gamedata/camera /var/www/gamedata/camera/thumb
+# The nginx user must read what the emulator writes there with group www-data and mode 640.
+if id nginx >/dev/null 2>&1 && ! id -nG nginx | grep -qw www-data; then
+  usermod -aG www-data nginx
+  echo "  nginx is now in the www-data group (to read the emulator's camera photos)"
+fi
+
+realip=/etc/nginx/hotel-real-ip.conf
+if [ yes = yes ]; then
+  # A server clock that runs behind makes Cloudflare's certificate "not yet valid": correct it first.
+  type fix_clock >/dev/null 2>&1 && fix_clock
+  cf=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  if [ "$(echo "$cf" | grep -c .)" -ge 10 ]; then
+    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+      echo "set_real_ip_from 127.0.0.1;"
+      echo "$cf" | sed 's/.*/set_real_ip_from &;/'; } > "$realip"
+    echo "> $realip: 127.0.0.1 and $(echo "$cf" | grep -c .) Cloudflare ranges (the visitor's address, not Cloudflare's)"
+  elif [ -f "$realip" ]; then
+    echo "  Could not download Cloudflare's ranges: $realip stays as it was"
+  else
+    printf 'set_real_ip_from 127.0.0.1;\n' > "$realip"
+    echo "  Could not download Cloudflare's ranges: NGINX sees Cloudflare's address until this runs again"
+  fi
+else
+  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Installer): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
+  echo "> $realip: 127.0.0.1 (Traefik)"
+fi
+if [ -f /etc/nginx/sites-available/hotel ] && ! grep -q 'include /etc/nginx/hotel-real-ip.conf' /etc/nginx/sites-available/hotel; then
+  sed -i -E 's#^([[:space:]]*)set_real_ip_from[[:space:]]+127\.0\.0\.1;#\1include /etc/nginx/hotel-real-ip.conf;#' /etc/nginx/sites-available/hotel
+  echo "  /etc/nginx/sites-available/hotel now takes its proxies from $realip"
+fi
+echo "> /etc/nginx/sites-available/hotel: listen 127.0.0.1:85, root $root"
+cat > /etc/nginx/sites-available/hotel <<'SITE'
+# The hotel website (written by All-in-1 Installer; the web access and Octane steps rewrite it).
+# Traefik (/opt/traefik) answers on ports 80/443 for https://hotel.example.com (and does the TLS) and passes the
+# site to this server on 127.0.0.1:85; /ws and Polaris' /api go straight to Polaris on 127.0.0.1:2096.
+# AtomCMS is the site (its own NGINX site on 127.0.0.1:86); this one serves Octane on /client/ and the assets.
+
+map $http_origin $hotel_cors_origin {
+    default "";
+    "~^https?://(www\.)?hotel\.example\.com$" $http_origin;
+}
+
+server {
+    listen 127.0.0.1:85;
+    server_name hotel.example.com www.hotel.example.com;
+
+    root @ROOT@;
+    index index.html index.php index.htm;
+
+    autoindex     off;
+    server_tokens off;
+
+    # The visitor's address from X-Forwarded-For, read from the right past the trusted proxies: Traefik on
+    # 127.0.0.1 and, behind Cloudflare, Cloudflare's ranges (in the real-IP file).
+    include /etc/nginx/hotel-real-ip.conf;
+    real_ip_header    X-Forwarded-For;
+    real_ip_recursive on;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=2592000" always;
+    add_header Referrer-Policy        "strict-origin";
+    add_header X-XSS-Protection       "1; mode=block";
+    add_header Permissions-Policy     "accelerometer=(), autoplay=(self), camera=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), sync-xhr=(), usb=()";
+
+    client_header_buffer_size   1k;
+    large_client_header_buffers 4 8k;
+
+    # Text compressed (gamedata JSON such as FurnitureData.json is several MB); .nitro/.hab bundles
+    # and images are compressed already and go as they are.
+    gzip            on;
+    gzip_vary       on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types      application/json application/javascript text/css text/plain text/xml application/xml image/svg+xml font/ttf font/otf application/wasm;
+
+    # The client opens hundreds of gamedata files: keep their file handles and metadata at hand.
+    open_file_cache          max=10000 inactive=60s;
+    open_file_cache_valid    30s;
+    open_file_cache_errors   on;
+
+    access_log /var/log/nginx/hotel/access.log;
+    error_log  /var/log/nginx/hotel/error.log;
+
+    location / {
+        return 404;
+    }
+    location = /client {
+        return 301 /client/;
+    }
+
+    location /client/ {
+        alias /var/www/Octane/dist/;
+        index index.html;
+    }
+
+    location = /client/index.html {
+        alias /var/www/Octane/dist/index.html;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    location = /client/.vite/manifest.json {
+        alias /var/www/Octane/dist/.vite/manifest.json;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+    }
+
+    # Vite only puts files with a hash in their name in assets/: they never change.
+    location ^~ /client/assets/ {
+        alias /var/www/Octane/dist/assets/;
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+    }
+
+    # Octane's runtime configuration: always the current version.
+    location ^~ /client/configuration/ {
+        alias /var/www/Octane/dist/configuration/;
+        add_header Cache-Control "no-store" always;
+    }
+    # The hotel's assets (copied in with the All-in-1 download tool) and the camera photos.
+    location /gamedata/ {
+        alias /var/www/gamedata/;
+
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+            add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+            add_header Access-Control-Max-Age        1728000 always;
+            add_header Vary                          Origin always;
+            add_header Content-Length                0;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+        add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+        add_header Vary                          Origin always;
+
+        try_files $uri $uri/ =404;
+
+        # A nested location does not inherit the preflight above: repeat it.
+        location ~* \.(jpg|jpeg|png|gif|ico|nitro|hab)$ {
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+                add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+                add_header Access-Control-Max-Age        1728000 always;
+                add_header Vary                          Origin always;
+                add_header Content-Length                0;
+                return 204;
+            }
+            expires 30d;
+            add_header Cache-Control               "public, no-transform";
+            add_header Access-Control-Allow-Origin $hotel_cors_origin always;
+            add_header Vary                        Origin            always;
+        }
+    }
+
+    location /custom/ {
+        alias /var/www/gamedata/custom/;
+    }
+}
+SITE
+sed -i "s#@ROOT@#$root#" /etc/nginx/sites-available/hotel
+ln -sfn /etc/nginx/sites-available/hotel /etc/nginx/sites-enabled/hotel
+
+# Ports 80 and 443 belong to Traefik, so the default site and any other site must not listen there.
+if [ -L /etc/nginx/sites-enabled/default ] || [ -f /etc/nginx/sites-enabled/default ]; then
+  rm -f /etc/nginx/sites-enabled/default
+  echo "  The default site is disabled (still in sites-available/default)"
+fi
+for f in /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/*; do
+  [ -f "$f" ] || continue
+  if grep -Eq '^[[:space:]]*listen[[:space:]]+(\[::\]:|0\.0\.0\.0:)?(80|443)([[:space:]]|;)' "$f"; then
+    fail "$f listens on port 80 or 443, which Traefik needs. Move that site to 127.0.0.1:85 (or disable it) and try again."
+  fi
+done
+
+nginx -t 2>&1 | sed 's/^/  /'
+nginx -t >/dev/null 2>&1 || fail "nginx -t refuses the configuration (see above)."
+if [ -d /run/systemd/system ]; then systemctl reload nginx || systemctl restart nginx; else nginx -s reload 2>/dev/null || service nginx restart; fi
+sleep 1
+# With the CMS on its own site this one only has /client (and the assets).
+code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' http://127.0.0.1:85/client/ || true)
+echo "  http://127.0.0.1:85/client/ answers $code"
+case "$code" in 200|302|403|404) ;; *) fail "NGINX does not answer on 127.0.0.1:85 (HTTP '$code')." ;; esac
+
+url="https://hotel.example.com"
+c() { curl -s --noproxy '*' -k --max-time 10 --resolve "hotel.example.com:443:127.0.0.1" "$@"; }
+client="$url/client/"
+echo "> $client (Octane)"
+# The NGINX reload above finishes in the background, so give the new workers a moment.
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  page=$(c "$client" || true)
+  echo "$page" | grep -q 'configuration/bootstrap.js' && break
+  sleep 1
+done
+echo "$page" | grep -q 'configuration/bootstrap.js' || fail "$client does not serve Octane's dist/index.html."
+echo "  index.html OK"
+echo "> ${client}configuration/renderer-config.json"
+socket=$(c "${client}configuration/renderer-config.json" | grep -oE '"socket.url": *"[^"]*"' || true)
+[ -n "$socket" ] || fail "${client}configuration/renderer-config.json is not served."
+echo "  $socket"
+echo "> $url/gamedata/"
+echo "  HTTP $(c -o /dev/null -w '%{http_code}' "$url/gamedata/config/" || true) (403/404 until the assets are copied in)"

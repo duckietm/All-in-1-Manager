@@ -1,0 +1,122 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root CI=1 NO_COLOR=1 COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 COMPOSER_PROCESS_TIMEOUT=1800
+set -o pipefail
+cd /var/www/atomcms
+db=$(grep -E '^DB_DATABASE=' .env | cut -d= -f2)
+[ -n "$db" ] || fail "DB_DATABASE is not set in /var/www/atomcms/.env."
+mariadb -N "$db" -e 'SELECT 1' >/dev/null 2>&1 || fail "Database $db does not exist (run the MariaDB step first)."
+
+if ! grep -qE '^APP_KEY=.+' .env; then
+  echo "> php artisan key:generate"
+  runuser -u www-data -- php artisan key:generate --force --no-interaction 2>&1 | sed 's/^ */  /'
+fi
+echo "> php artisan storage:link"
+runuser -u www-data -- php artisan storage:link --force --no-interaction 2>&1 | sed 's/^ */  /' || true
+
+first=yes
+mariadb -N "$db" -e "SELECT 1 FROM website_installation LIMIT 1" >/dev/null 2>&1 && first=
+if [ -n "$first" ]; then
+  echo "> php artisan migrate --seed   (first install: AtomCMS' website_* tables next to the emulator's)"
+  seed=--seed
+else
+  echo "> php artisan migrate   (AtomCMS is already installed: only new migrations)"
+  seed=
+fi
+rc=$(mktemp)
+(runuser -u www-data -- php artisan migrate --force --no-interaction $seed 2>&1; echo $? > "$rc") | grep -vE '^\s*$| RUNNING\s*$' | sed 's/^ */  /' || true
+code=$(cat "$rc"); rm -f "$rc"
+[ "$code" = 0 ] || fail "php artisan migrate stopped with exit code $code (see above)."
+
+if [ -n "$first" ]; then
+  rcon=$(grep -sE '^rcon.port=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+  echo "> website_settings: hotel name, theme atom, nitro_path /client and the gamedata paths"
+  mariadb "$db" <<'SQL'
+UPDATE website_settings SET `value` = 'Hotel' WHERE `key` = 'hotel_name';
+UPDATE website_settings SET `value` = 'atom' WHERE `key` = 'theme';
+UPDATE website_settings SET `value` = '/client' WHERE `key` = 'nitro_path';
+UPDATE website_settings SET `value` = '/var/www/gamedata/config/ExternalTexts.json' WHERE `key` = 'nitro_external_texts_file';
+UPDATE website_settings SET `value` = '/gamedata/c_images/album1584' WHERE `key` = 'badges_path';
+UPDATE website_settings SET `value` = '/var/www/gamedata/c_images/album1584' WHERE `key` = 'badge_path_filesystem';
+UPDATE website_settings SET `value` = '/gamedata/c_images/groupbadge/badge' WHERE `key` = 'group_badge_path';
+UPDATE website_settings SET `value` = '/gamedata/icons' WHERE `key` = 'furniture_icons_path';
+UPDATE website_settings SET `value` = '/gamedata/custom' WHERE `key` = 'ads_picture_path';
+UPDATE website_settings SET `value` = '/var/www/gamedata/custom' WHERE `key` = 'ads_path_filesystem';
+UPDATE website_settings SET `value` = '127.0.0.1' WHERE `key` = 'rcon_ip';
+SQL
+  mariadb "$db" -e "UPDATE website_settings SET \`value\` = '${rcon:-3001}' WHERE \`key\` = 'rcon_port'"
+  mariadb -N "$db" -e "SELECT CONCAT('  ', \`key\`, ' = ', \`value\`) FROM website_settings WHERE \`key\` IN ('hotel_name', 'theme', 'nitro_path', 'badges_path', 'group_badge_path', 'furniture_icons_path', 'rcon_port')"
+fi
+runuser -u www-data -- php artisan optimize:clear --no-interaction >/dev/null 2>&1 || true
+echo "FIRST=$first"
+!!! Setting up AtomCMS' database failed: boom

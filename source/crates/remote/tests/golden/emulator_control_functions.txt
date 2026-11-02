@@ -1,0 +1,29 @@
+emulator_running() { if [ -d /run/systemd/system ]; then systemctl is-active --quiet emulator; else pgrep -u emulator -f 'jar-with-dependencies' >/dev/null; fi; }
+stop_emulator() {
+  # pkill fails when nothing runs, which would end the script under set -e.
+  if [ -d /run/systemd/system ]; then systemctl stop emulator; else pkill -u emulator -f 'jar-with-dependencies' || true; fi
+  for i in $(seq 1 30); do emulator_running || return 0; sleep 1; done
+  fail "The emulator did not stop within 30 seconds."
+}
+start_emulator() {
+  # Start with an empty log so only this start counts.
+  [ -f "$log" ] && mv "$log" "$log.$(date +%H%M%S_%d-%m-%Y)"
+  if [ -d /run/systemd/system ]; then
+    systemctl restart emulator
+  else
+    stop_emulator
+    setsid runuser -u emulator -- "$d/emulator" </dev/null >/dev/null 2>&1 &
+  fi
+}
+wait_loaded() {
+  for i in $(seq 1 300); do
+    sleep 2
+    if grep -q 'successfully loaded' "$log" 2>/dev/null; then echo "  loaded after $((i * 2)) seconds"; return 0; fi
+    if grep -q 'startup was aborted' "$log" 2>/dev/null || ! emulator_running; then
+      [ $i -gt 3 ] || continue
+      echo "  --- last lines of $log ---"; tail -25 "$log" 2>/dev/null | sed 's/^/  /'
+      fail "The emulator stopped during startup. See $log."
+    fi
+  done
+  fail "The emulator did not finish loading within 10 minutes. See $log."
+}

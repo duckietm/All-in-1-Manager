@@ -1,0 +1,15 @@
+# dump 1
+size 12x4
+cursor 10,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |┌──┐ ────X  |
+01 - |│  │        |
+02 - |└──┘ ok▒bc`~|
+03 - |            |
+scrollback-lines
+text ┌──┐ ────X\u{A}│  │\u{A}└──┘ ok▒bc`~\u{A}

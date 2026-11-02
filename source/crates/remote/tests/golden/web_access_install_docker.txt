@@ -1,0 +1,122 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+case "$ID" in
+  ubuntu|debian) distro=$ID ;;
+  *) fail "Docker's repository is for Ubuntu and Debian; this server runs $ID." ;;
+esac
+conflicts=$(dpkg-query -W -f='${db:Status-Abbrev}${Package}\n' docker.io docker-compose docker-compose-v2 docker-doc podman-docker containerd runc 2>/dev/null | awk '/^ii/{printf "%s ", substr($0,4)}')
+if [ -n "$conflicts" ]; then
+  echo "> Removing packages that conflict with Docker Engine: $conflicts"
+  apt-get remove -y $conflicts
+fi
+
+echo "> Adding the Docker repository (download.docker.com/linux/$distro)"
+apt_update >/dev/null
+apt-get install -y ca-certificates curl gnupg
+install -m 0755 -d /etc/apt/keyrings
+tmp=$(mktemp)
+curl -fsSL "https://download.docker.com/linux/$distro/gpg" -o "$tmp" || fail "Could not download Docker's signing key."
+fingerprints=$(gpg --show-keys --with-colons "$tmp" 2>/dev/null | awk -F: '$1=="fpr" {print $10}')
+echo "$fingerprints" | grep -qx '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' || { rm -f "$tmp"; fail "Docker's signing key does not have the published fingerprint 9DC858229FC7DD38854AE2D88D81803C0EBFCD88."; }
+for fpr in $fingerprints; do
+  echo "$fpr" | grep -Eqx '9DC858229FC7DD38854AE2D88D81803C0EBFCD88|D3306A018370199E527AE7997EA0A9C3F273FCD8' || { rm -f "$tmp"; fail "Docker's key file contains an unknown key $fpr."; }
+done
+echo "  key 9DC858229FC7DD38854AE2D88D81803C0EBFCD88 checked"
+install -m 0644 "$tmp" /etc/apt/keyrings/docker.asc
+rm -f "$tmp"
+# The format docs.docker.com uses now. An older docker.list would add the same repository twice.
+rm -f /etc/apt/sources.list.d/docker.list
+cat > /etc/apt/sources.list.d/docker.sources <<EOF
+Types: deb
+URIs: https://download.docker.com/linux/$distro
+Suites: $codename
+Components: stable
+Architectures: $(dpkg --print-architecture)
+Signed-By: /etc/apt/keyrings/docker.asc
+EOF
+apt_update 2>&1 | grep -E 'docker|^(E|W):' || true
+apt-cache policy docker-ce | grep -q download.docker.com || fail "Docker has no packages for $PRETTY_NAME ($codename) yet."
+
+echo "> apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin"
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+echo "> Starting Docker"
+if [ -d /run/systemd/system ]; then
+  systemctl enable --now docker
+elif ! docker info >/dev/null 2>&1; then
+  service docker start || (setsid dockerd </dev/null >/var/log/dockerd.log 2>&1 &)
+fi
+for i in $(seq 1 30); do docker info >/dev/null 2>&1 && break; sleep 1; done
+docker info >/dev/null 2>&1 || fail "Docker is installed, but the Docker daemon does not run (see journalctl -u docker)."
+docker --version
+docker compose version

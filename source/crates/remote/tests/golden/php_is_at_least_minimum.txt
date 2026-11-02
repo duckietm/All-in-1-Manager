@@ -1,0 +1,11 @@
+8.5.12=True
+8.5.13-1+ubuntu24.04.1+deb.sury.org+1=True
+8.6.0=True
+8.5.12.1=True
+8.5.11=False
+8.5=False
+8=False
+=False
+8.5.=False
+8.5.1.2.3=False
+9.0=True

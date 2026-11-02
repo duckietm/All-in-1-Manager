@@ -1,0 +1,23 @@
+=== root
+echo '== 0'; find '/var/www/gamedata/furniture' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 1'; find '/var/www/gamedata/icons' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 2'; find '/var/www/gamedata/clothes' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 3'; find '/var/www/gamedata/effect' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 4'; find '/var/www/gamedata/pets' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 5'; find '/var/www/gamedata/c_images/album1584' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 6'; find '/var/www/gamedata/c_images/catalogue' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 7'; find '/var/www/gamedata/c_images/fx_icons' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 8'; find '/var/www/gamedata/c_images/Quests' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 9'; find '/var/www/gamedata/c_images/reception' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 10'; find '/var/www/gamedata/c_images/web_promo_small' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 11'; find '/var/www/gamedata/sounds' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+echo '== 12'; find '/var/www/gamedata/config' -maxdepth 1 -type f -printf '%f\t%s\t%T@\n' 2>/dev/null
+true
+=== input
+set -e
+install -d -m 2775 -o www-data -g www-data '/var/www/gamedata/furniture'
+# Keep file dates for the next sync to compare. Owner and mode come from the server.
+tar -x -f - -C '/var/www/gamedata/furniture' --no-same-owner --no-same-permissions
+echo "OK $(find '/var/www/gamedata/furniture' -maxdepth 1 -type f | wc -l)"
+--- stdin
+<3584 bytes>

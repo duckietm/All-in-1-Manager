@@ -1,0 +1,20 @@
+# dump 1
+size 16x6
+cursor 4,5 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 1 dropped 0
+replies 
+bells 0
+screen
+00 - |€£ 😀  中 文  한    |
+     3-3:-1/-1/256 4-4:-1/-1/128 6-6:-1/-1/256 7-7:-1/-1/128 8-8:-1/-1/256 9-9:-1/-1/128 11-11:-1/-1/256 12-12:-1/-1/128
+01 - |e ab cd         |
+02 - |split:中 €       |
+     6-6:-1/-1/256 7-7:-1/-1/128
+03 w |bad:���x���y����|
+04 - |z               |
+05 - |\u{85}\u{9B} k            |
+scrollback-lines
+0 - |àèìòù é ß Ωλ    |
+text àèìòù é ß Ωλ\u{A}€£ 😀 中文 한\u{A}e ab cd\u{A}split:中€\u{A}bad:���x���y����z\u{A}\u{85}\u{9B} k

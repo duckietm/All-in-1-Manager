@@ -1,0 +1,22 @@
+=== root
+login_path="$PATH"
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+shadowing() {
+  for t in node npm yarn composer; do
+    p=$(PATH="$login_path" command -v "$t" 2>/dev/null) || continue
+    [ "$p" != "/usr/bin/$t" ] && printf '%s ' "$p"
+  done
+  return 0
+}
+# Composer refuses to run as root without this, and the installer runs as root on purpose.
+export COMPOSER_ALLOW_SUPERUSER=1
+# Keep npm's update notices out of the log.
+export npm_config_update_notifier=false
+# Corepack would otherwise ask before downloading Yarn.
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+echo "node=$(node --version 2>/dev/null)"
+echo "nodesource=$(dpkg-query -W -f='${Version}' nodejs 2>/dev/null | grep -q nodesource && echo yes)"
+echo "yarn=$(cd /tmp && yarn --version 2>/dev/null)"
+echo "composer=$(composer --version --no-ansi 2>/dev/null | awk '{print $3}')"
+echo "php=$(command -v php >/dev/null 2>&1 && echo yes)"
+echo "shadowing=$(shadowing)"

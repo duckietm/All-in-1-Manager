@@ -1,0 +1,14 @@
+=== root
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1 NO_COLOR=1 FORCE_COLOR=0 HOME=/root
+[ -f /opt/traefik/hotel.env ] && sed 's/^/conf_/' /opt/traefik/hotel.env
+echo "octane=$([ -f /var/www/Octane/package.json ] && echo yes)"
+echo "renderer=$([ -f /var/www/Octane-Renderer/package.json ] && echo yes)"
+echo "node=$(node -v 2>/dev/null)"
+echo "socket=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))["socket.url"] || "") } catch { }' /var/www/Octane/public/configuration/renderer-config.json 2>/dev/null)"
+echo "built=$([ -f /var/www/Octane/dist/index.html ] && echo yes)"
+echo "site=$(grep -Eqs '(root|alias) /var/www/Octane/dist/?;' /etc/nginx/sites-available/hotel && echo yes)"
+echo "configbase=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))["plainConfigBaseUrl"] || "") } catch { }' /var/www/Octane/public/configuration/client-mode.json 2>/dev/null)"
+echo "gamedata=$([ -d /var/www/gamedata/config ] && echo yes)"
+echo "uicamera=$(node -e 'try { console.log(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))["camera.url"] || "") } catch { }' /var/www/Octane/public/configuration/ui-config.json 2>/dev/null)"
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2)
+[ -n "$db" ] && echo "emuimager=$(mariadb -N "$db" -e "SELECT GROUP_CONCAT(\`key\`, '=', \`value\` ORDER BY \`key\` SEPARATOR ',') FROM emulator_settings WHERE \`key\` IN ('camera.url', 'imager.location.output.camera', 'imager.location.output.thumbnail', 'camera.render.mode', 'imager.location.output.badges', 'imager.location.badgeparts')" 2>/dev/null)"

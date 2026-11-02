@@ -1,0 +1,33 @@
+# dump 1
+size 10x3
+cursor 1,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 5 dropped 0
+replies 
+bells 0
+screen
+00 - |f         |
+01 - |          |
+02 - |          |
+scrollback-lines
+0 - |a         |
+1 - |b         |
+2 - |c         |
+3 - |d         |
+4 - |e         |
+text a\u{A}b\u{A}c\u{A}d\u{A}e\u{A}f\u{A}\u{A}
+# dump 2
+size 10x3
+cursor 1,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 5
+replies 
+bells 0
+screen
+00 - |f         |
+01 - |          |
+02 - |          |
+scrollback-lines
+text f\u{A}\u{A}

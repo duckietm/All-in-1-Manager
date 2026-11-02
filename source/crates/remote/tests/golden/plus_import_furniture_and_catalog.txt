@@ -1,0 +1,637 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+set -o pipefail
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+db=${db:-habbo}
+staging=plus_import
+f='/var/backups/all-in-1/plus-import-1.sql'
+sql=$(mktemp)
+out=$(mktemp)
+# The conversion comes over stdin.
+cat > "$sql"
+cleanup() { rm -f "$sql" "$out" "$f"; mariadb -e "DROP DATABASE IF EXISTS \`$staging\`" 2>/dev/null || true; }
+trap cleanup EXIT
+[ -s "$f" ] || fail "The uploaded file $f is missing or empty."
+chmod 600 "$f"
+if gzip -t "$f" 2>/dev/null; then read_dump() { gunzip -c "$f"; }; else read_dump() { cat "$f"; }; fi
+(set +o pipefail; read_dump | grep -qE 'CREATE TABLE `furniture`') ||
+  fail "$(basename "$f") is not a PlusEMU dump: it has no furniture table (Polaris and Arcturus call it items_base)."
+
+mariadb -N "$db" -e 'SELECT 1' >/dev/null 2>&1 || fail "The hotel database $db does not exist or MariaDB does not run."
+for table in items_base catalog_pages catalog_items catalog_clothing items_crackable permission_ranks; do
+  [ "$(mariadb -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$db' AND table_name = '$table'")" = 1 ] ||
+    fail "$db has no $table table: it is not a Polaris database (or the emulator never started on it)."
+done
+
+echo "> Safety backup of $db first"
+install -d -m 700 /var/backups/all-in-1
+safety=/var/backups/all-in-1/$db-before-plus-import-$(date +%Y%m%d-%H%M%S).sql.gz
+(umask 077; mariadb-dump --single-transaction --quick --routines --triggers --events --hex-blob --databases "$db" | gzip -6 > "$safety")
+echo "  $safety ($(du -h "$safety" | cut -f1))"
+echo "SAFETY=$safety"
+
+d=/var/www/emulator/Emulator
+log=/var/log/emu/emulator.log
+emulator_running() { if [ -d /run/systemd/system ]; then systemctl is-active --quiet emulator; else pgrep -u emulator -f 'jar-with-dependencies' >/dev/null; fi; }
+stop_emulator() {
+  # pkill fails when nothing runs, which would end the script under set -e.
+  if [ -d /run/systemd/system ]; then systemctl stop emulator; else pkill -u emulator -f 'jar-with-dependencies' || true; fi
+  for i in $(seq 1 30); do emulator_running || return 0; sleep 1; done
+  fail "The emulator did not stop within 30 seconds."
+}
+start_emulator() {
+  # Start with an empty log so only this start counts.
+  [ -f "$log" ] && mv "$log" "$log.$(date +%H%M%S_%d-%m-%Y)"
+  if [ -d /run/systemd/system ]; then
+    systemctl restart emulator
+  else
+    stop_emulator
+    setsid runuser -u emulator -- "$d/emulator" </dev/null >/dev/null 2>&1 &
+  fi
+}
+wait_loaded() {
+  for i in $(seq 1 300); do
+    sleep 2
+    if grep -q 'successfully loaded' "$log" 2>/dev/null; then echo "  loaded after $((i * 2)) seconds"; return 0; fi
+    if grep -q 'startup was aborted' "$log" 2>/dev/null || ! emulator_running; then
+      [ $i -gt 3 ] || continue
+      echo "  --- last lines of $log ---"; tail -25 "$log" 2>/dev/null | sed 's/^/  /'
+      fail "The emulator stopped during startup. See $log."
+    fi
+  done
+  fail "The emulator did not finish loading within 10 minutes. See $log."
+}
+emulator=
+if [ -x "$d/emulator" ]; then
+  emulator=yes
+  echo "> Stopping the emulator"
+  stop_emulator
+fi
+# Whatever happens from here, the emulator runs again at the end.
+restart() { [ -n "$emulator" ] && { echo "> Starting the emulator"; start_emulator; wait_loaded; } || true; }
+
+echo "> Loading $(basename "$f") ($(du -h "$f" | cut -f1)) into the staging database $staging"
+mariadb -e "DROP DATABASE IF EXISTS \`$staging\`; CREATE DATABASE \`$staging\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+start=$(date +%s)
+if ! read_dump | sed -E "/^(CREATE DATABASE|USE) /s/\`[^\`]+\`/\`$staging\`/" | mariadb "$staging"; then
+  restart
+  fail "Loading the Plus dump failed (see above). The hotel database was not changed."
+fi
+echo "  $(mariadb -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$staging'") tables in $(( $(date +%s) - start )) seconds"
+for table in furniture catalog_pages catalog_offers catalog_offer_products catalog_page_offers catalog_page_texts catalog_page_images catalog_bot_presets; do
+  [ "$(mariadb -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$staging' AND table_name = '$table'")" = 1 ] ||
+    { restart; fail "The Plus dump has no $table table; this Plus version is not supported. The hotel database was not changed."; }
+done
+# Tables of newer Polaris versions: without them, the lines that use them are left out.
+for table in catalog_id_sequences catalog_manager_state; do
+  [ "$(mariadb -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$db' AND table_name = '$table'")" = 1 ] ||
+    sed -i "/$table/d" "$sql"
+done
+
+echo "> Converting to Polaris (furniture and catalog)"
+sed -i "s/@S@/$staging/g; s/@T@/$db/g" "$sql"
+start=$(date +%s)
+if ! mariadb -N "$staging" < "$sql" > "$out" 2>&1; then
+  sed 's/^/  /' "$out" | tail -n 20
+  echo "> The conversion stopped: putting $db back as it was"
+  gunzip -c "$safety" | mariadb || echo "  Restoring failed: import $safety with Import full database."
+  restart
+  fail "Converting the Plus data failed (see above). The hotel database is as it was before."
+fi
+echo "  done in $(( $(date +%s) - start )) seconds"
+# The report: the counts the tool reads stay KEY=value, the rest is written out.
+awk -F'=' '
+  /^(FURNI_EXISTING|FURNI_NEW|CRACKABLE_WITHOUT_PRIZES|PAGES|CATALOG_ITEMS)=/ { print; next }
+  $1 == "FURNI_HOW" { split($2, a, ":"); print "  New furniture, interaction " a[1] ": " a[2]; next }
+  $1 == "FALLBACK" { split($2, a, ":"); print "  No Polaris interaction for the Plus type " a[1] " (" a[2] "x, e.g. " a[3] "): plain furniture"; next }
+  $1 == "BC_PAGES_KEPT" { print "  Builders Club: " $2 " Plus pages left out, Polaris keeps its own"; next }
+  $1 == "PRODUCTS_SKIPPED" { split($2, a, ":"); print "  Left out: " a[2] " " a[1] " products (Polaris has no such product)"; next }
+  $1 == "OFFERS_WITHOUT_ITEMS" { if ($2 > 0) print "  Offers with nothing Polaris can sell: " $2 " (left out)"; next }
+  $1 == "POLARIS_PAGES_KEPT" { split($2, a, ":"); if (a[1] > 0) print "  Kept from the Polaris catalog: " a[2]; next }
+  { print "  " $0 }' "$out"
+# When the emulator does not load the converted database, the hotel does not stay down: the database goes
+# back and the emulator starts on it. wait_loaded ends with fail, so it runs in a subshell here.
+if [ -n "$emulator" ]; then
+  echo "> Starting the emulator"
+  start_emulator
+  if ! (wait_loaded); then
+    echo "> The emulator does not start with the converted database: putting $db back as it was"
+    gunzip -c "$safety" | mariadb || fail "Restoring failed: import $safety with Import full database."
+    start_emulator
+    (wait_loaded) || true
+    fail "The emulator does not start with the converted database (its log is above). $db is as it was before the import."
+  fi
+fi
+--- stdin
+-- Part of the All-in-1 Installer's "Import Plus database" tool (Remote/PlusImport.cs).
+-- @S@ is the staging database with the PlusEMU dump, @T@ the hotel's Polaris database; the tool fills them in.
+-- Lines starting with a KEY= value in the output are the tool's report.
+SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';
+SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;
+SET SESSION group_concat_max_len = 65535;
+USE `@S@`;
+
+-- ---------------------------------------------------------------- interactions
+-- What Polaris knows: its registered interactions, plus every type its furniture already uses.
+DROP TABLE IF EXISTS _pi_known;
+CREATE TABLE _pi_known (name VARCHAR(100) COLLATE utf8mb4_general_ci PRIMARY KEY) ENGINE=InnoDB;
+INSERT IGNORE INTO _pi_known VALUES 
+  ('ads_bg'), ('antenna'), ('background_toner'), ('badge_display'), ('battlebanzai_counter_blue'), ('battlebanzai_counter_green'),
+  ('battlebanzai_counter_red'), ('battlebanzai_counter_yellow'), ('battlebanzai_gate_blue'), ('battlebanzai_gate_green'), ('battlebanzai_gate_red'), ('battlebanzai_gate_yellow'),
+  ('battlebanzai_puck'), ('battlebanzai_random_teleport'), ('battlebanzai_sphere'), ('battlebanzai_tile'), ('blackhole'), ('breeding_nest'),
+  ('buildarea'), ('bunnyrun_field'), ('bunnyrun_pole'), ('cannon'), ('clothing'), ('club_gate'),
+  ('club_hopper'), ('club_teleporttile'), ('colorplate'), ('colorwheel'), ('conf_area_hide'), ('conf_chooser_disable'),
+  ('conf_dice_disable'), ('conf_doorkick_disable'), ('conf_handitem_block'), ('conf_hidewired'), ('conf_invis_control'), ('conf_queue_speed'),
+  ('conf_wired_disable'), ('costume_hopper'), ('crackable'), ('crackable_master'), ('crackable_monster'), ('crackable_subscription_box'),
+  ('default'), ('dice'), ('dimmer'), ('effect_gate'), ('effect_giver'), ('effect_tile'),
+  ('effect_tile_group'), ('effect_toggle'), ('effect_vendingmachine'), ('effect_vendingmachine_no_sides'), ('external_image'), ('fireworks'),
+  ('football'), ('football_counter_blue'), ('football_counter_green'), ('football_counter_red'), ('football_counter_yellow'), ('football_gate'),
+  ('football_goal_blue'), ('football_goal_green'), ('football_goal_red'), ('football_goal_yellow'), ('freeze_block'), ('freeze_counter_blue'),
+  ('freeze_counter_green'), ('freeze_counter_red'), ('freeze_counter_yellow'), ('freeze_exit'), ('freeze_gate_blue'), ('freeze_gate_green'),
+  ('freeze_gate_red'), ('freeze_gate_yellow'), ('freeze_tile'), ('fx_box'), ('game_timer'), ('game_upcounter'),
+  ('gate'), ('gift'), ('guild_furni'), ('guild_gate'), ('gym_equipment'), ('handitem'),
+  ('handitem_tile'), ('hopper'), ('icetag_field'), ('icetag_pole'), ('information_terminal'), ('jukebox'),
+  ('love_lock'), ('mannequin'), ('monsterplant_seed'), ('multiheight'), ('musicdisc'), ('mutearea'),
+  ('mystery_box'), ('mystery_key'), ('nest'), ('obstacle'), ('onewaygate'), ('pet_drink'),
+  ('pet_food'), ('pet_toy'), ('pet_trampoline'), ('pet_tree'), ('plants'), ('postit'),
+  ('pressureplate'), ('pressureplate_group'), ('puzzle_box'), ('pyramid'), ('random_state'), ('rebug_football'),
+  ('recolorable'), ('rentable_space'), ('roller'), ('rollerskate_field'), ('room_invisible_click_tile'), ('room_o_matic'),
+  ('snowboard_slope'), ('snowstorm_machine'), ('snowstorm_pile'), ('snowstorm_tree'), ('stack_helper'), ('stack_walk_helper'),
+  ('sticky_pole'), ('switch'), ('switch_remote_control'), ('talking_furni'), ('teleport'), ('teleporttile'),
+  ('tent'), ('tile_fxprovider_nfs'), ('tile_walkmagic'), ('totem_head'), ('totem_leg'), ('totem_planet'),
+  ('trap'), ('trophy'), ('vendingmachine'), ('vendingmachine_no_sides'), ('viking_cotie'), ('vimeo'),
+  ('vote_counter'), ('water'), ('water_can'), ('water_item'), ('wf_act_add_tag'), ('wf_act_add_tag_perm'),
+  ('wf_act_adjust_clock'), ('wf_act_alert'), ('wf_act_alert_habbo'), ('wf_act_all_users_leave_team'), ('wf_act_allign_furni_stack'), ('wf_act_bot_clothes'),
+  ('wf_act_bot_follow_avatar'), ('wf_act_bot_give_handitem'), ('wf_act_bot_give_handitem_or_effect'), ('wf_act_bot_move'), ('wf_act_bot_start_dance'), ('wf_act_bot_stop_dance'),
+  ('wf_act_bot_talk'), ('wf_act_bot_talk_custom'), ('wf_act_bot_talk_to_avatar'), ('wf_act_bot_talk_to_avatar_custom'), ('wf_act_bot_teleport'), ('wf_act_call_stacks'),
+  ('wf_act_call_stacks_custom'), ('wf_act_cancel_transaction'), ('wf_act_change_opacity'), ('wf_act_change_var_val'), ('wf_act_chase'), ('wf_act_click_conf'),
+  ('wf_act_close_dice'), ('wf_act_close_gates'), ('wf_act_cnd_move_furni'), ('wf_act_cnd_move_rotate'), ('wf_act_cnd_toggle_state'), ('wf_act_color_furni'),
+  ('wf_act_control_clock'), ('wf_act_dont_chase'), ('wf_act_dont_chase_top'), ('wf_act_double_click'), ('wf_act_execute_for_users'), ('wf_act_execute_stack_custom'),
+  ('wf_act_flee'), ('wf_act_forward_user_to_room'), ('wf_act_freeze'), ('wf_act_freeze_habbo'), ('wf_act_furni_to_furni'), ('wf_act_furni_to_user'),
+  ('wf_act_give_achievement'), ('wf_act_give_badge'), ('wf_act_give_credits'), ('wf_act_give_currency'), ('wf_act_give_diamonds'), ('wf_act_give_duckets'),
+  ('wf_act_give_effect'), ('wf_act_give_enable'), ('wf_act_give_experience'), ('wf_act_give_furni'), ('wf_act_give_handitem'), ('wf_act_give_hotelview_hof_points'),
+  ('wf_act_give_look'), ('wf_act_give_or_take_furni'), ('wf_act_give_points_highscore'), ('wf_act_give_points_type'), ('wf_act_give_respect'), ('wf_act_give_reward'),
+  ('wf_act_give_score'), ('wf_act_give_score_custom'), ('wf_act_give_score_pp'), ('wf_act_give_score_room'), ('wf_act_give_score_tm'), ('wf_act_give_userbadge'),
+  ('wf_act_give_var'), ('wf_act_init_transaction'), ('wf_act_join_team'), ('wf_act_kick_user'), ('wf_act_lay'), ('wf_act_leave_team'),
+  ('wf_act_log'), ('wf_act_lower_furni'), ('wf_act_make_fast_walk'), ('wf_act_make_user_say'), ('wf_act_match_to_sshot'), ('wf_act_match_to_sshot_height'),
+  ('wf_act_match_to_sshot_height_instant'), ('wf_act_match_to_sshot_new'), ('wf_act_modify_array'), ('wf_act_move_furni_as_group'), ('wf_act_move_furni_from_stack'), ('wf_act_move_furni_to'),
+  ('wf_act_move_furni_to_furni'), ('wf_act_move_group_step'), ('wf_act_move_rotate'), ('wf_act_move_rotate_collide'), ('wf_act_move_rotate_diagonal'), ('wf_act_move_rotate_no_under'),
+  ('wf_act_move_rotate_user'), ('wf_act_move_to_dir'), ('wf_act_move_user_tiles'), ('wf_act_mute_triggerer'), ('wf_act_neg_call_stack'), ('wf_act_neg_call_stacks'),
+  ('wf_act_neg_log'), ('wf_act_neg_send_signal'), ('wf_act_neg_show_message'), ('wf_act_open_gates'), ('wf_act_open_habbo_pages'), ('wf_act_override_height'),
+  ('wf_act_pickup_furni'), ('wf_act_place_furni'), ('wf_act_play_youtube_sound'), ('wf_act_plus_match_furni_state'), ('wf_act_progress_achievement'), ('wf_act_progress_reward_track'),
+  ('wf_act_quick_bopper'), ('wf_act_raise_furni'), ('wf_act_rel_mov'), ('wf_act_remove_badge'), ('wf_act_remove_furni'), ('wf_act_remove_tag'),
+  ('wf_act_remove_var'), ('wf_act_reset_highscores'), ('wf_act_reset_reward_track'), ('wf_act_reset_timers'), ('wf_act_roll_dice'), ('wf_act_roller_speed'),
+  ('wf_act_rotate_habbo'), ('wf_act_say_command'), ('wf_act_send_bubble'), ('wf_act_send_dataframe'), ('wf_act_send_message'), ('wf_act_send_signal'),
+  ('wf_act_set_altitude'), ('wf_act_set_highlight'), ('wf_act_set_room_ad'), ('wf_act_set_state'), ('wf_act_set_trg_state'), ('wf_act_show_message'),
+  ('wf_act_show_message_room'), ('wf_act_sit'), ('wf_act_spawn_furni'), ('wf_act_tele_room'), ('wf_act_teleport_all'), ('wf_act_teleport_blue'),
+  ('wf_act_teleport_bots_to_furni'), ('wf_act_teleport_green'), ('wf_act_teleport_red'), ('wf_act_teleport_to'), ('wf_act_teleport_to_room'), ('wf_act_teleport_yellow'),
+  ('wf_act_toggle_moodlight'), ('wf_act_toggle_state'), ('wf_act_toggle_state_down'), ('wf_act_toggle_state_trg'), ('wf_act_toggle_to_rnd'), ('wf_act_tp_furni_to_habbo'),
+  ('wf_act_unfreeze'), ('wf_act_unfreeze_habbo'), ('wf_act_user_to_furni'), ('wf_act_walk_to_furni'), ('wf_blob'), ('wf_cnd_actor_dir'),
+  ('wf_cnd_actor_in_group'), ('wf_cnd_actor_in_team'), ('wf_cnd_atleast_one_user_in_team'), ('wf_cnd_battlebanzai'), ('wf_cnd_bot_is_dancing'), ('wf_cnd_check_array'),
+  ('wf_cnd_chest_has_item_type'), ('wf_cnd_chest_has_items'), ('wf_cnd_counter_time_matches'), ('wf_cnd_daily_trg'), ('wf_cnd_date_rng_active'), ('wf_cnd_first_trg'),
+  ('wf_cnd_freeze'), ('wf_cnd_furni_in_range'), ('wf_cnd_furni_not_in_range'), ('wf_cnd_furni_opacity_is'), ('wf_cnd_furni_state_pattern'), ('wf_cnd_furnis_hv_avtrs'),
+  ('wf_cnd_furnis_hv_avtrs_custom'), ('wf_cnd_habbo_has_at_least_x_items'), ('wf_cnd_habbo_has_credits'), ('wf_cnd_habbo_has_duckets'), ('wf_cnd_habbo_has_rank'), ('wf_cnd_habbo_has_rights'),
+  ('wf_cnd_habbo_in_group'), ('wf_cnd_habbo_is_dancing'), ('wf_cnd_habbo_is_female'), ('wf_cnd_habbo_is_male'), ('wf_cnd_habbo_not_owns_furni'), ('wf_cnd_habbo_owns_badge'),
+  ('wf_cnd_habbo_owns_furni'), ('wf_cnd_has_altitude'), ('wf_cnd_has_furni_on'), ('wf_cnd_has_handitem'), ('wf_cnd_has_same_height'), ('wf_cnd_has_tag'),
+  ('wf_cnd_has_var'), ('wf_cnd_is_state'), ('wf_cnd_match_date'), ('wf_cnd_match_snapshot'), ('wf_cnd_match_snapshot_new'), ('wf_cnd_match_time'),
+  ('wf_cnd_motto_contains'), ('wf_cnd_neg_has_var'), ('wf_cnd_not_battlebanzai'), ('wf_cnd_not_battlebz'), ('wf_cnd_not_bot_is_dancing'), ('wf_cnd_not_freeze'),
+  ('wf_cnd_not_furni_on'), ('wf_cnd_not_furni_opacity_is'), ('wf_cnd_not_habbo_has_credits'), ('wf_cnd_not_habbo_has_diamonds'), ('wf_cnd_not_habbo_has_duckets'), ('wf_cnd_not_habbo_has_rank'),
+  ('wf_cnd_not_habbo_has_rights'), ('wf_cnd_not_habbo_in_group'), ('wf_cnd_not_habbo_is_dancing'), ('wf_cnd_not_habbo_owns_badge'), ('wf_cnd_not_has_handitem'), ('wf_cnd_not_has_same_height'),
+  ('wf_cnd_not_has_tag'), ('wf_cnd_not_hv_avtrs'), ('wf_cnd_not_in_group'), ('wf_cnd_not_in_team'), ('wf_cnd_not_match_snap'), ('wf_cnd_not_match_snap_new'),
+  ('wf_cnd_not_stuff_is'), ('wf_cnd_not_tgr_furni_hv_avtrs'), ('wf_cnd_not_trg_by_user'), ('wf_cnd_not_trggrer_on'), ('wf_cnd_not_triggerer_match'), ('wf_cnd_not_user_count'),
+  ('wf_cnd_not_user_performs_action'), ('wf_cnd_not_wearing_b'), ('wf_cnd_not_wearing_fx'), ('wf_cnd_not_wears_effect'), ('wf_cnd_not_wears_handitem'), ('wf_cnd_not_x_points_leaderboard'),
+  ('wf_cnd_slc_quantity'), ('wf_cnd_stuff_is'), ('wf_cnd_team_has_rank'), ('wf_cnd_team_has_score'), ('wf_cnd_tgr_furni_hv_avtrs'), ('wf_cnd_time_less_than'),
+  ('wf_cnd_time_more_than'), ('wf_cnd_trg_by_user'), ('wf_cnd_trg_frn_adjacent_state'), ('wf_cnd_trg_state_is'), ('wf_cnd_trggrer_on_frn'), ('wf_cnd_trgr_stuff_matches'),
+  ('wf_cnd_triggerer_match'), ('wf_cnd_user_cooldown'), ('wf_cnd_user_count_in'), ('wf_cnd_user_in_range'), ('wf_cnd_user_level'), ('wf_cnd_user_not_in_range'),
+  ('wf_cnd_user_on_furni_with_state'), ('wf_cnd_user_performs_action'), ('wf_cnd_valid_moves'), ('wf_cnd_var_age_match'), ('wf_cnd_var_val_match'), ('wf_cnd_wearing_badge'),
+  ('wf_cnd_wearing_effect'), ('wf_cnd_wears_effect'), ('wf_cnd_wears_handitem'), ('wf_cnd_x_habbos_on_furni'), ('wf_cnd_x_points_leaderboard'), ('wf_conf_area_hide'),
+  ('wf_conf_dice_disable'), ('wf_conf_doorkick_disable'), ('wf_conf_handitem_block'), ('wf_conf_hidewired'), ('wf_conf_invis_control'), ('wf_conf_queue_speed'),
+  ('wf_conf_wired_disable'), ('wf_contract_payment'), ('wf_contract_reward'), ('wf_contract_trade'), ('wf_highscore'), ('wf_label'),
+  ('wf_link'), ('wf_room_linker'), ('wf_slc_furni_altitude'), ('wf_slc_furni_area'), ('wf_slc_furni_bytype'), ('wf_slc_furni_neighborhood'),
+  ('wf_slc_furni_onfurni'), ('wf_slc_furni_picks'), ('wf_slc_furni_signal'), ('wf_slc_furni_with_var'), ('wf_slc_remote'), ('wf_slc_users_area'),
+  ('wf_slc_users_byaction'), ('wf_slc_users_byname'), ('wf_slc_users_bytype'), ('wf_slc_users_group'), ('wf_slc_users_handitem'), ('wf_slc_users_neighborhood'),
+  ('wf_slc_users_onfurni'), ('wf_slc_users_signal'), ('wf_slc_users_team'), ('wf_slc_users_with_var'), ('wf_storage_coins1'), ('wf_storage_coins2'),
+  ('wf_storage_furni1'), ('wf_storage_furni2'), ('wf_storage_furni_starter'), ('wf_trg_anti_afk'), ('wf_trg_at_given_time'), ('wf_trg_at_time_long'),
+  ('wf_trg_bot_reached_avtr'), ('wf_trg_bot_reached_stf'), ('wf_trg_click_bot'), ('wf_trg_click_furni'), ('wf_trg_click_tile'), ('wf_trg_click_user'),
+  ('wf_trg_clock_counter'), ('wf_trg_cnd_collision'), ('wf_trg_collision'), ('wf_trg_dice_rolled'), ('wf_trg_double_click_furni'), ('wf_trg_enter_room'),
+  ('wf_trg_exact_keyword'), ('wf_trg_game_ends'), ('wf_trg_game_starts'), ('wf_trg_game_team_lose'), ('wf_trg_game_team_win'), ('wf_trg_habbo_says_command'),
+  ('wf_trg_idles'), ('wf_trg_leave_room'), ('wf_trg_other_collides_user'), ('wf_trg_period_long'), ('wf_trg_period_short'), ('wf_trg_periodically'),
+  ('wf_trg_press_keybind'), ('wf_trg_receive_dataframe'), ('wf_trg_receive_message'), ('wf_trg_recv_signal'), ('wf_trg_room_initialized'), ('wf_trg_says_command'),
+  ('wf_trg_says_something'), ('wf_trg_score_achieved'), ('wf_trg_starts_dancing'), ('wf_trg_state_changed'), ('wf_trg_stops_dancing'), ('wf_trg_stuff_state'),
+  ('wf_trg_transaction_complete'), ('wf_trg_transaction_fail'), ('wf_trg_unidles'), ('wf_trg_user_collides_bot'), ('wf_trg_user_collides_other'), ('wf_trg_user_exits_room'),
+  ('wf_trg_user_gets_handitem'), ('wf_trg_user_performs_action'), ('wf_trg_username_as_trigger'), ('wf_trg_var_changed'), ('wf_trg_walks_off_furni'), ('wf_trg_walks_on_furni'),
+  ('wf_var_context'), ('wf_var_daily_task'), ('wf_var_echo'), ('wf_var_furni'), ('wf_var_pointer'), ('wf_var_quest'),
+  ('wf_var_quest_chain'), ('wf_var_reference'), ('wf_var_room'), ('wf_var_user'), ('wf_xtra_achievement_enabler'), ('wf_xtra_anim_time'),
+  ('wf_xtra_array_capture_variable'), ('wf_xtra_condition_change'), ('wf_xtra_custom_contract'), ('wf_xtra_exec_in_order'), ('wf_xtra_execution_limit'), ('wf_xtra_filter_furni'),
+  ('wf_xtra_filter_furni_by_var'), ('wf_xtra_filter_user'), ('wf_xtra_filter_users'), ('wf_xtra_filter_users_by_var'), ('wf_xtra_link_speaker'), ('wf_xtra_mov_carry_users'),
+  ('wf_xtra_mov_curve'), ('wf_xtra_mov_no_animation'), ('wf_xtra_mov_physics'), ('wf_xtra_one_condition'), ('wf_xtra_or_eval'), ('wf_xtra_random'),
+  ('wf_xtra_rotate_to_dir'), ('wf_xtra_scan_chest_furni_by_type'), ('wf_xtra_text_input_variable'), ('wf_xtra_text_output_furni_name'), ('wf_xtra_text_output_global'), ('wf_xtra_text_output_username'),
+  ('wf_xtra_text_output_variable'), ('wf_xtra_unseen'), ('wf_xtra_var_fx_boss'), ('wf_xtra_var_fx_health'), ('wf_xtra_var_fx_level'), ('wf_xtra_var_fx_number'),
+  ('wf_xtra_var_fx_progress'), ('wf_xtra_var_fx_status'), ('wf_xtra_var_import'), ('wf_xtra_var_leaderboard'), ('wf_xtra_var_lvlup_system'), ('wf_xtra_var_share'),
+  ('wf_xtra_var_text_connector'), ('wf_xtra_var_time_util'), ('wf_xtra_var_web_api'), ('wf_xtra_varfx_boss'), ('wf_xtra_varfx_hp'), ('wf_xtra_varfx_levelling'),
+  ('wf_xtra_varfx_number'), ('wf_xtra_varfx_prog'), ('wf_xtra_varfx_status'), ('youtube');
+INSERT IGNORE INTO _pi_known SELECT DISTINCT LOWER(CONVERT(interaction_type USING utf8mb4) COLLATE utf8mb4_general_ci) FROM `@T@`.items_base;
+
+-- Furniture Polaris drives by classname rather than by the Plus type.
+DROP TABLE IF EXISTS _pi_by_name;
+CREATE TABLE _pi_by_name (item_name VARCHAR(100) COLLATE utf8mb4_general_ci PRIMARY KEY, interaction VARCHAR(100) COLLATE utf8mb4_general_ci) ENGINE=InnoDB;
+INSERT INTO _pi_by_name VALUES 
+  ('wf_act_progress_ach', 'wf_act_progress_achievement'), ('wf_act_set_roller_spd', 'wf_act_roller_speed'),
+  ('wf_act_set_visibility', 'wf_act_change_opacity'), ('wf_floor_switch1', 'switch'),
+  ('wf_floor_switch2', 'switch'), ('wf_game_upcounter1', 'game_upcounter'),
+  ('wf_game_upcounter2', 'game_upcounter'), ('wf_ltdproto_act_toggle_state', 'wf_act_toggle_state'),
+  ('wf_proto_cnd_trggrer_on_frn', 'wf_cnd_trggrer_on_frn'), ('wf_proto_trg_at_given_time', 'wf_trg_at_given_time'),
+  ('wf_trg_room_initializes', 'wf_trg_room_initialized'), ('wf_trg_says_sycommand', 'wf_trg_says_command'),
+  ('wf_upcounter1', 'game_upcounter'), ('wf_upcounter2', 'game_upcounter'),
+  ('wf_var_dailytask', 'wf_var_daily_task');
+
+-- Plus types that have another name in Polaris (the reverse of plus-migrator's renames).
+DROP TABLE IF EXISTS _pi_reverse;
+CREATE TABLE _pi_reverse (plus VARCHAR(100) COLLATE utf8mb4_general_ci PRIMARY KEY, polaris VARCHAR(100) COLLATE utf8mb4_general_ci) ENGINE=InnoDB;
+INSERT INTO _pi_reverse VALUES 
+  ('area_hide', 'conf_area_hide'), ('background', 'ads_bg'), ('badge', 'default'),
+  ('ball', 'football'), ('banzaipuck', 'battlebanzai_puck'), ('bb_blue_gate', 'battlebanzai_gate_blue'),
+  ('bb_blue_score', 'battlebanzai_counter_blue'), ('bb_green_gate', 'battlebanzai_gate_green'), ('bb_green_score', 'battlebanzai_counter_green'),
+  ('bb_patch', 'battlebanzai_tile'), ('bb_pyramid', 'pyramid'), ('bb_red_gate', 'battlebanzai_gate_red'),
+  ('bb_red_score', 'battlebanzai_counter_red'), ('bb_teleport', 'battlebanzai_random_teleport'), ('bb_yellow_gate', 'battlebanzai_gate_yellow'),
+  ('bb_yellow_score', 'battlebanzai_counter_yellow'), ('blue_goal', 'football_goal_blue'), ('blue_score', 'football_counter_blue'),
+  ('bottle', 'dice'), ('camera_picture', 'external_image'), ('chooser_disable', 'conf_chooser_disable'),
+  ('crackable_egg', 'crackable'), ('effect_box', 'fx_box'), ('exchange', 'default'),
+  ('fbgate', 'football_gate'), ('floor', 'default'), ('freezebluecounter', 'freeze_counter_blue'),
+  ('freezebluegate', 'freeze_gate_blue'), ('freezeexit', 'freeze_exit'), ('freezegreencounter', 'freeze_counter_green'),
+  ('freezegreengate', 'freeze_gate_green'), ('freezeredcounter', 'freeze_counter_red'), ('freezeredgate', 'freeze_gate_red'),
+  ('freezetile', 'freeze_tile'), ('freezetileblock', 'freeze_block'), ('freezetimer', 'game_timer'),
+  ('freezeyellowcounter', 'freeze_counter_yellow'), ('freezeyellowgate', 'freeze_gate_yellow'), ('fx_provider', 'tile_fxprovider_nfs'),
+  ('gld_gate', 'guild_gate'), ('gld_item', 'guild_furni'), ('green_goal', 'football_goal_green'),
+  ('green_score', 'football_counter_green'), ('habbowheel', 'colorwheel'), ('handitem_block', 'conf_handitem_block'),
+  ('horse_body_dye', 'default'), ('horse_hair_dye', 'default'), ('horse_hairstyle', 'default'),
+  ('horse_saddle_1', 'default'), ('horse_saddle_2', 'default'), ('invis_control', 'conf_invis_control'),
+  ('landscape', 'default'), ('lovelock', 'love_lock'), ('pet', 'default'),
+  ('pet_breeding_box', 'breeding_nest'), ('pressure_pad', 'pressureplate'), ('purchasable_clothing', 'clothing'),
+  ('puzzlebox', 'puzzle_box'), ('queue_speed', 'conf_queue_speed'), ('red_goal', 'football_goal_red'),
+  ('red_score', 'football_counter_red'), ('rollerskate', 'rollerskate_field'), ('roombg', 'background_toner'),
+  ('scoreboard', 'vote_counter'), ('stacktool', 'stack_helper'), ('television', 'youtube'),
+  ('vip_gate', 'club_gate'), ('wallpaper', 'default'), ('wf_floor_switch1', 'switch'),
+  ('wf_floor_switch2', 'switch'), ('wf_game_upcounter1', 'game_upcounter'), ('wf_game_upcounter2', 'game_upcounter'),
+  ('wf_upcounter1', 'game_upcounter'), ('wf_upcounter2', 'game_upcounter'), ('wired_contract_payment', 'wf_contract_payment'),
+  ('wired_contract_reward', 'wf_contract_reward'), ('wired_contract_trade', 'wf_contract_trade'), ('wired_disable', 'conf_wired_disable'),
+  ('wired_label', 'wf_label'), ('wired_link', 'wf_link'), ('wired_room_linker', 'wf_room_linker'),
+  ('yellow_goal', 'football_goal_yellow'), ('yellow_score', 'football_counter_yellow');
+
+-- ---------------------------------------------------------------- furniture
+-- One Plus definition per classname and type (the one with furnidata, else the lowest id).
+DROP TABLE IF EXISTS _pi_furni;
+CREATE TABLE _pi_furni (
+  plus_id INT UNSIGNED PRIMARY KEY,
+  name_key VARCHAR(100) COLLATE utf8mb4_general_ci NOT NULL,
+  type CHAR(1) NOT NULL,
+  canonical INT UNSIGNED NOT NULL,
+  polaris_id INT UNSIGNED NULL,
+  is_new TINYINT NOT NULL DEFAULT 0,
+  interaction VARCHAR(100) COLLATE utf8mb4_general_ci NULL,
+  how VARCHAR(20) NULL,
+  KEY (name_key, type), KEY (canonical)
+) ENGINE=InnoDB;
+INSERT INTO _pi_furni (plus_id, name_key, type, canonical)
+SELECT f.id, LOWER(TRIM(REGEXP_REPLACE(f.item_name, '[[:cntrl:]]', '') COLLATE utf8mb4_general_ci)), f.type,
+       FIRST_VALUE(f.id) OVER (PARTITION BY LOWER(TRIM(REGEXP_REPLACE(f.item_name, '[[:cntrl:]]', '') COLLATE utf8mb4_general_ci)), f.type ORDER BY f.has_furnidata DESC, f.id)
+FROM furniture f;
+
+-- Polaris already has it: keep its id and its definition.
+DROP TABLE IF EXISTS _pi_existing;
+CREATE TABLE _pi_existing (name_key VARCHAR(100) COLLATE utf8mb4_general_ci, type VARCHAR(3), id INT UNSIGNED, PRIMARY KEY (name_key, type)) ENGINE=InnoDB
+SELECT LOWER(TRIM(CONVERT(item_name USING utf8mb4) COLLATE utf8mb4_general_ci)) AS name_key, type, MIN(id) AS id FROM `@T@`.items_base GROUP BY 1, 2;
+UPDATE _pi_furni p JOIN _pi_existing e ON e.name_key = p.name_key AND e.type = p.type SET p.polaris_id = e.id;
+
+-- New: the next ids after the highest one Polaris has.
+SET @base = (SELECT COALESCE(MAX(id), 0) FROM `@T@`.items_base);
+DROP TABLE IF EXISTS _pi_new_ids;
+CREATE TABLE _pi_new_ids (canonical INT UNSIGNED PRIMARY KEY, polaris_id INT UNSIGNED) ENGINE=InnoDB
+SELECT canonical, @base + ROW_NUMBER() OVER (ORDER BY canonical) AS polaris_id
+FROM (SELECT DISTINCT canonical FROM _pi_furni WHERE polaris_id IS NULL) c;
+UPDATE _pi_furni p JOIN _pi_new_ids n ON n.canonical = p.canonical SET p.polaris_id = n.polaris_id, p.is_new = 1;
+
+-- The interaction of a new definition, first rule that gives a type Polaris knows.
+UPDATE _pi_furni p JOIN furniture f ON f.id = p.plus_id
+LEFT JOIN _pi_by_name b ON b.item_name = p.name_key
+LEFT JOIN _pi_known kb ON kb.name = b.interaction
+LEFT JOIN _pi_known kn ON kn.name = p.name_key
+  AND (f.interaction_type LIKE 'wired%' OR f.interaction_type LIKE 'wf\_%' OR p.name_key LIKE 'wf\_%' OR p.name_key LIKE 'conf\_%')
+LEFT JOIN _pi_reverse r ON r.plus = LOWER(f.interaction_type COLLATE utf8mb4_general_ci)
+LEFT JOIN _pi_known kr ON kr.name = r.polaris
+LEFT JOIN _pi_known ki ON ki.name = LOWER(f.interaction_type COLLATE utf8mb4_general_ci)
+SET p.interaction = COALESCE(kb.name, kn.name, kr.name, ki.name, 'default'),
+    p.how = CASE WHEN kb.name IS NOT NULL THEN 'classname' WHEN kn.name IS NOT NULL THEN 'wired' WHEN kr.name IS NOT NULL THEN 'renamed'
+                 WHEN ki.name IS NOT NULL THEN 'same' WHEN LOWER(f.interaction_type COLLATE utf8mb4_general_ci) = 'default' THEN 'same' ELSE 'fallback' END
+WHERE p.is_new = 1 AND p.plus_id = p.canonical;
+
+INSERT INTO `@T@`.items_base
+  (id, sprite_id, public_name, item_name, type, width, length, stack_height, allow_stack, allow_sit, allow_lay, allow_walk,
+   allow_gift, allow_trade, allow_recycle, allow_marketplace_sell, allow_inventory_stack, interaction_type, interaction_modes_count,
+   vending_ids, multiheight, customparams, effect_id_male, effect_id_female, clothing_on_walk)
+SELECT p.polaris_id, f.sprite_id,
+       CONVERT(LEFT(IF(f.public_name = '', COALESCE(NULLIF(f.name, ''), f.item_name), f.public_name), 56) USING latin1),
+       CONVERT(TRIM(REGEXP_REPLACE(f.item_name, '[[:cntrl:]]', '')) USING latin1), f.type, GREATEST(f.width, 1), GREATEST(f.length, 1), LEAST(f.stack_height, 99.99),
+       f.can_stack, f.can_sit, IF(p.interaction = 'bed' OR f.can_lay_on, 1, 0), f.is_walkable,
+       f.allow_gift, f.allow_trade, f.allow_recycle, f.allow_marketplace_sell, f.allow_inventory_stack,
+       p.interaction, GREATEST(f.interaction_modes_count, 1),
+       IF(f.vending_ids IN ('', '0'), '0', REPLACE(f.vending_ids, ';', ',')),
+       IF(f.height_adjustable IN ('', '0'), '0', REPLACE(f.height_adjustable, ',', ';')),
+       -- Clothing set ids live in catalog_clothing; other parameters stay with the furniture.
+       CONVERT(LEFT(IF(p.interaction = 'clothing', '', COALESCE(f.custom_params, '')), 256) USING latin1),
+       f.effect_id, f.effect_id, ''
+FROM _pi_furni p JOIN furniture f ON f.id = p.plus_id
+WHERE p.is_new = 1 AND p.plus_id = p.canonical;
+
+-- Clothing: which clothing sets the furni unlocks. Polaris reads setid as numbers between commas and stops at
+-- anything else, so "3373, 3374" becomes "3373,3374".
+DROP TABLE IF EXISTS _pi_clothing_existing;
+CREATE TABLE _pi_clothing_existing (name_key VARCHAR(100) COLLATE utf8mb4_general_ci PRIMARY KEY) ENGINE=InnoDB
+SELECT DISTINCT LOWER(TRIM(CONVERT(name USING utf8mb4) COLLATE utf8mb4_general_ci)) AS name_key FROM `@T@`.catalog_clothing;
+INSERT INTO `@T@`.catalog_clothing (name, setid)
+SELECT name, setid FROM (
+  SELECT CONVERT(TRIM(REGEXP_REPLACE(f.item_name, '[[:cntrl:]]', '')) USING latin1) AS name,
+         TRIM(BOTH ',' FROM REGEXP_REPLACE(REGEXP_REPLACE(f.custom_params, '[^0-9,]', ''), ',+', ',')) AS setid
+  FROM _pi_furni p JOIN furniture f ON f.id = p.plus_id
+  LEFT JOIN _pi_clothing_existing e ON e.name_key = p.name_key
+  WHERE p.plus_id = p.canonical AND f.interaction_type = 'purchasable_clothing' AND e.name_key IS NULL
+) c
+WHERE setid <> '' AND CHAR_LENGTH(setid) <= 75;
+-- And rows written like that before (by an earlier import), which keep the emulator from starting.
+UPDATE `@T@`.catalog_clothing SET setid = TRIM(BOTH ',' FROM REGEXP_REPLACE(REGEXP_REPLACE(setid, '[^0-9,]', ''), ',+', ','))
+WHERE setid REGEXP '[^0-9,]' OR setid LIKE ',%' OR setid LIKE '%,' OR setid LIKE '%,,%';
+
+-- ---------------------------------------------------------------- report
+SELECT CONCAT('FURNI_EXISTING=', COUNT(DISTINCT canonical)) FROM _pi_furni WHERE is_new = 0;
+SELECT CONCAT('FURNI_NEW=', COUNT(*)) FROM _pi_furni WHERE is_new = 1 AND plus_id = canonical;
+SELECT CONCAT('FURNI_HOW=', how, ':', COUNT(*)) FROM _pi_furni WHERE is_new = 1 AND plus_id = canonical GROUP BY how;
+SELECT CONCAT('FALLBACK=', f.interaction_type, ':', COUNT(*), ':', GROUP_CONCAT(f.item_name ORDER BY f.id SEPARATOR ',' LIMIT 4))
+FROM _pi_furni p JOIN furniture f ON f.id = p.plus_id WHERE p.how = 'fallback' GROUP BY f.interaction_type ORDER BY COUNT(*) DESC;
+SELECT CONCAT('CRACKABLE_WITHOUT_PRIZES=', COUNT(*)) FROM _pi_furni p
+  WHERE p.is_new = 1 AND p.plus_id = p.canonical AND p.interaction LIKE 'crackable%'
+  AND NOT EXISTS (SELECT 1 FROM `@T@`.items_crackable c WHERE c.item_id = p.polaris_id);
+
+-- Part of the All-in-1 Installer's "Import Plus database" tool (Remote/PlusImport.cs).
+-- @S@ is the staging database with the PlusEMU dump, @T@ the hotel's Polaris database; the tool fills them in.
+-- Lines starting with a KEY= value in the output are the tool's report.
+-- Run after plus-to-polaris-furniture.sql, in the same staging database: it uses its _pi_furni map.
+SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';
+SET NAMES utf8mb4 COLLATE utf8mb4_general_ci;
+SET SESSION group_concat_max_len = 65535;
+USE `@S@`;
+
+-- ---------------------------------------------------------------- catalog (replaces the normal catalog)
+-- Pages: the normal catalog (Builders Club pages stay as Polaris has them), numbered from 1.
+DROP TABLE IF EXISTS _pi_pages;
+CREATE TABLE _pi_pages (plus_id INT PRIMARY KEY, polaris_id INT NOT NULL, layout VARCHAR(64) COLLATE utf8mb4_general_ci, KEY (polaris_id)) ENGINE=InnoDB
+SELECT id AS plus_id, ROW_NUMBER() OVER (ORDER BY id) AS polaris_id,
+       CASE layout WHEN 'frontpage4' THEN 'frontpage' WHEN 'club_gifts' THEN 'club_gift' WHEN 'guild_frontpage' THEN 'guilds'
+                   WHEN 'guild_custom_furni' THEN 'guild_furni' WHEN 'default_3x3_extrainfo' THEN 'default_3x3' ELSE layout END AS layout
+FROM catalog_pages WHERE catalog_mode = 'NORMAL';
+-- A layout Polaris does not have becomes the plain 3x3 page.
+UPDATE _pi_pages SET layout = 'default_3x3'
+WHERE layout NOT IN (SELECT TRIM(BOTH '''' FROM j.v) FROM (
+  SELECT SUBSTRING_INDEX(SUBSTRING_INDEX(SUBSTRING(column_type, 6, CHAR_LENGTH(column_type) - 6), ',', n.n), ',', -1) AS v
+  FROM information_schema.columns
+  JOIN (SELECT seq AS n FROM seq_1_to_100) n
+  WHERE table_schema = '@T@' AND table_name = 'catalog_pages' AND column_name = 'page_layout'
+    AND n.n <= 1 + CHAR_LENGTH(column_type) - CHAR_LENGTH(REPLACE(column_type, ',', ''))) j);
+
+-- Text and image slots, as Polaris's layouts read them (the reverse of plus-migrator's slots()). Every page's slots
+-- in one row first, so nothing is looked up per page.
+DROP TABLE IF EXISTS _pi_slots;
+CREATE TABLE _pi_slots (plus_id INT PRIMARY KEY, i0 TEXT, i1 TEXT, i2 TEXT, t0 MEDIUMTEXT, t1 MEDIUMTEXT, t2 MEDIUMTEXT, t3 MEDIUMTEXT) ENGINE=InnoDB
+SELECT pp.plus_id, img.i0, img.i1, img.i2, txt.t0, txt.t1, txt.t2, txt.t3
+FROM _pi_pages pp
+LEFT JOIN (SELECT page_id, MAX(IF(slot = 0, image, NULL)) AS i0, MAX(IF(slot = 1, image, NULL)) AS i1, MAX(IF(slot = 2, image, NULL)) AS i2
+           FROM catalog_page_images GROUP BY page_id) img ON img.page_id = pp.plus_id
+LEFT JOIN (SELECT page_id, MAX(IF(slot = 0, text, NULL)) AS t0, MAX(IF(slot = 1, text, NULL)) AS t1, MAX(IF(slot = 2, text, NULL)) AS t2,
+                  MAX(IF(slot = 3, text, NULL)) AS t3
+           FROM catalog_page_texts GROUP BY page_id) txt ON txt.page_id = pp.plus_id;
+
+DROP TABLE IF EXISTS _pi_page_text;
+CREATE TABLE _pi_page_text (polaris_id INT PRIMARY KEY, headline TEXT, teaser TEXT, special TEXT, text1 MEDIUMTEXT, text2 MEDIUMTEXT, details MEDIUMTEXT, text_teaser MEDIUMTEXT) ENGINE=InnoDB
+SELECT pp.polaris_id, s.i0 AS headline, s.i1 AS teaser, s.i2 AS special, s.t0 AS text1,
+  CASE WHEN pp.layout IN ('frontpage', 'pets', 'pets2', 'pets3', 'productpage1', 'roomads', 'mad_money') THEN s.t1
+       WHEN pp.layout = 'bots' THEN s.t2
+       WHEN pp.layout = 'single_bundle' THEN s.t3 END AS text2,
+  CASE WHEN pp.layout IN ('pets', 'pets2', 'pets3', 'productpage1') THEN s.t2
+       WHEN pp.layout IN ('frontpage', 'roomads', 'mad_money', 'club_buy', 'club_gift', 'info_duckets', 'info_loyalty', 'info_pets') THEN NULL
+       ELSE s.t1 END AS details,
+  CASE WHEN pp.layout = 'frontpage' THEN s.t2
+       WHEN pp.layout IN ('pets', 'pets2', 'pets3', 'productpage1') THEN s.t3
+       WHEN pp.layout IN ('bots', 'roomads', 'mad_money', 'soundmachine', 'club_buy', 'club_gift', 'info_duckets', 'info_loyalty') THEN NULL
+       ELSE s.t2 END AS text_teaser
+FROM _pi_pages pp JOIN _pi_slots s ON s.plus_id = pp.plus_id;
+
+-- Polaris-only: pages with Habbicons (and the pages above them) stay, after the Plus pages.
+DROP TABLE IF EXISTS _pi_keep_pages;
+CREATE TABLE _pi_keep_pages LIKE `@T@`.catalog_pages;
+ALTER TABLE _pi_keep_pages ENGINE=InnoDB;
+INSERT INTO _pi_keep_pages SELECT * FROM `@T@`.catalog_pages WHERE id IN (SELECT page_id FROM `@T@`.catalog_items WHERE habbicon_id > 0);
+INSERT IGNORE INTO _pi_keep_pages SELECT p.* FROM `@T@`.catalog_pages p WHERE p.id IN (SELECT parent_id FROM _pi_keep_pages);
+INSERT IGNORE INTO _pi_keep_pages SELECT p.* FROM `@T@`.catalog_pages p WHERE p.id IN (SELECT parent_id FROM _pi_keep_pages);
+INSERT IGNORE INTO _pi_keep_pages SELECT p.* FROM `@T@`.catalog_pages p WHERE p.id IN (SELECT parent_id FROM _pi_keep_pages);
+DROP TABLE IF EXISTS _pi_keep_items;
+CREATE TABLE _pi_keep_items LIKE `@T@`.catalog_items;
+INSERT INTO _pi_keep_items SELECT * FROM `@T@`.catalog_items WHERE page_id IN (SELECT id FROM _pi_keep_pages);
+
+SET @staff_rank = (SELECT COALESCE(MAX(id), 7) FROM `@T@`.permission_ranks);
+DELETE FROM `@T@`.catalog_pages;
+INSERT INTO `@T@`.catalog_pages
+  (id, parent_id, caption_save, caption, page_layout, icon_color, icon_image, min_rank, order_num, visible, enabled, club_only, vip_only,
+   page_headline, page_teaser, page_special, page_text1, page_text2, page_text_details, page_text_teaser, room_id, includes, catalog_mode)
+SELECT pp.polaris_id, COALESCE(parent.polaris_id, -1), LEFT(COALESCE(c.link, ''), 128), LEFT(c.caption, 128), pp.layout, 1, c.icon,
+       IF(c.required_permission IS NULL, 1, @staff_rank), c.position, IF(c.visible, '1', '0'), IF(c.enabled, '1', '0'),
+       IF(c.required_club_level > 0, '1', '0'), IF(c.required_club_level > 1, '1', '0'),
+       LEFT(COALESCE(t.headline, ''), 1024), LEFT(COALESCE(t.teaser, ''), 64), LEFT(COALESCE(t.special, ''), 2048),
+       t.text1, t.text2, t.details, t.text_teaser, 0, '', 'NORMAL'
+FROM _pi_pages pp JOIN catalog_pages c ON c.id = pp.plus_id
+LEFT JOIN _pi_pages parent ON parent.plus_id = c.parent_id
+JOIN _pi_page_text t ON t.polaris_id = pp.polaris_id;
+
+-- Products of an offer as Polaris items: furniture, effects, badges, bots and pets are all items there.
+-- The hotel's item names in an indexed table: looking them up in items_base itself would scan it for every product.
+DROP TABLE IF EXISTS _pi_target;
+CREATE TABLE _pi_target (name_key VARCHAR(100) COLLATE utf8mb4_general_ci, type VARCHAR(3), id INT UNSIGNED, PRIMARY KEY (name_key, type)) ENGINE=InnoDB
+SELECT LOWER(TRIM(CONVERT(item_name USING utf8mb4) COLLATE utf8mb4_general_ci)) AS name_key, type, MIN(id) AS id FROM `@T@`.items_base GROUP BY 1, 2;
+
+-- The Polaris item each non-furniture product needs: (kind, key) -> item name and type.
+DROP TABLE IF EXISTS _pi_special;
+CREATE TABLE _pi_special (kind VARCHAR(10), product_key VARCHAR(100) COLLATE utf8mb4_general_ci, name VARCHAR(100) COLLATE utf8mb4_general_ci,
+  type VARCHAR(3), effect INT, item_id INT UNSIGNED NULL, PRIMARY KEY (kind, product_key)) ENGINE=InnoDB
+SELECT DISTINCT 'effect' AS kind, CAST(effect_id AS CHAR) COLLATE utf8mb4_general_ci AS product_key,
+       CONCAT('avatar_effect', effect_id) COLLATE utf8mb4_general_ci AS name, 'e' AS type, effect_id AS effect
+FROM catalog_offer_products WHERE product_type = 'effect'
+UNION SELECT DISTINCT 'badge', badge_code COLLATE utf8mb4_general_ci, badge_code COLLATE utf8mb4_general_ci, 'b', 0
+FROM catalog_offer_products WHERE product_type = 'badge' AND COALESCE(badge_code, '') <> ''
+UNION SELECT DISTINCT 'pet', CAST(pet_type AS CHAR) COLLATE utf8mb4_general_ci, CONCAT('a0 pet', pet_type) COLLATE utf8mb4_general_ci, 's', 0
+FROM catalog_offer_products WHERE product_type = 'pet'
+UNION SELECT DISTINCT 'bot', CAST(bp.id AS CHAR) COLLATE utf8mb4_general_ci, IF(bp.ai_type = 'bartender', 'bot_bartender', 'bot_generic'), 'r', 0
+FROM catalog_offer_products op JOIN catalog_bot_presets bp ON bp.id = op.bot_preset_id WHERE op.product_type = 'bot';
+UPDATE _pi_special s JOIN _pi_target t ON t.name_key = LOWER(s.name) AND t.type = s.type SET s.item_id = t.id;
+
+-- Effects, badges and pets Polaris does not have yet get an item first (bots need Polaris' own bot items).
+-- Polaris gives the effect of effect_id_male / effect_id_female; pet items carry their own id as sprite, like the ones Polaris ships.
+SET @base = (SELECT COALESCE(MAX(id), 0) FROM `@T@`.items_base);
+DROP TABLE IF EXISTS _pi_special_new;
+CREATE TABLE _pi_special_new (name VARCHAR(100) COLLATE utf8mb4_general_ci, type VARCHAR(3), effect INT, id INT UNSIGNED, PRIMARY KEY (name, type)) ENGINE=InnoDB
+SELECT name, type, MAX(effect) AS effect, @base + ROW_NUMBER() OVER (ORDER BY type, name) AS id
+FROM _pi_special WHERE item_id IS NULL AND kind <> 'bot' GROUP BY name, type;
+INSERT INTO `@T@`.items_base (id, sprite_id, public_name, item_name, type, interaction_type, effect_id_male, effect_id_female)
+SELECT id, IF(name LIKE 'a0 pet%', id, 0), CONVERT(LEFT(name, 56) USING latin1), CONVERT(name USING latin1), type, 'default', effect, effect FROM _pi_special_new;
+UPDATE _pi_special s JOIN _pi_special_new n ON n.name = s.name AND n.type = s.type SET s.item_id = n.id WHERE s.item_id IS NULL;
+-- Pet items that came in as Plus furniture too.
+UPDATE `@T@`.items_base SET sprite_id = id WHERE item_name LIKE 'a0 pet%' AND sprite_id = 0;
+
+DROP TABLE IF EXISTS _pi_products;
+CREATE TABLE _pi_products (offer_id INT, position INT, item_id INT UNSIGNED NULL, amount INT, param VARCHAR(1024), kind VARCHAR(20), PRIMARY KEY (offer_id, position)) ENGINE=InnoDB
+SELECT op.offer_id, op.position, op.amount, op.product_type AS kind,
+  CASE op.product_type WHEN 'furni' THEN fm.polaris_id ELSE sp.item_id END AS item_id,
+  CASE op.product_type
+    -- For an effect Polaris reads extradata as its duration in seconds (empty: one day), as Plus does.
+    WHEN 'bot' THEN CONCAT('name:', bp.name, ';motto:', bp.motto, ';figure:', bp.figure, ';gender:', bp.gender)
+    -- Wallpaper, floor and landscape patterns come from the catalog name in Polaris.
+    WHEN 'furni' THEN IF(f.interaction_type IN ('wallpaper', 'floor', 'landscape'), '', op.extra_param)
+    ELSE op.extra_param
+  END AS param
+FROM catalog_offer_products op
+LEFT JOIN _pi_furni fm ON op.product_type = 'furni' AND fm.plus_id = op.furniture_id
+LEFT JOIN furniture f ON op.product_type = 'furni' AND f.id = op.furniture_id
+LEFT JOIN catalog_bot_presets bp ON op.product_type = 'bot' AND bp.id = op.bot_preset_id
+LEFT JOIN _pi_special sp ON sp.kind = op.product_type COLLATE utf8mb4_general_ci AND sp.product_key = CASE op.product_type
+    WHEN 'effect' THEN CAST(op.effect_id AS CHAR) WHEN 'badge' THEN op.badge_code WHEN 'pet' THEN CAST(op.pet_type AS CHAR)
+    WHEN 'bot' THEN CAST(op.bot_preset_id AS CHAR) END COLLATE utf8mb4_general_ci;
+
+-- Per offer once: its items as Polaris writes them ("id", or "id;id:amount" for a bundle), amount and extradata.
+DROP TABLE IF EXISTS _pi_offer_items;
+CREATE TABLE _pi_offer_items (offer_id INT PRIMARY KEY, item_ids VARCHAR(1000), amount INT, param VARCHAR(1024), products INT) ENGINE=InnoDB
+SELECT x.offer_id,
+  GROUP_CONCAT(IF(x.amount > 1 AND n.products > 1, CONCAT(x.item_id, ':', x.amount), x.item_id) ORDER BY x.position SEPARATOR ';') AS item_ids,
+  IF(n.products = 1, MAX(x.amount), 1) AS amount,
+  SUBSTRING_INDEX(GROUP_CONCAT(NULLIF(x.param, '') ORDER BY x.position SEPARATOR '|~|'), '|~|', 1) AS param,
+  n.products
+FROM _pi_products x
+JOIN (SELECT offer_id, COUNT(*) AS products FROM _pi_products WHERE item_id IS NOT NULL GROUP BY offer_id) n ON n.offer_id = x.offer_id
+WHERE x.item_id IS NOT NULL
+GROUP BY x.offer_id, n.products;
+
+-- One Polaris catalog item per offer and page it is on (an offer on four pages is four items), numbered from 1.
+DROP TABLE IF EXISTS _pi_offers;
+CREATE TABLE _pi_offers (catalog_id INT PRIMARY KEY, offer_id INT, page_id INT, position INT, item_ids VARCHAR(1000), amount INT, param VARCHAR(1024),
+  KEY (offer_id, page_id)) ENGINE=InnoDB
+SELECT ROW_NUMBER() OVER (ORDER BY po.page_id, po.position, po.offer_id) AS catalog_id, po.offer_id, pp.polaris_id AS page_id, po.position,
+       oi.item_ids, oi.amount, oi.param
+FROM catalog_page_offers po
+JOIN _pi_pages pp ON pp.plus_id = po.page_id
+JOIN _pi_offer_items oi ON oi.offer_id = po.offer_id;
+
+DELETE FROM `@T@`.catalog_items;
+INSERT INTO `@T@`.catalog_items
+  (id, item_ids, page_id, catalog_name, cost_credits, cost_points, points_type, amount, limited_stack, limited_sells, order_number,
+   offer_id, song_id, extradata, have_offer, club_only)
+SELECT o.catalog_id, o.item_ids, o.page_id, LEFT(c.localization_key, 100), c.cost_credits, c.cost_points, c.points_type, GREATEST(COALESCE(o.amount, 1), 1),
+       0, 0, o.position, -1, 0, LEFT(COALESCE(o.param, ''), 500), IF(c.bulk_purchase, '1', '0'), IF(c.club_level > 0, '1', '0')
+FROM _pi_offers o JOIN catalog_offers c ON c.id = o.offer_id
+WHERE c.enabled = 1;
+
+-- The kept Polaris pages and their items, numbered after the Plus ones.
+SET @page_base = (SELECT COALESCE(MAX(id), 0) FROM `@T@`.catalog_pages);
+SET @item_base = (SELECT COALESCE(MAX(id), 0) FROM `@T@`.catalog_items);
+DROP TABLE IF EXISTS _pi_keep_map;
+CREATE TABLE _pi_keep_map (old_id INT PRIMARY KEY, new_id INT) ENGINE=InnoDB
+SELECT id AS old_id, @page_base + ROW_NUMBER() OVER (ORDER BY id) AS new_id FROM _pi_keep_pages;
+UPDATE _pi_keep_items i JOIN _pi_keep_map m ON m.old_id = i.page_id SET i.page_id = m.new_id;
+UPDATE _pi_keep_pages p LEFT JOIN _pi_keep_map m ON m.old_id = p.parent_id SET p.parent_id = COALESCE(m.new_id, -1);
+UPDATE _pi_keep_pages p JOIN _pi_keep_map m ON m.old_id = p.id SET p.id = m.new_id;
+INSERT INTO `@T@`.catalog_pages SELECT * FROM _pi_keep_pages;
+DROP TABLE IF EXISTS _pi_keep_item_ids;
+CREATE TABLE _pi_keep_item_ids (old_id INT PRIMARY KEY, new_id INT) ENGINE=InnoDB
+SELECT id AS old_id, @item_base + ROW_NUMBER() OVER (ORDER BY id) AS new_id FROM _pi_keep_items;
+UPDATE _pi_keep_items i JOIN _pi_keep_item_ids m ON m.old_id = i.id SET i.id = m.new_id;
+INSERT INTO `@T@`.catalog_items SELECT * FROM _pi_keep_items;
+
+-- The catalog editor numbers new pages and offers after these, and clients reload the catalog.
+UPDATE `@T@`.catalog_id_sequences SET next_id = (SELECT COALESCE(MAX(id), 0) + 1 FROM `@T@`.catalog_pages) WHERE entity_type = 'PAGE' AND catalog_type = 'NORMAL';
+UPDATE `@T@`.catalog_id_sequences SET next_id = (SELECT COALESCE(MAX(id), 0) + 1 FROM `@T@`.catalog_items) WHERE entity_type = 'OFFER' AND catalog_type = 'NORMAL';
+UPDATE `@T@`.catalog_manager_state SET revision = revision + 1;
+
+-- ---------------------------------------------------------------- report
+SELECT CONCAT('PAGES=', COUNT(*)) FROM `@T@`.catalog_pages;
+SELECT CONCAT('CATALOG_ITEMS=', COUNT(*)) FROM `@T@`.catalog_items;
+SELECT CONCAT('BC_PAGES_KEPT=', (SELECT COUNT(*) FROM catalog_pages WHERE catalog_mode <> 'NORMAL'));
+SELECT CONCAT('PRODUCTS_SKIPPED=', kind, ':', COUNT(*)) FROM _pi_products WHERE item_id IS NULL GROUP BY kind;
+SELECT CONCAT('OFFERS_WITHOUT_ITEMS=', COUNT(*)) FROM catalog_page_offers po JOIN _pi_pages pp ON pp.plus_id = po.page_id
+  WHERE NOT EXISTS (SELECT 1 FROM _pi_offers o WHERE o.offer_id = po.offer_id AND o.page_id = pp.polaris_id);
+SELECT CONCAT('POLARIS_PAGES_KEPT=', COUNT(*), ':', COALESCE(GROUP_CONCAT(caption SEPARATOR ','), '')) FROM _pi_keep_pages;
+result: 0|0|0|0|0|

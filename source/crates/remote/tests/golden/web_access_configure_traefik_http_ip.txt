@@ -1,0 +1,204 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+t=/opt/traefik
+install -d -m 755 "$t" "$t/dynamic"
+install -d -m 700 "$t/letsencrypt"
+
+trusted=
+if [ no = yes ]; then
+  load_cloudflare_ranges
+  trusted=$(echo "$ranges" | sed 's/.*/"&"/' | paste -sd, -)
+fi
+if [ -f /opt/traefik/dynamic/crowdsec.yml ]; then
+  echo "> $t/traefik.yml (with CrowdSec)"
+  cat > "$t/traefik.yml" <<'EOF'
+# Traefik static configuration (written by All-in-1 Installer).
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+    http:
+      middlewares: [crowdsec@file]
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+log:
+  level: INFO
+  noColor: true
+# CrowdSec (Addons → CrowdSec): it reads this log; the plugin blocks the addresses it bans.
+accessLog:
+  filePath: /var/log/traefik/access.log
+experimental:
+  plugins:
+    crowdsec:
+      moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+      version: v1.8.1
+EOF
+else
+  echo "> $t/traefik.yml"
+  cat > "$t/traefik.yml" <<'EOF'
+# Traefik static configuration (written by All-in-1 Installer).
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+log:
+  level: INFO
+  noColor: true
+EOF
+fi
+sed -i "s#\[TRUSTED\]#[$trusted]#" "$t/traefik.yml"
+
+echo "> $t/dynamic/hotel.yml: http://192.0.2.10/ws and /api to Polaris, the rest to NGINX"
+cat > "$t/dynamic/hotel.yml" <<'EOF'
+# The hotel's routes (written by All-in-1 Installer).
+http:
+  routers:
+    polaris:
+      rule: "(PathPrefix(`/ws`) || PathPrefix(`/api`))"
+      entryPoints: [web]
+      service: polaris
+      priority: 100
+    hotel:
+      rule: "PathPrefix(`/`)"
+      entryPoints: [web]
+      service: nginx
+      priority: 1
+  services:
+    polaris:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:2096"
+    nginx:
+      loadBalancer:
+        servers:
+          - url: "http://127.0.0.1:85"
+EOF
+
+cat > "$t/hotel.env" <<'EOF'
+ADDRESS=192.0.2.10
+SCHEME=http
+CLOUDFLARE=no
+CMS=none
+CMS_NAME=
+CMS_PORT=
+EOF
+
+echo "> $t/compose.yaml"
+install -d -m 755 /var/log/traefik "$t/plugins-storage"
+cat > "$t/compose.yaml" <<'EOF'
+# Traefik for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+services:
+  traefik:
+    image: traefik:v3
+    container_name: traefik
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./traefik.yml:/etc/traefik/traefik.yml:ro
+      - ./dynamic:/etc/traefik/dynamic:ro
+      - ./letsencrypt:/letsencrypt
+      - ./plugins-storage:/plugins-storage
+      - /var/log/traefik:/var/log/traefik
+EOF
+
+echo "> docker compose pull (traefik:v3)"
+pulled=
+for i in 1 2 3; do
+  if compose_in "$t" pull -q 2>"$t/pull.log"; then pulled=yes; break; fi
+  tail -1 "$t/pull.log" | sed 's/^/  /'
+  [ $i -lt 3 ] && { echo "  Trying again in $((i * 20)) seconds ..."; sleep $((i * 20)); }
+done
+rm -f "$t/pull.log"
+if [ -z "$pulled" ]; then
+  docker image inspect traefik:v3 >/dev/null 2>&1 || fail "Could not download the Traefik image from Docker Hub (see above). Try again later."
+  echo "  Docker Hub did not answer: using the traefik:v3 image that is already on this server"
+fi
+echo "> docker compose up -d"
+compose_in "$t" up -d --force-recreate 2>&1 | grep -v '^ *$'
+for i in $(seq 1 20); do
+  [ "$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)" = true ] && ss -Hltn 'sport = :80' | grep -q . && break
+  sleep 1
+done
+[ "$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)" = true ] || { docker logs --tail 20 traefik 2>&1 | sed 's/^/  /'; fail "The Traefik container does not run."; }
+ss -Hltn 'sport = :80' | grep -q . || { docker logs --tail 20 traefik 2>&1 | sed 's/^/  /'; fail "Traefik runs, but does not listen on port 80."; }
+echo "  $(docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print "Traefik " $2}') is running"
+
+ufw_allow 80/tcp 443/tcp

@@ -1,0 +1,27 @@
+=== root
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root CI=1 NO_COLOR=1 COMPOSER_ALLOW_SUPERUSER=1 COMPOSER_NO_INTERACTION=1 COMPOSER_PROCESS_TIMEOUT=1800
+[ -f /opt/traefik/hotel.env ] && sed 's/^/conf_/' /opt/traefik/hotel.env
+echo "php=$(php8.5 -r 'echo PHP_VERSION;' 2>/dev/null)"
+echo "composer=$(command -v composer >/dev/null && echo yes)"
+echo "node=$(node -v 2>/dev/null)"
+echo "octane=$([ -f /var/www/Octane/dist/index.html ] && echo yes)"
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2)
+echo "emulator=$([ -n "$db" ] && echo yes)"
+d=/var/www/atomcms
+echo "name=$(grep -sE '^APP_NAME=' "$d/.env" | head -1 | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/')"
+echo "vendor=$([ -f "$d/vendor/autoload.php" ] && echo yes)"
+echo "theme=$([ -f "$d/public/build/manifest.json" ] && echo yes)"
+dbname=$(grep -sE '^DB_DATABASE=' "$d/.env" | cut -d= -f2)
+if [ -n "$dbname" ]; then
+  echo "migrated=$(mariadb -N "$dbname" -e "SELECT 1 FROM website_installation LIMIT 1" >/dev/null 2>&1 && echo yes)"
+  echo "key=$(mariadb -N "$dbname" -e "SELECT installation_key FROM website_installation ORDER BY id LIMIT 1" 2>/dev/null)"
+  echo "completed=$(mariadb -N "$dbname" -e "SELECT 1 FROM website_installation WHERE completed = 1 LIMIT 1" 2>/dev/null)"
+fi
+# Its own NGINX site (enabled), or the hotel site from before AtomCMS had one.
+echo "site=$( { [ -L /etc/nginx/sites-enabled/cms-atomcms ] && grep -qs 'root /var/www/atomcms/public;' /etc/nginx/sites-available/cms-atomcms; } || grep -qs 'root /var/www/atomcms/public;' /etc/nginx/sites-available/hotel && echo yes)"
+=== root
+f=/etc/nginx/sites-available/cms-mycms
+echo "root=$(awk '$1=="root" {gsub(/;/, "", $2); print $2; exit}' "$f" 2>/dev/null)"
+echo "php=$([ -f "$f" ] && { grep -q fastcgi_pass "$f" && echo yes || echo no; })"
+echo "content=$([ -n "$(ls -A /var/www/mycms 2>/dev/null)" ] && echo yes)"
+site=<none> name=<none> root=<none> php=<none> content=no

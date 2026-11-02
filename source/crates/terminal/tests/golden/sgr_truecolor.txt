@@ -1,0 +1,15 @@
+# dump 1
+size 20x3
+cursor 7,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |obc.tuz             |
+     0-0:33521664/-1/0 1-1:33521664/16843267/0 2-2:33489151/16843267/0 5-5:17437726/-1/9 6-6:-1/17369095/0
+01 - |                    |
+02 - |                    |
+scrollback-lines
+text obc.tuz\u{A}\u{A}

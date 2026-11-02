@@ -1,0 +1,18 @@
+=== root
+echo "cpu $(head -1 /proc/stat)"
+echo "cores $(nproc)"
+awk '/^(MemTotal|MemAvailable|SwapTotal|SwapFree):/ {print "mem", $1, $2}' /proc/meminfo
+awk 'NR > 2 { sub(/^ */, ""); split($0, a, /[: ]+/); if (a[1] != "lo" && a[1] !~ /^(docker|veth|br-)/) { rx += a[2]; tx += a[10] } } END { printf "net %.0f %.0f\n", rx, tx }' /proc/net/dev
+echo "load $(cut -d' ' -f1-3 /proc/loadavg)"
+echo "uptime $(cut -d' ' -f1 /proc/uptime)"
+df -P -B1 -x tmpfs -x devtmpfs -x overlay -x squashfs -x efivarfs 2>/dev/null | awk 'NR > 1 { print "disk", $6, $1, $2, $3, $4 }'
+who 2>/dev/null | awk '{ from = ""; if (match($0, /\(.*\)/)) from = substr($0, RSTART + 1, RLENGTH - 2); print "user", $1, $2, $3 "_" $4, from }'
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+[ -n "$db" ] && echo "players $(mariadb -N "$db" -e "SELECT COUNT(*) FROM users WHERE online = '1'" 2>/dev/null)"
+if [ -d /run/systemd/system ]; then systemctl is-active --quiet emulator && echo "emulator yes"; else pgrep -f jar-with-dependencies >/dev/null && echo "emulator yes"; fi
+true
+result: 22770|16770|4|8343662592|5143973888|2147479552|1073741824|123456789|98765432|0.42 0.31 0.25|864123|12|yes
+result: disk /|/dev/sda1|81032015872|21474836480|55985274880
+result: disk /boot/efi|/dev/sda15|109422592|6291456|103131136
+result: user root|pts/0|2026-10-31 09:12|203.0.113.7
+result: user simone|tty1|2026-10-30 18:00|

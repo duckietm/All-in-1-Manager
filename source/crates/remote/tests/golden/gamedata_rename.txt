@@ -1,0 +1,21 @@
+=== root
+set -e
+# Called in $(...), so the message goes to stderr and set -e stops the script on failure.
+inside() {
+  r=$(realpath -m -- "$1") || { echo "ERROR: invalid path" >&2; exit 3; }
+  case "$r" in
+    /var/www/gamedata|/var/www/gamedata/*) printf '%s' "$r" ;;
+    *) echo "ERROR: that path is outside /var/www/gamedata" >&2; exit 3 ;;
+  esac
+}
+# The web server and the emulator, both in group www-data, may read and change uploaded files.
+fix_rights() {
+  chown -R www-data:www-data -- "$1"
+  find "$1" -type d -exec chmod 2775 {} +
+  find "$1" -type f -exec chmod 664 {} +
+}
+a=$(inside '/var/www/gamedata/old'\''s')
+b=$(inside '/var/www/gamedata/new')
+[ "$a" != "/var/www/gamedata" ] || { echo "ERROR: gamedata itself cannot be renamed"; exit 3; }
+[ ! -e "$b" ] || { echo "ERROR: "'new'" already exists"; exit 3; }
+mv -- "$a" "$b"

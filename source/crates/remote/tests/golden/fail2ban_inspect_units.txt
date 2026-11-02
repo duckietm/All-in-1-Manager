@@ -1,0 +1,24 @@
+=== root
+echo "version=$(fail2ban-client --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1)"
+echo "installed=$(command -v fail2ban-client >/dev/null 2>&1 && echo yes)"
+echo "running=$(fail2ban-client ping 2>/dev/null | grep -q pong && echo yes)"
+f=/etc/fail2ban/jail.d/all-in-1.local
+if [ -f "$f" ]; then
+  echo "configured=yes"
+  # [DEFAULT] holds the installer's values.
+  get() { awk -F'=' -v k="$1" '$1 ~ "^[[:space:]]*"k"[[:space:]]*$" {sub(/^[[:space:]]+/, "", $2); sub(/[[:space:]]+$/, "", $2); print $2; exit}' "$f"; }
+  echo "ignoreip=$(get ignoreip)"
+  echo "maxretry=$(get maxretry)"
+  echo "findtime=$(get findtime)"
+  echo "bantime=$(get bantime)"
+  echo "increment=$(get bantime.increment)"
+fi
+echo "ssh=$( (ss -Hltnp 2>/dev/null | grep -E '"sshd"|ssh.socket' | awk '{print $4}' | sed 's/.*://'; sshd -T 2>/dev/null | awk '$1=="port" {print $2}') | sort -un | tr '\n' ' ')"
+if fail2ban-client status sshd >/tmp/.f2b.$$ 2>/dev/null; then
+  echo "banned=$(sed -n 's/.*Banned IP list:[[:space:]]*//p' /tmp/.f2b.$$)"
+  echo "total=$(sed -n 's/.*Total banned:[[:space:]]*//p' /tmp/.f2b.$$)"
+fi
+rm -f /tmp/.f2b.$$
+=== run
+echo "client=${SSH_CLIENT%% *}"
+result: installed=yes version=null running=no configured=yes settings=5/10080/1/yes/[] ssh=[] banned=[] total=0 client=null complete=no

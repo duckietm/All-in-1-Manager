@@ -1,0 +1,138 @@
+[ -d /etc/nginx/sites-available ] || fail "NGINX is not installed with sites-available. Run the NGINX step first."
+f=/etc/nginx/sites-available/cms-atomcms
+port_container() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker ps -aq 2>/dev/null | xargs -r docker inspect -f '{{.Name}} {{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostPort}} {{end}}{{end}}' 2>/dev/null | grep -E " $1( |$)" | head -1 | awk '{print $1}' | tr -d /
+}
+port_taken() {
+  container=$(port_container "$1")
+  # This app's own port (a run again) is not taken.
+  [ -n "${self_container:-}" ] && [ "$container" = "$self_container" ] && return 1
+  who=$(ss -Hltnp "sport = :$1" 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2)
+  if ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; then
+    [ -n "${self_file:-}" ] && [ "$who" = nginx ] && grep -qsE "listen[[:space:]]+([^;[:space:]]*:)?$1([[:space:]]|;)" "$self_file" && return 1
+    echo "in use by ${who:-a program}"; return 0
+  fi
+  other=$(grep -rlsE "^[^#]*listen[[:space:]]+([^;[:space:]]*:)?$1([[:space:]]|;)" /etc/nginx 2>/dev/null | grep -vx "${self_file:-/nonexistent}" | head -1)
+  [ -n "$other" ] && { echo "used by $other"; return 0; }
+  [ -n "$container" ] && { echo "published by the Docker container $container"; return 0; }
+  return 1
+}
+pick_port() {
+  port=$1
+  if [ -n "$port" ] && reason=$(port_taken "$port"); then
+    echo "  Port $port, which this had, is $reason now: choosing another one"
+    port=
+  fi
+  if [ -z "$port" ]; then
+    for p in $(seq 85 95); do
+      if reason=$(port_taken "$p"); then echo "  Port $p: $reason"; continue; fi
+      port=$p; break
+    done
+  fi
+  [ -n "$port" ] || fail "Ports 85 to 95 are all in use on this server: free one and try again."
+}
+# The port this CMS had, when it is still free for it; otherwise the first free one.
+self_file=$f
+pick_port "$(grep -sE '^[[:space:]]*listen[[:space:]]+127\.0\.0\.1:[0-9]+' "$f" | head -1 | grep -oE '[0-9]+;' | tr -d ';')"
+install -d -m 755 /var/log/nginx/hotel
+# The proxies the visitor's address is read past: servers set up before this file existed do not have it yet.
+realip=/etc/nginx/hotel-real-ip.conf
+if [ no = yes ]; then
+  # A server clock that runs behind makes Cloudflare's certificate "not yet valid": correct it first.
+  type fix_clock >/dev/null 2>&1 && fix_clock
+  cf=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  if [ "$(echo "$cf" | grep -c .)" -ge 10 ]; then
+    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+      echo "set_real_ip_from 127.0.0.1;"
+      echo "$cf" | sed 's/.*/set_real_ip_from &;/'; } > "$realip"
+    echo "> $realip: 127.0.0.1 and $(echo "$cf" | grep -c .) Cloudflare ranges (the visitor's address, not Cloudflare's)"
+  elif [ -f "$realip" ]; then
+    echo "  Could not download Cloudflare's ranges: $realip stays as it was"
+  else
+    printf 'set_real_ip_from 127.0.0.1;\n' > "$realip"
+    echo "  Could not download Cloudflare's ranges: NGINX sees Cloudflare's address until this runs again"
+  fi
+else
+  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Installer): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
+  echo "> $realip: 127.0.0.1 (Traefik)"
+fi
+if [ -f /etc/nginx/sites-available/hotel ] && ! grep -q 'include /etc/nginx/hotel-real-ip.conf' /etc/nginx/sites-available/hotel; then
+  sed -i -E 's#^([[:space:]]*)set_real_ip_from[[:space:]]+127\.0\.0\.1;#\1include /etc/nginx/hotel-real-ip.conf;#' /etc/nginx/sites-available/hotel
+  echo "  /etc/nginx/sites-available/hotel now takes its proxies from $realip"
+fi
+echo "> $f: listen 127.0.0.1:$port, root /var/www/atomcms/public (PHP)"
+cat > "$f" <<'SITE'
+# atomcms: the hotel's website (written by All-in-1 Installer, Addons → CMS). PHP 8.5 from /var/www/atomcms/public.
+# Traefik (/opt/traefik) passes http://192.0.2.10 here, except /client, /gamedata and /custom (the hotel site on
+# 127.0.0.1:85) and Polaris' /ws and /api paths.
+
+server {
+    listen 127.0.0.1:@PORT@;
+    server_name _;
+
+    root /var/www/atomcms/public;
+    index index.php index.html;
+
+    autoindex     off;
+    server_tokens off;
+
+    # The visitor's address from X-Forwarded-For, past Traefik (and Cloudflare), as for the hotel site.
+    include /etc/nginx/hotel-real-ip.conf;
+    real_ip_header    X-Forwarded-For;
+    real_ip_recursive on;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy        "strict-origin";
+
+    # Next to the hotel site's, so Debug → NGINX shows them too.
+    access_log /var/log/nginx/hotel/access.log;
+    error_log  /var/log/nginx/hotel/error.log;
+
+    client_max_body_size 20m;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.5-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_hide_header X-Powered-By;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+SITE
+sed -i "s#@PORT@#$port#" "$f"
+enabled=/etc/nginx/sites-enabled/cms-atomcms
+ln -sfn "$f" "$enabled"
+nginx -t 2>&1 | sed 's/^/  /'
+if ! nginx -t >/dev/null 2>&1; then
+  # Never leave NGINX with a configuration it refuses: its next restart, or a reboot, would fail.
+  rm -f "$enabled"
+  echo "  cms-atomcms is disabled again, so NGINX keeps a configuration it accepts"
+  fail "nginx -t refuses the configuration (see above). NGINX was not reloaded: the hotel keeps running as it was."
+fi
+# One CMS is the website at a time: the others go off once this one is accepted.
+for other in /etc/nginx/sites-enabled/cms-*; do
+  [ -e "$other" ] || [ -L "$other" ] || continue
+  [ "$other" = "$enabled" ] && continue
+  rm -f "$other"
+  echo "  $(basename "$other") is no longer the website (disabled; its files and sites-available/$(basename "$other") stay)"
+done
+# EpicNext runs a server of its own: off with its site.
+if [ atomcms != epicnext ] && [ -d /run/systemd/system ] && systemctl is-enabled --quiet epicnext-cms 2>/dev/null; then
+  systemctl disable --now epicnext-cms >/dev/null 2>&1 || true
+  echo "  epicnext-cms stopped and off at boot (its files stay)"
+fi
+if [ -d /run/systemd/system ]; then systemctl reload nginx || systemctl restart nginx; else nginx -s reload 2>/dev/null || service nginx restart; fi
+sleep 1
+code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" || true)
+echo "  http://127.0.0.1:$port/ answers HTTP $code"
+[ -n "$code" ] && [ "$code" != 000 ] || fail "NGINX does not answer on 127.0.0.1:$port."
+echo "PORT=$port"

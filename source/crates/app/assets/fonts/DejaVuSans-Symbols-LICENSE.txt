@@ -1,0 +1,8 @@
+DejaVuSans-Symbols.ttf is a subset of DejaVu Sans (https://dejavu-fonts.github.io/): only the punctuation, arrows,
+mathematical, technical, box drawing, geometric and miscellaneous symbol blocks, used as a fallback for symbols the
+other fonts lack.
+
+DejaVu fonts are free: Bitstream Vera Fonts copyright (c) 2003 by Bitstream, Inc.; DejaVu changes are in the public
+domain; glyphs imported from Arev fonts are (c) Tavmjong Bah. The license, which allows modifying and redistributing
+the fonts as long as a modified font is not named "Bitstream" or "Vera", is at
+https://dejavu-fonts.github.io/License.html

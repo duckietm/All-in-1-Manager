@@ -1,0 +1,18 @@
+# dump 1
+size 12x5
+cursor 4,4 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 2 dropped 0
+replies 
+bells 0
+screen
+00 - |THree       |
+01 - |            |
+02 - |vt          |
+03 - |  ff        |
+04 - |baXY        |
+scrollback-lines
+0 - |one         |
+1 - |   two      |
+text one\u{A}   two\u{A}THree\u{A}\u{A}vt\u{A}  ff\u{A}baXY

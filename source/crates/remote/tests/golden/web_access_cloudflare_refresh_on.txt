@@ -1,0 +1,190 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+echo "> /var/scripts/CF_Refresh.sh: Cloudflare's ranges for NGINX, Traefik and Polaris, weekly from /etc/cron.d/cf-refresh"
+install -d -m 755 /var/scripts
+cat > /var/scripts/CF_Refresh.sh <<'REFRESH'
+#!/bin/bash
+# Keeps Cloudflare's IP ranges current for the hotel (written by All-in-1 Installer; weekly from /etc/cron.d/cf-refresh).
+# NGINX, Traefik and Polaris read the visitor's address from X-Forwarded-For past Cloudflare, instead of seeing Cloudflare's.
+set -u
+fail() { echo "ERROR: $*"; exit 1; }
+v4=$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4) || fail "Could not download Cloudflare's IPv4 ranges: nothing changed."
+v6=$(curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) || fail "Could not download Cloudflare's IPv6 ranges: nothing changed."
+ranges=$(printf '%s\n%s\n' "$v4" "$v6" | grep -E '^[0-9a-f.:]+/[0-9]+$')
+[ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Cloudflare's ranges look wrong: nothing changed."
+echo "$(date '+%F %T') $(echo "$ranges" | grep -c .) Cloudflare ranges"
+
+# NGINX: the hotel site's trusted proxies. A reload keeps every connection.
+realip=/etc/nginx/hotel-real-ip.conf
+{ echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+  echo "set_real_ip_from 127.0.0.1;"
+  echo "$ranges" | sed 's/.*/set_real_ip_from &;/'; } > "$realip.new"
+if ! cmp -s "$realip.new" "$realip"; then
+  cp "$realip" "$realip.old" 2>/dev/null || true
+  mv "$realip.new" "$realip"
+  if nginx -t >/dev/null 2>&1; then
+    { [ -d /run/systemd/system ] && systemctl reload nginx; } || nginx -s reload
+    echo "  NGINX: updated and reloaded"
+  else
+    [ -f "$realip.old" ] && mv "$realip.old" "$realip"
+    echo "  NGINX: nginx -t refused the new list, the old one is back"
+  fi
+else
+  rm -f "$realip.new"
+  echo "  NGINX: up to date"
+fi
+
+# Traefik: the entry points trust X-Forwarded-For only from Cloudflare. A restart drops the players for a moment.
+traefik=/opt/traefik/traefik.yml
+list=$(echo "$ranges" | sed 's/.*/"&"/' | paste -sd, -)
+if [ -f "$traefik" ]; then
+  sed -E "s#^([[:space:]]*trustedIPs:).*#\1 [$list]#" "$traefik" > "$traefik.new"
+  if ! cmp -s "$traefik.new" "$traefik"; then
+    mv "$traefik.new" "$traefik"
+    docker restart traefik >/dev/null && echo "  Traefik: updated and restarted"
+  else
+    rm -f "$traefik.new"
+    echo "  Traefik: up to date"
+  fi
+fi
+
+# CrowdSec's bouncer (Addons → CrowdSec) takes the visitor past the same ranges. Traefik reads it again by itself.
+bouncer=/opt/traefik/dynamic/crowdsec.yml
+if [ -f "$bouncer" ] && grep -q 'forwardedHeadersTrustedIPs:' "$bouncer"; then
+  sed -E "s#^([[:space:]]*forwardedHeadersTrustedIPs:).*#\1 [$list]#" "$bouncer" > "$bouncer.new"
+  if ! cmp -s "$bouncer.new" "$bouncer"; then
+    cat "$bouncer.new" > "$bouncer"
+    echo "  CrowdSec bouncer: updated"
+  else
+    echo "  CrowdSec bouncer: up to date"
+  fi
+  rm -f "$bouncer.new"
+fi
+
+# Polaris: the proxies it reads X-Forwarded-For past. Only stopped (and started again) when the list changed:
+# it writes its settings back when it stops, so they cannot be changed while it runs.
+d=/var/www/emulator/Emulator
+log=/var/log/emu/emulator.log
+db=$(grep -sE '^db.database=' "$d/config.ini" | cut -d= -f2)
+if [ -n "$db" ]; then
+  want=$(echo "$ranges" | paste -sd, -)
+  current=$(mariadb -N "$db" -e "SELECT \`value\` FROM emulator_settings WHERE \`key\` = 'ws.ip.header.trusted'" 2>/dev/null)
+  if [ -z "$current" ]; then
+    echo "  Polaris: not set up for Cloudflare (Tools → Fix visitor IPs does that)"
+  elif [ "$current" = "$want" ]; then
+    echo "  Polaris: up to date"
+  else
+emulator_running() { if [ -d /run/systemd/system ]; then systemctl is-active --quiet emulator; else pgrep -u emulator -f 'jar-with-dependencies' >/dev/null; fi; }
+stop_emulator() {
+  # pkill fails when nothing runs, which would end the script under set -e.
+  if [ -d /run/systemd/system ]; then systemctl stop emulator; else pkill -u emulator -f 'jar-with-dependencies' || true; fi
+  for i in $(seq 1 30); do emulator_running || return 0; sleep 1; done
+  fail "The emulator did not stop within 30 seconds."
+}
+start_emulator() {
+  # Start with an empty log so only this start counts.
+  [ -f "$log" ] && mv "$log" "$log.$(date +%H%M%S_%d-%m-%Y)"
+  if [ -d /run/systemd/system ]; then
+    systemctl restart emulator
+  else
+    stop_emulator
+    setsid runuser -u emulator -- "$d/emulator" </dev/null >/dev/null 2>&1 &
+  fi
+}
+wait_loaded() {
+  for i in $(seq 1 300); do
+    sleep 2
+    if grep -q 'successfully loaded' "$log" 2>/dev/null; then echo "  loaded after $((i * 2)) seconds"; return 0; fi
+    if grep -q 'startup was aborted' "$log" 2>/dev/null || ! emulator_running; then
+      [ $i -gt 3 ] || continue
+      echo "  --- last lines of $log ---"; tail -25 "$log" 2>/dev/null | sed 's/^/  /'
+      fail "The emulator stopped during startup. See $log."
+    fi
+  done
+  fail "The emulator did not finish loading within 10 minutes. See $log."
+}
+    was_running=
+    if emulator_running; then was_running=yes; stop_emulator; fi
+    mariadb "$db" -e "UPDATE emulator_settings SET \`value\` = '$want' WHERE \`key\` = 'ws.ip.header.trusted'"
+    if [ -n "$was_running" ]; then start_emulator; wait_loaded; fi
+    echo "  Polaris: updated${was_running:+ and restarted}"
+  fi
+fi
+REFRESH
+chmod 755 /var/scripts/CF_Refresh.sh
+printf '# Cloudflare IP ranges for the hotel (All-in-1 Installer)\n0 4 * * 0 root /var/scripts/CF_Refresh.sh >> /var/log/cf-refresh.log 2>&1\n' > /etc/cron.d/cf-refresh
+chmod 644 /etc/cron.d/cf-refresh
+echo "  /etc/cron.d/cf-refresh: every Sunday at 04:00, output in /var/log/cf-refresh.log"
+echo "> Running it now"
+/var/scripts/CF_Refresh.sh | sed 's/^/  /'
+[ "${PIPESTATUS[0]}" = 0 ] || fail "The refresh script failed (see above)."

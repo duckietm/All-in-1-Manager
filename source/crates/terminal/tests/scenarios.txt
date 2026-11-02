@@ -1,0 +1,211 @@
+# Byte sequences fed into both the C# TerminalEmulator (tools/parity-terminal) and the Rust port
+# (crates/terminal/tests/golden.rs). Each scenario writes tests/golden/<name>.txt.
+#
+#   scenario <name> <columns> <rows>
+#   feed <bytes>             escapes: \e ESC, \r, \n, \t, \s space, \\ backslash, \xHH raw byte; other text as UTF-8
+#   repeat <count> <bytes>   feeds <bytes> <count> times, with %d replaced by the 0-based iteration number
+#   resize <columns> <rows>
+#   select <line> <column> <line> <column>   writes Text((line, column), (line, column)) to the dump
+#   dump                     writes the whole state (the end of a scenario dumps it too)
+#   end
+
+scenario text_wrap 10 4
+feed Hello world, this text wraps around the edge\r\n
+feed next\r\n
+end
+
+scenario crlf 12 5
+feed one\ntwo\r\nthree\rTH\r\n
+feed \x0bvt\x0cff\r\n
+feed back\x08\x08XY
+end
+
+scenario cursor_moves 20 8
+feed \e[3;5Hat 3,5\e[2Aup\e[1Bdn\e[4Crt\e[2Dlf
+feed \e[7Gg7\e[6dd6\e[2Enl\e[1Fpl
+feed \e[10;30Hclamp\e[0;0Hhome
+feed \e[5;10H\e7\e[1;1Hsaved\e8R\e[2;2H\e[sS\e[8;1H\e[uU
+feed \e[20Cend\e[100Bbottom
+feed \e[5`B5\e[2aa2\e[2ee2
+end
+
+scenario erase_line 16 4
+feed 0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF
+feed \e[1;5H\e[41m\e[K\e[2;5H\e[1K\e[3;5H\e[2K\e[0m
+end
+
+scenario erase_display 10 5
+feed aaaaaaaaaa\r\nbbbbbbbbbb\r\ncccccccccc\r\ndddddddddd\r\neeeeeeeeee
+feed \e[3;5H\e[J
+dump
+feed \e[2;5H\e[44m\e[1J\e[0m
+dump
+feed \e[1;1Hline1\r\nline2\r\n\e[2J
+dump
+feed \e[3J
+end
+
+scenario insert_delete_lines 10 6
+feed L1\r\nL2\r\nL3\r\nL4\r\nL5\r\nL6
+feed \e[2;3H\e[2L
+dump
+feed \e[3;1H\e[1M\e[5;1H\e[9M
+dump
+feed \e[2;5r\e[3;1H\e[L\e[1;1H\e[L\e[r
+end
+
+scenario insert_delete_chars 12 4
+feed abcdefghijkl\r\nabcdefghijkl\r\nabcdefghijkl
+feed \e[1;3H\e[2@\e[2;3H\e[3P\e[3;3H\e[4X
+feed \e[4;1Hhello\e[4;1H\e[4hXY\e[4lZ
+end
+
+scenario scroll_region 10 6
+feed r1\r\nr2\r\nr3\r\nr4\r\nr5\r\nr6
+feed \e[2;4r\e[4;1H\n\nin
+dump
+feed \e[2;1H\eM\eMrev
+feed \e[2S\e[1T
+feed \e[r\e[6;1H\nafter
+end
+
+scenario sgr_16 20 4
+feed \e[30ma\e[31mb\e[32mc\e[33md\e[34me\e[35mf\e[36mg\e[37mh\e[39mi
+feed \e[40ma\e[41mb\e[47mc\e[49md\r\n
+feed \e[90ma\e[97mb\e[100mc\e[107md\e[mn\e[1;31;42mx\e[0my
+end
+
+scenario sgr_256 20 3
+feed \e[38;5;196mr\e[48;5;21mb\e[38;5;300mc\e[38:5:46mg\e[0m.
+feed \e[38;5mx\e[0m\e[48;5;232;38;5;255mgrey\e[0m
+end
+
+scenario sgr_truecolor 20 3
+feed \e[38;2;255;128;0mo\e[48;2;1;2;3mb\e[38;2;300;0;999mc\e[0m.
+feed \e[38;2;1;2mt\e[0m\e[1;38;2;10;20;30;4mu\e[0m\e[48:2:9:8:7mz
+end
+
+scenario sgr_styles 20 3
+feed \e[1mB\e[2mD\e[22mN\e[3mI\e[23m\e[4mU\e[24m\e[21mV\e[24m\e[7mR\e[27m\e[8mH\e[28m\e[9mS\e[29m.
+feed \e[5;6;25mk\e[1;2;3;4;7;8;9mA\e[0mz\e[99mq
+end
+
+scenario alt_screen 10 4
+feed main1\r\nmain2\e[?1049h\e[2;3Halt\e[H\e[1mtop
+dump
+feed \e[?1049lback\e[?47hX\e[?47l\e[?1047hY\e[?1047l\e[?1048h\e[4;1H\e[?1048lZ
+end
+
+scenario utf8 16 6
+feed àèìòù é ß Ωλ\r\n
+feed €£ 😀 中文 한\r\n
+feed e\xcc\x81 a\xe2\x80\x8bb c\xe2\x80\x8dd\r\n
+feed split:\xe4\xb8
+feed \xad\xe2
+feed \x82\xac\r\n
+feed bad:\xff\xc0\xe4\xb8x\xed\xa0\x80y\xf4\x90\x80\x80z\r\n
+feed \xc2\x85\xc2\x9b k
+end
+
+scenario wide_chars 8 4
+feed abcdefg中x\r\n
+feed 中文字\e[2;2HZ\e[2;5HY\r\n
+feed 👍🚀🤖\e[3;1H\e[@
+feed \e[?7l\e[4;8H中
+end
+
+scenario tabs 24 4
+feed a\tb\tc\tend\r\n
+feed \e[1;5H\eH\e[1;9H\e[g\r\tx\tx\r\n
+feed \e[3g\tlast\r\n
+feed \e[3;1H\e[3I1\e[2Z2\e[Z3
+end
+
+scenario resize_shrink 12 6
+feed row1\r\nrow2\r\nrow3\r\nrow4 long text here!\e[3;3H
+resize 8 4
+dump
+resize 6 2
+end
+
+scenario resize_grow 10 4
+repeat 8 line%d\r\n
+feed prompt$
+resize 14 7
+dump
+feed \e[?1049halt
+resize 16 9
+feed \e[?1049l
+end
+
+scenario scrollback_many 20 5
+repeat 5200 line %d of the log\r\n
+feed done
+select 4990 0 4995 5
+end
+
+scenario vim_like 30 8
+feed $ vim notes.txt\r\n
+feed \e[?1049h\e[22;0;0t\e[?1h\e=\e[H\e[2J\e[?2004h\e]0;notes.txt - VIM\x07
+feed \e[1;7r\e[?25l\e[1;1Hfirst line\e[2;1Hsecond line\e[3;1H\e[94m~\e[0m\e[4;1H\e[94m~\e[0m
+feed \e[5;1H\e[94m~\e[0m\e[6;1H\e[94m~\e[0m\e[7;1H\e[94m~\e[0m
+feed \e[r\e[8;1H\e[7m"notes.txt" 2L, 23B\e[0m\e[8;22H1,1\e[8;27HAll\e[1;1H\e[?25h
+feed \e[?25l\e[1;7r\e[7;1H\n\e[r\e[7;1Hnew bottom\e[2;1H\e[Kchanged\e[1;1H\e[?25h
+dump
+feed \e[?25l\e[8;1H\e[K\e[8;1H:q\r\e[?2004l\e[?1l\e>\e[?1049l\e[23;0;0t\e[?25h$\s
+end
+
+scenario top_like 40 10
+feed \e[?1h\e=\e[?25l\e[H\e[2J
+feed \e[1;1Htop - 10:00:00 up 3 days,  1 user,  load average: 0.10\e[K
+feed \e[2;1H\e[1mTasks:\e[m 120 total,\e[1m   1 \e[mrunning\e[K
+feed \e[4;1H\e[7m  PID USER      %CPU COMMAND             \e[m\e[K
+feed \e[5;1H    1 root       0.0 systemd\e[K\e[6;1H\e[1m  842 www-data   5.1 nginx\e[m\e[K\e[7;1H\e[J
+feed \e[H\e[1;9H10:00:03\e[5;22H0.3\e[6;21H12.4\e[8;1H\e[32m  900 mysql      1.0 mysqld\e[m\e[K
+feed \e[10;1H\e[?1l\e>\e[?25h\e[K
+end
+
+scenario replies 20 5
+feed \e[5n\e[3;4H\e[6n\e[c\e[>c\e[0c
+feed \e[2;4r\e[?6h\e[2;3H\e[6n\e[?6l\e[6n\e[r
+feed bell\x07\x07
+end
+
+scenario line_drawing 12 4
+feed \e(0lqqk\r\nx  x\r\nmqqj\e(B ok
+feed \e)0\x0eabc\x0f`~\e[1;6H\e(0q\e[3bX
+end
+
+scenario modes 10 5
+feed \e[?7labcdefghijklmn\e[?7h\r\n
+feed \e[20hA\nB\e[20l\nC\r\n
+feed \e]2;title st\e\\\eP1$q\e\\x\e_apc\e\\y\e[1\x18z\e[2\x1az
+dump
+feed \e#8
+dump
+feed \e[1;31m\e[?1h\e[?2004h\e[3;3r\e[!p\e[2;2Hsoft
+dump
+feed \ec\e[?25lreset
+end
+
+scenario misc_escapes 10 5
+feed abc\eDd\eEe\eMf\e[5;1Hbottom\eD\eDx
+feed \e[1;1Hz\e[4b\e[2;1H\e[0b
+feed \e[3;1H\e[?5;6;7lno\e[?7h\e[1 q\e[>4;1m\e[=1c\e[1;2;3+p
+end
+
+scenario selection 10 5
+feed The quick brown fox jumps\r\n
+feed 中文字符号码\r\nshort   \r\n
+select 0 0 2 9
+select 2 4 0 2
+select 3 0 4 9
+select 0 3 0 7
+end
+
+scenario clear_scrollback_main 10 3
+feed a\r\nb\r\nc\r\nd\r\ne
+feed \e[2J\e[Hf
+dump
+feed \e[3J\e[?1049h\e[2Jalt\e[?1049l
+end

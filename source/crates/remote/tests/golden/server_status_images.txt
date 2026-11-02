@@ -1,0 +1,68 @@
+=== root
+command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || exit 0
+if docker inspect traefik >/dev/null 2>&1; then
+  running=$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)
+  version=$(docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print $2}')
+  # A newer image downloaded, but the container still runs the old one.
+  current=$(docker inspect -f '{{.Image}}' traefik 2>/dev/null)
+  downloaded=$(docker image inspect -f '{{.Id}}' traefik:v3 2>/dev/null)
+  restart=$([ -n "$downloaded" ] && [ "$current" != "$downloaded" ] && echo yes)
+  # The digest Docker Hub has for the tag now, against the one this server pulled.
+  remote=$(timeout 30 docker buildx imagetools inspect traefik:v3 --format '{{.Manifest.Digest}}' 2>/dev/null)
+  mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' traefik:v3 2>/dev/null | sed -n 's/.*@//p' | head -1)
+  newest=
+  if [ -z "$remote" ]; then
+    newer=; problem="Docker Hub did not answer"
+  else
+    problem=
+    newer=$([ "$remote" != "$mine" ] && echo yes)
+    [ -n "$newer" ] && newest=$(timeout 30 docker buildx imagetools inspect traefik:v3 --format '{{json .Image}}' 2>/dev/null \
+      | grep -oE '"org.opencontainers.image.version": *"[^"]+"' | head -1 | cut -d'"' -f4)
+  fi
+  echo "image0 $running|$version|$newer|$restart|$newest|$problem"
+fi
+if docker inspect gitea >/dev/null 2>&1; then
+  running=$(docker inspect -f '{{.State.Running}}' gitea 2>/dev/null)
+  version=$(docker exec gitea gitea --version 2>/dev/null | awk '{print $3}')
+  # A newer image downloaded, but the container still runs the old one.
+  current=$(docker inspect -f '{{.Image}}' gitea 2>/dev/null)
+  downloaded=$(docker image inspect -f '{{.Id}}' gitea/gitea:1 2>/dev/null)
+  restart=$([ -n "$downloaded" ] && [ "$current" != "$downloaded" ] && echo yes)
+  # The digest Docker Hub has for the tag now, against the one this server pulled.
+  remote=$(timeout 30 docker buildx imagetools inspect gitea/gitea:1 --format '{{.Manifest.Digest}}' 2>/dev/null)
+  mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' gitea/gitea:1 2>/dev/null | sed -n 's/.*@//p' | head -1)
+  newest=
+  if [ -z "$remote" ]; then
+    newer=; problem="Docker Hub did not answer"
+  else
+    problem=
+    newer=$([ "$remote" != "$mine" ] && echo yes)
+    [ -n "$newer" ] && newest=$(timeout 30 docker buildx imagetools inspect gitea/gitea:1 --format '{{json .Image}}' 2>/dev/null \
+      | grep -oE '"org.opencontainers.image.version": *"[^"]+"' | head -1 | cut -d'"' -f4)
+  fi
+  echo "image1 $running|$version|$newer|$restart|$newest|$problem"
+fi
+if docker inspect crowdsec >/dev/null 2>&1; then
+  running=$(docker inspect -f '{{.State.Running}}' crowdsec 2>/dev/null)
+  version=$(docker exec crowdsec cscli version 2>&1 | awk '/^version:/ {print $2}' | cut -d- -f1)
+  # A newer image downloaded, but the container still runs the old one.
+  current=$(docker inspect -f '{{.Image}}' crowdsec 2>/dev/null)
+  downloaded=$(docker image inspect -f '{{.Id}}' crowdsecurity/crowdsec:latest 2>/dev/null)
+  restart=$([ -n "$downloaded" ] && [ "$current" != "$downloaded" ] && echo yes)
+  # The digest Docker Hub has for the tag now, against the one this server pulled.
+  remote=$(timeout 30 docker buildx imagetools inspect crowdsecurity/crowdsec:latest --format '{{.Manifest.Digest}}' 2>/dev/null)
+  mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' crowdsecurity/crowdsec:latest 2>/dev/null | sed -n 's/.*@//p' | head -1)
+  newest=
+  if [ -z "$remote" ]; then
+    newer=; problem="Docker Hub did not answer"
+  else
+    problem=
+    newer=$([ "$remote" != "$mine" ] && echo yes)
+    [ -n "$newer" ] && newest=$(timeout 30 docker buildx imagetools inspect crowdsecurity/crowdsec:latest --format '{{json .Image}}' 2>/dev/null \
+      | grep -oE '"org.opencontainers.image.version": *"[^"]+"' | head -1 | cut -d'"' -f4)
+  fi
+  echo "image2 $running|$version|$newer|$restart|$newest|$problem"
+fi
+true
+result: Traefik|traefik|traefik:v3|3.5.3|yes|yes|no|3.5.4|-
+result: CrowdSec|crowdsec|crowdsecurity/crowdsec:latest|1.6.3|no|no|no|-|Docker Hub did not answer

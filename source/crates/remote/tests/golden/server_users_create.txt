@@ -1,0 +1,8 @@
+=== root
+set -e
+if ! id hotel >/dev/null 2>&1; then
+  useradd --system --user-group --home-dir /var/lib/hotel --create-home --shell /usr/sbin/nologin hotel
+fi
+getent group www-data >/dev/null || groupadd --system www-data
+usermod -aG www-data hotel
+id hotel

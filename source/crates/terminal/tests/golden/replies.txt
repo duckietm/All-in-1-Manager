@@ -1,0 +1,16 @@
+# dump 1
+size 20x5
+cursor 4,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies \u{1B}[0n\u{1B}[3;4R\u{1B}[?62;22c\u{1B}[>0;276;0c\u{1B}[?62;22c\u{1B}[2;3R\u{1B}[1;1R
+bells 2
+screen
+00 - |bell                |
+01 - |                    |
+02 - |                    |
+03 - |                    |
+04 - |                    |
+scrollback-lines
+text bell\u{A}\u{A}\u{A}\u{A}

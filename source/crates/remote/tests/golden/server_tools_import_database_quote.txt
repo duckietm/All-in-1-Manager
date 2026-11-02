@@ -1,0 +1,157 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+set -o pipefail
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+db=${db:-habbo}
+f='/tmp/it'\''s a dump.sql'
+[ -s "$f" ] || fail "The uploaded file $f is missing or empty."
+# The upload is only needed for this import, whatever happens.
+chmod 600 "$f"
+trap 'rm -f "$f"' EXIT
+if gzip -t "$f" 2>/dev/null; then read_dump() { gunzip -c "$f"; }; else read_dump() { cat "$f"; }; fi
+# No pipefail here because head ends the pipe early on purpose.
+(set +o pipefail; read_dump | head -c 65536 | grep -qiE '^(CREATE TABLE|INSERT INTO|-- MariaDB dump|-- MySQL dump)') ||
+  fail "$(basename "$f") does not look like a SQL dump (no CREATE TABLE or INSERT INTO near the start)."
+
+echo "> Safety backup of the current $db first"
+install -d -m 700 /var/backups/all-in-1
+safety=/var/backups/all-in-1/$db-before-import-$(date +%Y%m%d-%H%M%S).sql.gz
+if mariadb -N "$db" -e 'SELECT 1' >/dev/null 2>&1; then
+  (umask 077; mariadb-dump --single-transaction --quick --routines --triggers --events --hex-blob --databases "$db" | gzip -6 > "$safety")
+  echo "  $safety ($(du -h "$safety" | cut -f1))"
+else
+  echo "  $db does not exist yet: nothing to back up"
+  safety=
+fi
+
+d=/var/www/emulator/Emulator
+log=/var/log/emu/emulator.log
+emulator_running() { if [ -d /run/systemd/system ]; then systemctl is-active --quiet emulator; else pgrep -u emulator -f 'jar-with-dependencies' >/dev/null; fi; }
+stop_emulator() {
+  # pkill fails when nothing runs, which would end the script under set -e.
+  if [ -d /run/systemd/system ]; then systemctl stop emulator; else pkill -u emulator -f 'jar-with-dependencies' || true; fi
+  for i in $(seq 1 30); do emulator_running || return 0; sleep 1; done
+  fail "The emulator did not stop within 30 seconds."
+}
+start_emulator() {
+  # Start with an empty log so only this start counts.
+  [ -f "$log" ] && mv "$log" "$log.$(date +%H%M%S_%d-%m-%Y)"
+  if [ -d /run/systemd/system ]; then
+    systemctl restart emulator
+  else
+    stop_emulator
+    setsid runuser -u emulator -- "$d/emulator" </dev/null >/dev/null 2>&1 &
+  fi
+}
+wait_loaded() {
+  for i in $(seq 1 300); do
+    sleep 2
+    if grep -q 'successfully loaded' "$log" 2>/dev/null; then echo "  loaded after $((i * 2)) seconds"; return 0; fi
+    if grep -q 'startup was aborted' "$log" 2>/dev/null || ! emulator_running; then
+      [ $i -gt 3 ] || continue
+      echo "  --- last lines of $log ---"; tail -25 "$log" 2>/dev/null | sed 's/^/  /'
+      fail "The emulator stopped during startup. See $log."
+    fi
+  done
+  fail "The emulator did not finish loading within 10 minutes. See $log."
+}
+emulator=
+if [ -x "$d/emulator" ]; then
+  emulator=yes
+  echo "> Stopping the emulator"
+  stop_emulator
+fi
+
+charset=$(mariadb -N -e "SELECT CONCAT(default_character_set_name, ' ', default_collation_name) FROM information_schema.schemata WHERE schema_name = '$db'")
+set -- ${charset:-utf8mb4 utf8mb4_unicode_ci}
+echo "> Recreating $db (character set $1, collation $2)"
+mariadb -e "DROP DATABASE IF EXISTS \`$db\`; CREATE DATABASE \`$db\` CHARACTER SET $1 COLLATE $2"
+
+echo "> Importing $(basename "$f") ($(du -h "$f" | cut -f1)) into $db"
+start=$(date +%s)
+if ! read_dump | sed -E "/^(CREATE DATABASE|USE) /s/\`[^\`]+\`/\`$db\`/" | mariadb "$db"; then
+  echo "  The import stopped."
+  [ -n "$safety" ] && echo "  The database as it was before is in $safety (Import full database with that file restores it)."
+  fail "Importing $(basename "$f") failed (see above). The emulator was not started."
+fi
+echo "  $(mariadb -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$db'") tables in $(( $(date +%s) - start )) seconds"
+
+if [ -d /var/www/atomcms/vendor ]; then
+  echo "> AtomCMS: php artisan cache:clear"
+  (cd /var/www/atomcms && runuser -u www-data -- php artisan cache:clear --no-interaction >/dev/null 2>&1) || true
+fi
+if [ -n "$emulator" ]; then
+  echo "> Starting the emulator (it updates the database to its version)"
+  start_emulator
+  wait_loaded
+fi

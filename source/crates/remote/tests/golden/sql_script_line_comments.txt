@@ -1,0 +1,14 @@
+=== input
+-- first comment; with semicolon
+SELECT 1; -- trailing; comment
+# hash; comment
+SELECT 2;
+SELECT 3 --not a comment
+;
+=== statements
+--- line 2
+SELECT 1
+--- line 4
+SELECT 2
+--- line 5
+SELECT 3 --not a comment

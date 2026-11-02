@@ -1,0 +1,21 @@
+=== input
+INSERT INTO t (a, b)
+VALUES
+  (1, 'one
+two'),
+  (2, 'three');
+
+UPDATE t
+SET b = 'x'
+WHERE a = 1;
+=== statements
+--- line 1
+INSERT INTO t (a, b)
+VALUES
+  (1, 'one
+two'),
+  (2, 'three')
+--- line 7
+UPDATE t
+SET b = 'x'
+WHERE a = 1

@@ -1,0 +1,3 @@
+=== root
+sshd -T 2>/dev/null | awk '$1=="permitrootlogin"{print $2}'
+result: without-password

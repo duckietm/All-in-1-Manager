@@ -1,0 +1,25 @@
+=== root
+pid=$(pgrep -u emulator -x java | head -1)
+echo "clk $(getconf CLK_TCK)"
+echo "cores $(nproc)"
+echo "machine $(head -1 /proc/stat | awk '{ s = 0; for (i = 2; i <= 9; i++) s += $i; print s }')"
+if [ -n "$pid" ] && [ -d /proc/$pid ]; then
+  echo "pid $pid"
+  # comm can hold spaces and brackets, so count fields from after the last ')'.
+  awk '{ sub(/.*\) /, ""); print "proc", $12 + $13, $20 }' /proc/$pid/stat
+  echo "rss $(awk '/^VmRSS:/ {print $2 * 1024}' /proc/$pid/status)"
+  echo "xmx $(tr '\0' '\n' < /proc/$pid/cmdline | sed -n 's/^-Xmx\([0-9]*\)\([mMgG]\)$/\1 \2/p')"
+  echo "boot $(awk '{print int($1)}' /proc/uptime)"
+  for t in /proc/$pid/task/*; do
+    s=$(cat "$t/stat" 2>/dev/null) || continue
+    rest=${s##*) }
+    set -- $rest
+    echo "t ${t##*/} $1 $(( ${12} + ${13} )) $(cat "$t/comm" 2>/dev/null)"
+  done
+fi
+true
+result: 4242|100|4|2345678|81234|1610612736|2147483648|5000
+result: thread 4242|java|S|12
+result: thread 4250|WiredTickCoordi|R|5400
+result: thread 4251|WiredTickShard-|S|2100
+result: thread 4260|C2 CompilerThre|S|700

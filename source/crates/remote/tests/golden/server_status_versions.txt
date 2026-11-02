@@ -1,0 +1,24 @@
+=== root
+d=/var/www/emulator
+if [ -d "$d/.git" ]; then
+  echo "repo0 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null)"
+fi
+d=/var/www/Octane
+if [ -d "$d/.git" ]; then
+  echo "repo1 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null)"
+fi
+d=/var/www/Octane-Renderer
+if [ -d "$d/.git" ]; then
+  echo "repo2 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null)"
+fi
+d=/var/www/atomcms
+if [ -d "$d/.git" ]; then
+  echo "repo3 $(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)|$(git -c safe.directory="$d" -C "$d" log -1 --format='%h|%cd|%s' --date=format:'%Y-%m-%d %H:%M' 2>/dev/null)"
+fi
+jar=$(ls -t /var/www/emulator/Emulator/target/Polaris-*-jar-with-dependencies.jar /var/www/emulator/Emulator/target/Habbo-*-jar-with-dependencies.jar 2>/dev/null | head -1)
+[ -n "$jar" ] && echo "jar $(basename "$jar" -jar-with-dependencies.jar)"
+[ -f /var/www/Octane/package.json ] && echo "octane $(grep -m1 '"version"' /var/www/Octane/package.json | cut -d'"' -f4)"
+[ -f /var/www/Octane-Renderer/package.json ] && echo "renderer $(grep -m1 '"version"' /var/www/Octane-Renderer/package.json | cut -d'"' -f4)"
+true
+result: Emulator (Polaris)|/var/www/emulator|main|a1b2c3d|2026-10-30 21:15|Fix wired|with a pipe|Polaris-4.2.0
+result: Octane|/var/www/Octane|dev|e4f5a6b|2026-10-29 10:00|Octane update|v1.6.3

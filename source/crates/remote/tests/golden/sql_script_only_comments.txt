@@ -1,0 +1,6 @@
+=== input
+-- a
+# b
+/* c */
+
+=== statements

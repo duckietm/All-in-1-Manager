@@ -1,0 +1,25 @@
+=== input
+set -e
+# Called in $(...), so the message goes to stderr and set -e stops the script on failure.
+inside() {
+  r=$(realpath -m -- "$1") || { echo "ERROR: invalid path" >&2; exit 3; }
+  case "$r" in
+    /var/www/gamedata|/var/www/gamedata/*) printf '%s' "$r" ;;
+    *) echo "ERROR: that path is outside /var/www/gamedata" >&2; exit 3 ;;
+  esac
+}
+# The web server and the emulator, both in group www-data, may read and change uploaded files.
+fix_rights() {
+  chown -R www-data:www-data -- "$1"
+  find "$1" -type d -exec chmod 2775 {} +
+  find "$1" -type f -exec chmod 664 {} +
+}
+set -e
+d=$(inside '/var/www/gamedata')
+[ -d "$d" ] || { echo "ERROR: the target is not a folder"; exit 3; }
+tar -x -f - -C "$d" --no-same-owner --no-same-permissions --skip-old-files
+p=$(inside '/var/www/gamedata/single.gif'); [ ! -e "$p" ] || fix_rights "$p"
+echo OK
+--- stdin
+<3072 bytes>
+!!! Uploading failed: the target is not a folder

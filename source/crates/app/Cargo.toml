@@ -1,0 +1,38 @@
+[package]
+name = "aio-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "All-in-1 Installer: sets up a full hotel server (Polaris, Octane, MariaDB, NGINX, Traefik) over SSH"
+build = "build.rs"
+
+[[bin]]
+name = "all-in-1-installer"
+path = "src/main.rs"
+
+[dependencies]
+aio-core.workspace = true
+aio-remote.workspace = true
+aio-terminal.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+eframe.workspace = true
+egui_extras = { workspace = true, features = ["svg", "image"] }
+image.workspace = true
+rfd.workspace = true
+sys-locale.workspace = true
+zip.workspace = true
+
+[build-dependencies]
+zip = { workspace = true }
+embed-resource = "3"
+
+[dev-dependencies]
+tempfile.workspace = true

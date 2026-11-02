@@ -1,0 +1,82 @@
+trusted=
+if [ no = yes ]; then
+  load_cloudflare_ranges
+  trusted=$(echo "$ranges" | sed 's/.*/"&"/' | paste -sd, -)
+fi
+if [ -f /opt/traefik/dynamic/crowdsec.yml ]; then
+  echo "> $t/traefik.yml (with CrowdSec)"
+  cat > "$t/traefik.yml" <<'EOF'
+# Traefik static configuration (written by All-in-1 Installer).
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+      middlewares: [crowdsec@file]
+  websecure:
+    address: ":443"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+    http:
+      middlewares: [crowdsec@file]
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+log:
+  level: INFO
+  noColor: true
+# CrowdSec (Addons → CrowdSec): it reads this log; the plugin blocks the addresses it bans.
+accessLog:
+  filePath: /var/log/traefik/access.log
+experimental:
+  plugins:
+    crowdsec:
+      moduleName: github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin
+      version: v1.8.1
+EOF
+else
+  echo "> $t/traefik.yml"
+  cat > "$t/traefik.yml" <<'EOF'
+# Traefik static configuration (written by All-in-1 Installer).
+entryPoints:
+  web:
+    address: ":80"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    forwardedHeaders:
+      trustedIPs: [TRUSTED]
+providers:
+  file:
+    directory: /etc/traefik/dynamic
+    watch: true
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      storage: /letsencrypt/acme.json
+      httpChallenge:
+        entryPoint: web
+log:
+  level: INFO
+  noColor: true
+EOF
+fi
+sed -i "s#\[TRUSTED\]#[$trusted]#" "$t/traefik.yml"

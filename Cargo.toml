@@ -1,0 +1,58 @@
+[workspace]
+resolver = "2"
+members = ["source/crates/core", "source/crates/remote", "source/crates/terminal", "source/crates/app"]
+
+[workspace.package]
+version = "2.0.2"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[workspace.dependencies]
+aio-core = { path = "source/crates/core" }
+aio-remote = { path = "source/crates/remote" }
+aio-terminal = { path = "source/crates/terminal" }
+
+anyhow = "1"
+thiserror = "2"
+async-trait = "0.1"
+tokio = { version = "1.54", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+reqwest = { version = "0.12.28", default-features = false, features = ["json", "rustls-tls", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+regex = "1"
+chrono = "0.4"
+rand = "0.8"
+base64 = "0.22"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+aes = "0.8"
+ctr = "0.9"
+cbc = { version = "0.1", features = ["alloc"] }
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+bcrypt-pbkdf = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2.6.1", default-features = false, features = ["deflate"] }
+russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }
+russh-sftp = "2"
+mysql_async = { version = "0.35.1", default-features = false, features = ["minimal", "rustls-tls"] }
+vte = "0.15"
+eframe = { version = "0.31.1", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+egui_extras = { version = "0.31.1", features = ["image"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "gif", "jpeg", "ico", "webp", "bmp"] }
+rfd = "0.15.4"
+sys-locale = "0.3"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2

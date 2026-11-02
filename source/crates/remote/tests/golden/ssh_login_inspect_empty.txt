@@ -1,0 +1,5 @@
+=== root
+sshd -T 2>/dev/null | awk '$1 == "passwordauthentication" || $1 == "kbdinteractiveauthentication" || $1 == "permitrootlogin" { print $1 "=" $2 }'
+echo "ours=$([ -f /etc/ssh/sshd_config.d/00-all-in-1-keys-only.conf ] && echo yes)"
+echo "keys=$(awk '{ for (i = 1; i < NF; i++) if ($i ~ /^(ssh-|ecdsa-|sk-)/) { print $(i + 1); break } }' /root/.ssh/authorized_keys 2>/dev/null | paste -sd' ' -)"
+result: password=yes keyboard=yes permit=null ours=no saved=no keysonly=no

@@ -1,0 +1,7 @@
+=== input
+SELECT "a""b;";SELECT 'end'
+=== statements
+--- line 1
+SELECT "a""b;"
+--- line 1
+SELECT 'end'

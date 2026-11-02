@@ -1,0 +1,11 @@
+[my-hotel_1.eu] null
+[hotel
+] null
+[] The name in the console: letters, digits, '.', '-' and '_', at most 64.
+[my hotel] The name in the console: letters, digits, '.', '-' and '_', at most 64.
+[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa] null
+[aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa] The name in the console: letters, digits, '.', '-' and '_', at most 64.
+[hötel] The name in the console: letters, digits, '.', '-' and '_', at most 64.
+[a
+
+] The name in the console: letters, digits, '.', '-' and '_', at most 64.

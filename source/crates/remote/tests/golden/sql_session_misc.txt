@@ -1,0 +1,14 @@
+is_binary BLOB: True
+is_binary VARBINARY: True
+is_binary binary: True
+is_binary VARCHAR: False
+is_binary GEOMETRY: False
+is_binary LONGBLOB: True
+is_binary TEXT: False
+is_binary INT: False
+quote users: `users`
+quote we`ird: `we``ird`
+quote : ``
+quote a``b: `a````b`
+key_condition id: `id` <=> @key0
+key_condition user_id,room`id,slot: `user_id` <=> @key0 AND `room``id` <=> @key1 AND `slot` <=> @key2

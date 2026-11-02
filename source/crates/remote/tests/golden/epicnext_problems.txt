@@ -1,0 +1,15 @@
+[folder ] -> <ok>
+[folder NextCMS/epicnext-cms] -> <ok>
+[folder /NextCMS] -> The folder is a path inside the repository such as NextCMS/epicnext-cms (letters, digits, '.', '_', '-' and '/'), or empty for the top folder.
+[folder a/../b] -> The folder is a path inside the repository such as NextCMS/epicnext-cms (letters, digits, '.', '_', '-' and '/'), or empty for the top folder.
+[folder a/] -> The folder is a path inside the repository such as NextCMS/epicnext-cms (letters, digits, '.', '_', '-' and '/'), or empty for the top folder.
+[folder a b] -> The folder is a path inside the repository such as NextCMS/epicnext-cms (letters, digits, '.', '_', '-' and '/'), or empty for the top folder.
+[branch ] -> <ok>
+[branch main] -> <ok>
+[branch feature/x] -> <ok>
+[branch -x] -> Enter a branch name such as main, or leave it empty for the repository's default branch.
+[branch a..b] -> Enter a branch name such as main, or leave it empty for the repository's default branch.
+[branch x/] -> Enter a branch name such as main, or leave it empty for the repository's default branch.
+[branch /x] -> Enter a branch name such as main, or leave it empty for the repository's default branch.
+[branch a b] -> Enter a branch name such as main, or leave it empty for the repository's default branch.
+[branch bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb] -> Enter a branch name such as main, or leave it empty for the repository's default branch.

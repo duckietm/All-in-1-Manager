@@ -1,0 +1,27 @@
+=== root
+log=/var/log/emu/emulator.log
+[ -f "$log" ] || exit 0
+tmp=$(mktemp)
+grep -E 'Slow wired task|wired tasks waiting' "$log" 2>/dev/null | tail -n 5000 > "$tmp" || true
+awk '/Slow wired task/ {
+       match($0, /shard=[0-9]+/); shard = substr($0, RSTART + 6, RLENGTH - 6)
+       match($0, /room=[0-9]+/); room = substr($0, RSTART + 5, RLENGTH - 5)
+       match($0, /took=[0-9]+/); took = substr($0, RSTART + 5, RLENGTH - 5) + 0
+       n[room]++; sum[room] += took; if (took > max[room]) max[room] = took; last[room] = $1
+       if (index(shards[room], "," shard ",") == 0) shards[room] = shards[room] "," shard ","
+       total++ }
+     /wired tasks waiting/ { dropped++ }
+     END { for (r in n) { s = shards[r]; gsub(/,+/, ",", s); gsub(/^,|,$/, "", s); print "room", r, n[r], max[r], sum[r], last[r], s }
+           print "totals", total + 0, dropped + 0 }' "$tmp"
+tail -n 8 "$tmp" | sed 's/^/recent /'
+rm -f "$tmp"
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+ids=$(grep -oE 'room=[0-9]+' "$log" 2>/dev/null | cut -d= -f2 | sort -un | tail -n 200 | paste -sd, -)
+[ -n "$db" ] && [ -n "$ids" ] && mariadb -N -B "$db" -e "SELECT id, name FROM rooms WHERE id IN ($ids)" 2>/dev/null | sed 's/^/name /'
+true
+result: 9|2
+result: room 99|-|1|300|300|2026-10-31T09:13:00|
+result: room 12|The Casino|3|85|190|2026-10-31T09:12:01|0,2
+result: room 7|Wired lab|5|40|160|2026-10-31T09:10:44|1
+result: recent 2026-10-31T09:13:00 WARN Slow wired task: shard=1, room=99, took=300ms
+result: recent 2026-10-31T09:13:05 WARN Room 99 has 64 wired tasks waiting

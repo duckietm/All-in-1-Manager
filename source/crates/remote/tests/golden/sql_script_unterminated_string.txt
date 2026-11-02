@@ -1,0 +1,10 @@
+=== input
+SELECT 1;
+SELECT 'never closed;
+SELECT 2;
+=== statements
+--- line 1
+SELECT 1
+--- line 2
+SELECT 'never closed;
+SELECT 2;

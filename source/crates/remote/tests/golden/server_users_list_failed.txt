@@ -1,0 +1,4 @@
+=== root
+echo "www=$(getent group www-data | cut -d: -f4)"
+getent passwd | awk -F: '{ print "user=" $1 ":" $3 ":" $6 ":" $7 }'
+!!! Could not read the users of the server: getent: permission denied

@@ -1,0 +1,8 @@
+null
+Failed logins before a ban: a number from 1 to 100.
+Failed logins before a ban: a number from 1 to 100.
+Counted within: from 1 minute to 7 days (10080 minutes).
+Counted within: from 1 minute to 7 days (10080 minutes).
+Ban time: from 1 minute to 365 days (525600 minutes).
+Ban time: from 1 minute to 365 days (525600 minutes).
+null

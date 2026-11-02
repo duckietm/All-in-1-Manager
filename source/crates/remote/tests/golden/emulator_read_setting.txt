@@ -1,0 +1,3 @@
+=== root
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2)
+[ -n "$db" ] && mariadb -N "$db" -e "SELECT \`value\` FROM emulator_settings WHERE \`key\` = 'ws.whitelist'" 2>/dev/null

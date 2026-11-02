@@ -1,0 +1,17 @@
+=== input
+/* header; comment
+ spanning lines */
+SELECT 1;
+SELECT /* inline; */ 2;
+/*!40101 SET NAMES utf8 */;
+/* only comment */;
+SELECT 3;
+=== statements
+--- line 3
+SELECT 1
+--- line 4
+SELECT /* inline; */ 2
+--- line 5
+/*!40101 SET NAMES utf8 */
+--- line 7
+SELECT 3

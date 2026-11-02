@@ -1,0 +1,14 @@
+=== input
+DELIMITER<TAB>;;<CR>
+SELECT 1;;<CR>
+SELECT 2;;<CR>
+DELIMITER ;<CR>
+SELECT 3;<CR>
+
+=== statements
+--- line 2
+SELECT 1
+--- line 3
+SELECT 2
+--- line 5
+SELECT 3

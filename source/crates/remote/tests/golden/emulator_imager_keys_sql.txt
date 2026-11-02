@@ -1,0 +1,1 @@
+'camera.url', 'imager.location.output.camera', 'imager.location.output.thumbnail', 'camera.render.mode', 'imager.location.output.badges', 'imager.location.badgeparts'

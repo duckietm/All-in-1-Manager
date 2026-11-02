@@ -1,0 +1,29 @@
+select 4990 0 4995 5 line 5186 of the log\u{A}line 5187 of the log\u{A}line 5188 of the log\u{A}line 5189 of the log\u{A}line 5190 of the log\u{A}line 5
+# dump 1
+size 20x5
+cursor 4,4 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 5000 dropped 196
+replies 
+bells 0
+screen
+00 - |line 5196 of the log|
+01 - |line 5197 of the log|
+02 - |line 5198 of the log|
+03 - |line 5199 of the log|
+04 - |done                |
+scrollback-lines
+0 - |line 196 of the log |
+1 - |line 197 of the log |
+2 - |line 198 of the log |
+4990 - |line 5186 of the log|
+4991 - |line 5187 of the log|
+4992 - |line 5188 of the log|
+4993 - |line 5189 of the log|
+4994 - |line 5190 of the log|
+4995 - |line 5191 of the log|
+4996 - |line 5192 of the log|
+4997 - |line 5193 of the log|
+4998 - |line 5194 of the log|
+4999 - |line 5195 of the log|

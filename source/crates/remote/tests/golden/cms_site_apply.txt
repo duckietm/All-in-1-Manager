@@ -1,0 +1,210 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+[ -d /etc/nginx/sites-available ] || fail "NGINX is not installed with sites-available. Run the NGINX step first."
+f=/etc/nginx/sites-available/cms-mycms
+port_container() {
+  command -v docker >/dev/null 2>&1 || return 0
+  docker ps -aq 2>/dev/null | xargs -r docker inspect -f '{{.Name}} {{range $p, $c := .HostConfig.PortBindings}}{{range $c}}{{.HostPort}} {{end}}{{end}}' 2>/dev/null | grep -E " $1( |$)" | head -1 | awk '{print $1}' | tr -d /
+}
+port_taken() {
+  container=$(port_container "$1")
+  # This app's own port (a run again) is not taken.
+  [ -n "${self_container:-}" ] && [ "$container" = "$self_container" ] && return 1
+  who=$(ss -Hltnp "sport = :$1" 2>/dev/null | grep -oE 'users:\(\("[^"]+"' | head -1 | cut -d'"' -f2)
+  if ss -Hltn "sport = :$1" 2>/dev/null | grep -q .; then
+    [ -n "${self_file:-}" ] && [ "$who" = nginx ] && grep -qsE "listen[[:space:]]+([^;[:space:]]*:)?$1([[:space:]]|;)" "$self_file" && return 1
+    echo "in use by ${who:-a program}"; return 0
+  fi
+  other=$(grep -rlsE "^[^#]*listen[[:space:]]+([^;[:space:]]*:)?$1([[:space:]]|;)" /etc/nginx 2>/dev/null | grep -vx "${self_file:-/nonexistent}" | head -1)
+  [ -n "$other" ] && { echo "used by $other"; return 0; }
+  [ -n "$container" ] && { echo "published by the Docker container $container"; return 0; }
+  return 1
+}
+pick_port() {
+  port=$1
+  if [ -n "$port" ] && reason=$(port_taken "$port"); then
+    echo "  Port $port, which this had, is $reason now: choosing another one"
+    port=
+  fi
+  if [ -z "$port" ]; then
+    for p in $(seq 85 95); do
+      if reason=$(port_taken "$p"); then echo "  Port $p: $reason"; continue; fi
+      port=$p; break
+    done
+  fi
+  [ -n "$port" ] || fail "Ports 85 to 95 are all in use on this server: free one and try again."
+}
+# The port this CMS had, when it is still free for it; otherwise the first free one.
+self_file=$f
+pick_port "$(grep -sE '^[[:space:]]*listen[[:space:]]+127\.0\.0\.1:[0-9]+' "$f" | head -1 | grep -oE '[0-9]+;' | tr -d ';')"
+install -d -m 755 /var/log/nginx/hotel
+# The proxies the visitor's address is read past: servers set up before this file existed do not have it yet.
+realip=/etc/nginx/hotel-real-ip.conf
+if [ no = yes ]; then
+  # A server clock that runs behind makes Cloudflare's certificate "not yet valid": correct it first.
+  type fix_clock >/dev/null 2>&1 && fix_clock
+  cf=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  if [ "$(echo "$cf" | grep -c .)" -ge 10 ]; then
+    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+      echo "set_real_ip_from 127.0.0.1;"
+      echo "$cf" | sed 's/.*/set_real_ip_from &;/'; } > "$realip"
+    echo "> $realip: 127.0.0.1 and $(echo "$cf" | grep -c .) Cloudflare ranges (the visitor's address, not Cloudflare's)"
+  elif [ -f "$realip" ]; then
+    echo "  Could not download Cloudflare's ranges: $realip stays as it was"
+  else
+    printf 'set_real_ip_from 127.0.0.1;\n' > "$realip"
+    echo "  Could not download Cloudflare's ranges: NGINX sees Cloudflare's address until this runs again"
+  fi
+else
+  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Installer): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
+  echo "> $realip: 127.0.0.1 (Traefik)"
+fi
+if [ -f /etc/nginx/sites-available/hotel ] && ! grep -q 'include /etc/nginx/hotel-real-ip.conf' /etc/nginx/sites-available/hotel; then
+  sed -i -E 's#^([[:space:]]*)set_real_ip_from[[:space:]]+127\.0\.0\.1;#\1include /etc/nginx/hotel-real-ip.conf;#' /etc/nginx/sites-available/hotel
+  echo "  /etc/nginx/sites-available/hotel now takes its proxies from $realip"
+fi
+echo "> $f: listen 127.0.0.1:$port, root /var/www/mycms (PHP)"
+cat > "$f" <<'SITE'
+# mycms: the hotel's website (written by All-in-1 Installer, Addons → CMS). PHP 8.5 from /var/www/mycms.
+# Traefik (/opt/traefik) passes http://hotel.example.com here, except /client, /gamedata and /custom (the hotel site on
+# 127.0.0.1:85) and Polaris' /ws and /api paths.
+
+server {
+    listen 127.0.0.1:@PORT@;
+    server_name hotel.example.com www.hotel.example.com;
+
+    root /var/www/mycms;
+    index index.php index.html;
+
+    autoindex     off;
+    server_tokens off;
+
+    # The visitor's address from X-Forwarded-For, past Traefik (and Cloudflare), as for the hotel site.
+    include /etc/nginx/hotel-real-ip.conf;
+    real_ip_header    X-Forwarded-For;
+    real_ip_recursive on;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy        "strict-origin";
+
+    # Next to the hotel site's, so Debug → NGINX shows them too.
+    access_log /var/log/nginx/hotel/access.log;
+    error_log  /var/log/nginx/hotel/error.log;
+
+    client_max_body_size 20m;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.5-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
+        fastcgi_hide_header X-Powered-By;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+SITE
+sed -i "s#@PORT@#$port#" "$f"
+enabled=/etc/nginx/sites-enabled/cms-mycms
+ln -sfn "$f" "$enabled"
+nginx -t 2>&1 | sed 's/^/  /'
+if ! nginx -t >/dev/null 2>&1; then
+  # Never leave NGINX with a configuration it refuses: its next restart, or a reboot, would fail.
+  rm -f "$enabled"
+  echo "  cms-mycms is disabled again, so NGINX keeps a configuration it accepts"
+  fail "nginx -t refuses the configuration (see above). NGINX was not reloaded: the hotel keeps running as it was."
+fi
+# One CMS is the website at a time: the others go off once this one is accepted.
+for other in /etc/nginx/sites-enabled/cms-*; do
+  [ -e "$other" ] || [ -L "$other" ] || continue
+  [ "$other" = "$enabled" ] && continue
+  rm -f "$other"
+  echo "  $(basename "$other") is no longer the website (disabled; its files and sites-available/$(basename "$other") stay)"
+done
+# EpicNext runs a server of its own: off with its site.
+if [ mycms != epicnext ] && [ -d /run/systemd/system ] && systemctl is-enabled --quiet epicnext-cms 2>/dev/null; then
+  systemctl disable --now epicnext-cms >/dev/null 2>&1 || true
+  echo "  epicnext-cms stopped and off at boot (its files stay)"
+fi
+if [ -d /run/systemd/system ]; then systemctl reload nginx || systemctl restart nginx; else nginx -s reload 2>/dev/null || service nginx restart; fi
+sleep 1
+code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port/" || true)
+echo "  http://127.0.0.1:$port/ answers HTTP $code"
+[ -n "$code" ] && [ "$code" != 000 ] || fail "NGINX does not answer on 127.0.0.1:$port."
+echo "PORT=$port"

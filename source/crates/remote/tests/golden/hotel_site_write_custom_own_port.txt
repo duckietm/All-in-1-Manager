@@ -1,0 +1,196 @@
+[ -d /etc/nginx/sites-available ] || fail "NGINX is not installed with sites-available. Run the NGINX step first."
+if [ -f /etc/nginx/sites-available/hotel ] && ! grep -q 'All-in-1 Installer' /etc/nginx/sites-available/hotel; then
+  cp /etc/nginx/sites-available/hotel "/etc/nginx/sites-available/hotel.bak-$(date +%Y%m%d-%H%M%S)"
+  echo "  The old /etc/nginx/sites-available/hotel is saved as /etc/nginx/sites-available/hotel.bak-<time>"
+fi
+root='/var/www/Octane/dist'
+[ -n "$root" ] || { [ -f /etc/nginx/sites-available/hotel ] && root=$(awk '$1=="root" {gsub(/;/, "", $2); print $2; exit}' /etc/nginx/sites-available/hotel); }
+[ -n "$root" ] && [ "$root" != "@ROOT@" ] || root=/usr/share/nginx/html
+
+install -d -m 755 /var/log/nginx/hotel
+install -d -m 2775 -o www-data -g www-data /var/www/gamedata /var/www/gamedata/custom \
+  /var/www/gamedata/camera /var/www/gamedata/camera/thumb
+# The nginx user must read what the emulator writes there with group www-data and mode 640.
+if id nginx >/dev/null 2>&1 && ! id -nG nginx | grep -qw www-data; then
+  usermod -aG www-data nginx
+  echo "  nginx is now in the www-data group (to read the emulator's camera photos)"
+fi
+
+realip=/etc/nginx/hotel-real-ip.conf
+if [ no = yes ]; then
+  # A server clock that runs behind makes Cloudflare's certificate "not yet valid": correct it first.
+  type fix_clock >/dev/null 2>&1 && fix_clock
+  cf=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  if [ "$(echo "$cf" | grep -c .)" -ge 10 ]; then
+    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+      echo "set_real_ip_from 127.0.0.1;"
+      echo "$cf" | sed 's/.*/set_real_ip_from &;/'; } > "$realip"
+    echo "> $realip: 127.0.0.1 and $(echo "$cf" | grep -c .) Cloudflare ranges (the visitor's address, not Cloudflare's)"
+  elif [ -f "$realip" ]; then
+    echo "  Could not download Cloudflare's ranges: $realip stays as it was"
+  else
+    printf 'set_real_ip_from 127.0.0.1;\n' > "$realip"
+    echo "  Could not download Cloudflare's ranges: NGINX sees Cloudflare's address until this runs again"
+  fi
+else
+  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Installer): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
+  echo "> $realip: 127.0.0.1 (Traefik)"
+fi
+if [ -f /etc/nginx/sites-available/hotel ] && ! grep -q 'include /etc/nginx/hotel-real-ip.conf' /etc/nginx/sites-available/hotel; then
+  sed -i -E 's#^([[:space:]]*)set_real_ip_from[[:space:]]+127\.0\.0\.1;#\1include /etc/nginx/hotel-real-ip.conf;#' /etc/nginx/sites-available/hotel
+  echo "  /etc/nginx/sites-available/hotel now takes its proxies from $realip"
+fi
+echo "> /etc/nginx/sites-available/hotel: listen 127.0.0.1:85, root $root"
+cat > /etc/nginx/sites-available/hotel <<'SITE'
+# The hotel website (written by All-in-1 Installer; the web access and Octane steps rewrite it).
+# Traefik (/opt/traefik) answers on ports 80/443 for http://hotel.example.com (and does the TLS) and passes the
+# site to this server on 127.0.0.1:85; /ws and Polaris' /api go straight to Polaris on 127.0.0.1:2096.
+# mycms is the site (its own NGINX site on 127.0.0.1:87); this one serves Octane on /client/ and the assets.
+
+map $http_origin $hotel_cors_origin {
+    default "";
+    "~^https?://(www\.)?hotel\.example\.com$" $http_origin;
+}
+
+server {
+    listen 127.0.0.1:85;
+    server_name hotel.example.com www.hotel.example.com;
+
+    root @ROOT@;
+    index index.html index.php index.htm;
+
+    autoindex     off;
+    server_tokens off;
+
+    # The visitor's address from X-Forwarded-For, read from the right past the trusted proxies: Traefik on
+    # 127.0.0.1 and, behind Cloudflare, Cloudflare's ranges (in the real-IP file).
+    include /etc/nginx/hotel-real-ip.conf;
+    real_ip_header    X-Forwarded-For;
+    real_ip_recursive on;
+
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy        "strict-origin";
+    add_header X-XSS-Protection       "1; mode=block";
+    add_header Permissions-Policy     "accelerometer=(), autoplay=(self), camera=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), sync-xhr=(), usb=()";
+
+    client_header_buffer_size   1k;
+    large_client_header_buffers 4 8k;
+
+    # Text compressed (gamedata JSON such as FurnitureData.json is several MB); .nitro/.hab bundles
+    # and images are compressed already and go as they are.
+    gzip            on;
+    gzip_vary       on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_types      application/json application/javascript text/css text/plain text/xml application/xml image/svg+xml font/ttf font/otf application/wasm;
+
+    # The client opens hundreds of gamedata files: keep their file handles and metadata at hand.
+    open_file_cache          max=10000 inactive=60s;
+    open_file_cache_valid    30s;
+    open_file_cache_errors   on;
+
+    access_log /var/log/nginx/hotel/access.log;
+    error_log  /var/log/nginx/hotel/error.log;
+
+    location / {
+        return 404;
+    }
+    location = /client {
+        return 301 /client/;
+    }
+
+    location /client/ {
+        alias /var/www/Octane/dist/;
+        index index.html;
+    }
+
+    location = /client/index.html {
+        alias /var/www/Octane/dist/index.html;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    location = /client/.vite/manifest.json {
+        alias /var/www/Octane/dist/.vite/manifest.json;
+        default_type application/json;
+        add_header Cache-Control "no-store" always;
+    }
+
+    # Vite only puts files with a hash in their name in assets/: they never change.
+    location ^~ /client/assets/ {
+        alias /var/www/Octane/dist/assets/;
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+    }
+
+    # Octane's runtime configuration: always the current version.
+    location ^~ /client/configuration/ {
+        alias /var/www/Octane/dist/configuration/;
+        add_header Cache-Control "no-store" always;
+    }
+    # The hotel's assets (copied in with the All-in-1 download tool) and the camera photos.
+    location /gamedata/ {
+        alias /var/www/gamedata/;
+
+        if ($request_method = OPTIONS) {
+            add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+            add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+            add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+            add_header Access-Control-Max-Age        1728000 always;
+            add_header Vary                          Origin always;
+            add_header Content-Length                0;
+            return 204;
+        }
+        add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+        add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+        add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+        add_header Vary                          Origin always;
+
+        try_files $uri $uri/ =404;
+
+        # A nested location does not inherit the preflight above: repeat it.
+        location ~* \.(jpg|jpeg|png|gif|ico|nitro|hab)$ {
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin   $hotel_cors_origin always;
+                add_header Access-Control-Allow-Methods  "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers  "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range" always;
+                add_header Access-Control-Max-Age        1728000 always;
+                add_header Vary                          Origin always;
+                add_header Content-Length                0;
+                return 204;
+            }
+            expires 30d;
+            add_header Cache-Control               "public, no-transform";
+            add_header Access-Control-Allow-Origin $hotel_cors_origin always;
+            add_header Vary                        Origin            always;
+        }
+    }
+
+    location /custom/ {
+        alias /var/www/gamedata/custom/;
+    }
+}
+SITE
+sed -i "s#@ROOT@#$root#" /etc/nginx/sites-available/hotel
+ln -sfn /etc/nginx/sites-available/hotel /etc/nginx/sites-enabled/hotel
+
+# Ports 80 and 443 belong to Traefik, so the default site and any other site must not listen there.
+if [ -L /etc/nginx/sites-enabled/default ] || [ -f /etc/nginx/sites-enabled/default ]; then
+  rm -f /etc/nginx/sites-enabled/default
+  echo "  The default site is disabled (still in sites-available/default)"
+fi
+for f in /etc/nginx/conf.d/*.conf /etc/nginx/sites-enabled/*; do
+  [ -f "$f" ] || continue
+  if grep -Eq '^[[:space:]]*listen[[:space:]]+(\[::\]:|0\.0\.0\.0:)?(80|443)([[:space:]]|;)' "$f"; then
+    fail "$f listens on port 80 or 443, which Traefik needs. Move that site to 127.0.0.1:85 (or disable it) and try again."
+  fi
+done
+
+nginx -t 2>&1 | sed 's/^/  /'
+nginx -t >/dev/null 2>&1 || fail "nginx -t refuses the configuration (see above)."
+if [ -d /run/systemd/system ]; then systemctl reload nginx || systemctl restart nginx; else nginx -s reload 2>/dev/null || service nginx restart; fi
+sleep 1
+# With the CMS on its own site this one only has /client (and the assets).
+code=$(curl -s --noproxy '*' -o /dev/null -w '%{http_code}' http://127.0.0.1:85/client/ || true)
+echo "  http://127.0.0.1:85/client/ answers $code"
+case "$code" in 200|302|403|404) ;; *) fail "NGINX does not answer on 127.0.0.1:85 (HTTP '$code')." ;; esac

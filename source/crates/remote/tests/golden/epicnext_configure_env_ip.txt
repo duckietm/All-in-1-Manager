@@ -1,0 +1,153 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+cd /var/www/epicnext
+if [ -f .env ]; then
+  cp -p .env ".env.bak-$(date +%Y%m%d-%H%M%S)"
+  echo "> /var/www/epicnext/.env (the old one is kept as .env.bak-<time>)"
+elif [ -f .env.example ]; then
+  cp .env.example .env
+  echo "> /var/www/epicnext/.env from .env.example"
+else
+  : > .env
+  echo "> /var/www/epicnext/.env (new: the clone has no .env.example)"
+fi
+env_set() {
+  if grep -q "^$1=" .env; then
+    KEY="$1" VALUE="$2" awk 'index($0, ENVIRON["KEY"] "=") == 1 { print ENVIRON["KEY"] "=" ENVIRON["VALUE"]; next } { print }' .env > .env.new
+    cat .env.new > .env && rm -f .env.new
+  else
+    printf '%s=%s\n' "$1" "$2" >> .env
+  fi
+  case "$1" in DATABASE_URL) echo "  $1=$(echo "$2" | sed -E 's#://([^:]*):[^@]*@#://\1:***@#')" ;; *SECRET*) echo "  $1=***" ;; *) echo "  $1=$2" ;; esac
+}
+env_set HOTEL_NAME '"Hotel"'
+env_set APP_URL 'http://192.0.2.10'
+env_set AUTH_URL 'http://192.0.2.10'
+env_set AUTH_TRUST_HOST 'true'
+env_set RCON_HOST '127.0.0.1'
+secret=$(grep -sE '^AUTH_SECRET=' .env | cut -d= -f2- | tr -d '"')
+if [ ${#secret} -lt 32 ] || echo "$secret" | grep -qiE 'random|change|your'; then
+  env_set AUTH_SECRET "$(openssl rand -hex 32)"
+else
+  echo "  AUTH_SECRET kept"
+fi
+ini=/var/www/emulator/Emulator/config.ini
+rcon=$(grep -sE '^rcon.port=' "$ini" | cut -d= -f2 | tr -d '[:space:]')
+env_set RCON_PORT "${rcon:-3001}"
+# Without Valkey/Redis on this server EpicNext keeps its cache in memory; a URL to nothing only gives errors.
+if ss -Hltn 'sport = :6379' 2>/dev/null | grep -q .; then echo "  REDIS_URL kept (something listens on 6379)"; else
+  sed -i -E 's/^REDIS_URL=/# REDIS_URL=/' .env
+  echo "  REDIS_URL left unset (no Valkey/Redis on 6379)"
+fi
+
+# The database login: over TCP to 127.0.0.1, as EpicNext connects.
+db=$(grep -sE '^db.database=' "$ini" | cut -d= -f2 | tr -d '[:space:]')
+[ -n "$db" ] || fail "No db.database in $ini: run the Emulator step first."
+db_ok() { [ -n "$1" ] && [ -n "$2" ] && MYSQL_PWD="$2" mariadb --protocol=tcp -h 127.0.0.1 -P 3306 -u "$1" -N -e 'SELECT 1 FROM users LIMIT 1' "$db" >/dev/null 2>&1; }
+enc() { node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$1"; }
+dbuser= dbpass= from=
+try_login() { if [ -z "$from" ] && db_ok "$1" "$2"; then dbuser=$1 dbpass=$2 from=$3; fi; }
+try_login '' '' "the cms login saved on this computer"
+cur=$(grep -sE '^DATABASE_URL=' .env | head -1 | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/')
+if [ -n "$cur" ]; then
+  { read -r u; read -r p; } < <(node -e 'try { const u = new URL(process.argv[1]); console.log(decodeURIComponent(u.username)); console.log(decodeURIComponent(u.password)) } catch { console.log(""); console.log("") }' "$cur")
+  [ "$u" = user ] && [ "$p" = password ] || try_login "$u" "$p" "the login already in .env"
+fi
+atom=/var/www/atomcms/.env
+value() { grep -sE "^$1=" "$atom" | head -1 | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/' | tr -d '\r'; }
+try_login "$(value DB_USERNAME)" "$(value DB_PASSWORD)" "AtomCMS' cms login ($atom)"
+if [ -z "$from" ]; then
+  # An account of its own, made with root (the socket login), with the cms account's rights on the hotel database only.
+  pw=$(openssl rand -hex 24)
+  mariadb <<SQL || fail "Making the MariaDB account epicnext failed (see above). Set DATABASE_URL in /var/www/epicnext/.env yourself and run this step again."
+CREATE USER IF NOT EXISTS 'epicnext'@'localhost' IDENTIFIED BY '$pw';
+ALTER USER 'epicnext'@'localhost' IDENTIFIED BY '$pw';
+CREATE USER IF NOT EXISTS 'epicnext'@'127.0.0.1' IDENTIFIED BY '$pw';
+ALTER USER 'epicnext'@'127.0.0.1' IDENTIFIED BY '$pw';
+GRANT EXECUTE, SELECT, SHOW VIEW, ALTER, ALTER ROUTINE, CREATE, CREATE ROUTINE, CREATE TEMPORARY TABLES, CREATE VIEW, DELETE, DROP, EVENT, INDEX, INSERT, REFERENCES, TRIGGER, UPDATE, LOCK TABLES ON \`$db\`.* TO 'epicnext'@'localhost', 'epicnext'@'127.0.0.1';
+FLUSH PRIVILEGES;
+SQL
+  try_login epicnext "$pw" "a new MariaDB account epicnext (only on $db)"
+  [ -n "$from" ] || fail "The new MariaDB account epicnext cannot log in on 127.0.0.1:3306."
+fi
+echo "  Database login: $from"
+env_set DATABASE_URL "mysql://$(enc "$dbuser"):$(enc "$dbpass")@127.0.0.1:3306/$(enc "$db")?charset=utf8mb4&connection_limit=25&connect_timeout=5"
+# EpicNext's checks (src/env.ts) refuse an empty value for a URL or a number (such as DISCORD_WEBHOOK_URL= from
+# .env.example), while an unset one is fine: empty settings are commented out.
+empty=$(grep -cE '^[A-Za-z0-9_]+=("")?[[:space:]]*$' .env || true)
+if [ "$empty" -gt 0 ]; then
+  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Installer)/' .env
+  echo "  $empty empty settings left unset (commented out): EpicNext refuses empty values"
+fi
+chmod 640 .env
+chown www-data:www-data .env

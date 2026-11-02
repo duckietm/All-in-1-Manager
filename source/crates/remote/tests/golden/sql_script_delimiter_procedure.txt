@@ -1,0 +1,19 @@
+=== input
+DELIMITER $$
+CREATE PROCEDURE p()
+BEGIN
+  SELECT 1;
+  SELECT 'x$$y';
+END$$
+DELIMITER ;
+CALL p();
+
+=== statements
+--- line 2
+CREATE PROCEDURE p()
+BEGIN
+  SELECT 1;
+  SELECT 'x$$y';
+END
+--- line 8
+CALL p()

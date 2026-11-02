@@ -1,0 +1,9 @@
+=== input
+/* c */SELECT 1;
+# x
+  SELECT 2;
+=== statements
+--- line 1
+/* c */SELECT 1
+--- line 3
+SELECT 2

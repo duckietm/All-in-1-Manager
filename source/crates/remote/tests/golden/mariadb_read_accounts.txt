@@ -1,0 +1,10 @@
+=== stream
+env=/var/www/atomcms/.env
+ini=/var/www/emulator/Emulator/config.ini
+value() { grep -sE "^$1=" "$2" | head -1 | cut -d= -f2- | sed -E 's/^"(.*)"$/\1/' | tr -d '\r'; }
+echo "DB=$(value db.database "$ini")"
+echo "CMSUSER=$(value DB_USERNAME "$env")"
+echo "CMSPASS=$(value DB_PASSWORD "$env")"
+echo "EMUUSER=$(value db.username "$ini")"
+echo "EMUPASS=$(value db.password "$ini")"
+result: habbo|cms|secret||pw

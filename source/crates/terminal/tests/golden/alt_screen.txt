@@ -1,0 +1,31 @@
+# dump 1
+size 10x4
+cursor 3,0 visible=1
+modes app_cursor=0 bracketed=0 alternate=1
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |top       |
+     0-2:-1/-1/1
+01 - |  alt     |
+02 - |          |
+03 - |          |
+scrollback-lines
+text top\u{A}  alt\u{A}\u{A}
+# dump 2
+size 10x4
+cursor 9,1 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |main1     |
+01 - |main2backZ|
+02 - |          |
+03 - |          |
+scrollback-lines
+text main1\u{A}main2backZ\u{A}\u{A}

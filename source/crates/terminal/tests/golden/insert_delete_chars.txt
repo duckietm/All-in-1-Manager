@@ -1,0 +1,15 @@
+# dump 1
+size 12x4
+cursor 3,3 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |ab  cdefghij|
+01 - |abfghijkl   |
+02 - |ab    ghijkl|
+03 - |XYZello     |
+scrollback-lines
+text ab  cdefghij\u{A}abfghijkl\u{A}ab    ghijkl\u{A}XYZello

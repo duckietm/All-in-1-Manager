@@ -1,0 +1,161 @@
+=== root
+[ -f /opt/traefik/hotel.env ] && sed 's/^/conf_/' /opt/traefik/hotel.env
+status=$(ufw status verbose 2>/dev/null)
+echo "active=$(echo "$status" | grep -q '^Status: active' && echo yes)"
+echo "deny=$(echo "$status" | grep -q 'deny (incoming)' && echo yes)"
+# sshd's listeners plus its configured ports. On Ubuntu 24.04+ systemd holds the socket through ssh.socket.
+echo "ssh=$( (ss -Hltnp 2>/dev/null | grep -E '"sshd"|ssh.socket' | awk '{print $4}' | sed 's/.*://'; sshd -T 2>/dev/null | awk '$1=="port" {print $2}') | sort -un | tr '\n' ' ')"
+echo "mariadb=$(echo "$status" | grep -qE '^3306[/ ].*ALLOW' && echo open)"
+echo "sysctl=$(grep -Eq '^[[:space:]]*net.ipv4.tcp_syncookies[[:space:]]*=[[:space:]]*1[[:space:]]*$' /etc/sysctl.conf && grep -Eq '^[[:space:]]*net.ipv4.tcp_max_syn_backlog[[:space:]]*=[[:space:]]*2048[[:space:]]*$' /etc/sysctl.conf && grep -Eq '^[[:space:]]*net.ipv4.tcp_synack_retries[[:space:]]*=[[:space:]]*3[[:space:]]*$' /etc/sysctl.conf && echo yes)"
+# The firewall's messages only in /var/log/ufw.log: "& stop" is on in rsyslog's ufw file (no file, no rsyslog: fine).
+f=/etc/rsyslog.d/20-ufw.conf
+echo "ufwlog=$([ ! -f "$f" ] || grep -qE '^[[:space:]]*&[[:space:]]*stop' "$f" && echo yes)"
+# NGINX trusts more than 127.0.0.1 (Cloudflare's ranges) in the hotel site's real-IP file.
+echo "realipcf=$([ "$(grep -c '^set_real_ip_from' /etc/nginx/hotel-real-ip.conf 2>/dev/null)" -gt 1 ] && grep -q 'include /etc/nginx/hotel-real-ip.conf' /etc/nginx/sites-available/hotel 2>/dev/null && echo yes)"
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2)
+if [ -n "$db" ]; then
+  echo "whitelist=$(mariadb -N "$db" -e "SELECT \`value\` FROM emulator_settings WHERE \`key\` = 'ws.whitelist'" 2>/dev/null)"
+  echo "ipheader=$(mariadb -N "$db" -e "SELECT \`value\` FROM emulator_settings WHERE \`key\` = 'ws.ip.header'" 2>/dev/null)"
+  echo "trusted=$(mariadb -N "$db" -e "SELECT \`value\` FROM emulator_settings WHERE \`key\` = 'ws.ip.header.trusted'" 2>/dev/null)"
+fi
+=== root
+command -v ufw >/dev/null 2>&1 && echo "ufw=yes"
+[ -f /etc/ufw/all-in-1-hardened ] && echo "marker=yes"
+echo "rules=$(ufw show added 2>/dev/null | grep -c '^ufw ')"
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+if ! command -v ufw >/dev/null 2>&1; then
+  echo "> Installing ufw"
+  apt_update >/dev/null
+  apt-get install -y ufw 2>&1 | grep -v 'Reading database' || true
+  command -v ufw >/dev/null 2>&1 || fail "ufw could not be installed (see above)."
+fi
+# ufw only takes IPv6 rules when IPv6 is on in /etc/default/ufw and on the server.
+ipv6=yes
+grep -qi '^IPV6=yes' /etc/default/ufw 2>/dev/null && [ -f /proc/net/if_inet6 ] || ipv6=
+
+# Download Cloudflare's ranges before anything changes, so a failed download changes nothing.
+ranges=
+if [ no = yes ]; then
+  load_cloudflare_ranges "the firewall was not changed"
+  [ -n "$ipv6" ] || { ranges=$(echo "$ranges" | grep -v ':'); echo "  IPv6 is off: only the IPv4 ranges are used"; }
+fi
+
+echo "> ufw: starting from a clean rule set (ufw keeps the old rules as /etc/ufw/*.rules.<date>)"
+ufw --force reset >/dev/null
+ufw default deny incoming
+ufw default allow outgoing
+for port in 22; do
+  ufw limit "$port/tcp" comment 'Rate limit for openssh server'
+done
+
+if [ -n "$ranges" ]; then
+  echo "> HTTP/HTTPS only from Cloudflare"
+  for range in $ranges; do
+    ufw allow proto tcp from "$range" to any port 80,443 comment 'Cloudflare' >/dev/null
+  done
+  echo "  $(echo "$ranges" | grep -c .) Cloudflare ranges may reach ports 80 and 443"
+else
+  ufw allow 80/tcp comment 'HTTP (Traefik)'
+  ufw allow 443/tcp comment 'HTTPS (Traefik)'
+fi
+
+echo "  MariaDB (3306) and the emulator's ports stay closed (use an SSH tunnel for HeidiSQL)"
+
+echo "> ufw enable"
+ufw --force enable
+printf 'Firewall set up by the All-in-1 Installer harden step on %s.\nThe other steps no longer open ports; run the harden step again to change the rules.\n' "$(date)" > /etc/ufw/all-in-1-hardened
+ufw status verbose | sed 's/^/  /' | grep -v '^  $' | grep -v 'Cloudflare' || true
+[ -z "$ranges" ] || echo "  (+ $(ufw status | grep -c Cloudflare) Cloudflare rules for 80,443)"
+echo "> Firewall log: /var/log/ufw.log"
+if ufw status verbose 2>/dev/null | grep -q '^Logging: off'; then ufw logging low >/dev/null; echo "  ufw logging switched on (low)"; fi
+f=/etc/rsyslog.d/20-ufw.conf
+if [ -f "$f" ]; then
+  if grep -qE '^[[:space:]]*#[[:space:]]*&[[:space:]]*stop' "$f"; then
+    sed -i -E 's/^[[:space:]]*#[[:space:]]*(&[[:space:]]*stop)/\1/' "$f"
+    echo "  $f: '& stop' switched on: the firewall's messages go only to /var/log/ufw.log, not also to kern.log and syslog"
+  elif grep -qE '^[[:space:]]*&[[:space:]]*stop' "$f"; then
+    echo "  $f: '& stop' is already on"
+  else
+    printf '& stop\n' >> "$f"
+    echo "  $f: '& stop' added"
+  fi
+  if { [ -d /run/systemd/system ] && systemctl restart rsyslog; } || service rsyslog restart >/dev/null 2>&1; then
+    echo "  rsyslog restarted"
+  else
+    echo "  rsyslog could not be restarted: run 'sudo service rsyslog restart' yourself"
+  fi
+else
+  echo "  No $f (rsyslog is not installed): the firewall's messages are in the journal (journalctl -k | grep UFW)"
+fi
+result: yes

@@ -1,0 +1,125 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root CI=1 NO_COLOR=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NEXT_TELEMETRY_DISABLED=1
+pid=$(ss -Hltnp "sport = :3002" 2>/dev/null | grep -oE 'pid=[0-9]+' | head -1 | cut -d= -f2)
+# Next.js' own server process runs in the CMS folder.
+if [ -n "$pid" ] && [ "$(readlink /proc/$pid/cwd)" != /var/www/epicnext ]; then
+  ps -o pid=,user=,args= -p "$pid" | sed 's/^/  /'
+  fail "Port 3002 is used by another program (above): EpicNext runs on 127.0.0.1:3002. Stop that program first."
+fi
+echo "> /etc/systemd/system/epicnext-cms.service"
+cat > /etc/systemd/system/epicnext-cms.service <<'UNIT'
+# EpicNext CMS (written by All-in-1 Installer, Addons → CMS). NGINX (cms-epicnext) passes the site here.
+[Unit]
+Description=EpicNext CMS
+After=network-online.target mariadb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/epicnext
+Environment=NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+ExecStart=/usr/bin/node /var/www/epicnext/node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3002
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+chmod 644 /etc/systemd/system/epicnext-cms.service
+if [ -d /run/systemd/system ]; then
+  systemctl daemon-reload
+  systemctl enable epicnext-cms >/dev/null 2>&1
+  systemctl restart epicnext-cms
+  echo "  epicnext-cms enabled and started"
+else
+  if [ -d /run/systemd/system ]; then systemctl stop epicnext-cms 2>/dev/null || true
+else pkill -u www-data -f '/var/www/epicnext/node_modules/next/' 2>/dev/null || true; fi
+  touch /var/log/epicnext-cms.log && chown www-data /var/log/epicnext-cms.log
+  # Only the server itself in the background, with no handle on this session's output (it would keep it open).
+  cd /var/www/epicnext
+  setsid runuser -u www-data -- env NODE_ENV=production /usr/bin/node /var/www/epicnext/node_modules/next/dist/bin/next start -H 127.0.0.1 -p 3002 </dev/null >>/var/log/epicnext-cms.log 2>&1 &
+  echo "  (no systemd on this machine: started directly, not at boot; log /var/log/epicnext-cms.log)"
+fi
+for i in $(seq 1 60); do
+  code=$(curl -s --noproxy '*' -o /dev/null --max-time 5 -w '%{http_code}' http://127.0.0.1:3002/ || true)
+  [ -n "$code" ] && [ "$code" != 000 ] && break
+  sleep 2
+done
+if [ -z "$code" ] || [ "$code" = 000 ]; then
+  if [ -d /run/systemd/system ]; then journalctl -u epicnext-cms -n 30 --no-pager 2>/dev/null | sed 's/^/  /'; else tail -30 /var/log/epicnext-cms.log | sed 's/^/  /'; fi
+  fail "EpicNext does not answer on http://127.0.0.1:3002 after 2 minutes (its log is above)."
+fi
+echo "  http://127.0.0.1:3002/ answers HTTP $code"

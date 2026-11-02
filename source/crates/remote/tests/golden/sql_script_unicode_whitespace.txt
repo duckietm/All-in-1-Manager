@@ -1,0 +1,8 @@
+=== input
+ SELECT 'é;ü'; 
+SELECT 2;　
+=== statements
+--- line 1
+SELECT 'é;ü'
+--- line 2
+SELECT 2

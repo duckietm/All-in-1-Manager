@@ -1,0 +1,14 @@
+=== root
+d=/var/www/emulator/Emulator
+echo "repo=$([ -f "$d/pom.xml" ] && echo yes)"
+echo "java=$(ls -d /usr/lib/jvm/java-25-openjdk-* /usr/lib/jvm/temurin-25-jdk-* 2>/dev/null | head -1)"
+echo "account=$(id -nG emulator 2>/dev/null | grep -qw www-data && echo yes)"
+echo "jar=$(ls -t "$d"/target/Polaris-*-jar-with-dependencies.jar "$d"/target/Habbo-*-jar-with-dependencies.jar 2>/dev/null | head -1)"
+echo "config=$([ -f "$d/config.ini" ] && echo yes)"
+echo "running=$(if [ -d /run/systemd/system ]; then systemctl is-active --quiet emulator; else pgrep -u emulator -f 'jar-with-dependencies' >/dev/null; fi && echo yes)"
+echo "service=$([ -f /etc/systemd/system/emulator.service ] && echo yes)"
+echo "configtz=$(grep -oE 'serverTimezone=[^&[:space:]]+' "$d/config.ini" 2>/dev/null | head -1 | cut -d= -f2)"
+echo "memory=$(grep -oE '^MEMORY_MB=[0-9]+|Xmx[0-9]+m' "$d/emulator" 2>/dev/null | head -1 | tr -dc 0-9)"
+echo "whitelist=$(mariadb -N -e "SELECT value FROM habbo.emulator_settings WHERE \`key\` = 'ws.whitelist'" 2>/dev/null)"
+echo "ram=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)"
+echo "zones=$( (timedatectl list-timezones 2>/dev/null || (cd /usr/share/zoneinfo && find [A-Z]* -type f | grep -vE '^(posix|right|Etc/)' | sort)) | tr '\n' ' ')"

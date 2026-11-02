@@ -1,0 +1,114 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin HOME=/root CI=1 NO_COLOR=1 COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NEXT_TELEMETRY_DISABLED=1
+set -o pipefail
+for tool in git rsync; do
+  if ! command -v $tool >/dev/null 2>&1; then
+    echo "> Installing $tool"
+    apt_update >/dev/null
+    apt-get install -y $tool >/dev/null
+  fi
+done
+src=/var/www/epicnext-src
+d=/var/www/epicnext
+u='https://gitea.epicnabbo.nl/Remco/EpicNext-Cms.git'
+b=''
+f=''
+g() { git -c safe.directory="$src" -C "$src" "$@"; }
+# The checkout fits when it is of the same repository, branch and folder; otherwise it is made again.
+if [ -d "$src/.git" ] && [ "$(sed -n 1p /var/www/epicnext-src/.all-in-1-source 2>/dev/null)" = "$u" ] &&
+   [ "$(sed -n 2p /var/www/epicnext-src/.all-in-1-source 2>/dev/null)" = "$b" ] && [ "$(sed -n 3p /var/www/epicnext-src/.all-in-1-source 2>/dev/null)" = "$f" ]; then
+  current=$(g rev-parse --abbrev-ref HEAD)
+  echo "> git fetch origin $current  ($src)"
+  GIT_TERMINAL_PROMPT=0 g fetch --quiet --depth 1 origin "$current" || fail "git fetch failed (see above)."
+  g reset --quiet --hard FETCH_HEAD
+else
+  rm -rf "$src"
+  echo "> git clone --sparse${b:+ --branch $b} $u  (only $f, into $src)"
+  GIT_TERMINAL_PROMPT=0 git clone --quiet --depth 1 --filter=blob:none --sparse ${b:+--branch "$b"} "$u" "$src" 2>&1 ||
+    fail "Cloning $u${b:+ (branch $b)} failed (see above)."
+  g sparse-checkout set "$f" || fail "git sparse-checkout failed (see above)."
+  printf '%s\n%s\n%s\n' "$u" "$b" "$f" > /var/www/epicnext-src/.all-in-1-source
+fi
+if [ ! -f "$src/$f/package.json" ]; then
+  fail "$f is not in the $(g rev-parse --abbrev-ref HEAD) branch of $u (no package.json there). Enter the branch that has it, or check the folder."
+fi
+[ -d "$d" ] && [ -n "$(ls -A "$d" 2>/dev/null)" ] && [ ! -f "$d/package.json" ] &&
+  echo "  WARNING: $d had other content; files the CMS does not use stay there"
+install -d -m 755 "$d"
+echo "> $f -> $d"
+# What the CMS writes while it runs stays: settings, packages, build, uploads, imported assets.
+rsync -a --delete               --exclude=/.env --exclude='/.env.bak-*' --exclude=/.env.local               --exclude=/node_modules/ --exclude=/.next/ --exclude=/storage/ --exclude=/logs/ --exclude=/backups/               --exclude=/public/nitro-assets/ --exclude=/public/swf/ --exclude=/public/cache/ --exclude=/public/assets/images/badges/               --exclude=/.git/               "$src/$f/" "$d/"
+echo "  $(find "$d" -path "$d/node_modules" -prune -o -type f -print | wc -l) files"
+echo "COMMIT=$(g rev-parse --abbrev-ref HEAD) $(g log -1 --format='%h %cd %s' --date=short)"
+commit=

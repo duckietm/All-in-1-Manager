@@ -1,0 +1,151 @@
+=== stream
+set -e
+export DEBIAN_FRONTEND=noninteractive
+. /etc/os-release
+codename="${VERSION_CODENAME:-$(lsb_release -cs 2>/dev/null)}"
+fail() { echo "ERROR: $*"; exit 1; }
+# docker compose in a folder, with the owner's own compose.override.yaml when there is one (it survives reruns).
+compose_in() {
+  if [ -f "$1/compose.override.yaml" ]; then docker compose -f "$1/compose.yaml" -f "$1/compose.override.yaml" "${@:2}"
+  else docker compose -f "$1/compose.yaml" "${@:2}"; fi
+}
+
+# apt refuses repository files dated in the future ("Release file ... is not valid yet"), so a server
+# clock that runs behind breaks every apt-get update. Compare it with the Date header of a trusted
+# HTTPS server and correct it once, before the first update.
+clock_checked=
+fix_clock() {
+  [ -n "$clock_checked" ] && return 0
+  clock_checked=1
+  remote=""
+  for url in https://deb.debian.org/ https://archive.ubuntu.com/; do
+    if command -v curl >/dev/null 2>&1; then
+      remote=$(curl -fsSI --max-time 10 "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    elif command -v wget >/dev/null 2>&1; then
+      remote=$(wget -qS --spider -T 10 "$url" 2>&1 | tr -d '\r' | awk 'tolower($1)=="date:" {sub(/^[^:]*: */, ""); print; exit}')
+    fi
+    [ -n "$remote" ] && break
+  done
+  [ -n "$remote" ] || { echo "  (could not check the server clock: no curl/wget or no internet)"; return 0; }
+  real=$(date -d "$remote" +%s 2>/dev/null) || return 0
+  skew=$((real - $(date +%s)))
+  if [ "${skew#-}" -gt 120 ]; then
+    echo "  The server clock is off by $skew seconds: setting it to $remote"
+    date -u -s "@$real" >/dev/null || fail "The server clock is off by $skew seconds and could not be corrected. Set the right time, then try again."
+    hwclock --systohc >/dev/null 2>&1 || true
+    if command -v timedatectl >/dev/null 2>&1 && [ -d /run/systemd/system ] && timedatectl set-ntp true >/dev/null 2>&1; then
+      echo "  Automatic time sync (NTP) is on"
+    else
+      echo "  Automatic time sync could not be switched on: install systemd-timesyncd or chrony to keep the time right"
+    fi
+  fi
+}
+apt_update() { fix_clock; apt-get update; }
+
+# download URL FILE, with timeouts and retries and a last attempt over IPv4. Tools that download by
+# themselves (composer-setup.php, mvnw) have no timeout and hang forever on a broken IPv6 route.
+download() {
+  curl -fsSL --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1" && return 0
+  echo "  Trying again over IPv4 ..."
+  curl -fsSL -4 --connect-timeout 20 --max-time 900 --retry 2 --retry-delay 5 -o "$2" "$1"
+}
+
+# Opens ports when ufw is active, unless the harden step manages the firewall.
+ufw_allow() {
+  if [ -f /etc/ufw/all-in-1-hardened ]; then
+    echo "  The firewall is managed by the Harden step: no port opened (run that step again to change it)"
+    return 0
+  fi
+  command -v ufw >/dev/null 2>&1 && ufw status | grep -q 'Status: active' || return 0
+  echo "> ufw is active: allowing $*"
+  for port in "$@"; do ufw allow "$port"; done
+}
+
+# Sets $ranges to Cloudflare's published IP ranges, one per line. $1 is added to the error message.
+load_cloudflare_ranges() {
+  fix_clock
+  echo "> Downloading Cloudflare's IP ranges (www.cloudflare.com/ips-v4, ips-v6)"
+  ranges=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
+    | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
+  [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
+  echo "  $(echo "$ranges" | grep -c .) ranges"
+}
+d=/var/www/emulator/Emulator
+# mvnw downloads Maven silently and without a timeout, which can hang forever on a server with broken IPv6.
+# Download the version it asks for here instead, with visible output and timeouts.
+props="$d/.mvn/wrapper/maven-wrapper.properties"
+url=$(sed -n 's/^distributionUrl=//p' "$props" 2>/dev/null | tr -d '\r')
+sum=$(sed -n 's/^distributionSha256Sum=//p' "$props" 2>/dev/null | tr -d '\r')
+maven=
+if [ -n "$url" ]; then
+  name=$(basename "$url" -bin.zip)
+  maven=/opt/$name/bin/mvn
+  if [ ! -x "$maven" ]; then
+    echo "> Downloading $name (only the first build)"
+    echo "  $url"
+    tmp=$(mktemp -d)
+    # New Maven releases can reach the Apache download servers before Maven Central, so try those too.
+    version=${name#apache-maven-}
+    apache="maven/maven-${version%%.*}/$version/binaries/$name-bin.zip"
+    got=
+    for from in "$url" "https://dlcdn.apache.org/$apache" "https://archive.apache.org/dist/$apache"; do
+      if download "$from" "$tmp/maven.zip"; then got=$from; break; fi
+      echo "  Not available from $(echo "$from" | cut -d/ -f3), trying the next server ..."
+    done
+    [ -n "$got" ] || { rm -rf "$tmp"; fail "Could not download $name. Check that the server can reach repo.maven.apache.org and dlcdn.apache.org (DNS, firewall, proxy)."; }
+    [ "$got" = "$url" ] || echo "  from $got"
+    echo "  $(du -h "$tmp/maven.zip" | cut -f1) downloaded"
+    if [ -n "$sum" ] && ! echo "$sum  $tmp/maven.zip" | sha256sum -c --status; then
+      rm -rf "$tmp"; fail "The downloaded Maven does not match the sha256 in maven-wrapper.properties."
+    fi
+    rm -rf "/opt/$name"
+    unzip -q "$tmp/maven.zip" -d /opt
+    rm -rf "$tmp"
+    [ -x "$maven" ] || fail "$maven is missing after unpacking."
+  fi
+  echo "  $("$maven" -v 2>/dev/null | head -1 | sed 's/\x1b\[[0-9;]*m//g')"
+fi
+cat > "$d/build.sh" <<'BUILD'
+#!/bin/sh
+# Builds the Polaris emulator into target/ (written by All-in-1 Installer).
+#   ./build.sh               build without the unit tests (about 1 minute)
+#   ./build.sh --with-tests  also run the 4000+ unit tests (about 4 minutes)
+# pom.xml needs Maven 3.9.11+ and JDK 25, newer than most distributions ship: the installer puts the
+# Maven version of the Maven Wrapper in /opt; without it, mvnw downloads it.
+set -e
+cd "$(dirname "$0")"
+export JAVA_HOME=JAVA_HOME_HERE
+mvn=MAVEN_HERE
+[ -x "$mvn" ] || mvn=./mvnw
+tests=-DskipTests
+[ "$1" = "--with-tests" ] && tests=
+exec "$mvn" -B -ntp clean package $tests -f pom.xml
+BUILD
+sed -i -e "s#JAVA_HOME_HERE#/usr/lib/jvm/java-25-openjdk-amd64#" -e "s#MAVEN_HERE#${maven:-./mvnw}#" "$d/build.sh"
+chown emulator:www-data "$d/build.sh"
+chmod 755 "$d/build.sh" "$d/mvnw"
+echo "> $d/build.sh (as emulator)"
+# The account's real home (an existing account keeps its own), for Maven's ~/.m2.
+home=$(getent passwd emulator | cut -d: -f6)
+home=${home:-/var/lib/emulator}
+[ -d "$home/.m2/repository" ] || echo "  The first build downloads the libraries (about 150 MB): this takes a few minutes."
+cd "$d"
+# Maven prints little while it downloads, so report progress every 30 s and give up after 30 minutes.
+start=$(date +%s)
+timeout 1800 runuser -u emulator -- env HOME="$home" "$d/build.sh" &
+build=$!
+(
+  while sleep 30 </dev/null >/dev/null 2>&1; do
+    kill -0 $build 2>/dev/null || exit 0
+    echo "  ... still building: $(( ($(date +%s) - start) / 60 )) min, $(du -sm "$home/.m2" 2>/dev/null | cut -f1) MB in ~/.m2"
+  done
+) &
+beat=$!
+if wait $build; then rc=0; else rc=$?; fi
+kill $beat 2>/dev/null || true
+wait $beat 2>/dev/null || true
+[ $rc -ne 124 ] || fail "The build did not finish within 30 minutes. Run $d/build.sh on the server to see where it stops."
+[ $rc -eq 0 ] || fail "build.sh stopped with exit code $rc (see the Maven output above)."
+jar=$(ls -t target/Polaris-*-jar-with-dependencies.jar target/Habbo-*-jar-with-dependencies.jar 2>/dev/null | head -1)
+[ -n "$jar" ] || fail "The build finished, but there is no *-jar-with-dependencies.jar in $d/target."
+echo "JAR=$d/$jar"

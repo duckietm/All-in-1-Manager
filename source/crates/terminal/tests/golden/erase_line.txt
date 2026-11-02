@@ -1,0 +1,18 @@
+# dump 1
+size 16x4
+cursor 4,2 visible=1
+modes app_cursor=0 bracketed=0 alternate=0
+title 
+scrollback 0 dropped 0
+replies 
+bells 0
+screen
+00 - |0123            |
+     4-15:-1/1/0
+01 w |     56789ABCDEF|
+     0-4:-1/1/0
+02 - |                |
+     0-15:-1/1/0
+03 - |                |
+scrollback-lines
+text 0123\u{A}     56789ABCDEF\u{A}

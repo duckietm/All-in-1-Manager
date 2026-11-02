@@ -79,6 +79,25 @@ pub fn packed_version() -> String {
         .clone()
 }
 
+/// The translations of the catalogue's page texts (Dutch text -> text), per language, maintained with
+/// source/tools/catalog_texts.py.
+const PAGE_TEXTS: [(&str, &str); 8] = [
+    ("en", include_str!("../../assets/catalog/texts/en.json")),
+    ("es", include_str!("../../assets/catalog/texts/es.json")),
+    ("pt", include_str!("../../assets/catalog/texts/pt.json")),
+    ("de", include_str!("../../assets/catalog/texts/de.json")),
+    ("fr", include_str!("../../assets/catalog/texts/fr.json")),
+    ("it", include_str!("../../assets/catalog/texts/it.json")),
+    ("fi", include_str!("../../assets/catalog/texts/fi.json")),
+    ("tr", include_str!("../../assets/catalog/texts/tr.json")),
+];
+
+/// The page text dictionaries, read once.
+pub fn page_dictionaries() -> &'static [(&'static str, aio_remote::catalog_texts::Dictionary)] {
+    static DICTIONARIES: std::sync::OnceLock<Vec<(&'static str, aio_remote::catalog_texts::Dictionary)>> = std::sync::OnceLock::new();
+    DICTIONARIES.get_or_init(|| PAGE_TEXTS.iter().map(|(code, json)| (*code, serde_json::from_str(json).unwrap_or_default())).collect())
+}
+
 /// The language the packed FurnitureData.json is in: chosen, it is used as it is.
 pub const PACKED_LANGUAGE: &str = "nl";
 
@@ -366,6 +385,10 @@ impl InstallStep for DefaultCatalogStep {
                     self.output.lock().unwrap().switched = Some(switched);
                 }
             }
+            // The page texts were imported in Dutch.
+            if language.code != PACKED_LANGUAGE {
+                aio_remote::catalog_texts::translate(server, page_dictionaries(), language.code, language.name, &log).await?;
+            }
             // The emulator writes to ExternalTexts.json too, so it goes in while the emulator is stopped.
             let old_texts = match &texts {
                 Some(texts) => {
@@ -456,6 +479,21 @@ pub fn wizard(shared: &Shared) -> Wizard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn page_text_translations_fit_their_originals() {
+        let keys: Vec<String> = serde_json::from_str(include_str!("../../assets/catalog/texts/keys.json")).unwrap();
+        let keys: std::collections::HashSet<&str> = keys.iter().map(String::as_str).collect();
+        for (code, json) in PAGE_TEXTS {
+            let dictionary: std::collections::HashMap<String, String> = serde_json::from_str(json).unwrap_or_else(|e| panic!("{code}.json: {e}"));
+            for (original, translated) in &dictionary {
+                assert!(keys.contains(original.as_str()), "{code}.json: {original:?} is not in the catalogue (run source/tools/catalog_texts.py)");
+                assert_eq!(original.matches('\n').count(), translated.matches('\n').count(), "{code}.json: line breaks of {original:?}");
+                assert_eq!(original.matches('<').count(), translated.matches('<').count(), "{code}.json: HTML tags of {original:?}");
+            }
+        }
+        assert_eq!(page_dictionaries().len(), 8);
+    }
 
     #[test]
     fn the_version_is_quick() {

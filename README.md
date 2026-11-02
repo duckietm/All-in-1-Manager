@@ -1064,6 +1064,22 @@ skipped; split at the first `=`). Texts the hotel has but the official file does
 names of custom badges there, hotels add their own). It goes to `gamedata/config/ExternalTexts.json` while the
 emulator is stopped (the old file kept as `.bak-<time>`), and comes back when the emulator does not load afterwards.
 
+**Catalogue page texts**: the captions and texts of the catalogue pages (`caption`, `page_text1`, `page_text2`,
+`page_text_details`, `page_text_teaser` of `catalog_pages` and `catalog_pages_bc`) follow the furniture language too.
+The translations are dictionaries in `source/crates/app/assets/catalog/texts/<lang>.json`, from the Dutch text as it
+is in the catalogue to the text in that language. A text in the database is recognised in any of the languages, so
+English → German works as well; a text that is in no dictionary (a page you wrote yourself) is never touched, and a
+text without a translation stays as it is. The changes go in one transaction while the emulator is stopped.
+
+Keeping them up to date after a new catalogue export:
+
+```bash
+python source/tools/catalog_texts.py --missing   # replace Full_Catalog.zip first; writes texts/<lang>.missing.json
+#   fill in the values of the .missing.json files (keep HTML tags, line breaks and %placeholders%)
+python source/tools/catalog_texts.py --merge     # into texts/<lang>.json
+cargo test -p aio-app                            # checks every translation against its original
+```
+
 Switching later, without importing the catalogue again: **Tools → Furniture language** (download first, then one stop
 of the emulator, the database, `FurnitureData.json` and optionally `ExternalTexts.json`, and one start).
 

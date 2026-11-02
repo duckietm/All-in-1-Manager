@@ -630,6 +630,7 @@ async fn furniture_language_tool(job: &Job) -> Result<()> {
     run.done(if stopped { t("stopped") } else { t("not installed") });
     let work = async {
         let switched = furniture_language::finish(server, prepared, false, &log).await?;
+        aio_remote::catalog_texts::translate(server, crate::views::default_catalog::page_dictionaries(), language.code, language.name, &log).await?;
         run.done(name);
         let old_texts = match &texts {
             Some(texts) => {

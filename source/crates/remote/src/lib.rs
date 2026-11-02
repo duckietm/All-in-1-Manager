@@ -8,6 +8,7 @@ pub mod server;
 pub mod ssh;
 
 pub mod asset_sync;
+pub mod catalog_texts;
 pub mod atom_cms;
 pub mod cms_site;
 pub mod crowdsec;

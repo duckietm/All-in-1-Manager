@@ -97,6 +97,10 @@ fn preview(s: &WebAccessSettings) -> String {
     let mut text = format!(
         "{url}  →  NGINX on localhost:{NGINX_PORT}\n{url}/ws  and  {url}/api  →  Polaris on localhost:{POLARIS_PORT}"
     );
+    if let Some(alias) = s.www_alias() {
+        text.push('\n');
+        text.push_str(&tf("{alias}  →  redirects to {url}, once {alias} has a DNS record that points here too", &[("alias", &alias), ("url", &url)]));
+    }
     if s.cloudflare {
         text.push('\n');
         text.push_str(t("Cloudflare: set SSL/TLS to \"Full (strict)\" for https, and keep the DNS record proxied (orange cloud)."));

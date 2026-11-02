@@ -480,6 +480,15 @@ https://example.com/api/...  Traefik          -> Polaris    http://127.0.0.1:209
    redirects to https and the Let's Encrypt certificate (HTTP challenge) is renewed automatically. With
    Cloudflare, `X-Forwarded-For` is only trusted from Cloudflare's published IP ranges; without it, Traefik
    writes the header itself, so it cannot be faked. Ports 80 and 443 are opened in ufw when it is active.
+
+   **www**: a hotel on a domain of its own also answers on its second name, `example.com` on `www.example.com`
+   and `www.example.com` on `example.com` (also for two-part endings such as `example.co.uk`). A subdomain
+   (`test.example.com`), `localhost` and an IP address are the only name. The second name **redirects** (301) to
+   the address you entered, keeping the path, so cookies, Polaris' websocket whitelist and the CMS' own URL keep
+   one name; it has a router and certificate of its own in `dynamic/hotel-www.yml`, so it can never cost the
+   address its certificate. That file is only written when the second name has a DNS record that points where the
+   address points (any record with Cloudflare); otherwise the log says which record to add (an A record, or a
+   CNAME to the address for `www`), and running the step again adds the redirect.
 4. **Polaris**: the address is added to `ws.whitelist` (websocket origins and CORS for `/api`), and
    `ws.ip.header = X-Forwarded-For`, so bans and rate limits see the visitor's IP; with Cloudflare also
    `ws.ip.header.trusted` = Cloudflare's ranges (see **The players' real IP behind Cloudflare** below). The emulator

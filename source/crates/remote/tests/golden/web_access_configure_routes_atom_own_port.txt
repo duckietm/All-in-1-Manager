@@ -121,3 +121,4 @@ CMS=atom
 CMS_NAME=
 CMS_PORT=86
 EOF
+rm -f "$t/dynamic/hotel-www.yml"

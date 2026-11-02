@@ -1927,6 +1927,7 @@
   "{address}: expires in {days} days. Let's Encrypt renews it from 30 days before: is port 80 reachable?": "{address}: {days} gün içinde sona eriyor. Let's Encrypt onu 30 gün öncesinden yeniler: port 80'e ulaşılabiliyor mu?",
   "{address}: the certificate could not be read on port 443.": "{address}: sertifika port 443 üzerinde okunamadı.",
   "{address}: valid for {days} more days.": "{address}: {days} gün daha geçerli.",
+  "{alias}  →  redirects to {url}, once {alias} has a DNS record that points here too": "{alias}  →  {url} adresine yönlendirir; bunun için {alias} için de buraya işaret eden bir DNS kaydı gerekir",
   "{available} of {total} free.": "{total} alanın {available} kadarı boş.",
   "{banned} address(es) banned now, {total} in total since the last restart. You can skip this step, or save new settings.": "Şu an {banned} adres yasaklı, son yeniden başlatmadan beri toplam {total}. Bu adımı atlayabilir ya da yeni ayarları kaydedebilirsin.",
   "{behind} new": "{behind} yeni",

@@ -1927,6 +1927,7 @@
   "{address}: expires in {days} days. Let's Encrypt renews it from 30 days before: is port 80 reachable?": "{address}: verloopt over {days} dagen. Let's Encrypt vernieuwt het vanaf 30 dagen vooraf: is poort 80 bereikbaar?",
   "{address}: the certificate could not be read on port 443.": "{address}: het certificaat kon niet worden gelezen op poort 443.",
   "{address}: valid for {days} more days.": "{address}: nog {days} dagen geldig.",
+  "{alias}  →  redirects to {url}, once {alias} has a DNS record that points here too": "{alias}  →  stuurt door naar {url}, zodra {alias} ook een DNS-record heeft dat hierheen wijst",
   "{available} of {total} free.": "{available} van {total} vrij.",
   "{banned} address(es) banned now, {total} in total since the last restart. You can skip this step, or save new settings.": "Nu {banned} adres(sen) gebannen, {total} in totaal sinds de laatste herstart. Je kunt deze stap overslaan, of nieuwe instellingen opslaan.",
   "{behind} new": "{behind} nieuw",

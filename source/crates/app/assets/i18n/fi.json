@@ -1927,6 +1927,7 @@
   "{address}: expires in {days} days. Let's Encrypt renews it from 30 days before: is port 80 reachable?": "{address}: vanhenee {days} päivän kuluttua. Let's Encrypt uusii sen 30 päivää etukäteen: onko portti 80 tavoitettavissa?",
   "{address}: the certificate could not be read on port 443.": "{address}: varmennetta ei voitu lukea portista 443.",
   "{address}: valid for {days} more days.": "{address}: voimassa vielä {days} päivää.",
+  "{alias}  →  redirects to {url}, once {alias} has a DNS record that points here too": "{alias}  →  ohjaa osoitteeseen {url}, kun myös nimellä {alias} on tänne osoittava DNS-tietue",
   "{available} of {total} free.": "{available} / {total} vapaana.",
   "{banned} address(es) banned now, {total} in total since the last restart. You can skip this step, or save new settings.": "{banned} osoitetta estetty nyt, yhteensä {total} viime uudelleenkäynnistyksen jälkeen. Voit ohittaa tämän vaiheen tai tallentaa uudet asetukset.",
   "{behind} new": "{behind} uutta",

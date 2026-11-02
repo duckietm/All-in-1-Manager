@@ -1927,6 +1927,7 @@
   "{address}: expires in {days} days. Let's Encrypt renews it from 30 days before: is port 80 reachable?": "{address}: caduca en {days} días. Let's Encrypt lo renueva desde 30 días antes: ¿es accesible el puerto 80?",
   "{address}: the certificate could not be read on port 443.": "{address}: no se pudo leer el certificado en el puerto 443.",
   "{address}: valid for {days} more days.": "{address}: válido {days} días más.",
+  "{alias}  →  redirects to {url}, once {alias} has a DNS record that points here too": "{alias}  →  redirige a {url}, en cuanto {alias} también tenga un registro DNS que apunte aquí",
   "{available} of {total} free.": "{available} de {total} libres.",
   "{banned} address(es) banned now, {total} in total since the last restart. You can skip this step, or save new settings.": "{banned} dirección(es) bloqueada(s) ahora, {total} en total desde el último reinicio. Puedes saltar este paso, o guardar ajustes nuevos.",
   "{behind} new": "{behind} nuevos",

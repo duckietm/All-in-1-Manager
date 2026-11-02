@@ -41,6 +41,11 @@ pub fn compare(name: &str, actual: &str) {
     if expected == actual {
         return;
     }
+    // AIO_UPDATE_GOLDEN=1 cargo test: after an intended change, write the new output over the golden file (review the diff).
+    if std::env::var_os("AIO_UPDATE_GOLDEN").is_some() {
+        std::fs::write(&path, actual).unwrap();
+        return;
+    }
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../target/golden-actual");
     let _ = std::fs::create_dir_all(&out);
     let _ = std::fs::write(out.join(format!("{name}.txt")), actual);

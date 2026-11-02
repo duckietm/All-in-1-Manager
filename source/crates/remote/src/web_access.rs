@@ -79,6 +79,25 @@ impl WebAccessSettings {
         self.address.parse::<std::net::IpAddr>().is_ok()
     }
 
+    /// The second name of a hotel on a domain of its own: www.example.com for example.com, and example.com for
+    /// www.example.com. None for a subdomain (test.example.com), a name without a dot (localhost) and an IP address:
+    /// those are the only name. Traefik redirects the second name to the address, so cookies, Polaris' websocket
+    /// whitelist and the CMS' own URL keep one name.
+    pub fn www_alias(&self) -> Option<String> {
+        if self.is_ip_address() {
+            return None;
+        }
+        let address = self.address.trim_end_matches('.').to_lowercase();
+        let (www, base) = match address.strip_prefix("www.") {
+            Some(base) => (true, base.to_string()),
+            None => (false, address.clone()),
+        };
+        if !is_registrable_domain(&base) {
+            return None;
+        }
+        Some(if www { base } else { format!("www.{base}") })
+    }
+
     /// Reads /opt/traefik/hotel.env as printed with a conf_ prefix. None before the web access step.
     pub fn from_hotel_env(values: &ScriptValues) -> Option<Self> {
         let address = values.get("conf_ADDRESS")?;
@@ -93,6 +112,26 @@ impl WebAccessSettings {
             epic_next: cms == Some("epicnext"),
         })
     }
+}
+
+// Public suffixes with two parts that hotels use (example.co.uk is a domain of its own, like example.com).
+const TWO_PART_SUFFIXES: &[&str] = &[
+    "co.uk", "org.uk", "me.uk", "ltd.uk", "plc.uk", "net.uk", "com.au", "net.au", "org.au", "co.nz", "net.nz", "org.nz", "com.br",
+    "net.br", "org.br", "com.tr", "net.tr", "org.tr", "co.za", "com.mx", "com.ar", "co.jp", "com.cn", "com.sg", "com.my", "co.in",
+    "co.id", "com.ph", "co.kr", "co.il", "com.pl", "com.pt", "com.es", "co.it", "com.ua", "com.ru",
+];
+
+// Names that never get a www twin: on the own computer or the local network.
+const LOCAL_SUFFIXES: &[&str] = &["localhost", "local", "lan", "home", "internal", "test", "invalid", "example"];
+
+/// example.com, example.co.uk: the name a registrar sells, not a subdomain of it, a name without a dot or a local one.
+fn is_registrable_domain(name: &str) -> bool {
+    let labels: Vec<&str> = name.split('.').collect();
+    if labels.len() < 2 || labels.iter().any(|l| l.is_empty()) || LOCAL_SUFFIXES.contains(labels.last().unwrap()) {
+        return false;
+    }
+    let two_part = labels.len() >= 2 && TWO_PART_SUFFIXES.contains(&labels[labels.len() - 2..].join(".").as_str());
+    labels.len() == if two_part { 3 } else { 2 }
 }
 
 pub const TRAEFIK_DIRECTORY: &str = "/opt/traefik";
@@ -466,7 +505,63 @@ CLOUDFLARE={{cloudflare}}
 CMS={{cms}}
 CMS_NAME={{cmsName}}
 CMS_PORT={{cmsPort}}
-EOF"#;
+EOF{{www}}"#;
+
+// The hotel's second name (www.example.com, or example.com for www.example.com): its own router that redirects to the
+// address, with a certificate of its own, so a missing record can never cost the address its certificate. Only when the
+// name has a DNS record that points where the address points (or to Cloudflare); otherwise the step says what to add.
+const WWW_ROUTE: &str = r#"
+
+www={{alias}}
+main=$(getent ahostsv4 {{Address}} 2>/dev/null | awk '{print $1}' | sort -u)
+second=$(getent ahostsv4 "$www" 2>/dev/null | awk '{print $1}' | sort -u)
+if [ -n "$second" ] && { [ {{cloudflare}} = yes ] || [ -z "$main" ] || [ -n "$(printf '%s\n' $main $second | sort | uniq -d)" ]; }; then
+  echo "> $t/dynamic/hotel-www.yml: $www → {{Url}}"
+  cat > "$t/dynamic/hotel-www.yml" <<'EOF'
+# {{alias}} leads to the hotel's address (written by All-in-1 Installer).
+http:
+  routers:
+    hotel-www:
+      rule: "Host(`{{alias}}`)"
+      entryPoints: [{{entryPoint}}]
+      middlewares: [hotel-www]
+      service: noop@internal{{tls}}
+  middlewares:
+    hotel-www:
+      redirectRegex:
+        regex: "^[^:]+://[^/]+(.*)"
+        replacement: "{{Url}}${1}"
+        permanent: true
+EOF
+else
+  rm -f "$t/dynamic/hotel-www.yml"
+  if [ -z "$second" ]; then
+    echo "  $www has no DNS record yet: add one (an A record with this server's IP{{cname}}{{proxied}}) and run this step again, so $www leads to the hotel too."
+  else
+    echo "  $www points to $(echo $second), not where {{Address}} points ($(echo $main)): change its DNS record and run this step again, so $www leads to the hotel too."
+  fi
+fi"#;
+
+/// The part of the routes script for the hotel's second name: the redirect, or removing an old one.
+fn www_route_script(settings: &WebAccessSettings, entry_point: &str, tls: &str) -> String {
+    let Some(alias) = settings.www_alias() else {
+        return "\nrm -f \"$t/dynamic/hotel-www.yml\"".into();
+    };
+    fill(
+        WWW_ROUTE,
+        &[
+            ("alias", &alias),
+            ("Address", &settings.address),
+            ("Url", &settings.url()),
+            ("cloudflare", if settings.cloudflare { "yes" } else { "no" }),
+            ("entryPoint", entry_point),
+            ("tls", tls),
+            // A CNAME only works for www, not for the bare domain.
+            ("cname", &if alias.starts_with("www.") { format!(", or a CNAME to {}", settings.address) } else { String::new() }),
+            ("proxied", if settings.cloudflare { ", proxied in Cloudflare" } else { "" }),
+        ],
+    )
+}
 
 // Writes dynamic/hotel.yml and hotel.env in $t. Traefik picks up the routes without a restart.
 fn routes_script(settings: &WebAccessSettings) -> String {
@@ -544,6 +639,7 @@ fn routes_script(settings: &WebAccessSettings) -> String {
             ("cms", cms),
             ("cmsName", settings.custom_cms.as_deref().unwrap_or("")),
             ("cmsPort", &if own { settings.cms_port.to_string() } else { String::new() }),
+            ("www", &www_route_script(settings, entry_point, tls)),
         ],
     )
 }
@@ -841,6 +937,35 @@ pub async fn test(server: &dyn Server, settings: &WebAccessSettings, log: Log<'_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn www_alias_only_for_a_domain_of_its_own() {
+        let alias = |address: &str| WebAccessSettings::new(address, true, false).www_alias();
+        assert_eq!(alias("example.com").as_deref(), Some("www.example.com"));
+        assert_eq!(alias("Example.COM").as_deref(), Some("www.example.com"));
+        assert_eq!(alias("www.example.com").as_deref(), Some("example.com"));
+        assert_eq!(alias("example.co.uk").as_deref(), Some("www.example.co.uk"));
+        assert_eq!(alias("www.example.com.br").as_deref(), Some("example.com.br"));
+        for only in ["test.example.com", "www.test.example.com", "hotel.example.co.uk", "localhost", "hotel.localhost", "hotel.local",
+            "10.10.10.1", "2001:db8::1", "example"]
+        {
+            assert_eq!(alias(only), None, "{only}");
+        }
+    }
+
+    #[test]
+    fn www_route_redirects_to_the_address() {
+        let script = www_route_script(&WebAccessSettings::new("example.com", true, true), "websecure", "\n      tls:\n        certResolver: letsencrypt");
+        assert!(script.contains("www=www.example.com"));
+        assert!(script.contains("rule: \"Host(`www.example.com`)\""));
+        assert!(script.contains("replacement: \"https://example.com${1}\""));
+        assert!(script.contains("certResolver: letsencrypt"));
+        assert!(script.contains("[ yes = yes ]"), "Cloudflare: any record of www is fine");
+        let plain = www_route_script(&WebAccessSettings::new("www.example.com", false, false), "web", "");
+        assert!(plain.contains("Host(`example.com`)") && plain.contains("http://www.example.com${1}"));
+        assert!(!plain.contains("CNAME"), "the bare domain cannot be a CNAME");
+        assert_eq!(www_route_script(&WebAccessSettings::new("test.example.com", true, false), "websecure", ""), "\nrm -f \"$t/dynamic/hotel-www.yml\"");
+    }
 
     #[test]
     fn state_and_whitelist() {

@@ -110,3 +110,4 @@ CMS=custom
 CMS_NAME=mycms
 CMS_PORT=
 EOF
+rm -f "$t/dynamic/hotel-www.yml"

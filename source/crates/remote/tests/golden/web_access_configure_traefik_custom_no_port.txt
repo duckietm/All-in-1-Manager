@@ -195,6 +195,7 @@ CMS=custom
 CMS_NAME=mycms
 CMS_PORT=
 EOF
+rm -f "$t/dynamic/hotel-www.yml"
 
 echo "> $t/compose.yaml"
 install -d -m 755 /var/log/traefik "$t/plugins-storage"

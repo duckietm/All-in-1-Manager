@@ -1927,6 +1927,7 @@
   "{address}: expires in {days} days. Let's Encrypt renews it from 30 days before: is port 80 reachable?",
   "{address}: the certificate could not be read on port 443.",
   "{address}: valid for {days} more days.",
+  "{alias}  →  redirects to {url}, once {alias} has a DNS record that points here too",
   "{available} of {total} free.",
   "{banned} address(es) banned now, {total} in total since the last restart. You can skip this step, or save new settings.",
   "{behind} new",

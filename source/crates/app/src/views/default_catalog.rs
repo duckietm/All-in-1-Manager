@@ -62,8 +62,20 @@ fn problem(state: &default_catalog::CatalogState) -> Option<String> {
 }
 
 /// The version of the packed catalogue (its export date), for the page.
+/// Read once, from the first line of the SQL only: the page asks for it on every frame, and unpacking the whole
+/// catalogue (22 MB) each time made the window crawl.
 pub fn packed_version() -> String {
-    open_catalog().map(|c| c.version).unwrap_or_default()
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION
+        .get_or_init(|| {
+            let mut head = [0u8; 512];
+            let read = zip::ZipArchive::new(std::io::Cursor::new(CATALOG_ZIP))
+                .ok()
+                .and_then(|mut archive| archive.by_name("Catalog_Export.sql").ok().and_then(|mut file| file.read(&mut head).ok()))
+                .unwrap_or(0);
+            default_catalog::version_of(&String::from_utf8_lossy(&head[..read])).unwrap_or_default()
+        })
+        .clone()
 }
 
 /// The language the packed FurnitureData.json is in: chosen, it is used as it is.
@@ -398,6 +410,19 @@ pub fn wizard(shared: &Shared) -> Wizard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_is_quick() {
+        let started = std::time::Instant::now();
+        assert_eq!(packed_version(), "2026-11-01");
+        // Asked on every frame: after the first time it must cost nothing.
+        let again = std::time::Instant::now();
+        for _ in 0..1000 {
+            assert_eq!(packed_version(), "2026-11-01");
+        }
+        assert!(again.elapsed() < std::time::Duration::from_millis(50), "{:?}", again.elapsed());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 
     #[test]
     fn the_packed_catalogue_is_complete() {

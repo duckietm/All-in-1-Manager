@@ -1331,6 +1331,18 @@ Requires Rust (stable, 1.85 or newer) from <https://rustup.rs>. On Linux also th
 sudo apt-get install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev
 ```
 
+The quickest way: run the build script in the root of the repository. On Windows double-click **`build.cmd`** for a
+menu, or run it in a terminal; on Linux use `./build.sh`:
+
+```
+build release      ./build.sh release     # the program to hand out -> public/release/ (with Assets/ next to it)
+build dev          ./build.sh dev         # debug build             -> public/dev/
+build run          ./build.sh run         # debug build, and start it
+build test         ./build.sh test        # all tests
+```
+
+On Windows it needs Visual Studio's "Desktop development with C++" (Rust uses its linker). The same with Python:
+
 ```bash
 python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-installer(.exe)
 python source/tools/build.py release           # release build  -> public/release/ (with Assets/ next to it)

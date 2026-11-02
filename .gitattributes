@@ -1,2 +1,6 @@
 # Scripts and golden files are compared byte for byte: keep LF everywhere.
 * text=auto eol=lf
+
+# Windows batch files need CRLF, or cmd.exe can miss their labels.
+*.cmd text eol=crlf
+*.bat text eol=crlf

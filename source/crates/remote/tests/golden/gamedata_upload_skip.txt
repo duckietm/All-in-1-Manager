@@ -17,8 +17,18 @@ fix_rights() {
 set -e
 d=$(inside '/var/www/gamedata')
 [ -d "$d" ] || { echo "ERROR: the target is not a folder"; exit 3; }
-tar -x -f - -C "$d" --no-same-owner --no-same-permissions --skip-old-files
-p=$(inside '/var/www/gamedata/single.gif'); [ ! -e "$p" ] || fix_rights "$p"
+list=$(mktemp)
+trap 'rm -f "$list" "$list.tops"' EXIT
+tar -x -v --quoting-style=literal -f - -C "$d" --no-same-owner --no-same-permissions --skip-old-files > "$list"
+cut -d/ -f1 "$list" | sort -u | while IFS= read -r top; do
+  case "$top" in ''|.|..) continue ;; esac
+  if [ -e "$d/$top" ] && [ ! -L "$d/$top" ]; then printf '%s\0' "$d/$top"; fi
+done > "$list.tops"
+if [ -s "$list.tops" ]; then
+  xargs -0 chown -R www-data:www-data -- < "$list.tops"
+  xargs -0 sh -c 'find "$@" -type d -exec chmod 2775 {} + && find "$@" -type f -exec chmod 664 {} +' fix_rights < "$list.tops"
+fi
+echo "  $(wc -l < "$list") item(s) in $d" >&2
 echo OK
 --- stdin
 <3072 bytes>

@@ -16,5 +16,4 @@ fix_rights() {
 }
 d=$(inside '/var/www/gamedata/icons')
 cd "$d"
-p=$(inside '/var/www/gamedata/icons/a.png'); find './a.png' -type f -printf '%s\t%p\n'
-p=$(inside '/var/www/gamedata/icons/sub'); find './sub' -type f -printf '%s\t%p\n'
+find './a.png' './sub' -type f -printf '%s\t%p\n'

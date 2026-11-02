@@ -14,9 +14,7 @@ fix_rights() {
   find "$1" -type d -exec chmod 2775 {} +
   find "$1" -type f -exec chmod 664 {} +
 }
-p=$(inside '/var/www/gamedata/icons/a.png')
-[ "$p" != "/var/www/gamedata" ] || { echo "ERROR: gamedata itself cannot be deleted"; exit 3; }
-rm -rf -- "$p"
-p=$(inside '/var/www/gamedata/icons/b dir')
-[ "$p" != "/var/www/gamedata" ] || { echo "ERROR: gamedata itself cannot be deleted"; exit 3; }
-rm -rf -- "$p"
+d=$(inside '/var/www/gamedata/icons')
+[ -d "$d" ] || { echo "ERROR: not a folder"; exit 3; }
+cd "$d"
+rm -rf -- './a.png' './b dir'

@@ -106,6 +106,25 @@ fn error_of(result: &CommandResult) -> String {
         .unwrap_or_else(|| format!("{}{}", result.output, result.error).trim().to_string())
 }
 
+// The script goes to the server as one argument of bash -c, and Linux allows at most 128 KB per argument: a selection
+// of thousands of items is split into scripts that stay well under that.
+const SCRIPT_LIMIT: usize = 64 * 1024;
+
+/// `command 'a' 'b' ...` lines with as many arguments as fit in a script, so thousands of items take a few commands.
+fn command_batches(command: &str, args: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for arg in args {
+        match lines.last_mut() {
+            Some(line) if line.len() + 1 + arg.len() <= SCRIPT_LIMIT - 1024 => {
+                line.push(' ');
+                line.push_str(&arg);
+            }
+            _ => lines.push(format!("{command} {arg}")),
+        }
+    }
+    lines
+}
+
 async fn run(server: &dyn Server, script: &str, failure: &str) -> Result<CommandResult> {
     let result = server.run_as_root(&(guard() + script)).await?;
     if !result.succeeded() {
@@ -166,19 +185,19 @@ pub async fn rename(server: &dyn Server, relative: &str, from: &str, to: &str) -
     Ok(())
 }
 
-const DELETE: &str = r#"p=$(inside {{path}})
-[ "$p" != "{{Root}}" ] || { echo "ERROR: gamedata itself cannot be deleted"; exit 3; }
-rm -rf -- "$p""#;
+// The names are plain names in the folder (check_names: no /, . or ..), so none of them is gamedata itself or leaves
+// the folder; rm -rf removes a symlink itself, never what it points to.
+const DELETE: &str = r#"d=$(inside {{dir}})
+[ -d "$d" ] || { echo "ERROR: not a folder"; exit 3; }
+cd "$d"
+{{removes}}"#;
 
 pub async fn delete(server: &dyn Server, relative: &str, names: &[String]) -> Result<()> {
     check_names(names.iter().map(String::as_str))?;
     let dir = absolute(relative)?;
-    let script = names
-        .iter()
-        .map(|name| fill(DELETE, &[("Root", &root()), ("path", &q(&format!("{dir}/{name}")))]))
-        .collect::<Vec<_>>()
-        .join("\n");
-    run(server, &script, "Deleting failed").await?;
+    for removes in command_batches("rm -rf --", names.iter().map(|n| q(&format!("./{n}")))) {
+        run(server, &fill(DELETE, &[("dir", &q(&dir)), ("removes", &removes)]), "Deleting failed").await?;
+    }
     Ok(())
 }
 
@@ -186,14 +205,14 @@ pub async fn delete(server: &dyn Server, relative: &str, names: &[String]) -> Re
 pub async fn files_under(server: &dyn Server, relative: &str, names: &[String]) -> Result<Vec<(String, i64)>> {
     check_names(names.iter().map(String::as_str))?;
     let dir = absolute(relative)?;
-    let finds = names
-        .iter()
-        .map(|n| format!("p=$(inside {}); find {} -type f -printf '%s\\t%p\\n'", q(&format!("{dir}/{n}")), q(&format!("./{n}"))))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let script = format!("d=$(inside {})\ncd \"$d\"\n{finds}", q(&dir));
-    let result = run(server, &script, "Reading the files failed").await?;
-    Ok(parse_files(&result.output))
+    // find does not follow a symlink it is given (-P), so the names cannot lead out of gamedata.
+    let mut files = Vec::new();
+    for find in command_batches("find", names.iter().map(|n| q(&format!("./{n}")))) {
+        let script = format!("d=$(inside {})\ncd \"$d\"\n{find} -type f -printf '%s\\t%p\\n'", q(&dir));
+        let result = run(server, &script, "Reading the files failed").await?;
+        files.extend(parse_files(&result.output));
+    }
+    Ok(files)
 }
 
 fn parse_files(output: &str) -> Vec<(String, i64)> {
@@ -275,11 +294,24 @@ fn tar_items(local_paths: &[PathBuf]) -> Vec<TarItem> {
     items
 }
 
+// The rights for what was uploaded come from tar's own list (-v), and are set in batches: the script stays the same size
+// for 10 000 dropped files (bash -c takes one argument, at most 128 KB) and runs a handful of commands, not 4 per item.
+// An uploaded top-level item that is a symlink is left alone, so the rights never follow a link out of gamedata.
 const UPLOAD: &str = r#"set -e
 d=$(inside {{target}})
 [ -d "$d" ] || { echo "ERROR: the target is not a folder"; exit 3; }
-tar -x -f - -C "$d" --no-same-owner --no-same-permissions {{mode}}
-{{fixes}}
+list=$(mktemp)
+trap 'rm -f "$list" "$list.tops"' EXIT
+tar -x -v --quoting-style=literal -f - -C "$d" --no-same-owner --no-same-permissions {{mode}} > "$list"
+cut -d/ -f1 "$list" | sort -u | while IFS= read -r top; do
+  case "$top" in ''|.|..) continue ;; esac
+  if [ -e "$d/$top" ] && [ ! -L "$d/$top" ]; then printf '%s\0' "$d/$top"; fi
+done > "$list.tops"
+if [ -s "$list.tops" ]; then
+  xargs -0 chown -R www-data:www-data -- < "$list.tops"
+  xargs -0 sh -c 'find "$@" -type d -exec chmod 2775 {} + && find "$@" -type f -exec chmod 664 {} +' fix_rights < "$list.tops"
+fi
+echo "  $(wc -l < "$list") item(s) in $d" >&2
 echo OK"#;
 
 /// Uploads local files and folders into a gamedata folder as one tar stream. Existing files are replaced unless
@@ -290,16 +322,7 @@ pub async fn upload(server: &dyn Server, local_paths: &[PathBuf], relative: &str
         crate::fail!("A file name cannot be uploaded (control characters or too long).");
     }
     let target = absolute(relative)?;
-    let fixes = tops
-        .iter()
-        .map(|t| format!("p=$(inside {}); [ ! -e \"$p\" ] || fix_rights \"$p\"", q(&format!("{target}/{t}"))))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let script = guard()
-        + &fill(
-            UPLOAD,
-            &[("target", &q(&target)), ("mode", if skip_existing { "--skip-old-files" } else { "--overwrite" }), ("fixes", &fixes)],
-        );
+    let script = guard() + &fill(UPLOAD, &[("target", &q(&target)), ("mode", if skip_existing { "--skip-old-files" } else { "--overwrite" })]);
     let items = tar_items(local_paths);
     let result = tar_stream::upload(server, &script, &items, progress).await?;
     if !result.succeeded() || !result.output.contains("OK") {
@@ -318,6 +341,15 @@ mod tests {
         assert_eq!(absolute("").unwrap(), root);
         assert_eq!(absolute("/a/./b\\c/").unwrap(), format!("{root}/a/b/c"));
         assert_eq!(absolute("a/../b").unwrap_err().to_string(), "Paths outside gamedata are not allowed.");
+    }
+
+    #[test]
+    fn long_selections_are_split() {
+        let args: Vec<String> = (0..10_000).map(|i| format!("'./file-{i:05}.png'")).collect();
+        let commands = command_batches("rm -rf --", args.clone());
+        assert!(commands.len() > 1 && commands.iter().all(|c| c.starts_with("rm -rf -- ") && c.len() <= SCRIPT_LIMIT));
+        let back: Vec<String> = commands.iter().flat_map(|c| c["rm -rf -- ".len()..].split(' ').map(str::to_string).collect::<Vec<_>>()).collect();
+        assert_eq!(back, args, "every name once, in order");
     }
 
     #[test]

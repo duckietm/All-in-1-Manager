@@ -1122,6 +1122,9 @@ folders in it: there is no way above it.
   through it. gamedata itself cannot be renamed or deleted.
 - Uploads go as one tar stream over the SSH connection (like Deploy Assets), downloads over SFTP; the progress and
   speed are shown under the panes.
+- Large selections are fine: dropping 10 000 files into `c_images` takes seconds, and so do deleting them or reading
+  them for a download. The rights are set in batches from `tar`'s own list, and long selections are split into
+  scripts under Linux's 128 KB limit per command argument.
 
 ### SQL Editor
 

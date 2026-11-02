@@ -1,201 +1,140 @@
 name: Release
 
-# Every push to main becomes a new version of the installer:
-#   1. the next version: the newest v* tag plus one (1.0.4 -> 1.0.5), or <Version> in the project file when that
-#      was raised by hand to something higher (1.1.0);
-#   2. the Program folder is rebuilt with that version (its Assets folder stays as it is), so the Program folder on
-#      main always reports the version in the project file, which is what the installer's update check compares;
-#   3. both single-file programs are built with that version;
-#   4. the project file and Program are committed to main, tagged vX.Y.Z, and published as a release with the
-#      single-file programs (the installer's self-update downloads those).
-# Pushes made by this workflow use GITHUB_TOKEN, which does not start workflows again: no loop.
+# Every push to main publishes a release with the Windows and Linux binaries, and the version goes up by itself:
+#   - the version in Cargo.toml has no release yet (you set it yourself, e.g. 2.1.0): that version is released;
+#   - it already has one: the last number goes up (2.0.3 -> 2.0.4, with source/tools/version.py --next), the bot
+#     commits "Version 2.0.4" to main, and that is released.
+# The tag rust-v<version> is made on the released commit. Pushes that only change the README, the licence or
+# public/docs release nothing. The installer's update check at startup looks for exactly these tags and file names.
+#
+# A tag rust-v<version> pushed by hand (it must match Cargo.toml) or "Run workflow" on the Actions page also release.
+
 on:
   push:
     branches: [main]
+    tags: ["rust-v*"]
+    paths-ignore: ["README.md", "LICENSE", "public/docs/**"]
   workflow_dispatch:
 
-# One release at a time, in push order.
+# One release at a time: a push that arrives meanwhile waits and then releases what main has by then.
 concurrency:
-  group: release-main
+  group: release
   cancel-in-progress: false
 
-permissions:
-  contents: read
-
 env:
-  PROJECT: SourceCode/All-in-1 Installer.csproj
+  CARGO_TERM_COLOR: always
 
 jobs:
   version:
-    name: Next version
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.next.outputs.version }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - id: next
-        name: Work out the next version
-        shell: bash
-        run: |
-          set -euo pipefail
-          project=$(grep -oPm1 '(?<=<Version>)[0-9]+\.[0-9]+\.[0-9]+(?=</Version>)' "$PROJECT")
-          tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1 | sed 's/^v//')
-          if [ -z "$tag" ]; then
-            # The first release: the project file's version as it is.
-            next=$project
-          elif [ "$(printf '%s\n%s\n' "$tag" "$project" | sort -V | tail -1)" = "$project" ] && [ "$project" != "$tag" ]; then
-            # Raised by hand above the last release.
-            next=$project
-          else
-            IFS=. read -r major minor patch <<< "$tag"
-            next="$major.$minor.$((patch + 1))"
-          fi
-          echo "Project file: $project, last release: ${tag:-none}, next: $next"
-          echo "version=$next" >> "$GITHUB_OUTPUT"
-
-  program:
-    name: Program folder
-    needs: version
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      # global.json asks for a .NET 11 SDK and allows prereleases, so the preview channel is what matches.
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '11.0.x'
-          dotnet-quality: 'preview'
-
-      # The same kind of build as the Program folder: framework-independent per platform files (the .exe, the
-      # .dll files and runtimes/ for every platform), not one single file.
-      - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
-          dotnet build "$PROJECT" -c Release -p:Version=${{ needs.version.outputs.version }} \
-            -p:DebugType=none -p:DebugSymbols=false -o program
-          # The client images come from the Program folder on main, not from the build.
-          rm -rf program/Assets
-          ls program
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: program
-          path: program
-          if-no-files-found: error
-
-  single-file:
-    name: ${{ matrix.rid }}
-    needs: version
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - os: windows-latest
-            rid: win-x64
-            extension: '.exe'
-          - os: ubuntu-latest
-            rid: linux-x64
-            extension: ''
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '11.0.x'
-          dotnet-quality: 'preview'
-
-      - name: Publish
-        shell: bash
-        env:
-          RID: ${{ matrix.rid }}
-        run: |
-          set -euo pipefail
-          dotnet publish "$PROJECT" -c Release -r "$RID" --self-contained true \
-            -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true \
-            -p:DebugType=none -p:DebugSymbols=false \
-            -p:Version=${{ needs.version.outputs.version }} -o "publish/$RID"
-
-      # The update check picks the release file by name: the .exe on Windows, the one with "linux" in it otherwise.
-      - name: Name the file after the platform
-        shell: bash
-        env:
-          RID: ${{ matrix.rid }}
-          EXTENSION: ${{ matrix.extension }}
-        run: |
-          set -euo pipefail
-          cd "publish/$RID"
-          mv "All-in-1 Installer$EXTENSION" "All-in-1 Installer $RID$EXTENSION"
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: single-file-${{ matrix.rid }}
-          path: publish/${{ matrix.rid }}/All-in-1 Installer ${{ matrix.rid }}${{ matrix.extension }}
-          if-no-files-found: error
-
-  release:
-    name: Commit, tag and release
-    needs: [version, program, single-file]
+    name: Version
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    env:
-      VERSION: ${{ needs.version.outputs.version }}
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      sha: ${{ steps.check.outputs.sha }}
+      release: ${{ steps.check.outputs.release }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v4
         with:
-          ref: main
+          # The newest main (a run that waited may find the bot's version commit there), with the tags.
+          ref: ${{ github.ref_type == 'tag' && github.ref || 'main' }}
           fetch-depth: 0
-
-      - uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: Version and Program folder
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i -E "0,/<Version>[^<]*<\/Version>/s//<Version>$VERSION<\/Version>/" "$PROJECT"
-          grep -m1 '<Version>' "$PROJECT"
-          # Everything in Program except Assets is replaced by the new build (files the build no longer makes go).
-          mkdir -p Program
-          find Program -mindepth 1 -maxdepth 1 ! -name Assets -exec rm -rf {} +
-          cp -a artifacts/program/. Program/
-          git add -A "$PROJECT" Program
-
-      - name: Commit and tag
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "Version $VERSION" || echo "Nothing changed besides the tag"
-          git tag "v$VERSION"
-          # A push that came in meanwhile is taken along (the concurrency group keeps releases in order).
-          for attempt in 1 2 3; do
-            if git push origin HEAD:main "v$VERSION"; then exit 0; fi
-            git pull --rebase origin main
-          done
-          echo "Could not push the version commit to main (is main protected against the github-actions bot?)."
-          exit 1
-
-      - name: Publish the release
+      - id: check
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          set -euo pipefail
-          files=()
-          while IFS= read -r -d '' file; do files+=("$file"); done \
-            < <(find artifacts -type f -path 'artifacts/single-file-*' -name 'All-in-1 Installer *' -print0 | sort -z)
-          [ "${#files[@]}" -gt 0 ] || { echo "The build produced no program to release."; exit 1; }
-          printf '%s\n' "${files[@]}"
-          gh release create "v$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "v$VERSION" \
-            --generate-notes \
-            "${files[@]}"
+          version=$(python3 source/tools/version.py)
+          released() { gh release view "rust-v$1" --repo "${{ github.repository }}" >/dev/null 2>&1; }
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            if [ "${{ github.ref_name }}" != "rust-v$version" ]; then
+              echo "::error::Tag ${{ github.ref_name }} does not match Cargo.toml version $version"
+              exit 1
+            fi
+            if released "$version"; then release=false; else release=true; fi
+          elif ! released "$version"; then
+            echo "rust-v$version has no release yet: releasing it."
+            release=true
+          elif [ "$(git rev-parse "rust-v$version^{commit}" 2>/dev/null)" = "$(git rev-parse HEAD)" ]; then
+            echo "main is rust-v$version already: nothing new to release."
+            release=false
+          else
+            version=$(python3 source/tools/version.py --next)
+            echo "Raising the version to $version."
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git commit -q -am "Version $version"
+            git push origin HEAD:main
+            release=true
+          fi
+          echo "tag=rust-v$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+  windows:
+    name: Windows x64
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo build --release -p aio-app
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item target/release/all-in-1-installer.exe out/all-in-1-installer-windows-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: out/
+
+  linux:
+    name: Linux x64
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      - run: cargo build --release -p aio-app
+      - name: Package
+        run: |
+          mkdir -p out
+          cp target/release/all-in-1-installer out/all-in-1-installer-linux-x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: out/
+
+  release:
+    name: Publish release
+    needs: [version, windows, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      # The tag is made on the released commit when it does not exist yet.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          target_commitish: ${{ needs.version.outputs.sha }}
+          name: All-in-1 Installer ${{ needs.version.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            dist/all-in-1-installer-windows-x64.exe
+            dist/all-in-1-installer-linux-x64

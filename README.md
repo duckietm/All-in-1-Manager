@@ -1018,6 +1018,27 @@ Later: **Tools → CrowdSec whitelist and bans** edits the whitelist (Traefik re
 (its data and enrollment) stays, so installing again needs no new key, unless you tick **Also delete CrowdSec's data
 and enrollment**. Remove the engine from your console yourself when you no longer need it.
 
+### Default catalogue
+
+**Addons → Default catalogue** installs the catalogue that comes with the installer, for a new hotel: the catalogue
+pages and items, the furniture list (`items_base`) and the client's `FurnitureData.json`, which belong together. The
+step shows the catalogue's export date and what the hotel has now. Run Install New Server first (MariaDB, the
+emulator and Octane); the furniture files and catalogue icons come from [Deploy Assets](#deploy-assets).
+
+1. **Check**: the hotel database exists with the emulator's tables, and gamedata exists. When the hotel already has a
+   catalogue, a box confirms that it may be replaced.
+2. **Upload** `Catalog_Export.sql` and `FurnitureData.json` (packed into the program, about 1.7 MB) to the backup
+   folder.
+3. **Backup and import**: a safety backup of the database (`<db>-before-catalog-<time>.sql.gz`), the emulator stops,
+   the SQL drops and recreates the catalogue tables and `items_base` (and sets the catalogue's item ids in
+   `emulator_settings`), and `FurnitureData.json` goes to `gamedata/config` (an existing one is kept as
+   `.bak-<time>`). The emulator starts again; when the import fails or the emulator does not load, the database and
+   the old `FurnitureData.json` go back.
+
+A marker in `gamedata/config/.all-in-1-catalog` remembers the installed version, so the step shows **Skip (already
+installed)** for the same catalogue. Meant for a new hotel: furniture players already own keeps its `items_base`
+number, so on a hotel with a different furniture list it would turn into other furniture.
+
 ### Deploy Assets
 
 **Deploy Assets** copies what the [All-in-1 downloader](https://github.com/duckietm/all-in-1-converter) downloaded to

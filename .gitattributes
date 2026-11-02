@@ -4,3 +4,6 @@
 # Windows batch files need CRLF, or cmd.exe can miss their labels.
 *.cmd text eol=crlf
 *.bat text eol=crlf
+
+# Binary data, never converted.
+*.zip binary

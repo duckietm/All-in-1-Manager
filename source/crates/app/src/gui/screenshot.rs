@@ -1,5 +1,5 @@
 //! Debug aid: `AIO_SCREENSHOT=<file.png>` (or `HABBO_SCREENSHOT`, as in the converter) saves one screenshot of the
-//! window and closes it. `AIO_SCREENSHOT_PAGE` picks the page (dashboard, install, cms, gitea, fail2ban, crowdsec,
+//! window and closes it. `AIO_SCREENSHOT_PAGE` picks the page (dashboard, install, cms, gitea, fail2ban, crowdsec, catalog,
 //! deploy, explorer, sql, debug, tools, status, doctor, history, monitor, terminal, settings, about, login); `AIO_SCREENSHOT_THEME=dark|light`
 //! forces the theme, `AIO_SCREENSHOT_LOOK=hotel|professional` the look and `AIO_SCREENSHOT_LANG` the language.
 //! `AIO_SCREENSHOT_CONNECT=1` logs in to the dry-run recorder first, so the pages show their logged-in state, and
@@ -79,6 +79,7 @@ impl Screenshot {
                 "gitea" => Page::Gitea,
                 "fail2ban" => Page::Fail2Ban,
                 "crowdsec" => Page::CrowdSec,
+                "catalog" => Page::DefaultCatalog,
                 "deploy" => Page::DeployAssets,
                 "explorer" => Page::AssetExplorer,
                 "sql" => Page::SqlEditor,

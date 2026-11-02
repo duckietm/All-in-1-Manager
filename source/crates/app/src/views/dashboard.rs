@@ -122,6 +122,7 @@ impl Dashboard {
             ("Gitea", t("Your own Git server (like a small GitHub) on git.yourdomain, in Docker behind Traefik.").into(), Icon::Git, "#609926", Page::Gitea),
             ("Fail2Ban", t("Bans addresses that guess SSH passwords; a whitelist for your own IPs (Tools → Fail2Ban).").into(), Icon::Shield, "#DC2626", Page::Fail2Ban),
             ("CrowdSec", t("Blocks attackers on every route through Traefik, with the community's blocklist. Cloudflare aware.").into(), Icon::Shield, "#7C3AED", Page::CrowdSec),
+            (t("Default catalogue"), t("A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.").into(), Icon::Shopping, "#D97706", Page::DefaultCatalog),
             (t("Deploy Assets"), tf("The All-in-1 downloader's assets and the UI texts to {gamedata}.", &[("gamedata", &gamedata)]), Icon::Download, "#8B5CF6", Page::DeployAssets),
             ("Asset Explorer", tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]), Icon::FolderSync, "#2563EB", Page::AssetExplorer),
             ("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Page::SqlEditor),

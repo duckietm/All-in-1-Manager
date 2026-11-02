@@ -8,6 +8,7 @@ pub mod clone;
 pub mod crowdsec;
 pub mod custom_cms;
 pub mod dashboard;
+pub mod default_catalog;
 pub mod debug;
 pub mod deploy;
 pub mod dev_tools;
@@ -77,6 +78,7 @@ pub(crate) fn wizards(shared: &Shared) -> crate::gui::Wizards {
         remove_fail2ban: remove_fail2ban::wizard(shared),
         crowdsec: crowdsec::wizard(shared),
         remove_crowdsec: remove_crowdsec::wizard(shared),
+        default_catalog: default_catalog::wizard(shared),
         deploy: deploy::wizard(shared),
     }
 }

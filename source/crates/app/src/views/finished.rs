@@ -647,6 +647,47 @@ pub fn fail2ban(settings: Option<Fail2BanSettings>, ssh_ports: Vec<i64>, client_
     })
 }
 
+/// The Default catalogue addon: what is in the hotel now, the backup, and what the client still needs.
+pub fn default_catalog(result: Option<aio_remote::default_catalog::CatalogResult>, version: String, steps: Steps) -> Box<dyn FinishPage> {
+    Page::boxed(move |ui, palette| {
+        let ok = clean(&steps);
+        let message = match (&result, ok) {
+            (Some(r), true) => tf(
+                "{pages} pages, {items} catalogue items, {furniture} furniture. Players see it after they reload the hotel.",
+                &[("pages", &r.pages.to_string()), ("items", &r.catalog_items.to_string()), ("furniture", &r.furniture.to_string())],
+            ),
+            (None, true) => t("The catalogue was already installed.").into(),
+            (_, false) => t(RUN_AGAIN).to_string(),
+        };
+        widgets::result_banner(
+            ui,
+            palette,
+            if ok { ResultKind::Success } else { ResultKind::Warning },
+            &if ok { tf("The default catalogue ({version}) is installed", &[("version", &version)]) } else { t("The catalogue was not installed").into() },
+            &message,
+        );
+        step_list(ui, palette, &steps);
+        if let Some(r) = &result {
+            section(ui, t("1. As it was before"), |ui| {
+                widgets::text(ui, t("The database before the import (Tools → Import full database puts it back):"), 13.0);
+                code(ui, palette, &r.safety_backup);
+                if let Some(old) = &r.old_furniture_data {
+                    widgets::text(ui, t("The FurnitureData.json that was there:"), 13.0);
+                    code(ui, palette, old);
+                }
+            });
+        }
+        section(ui, t("2. The furniture files"), |ui| {
+            widgets::text(
+                ui,
+                t("The catalogue names furniture; the client also needs their files and the catalogue icons in gamedata. Put them there with Deploy Assets, or check with the Asset Explorer."),
+                13.0,
+            );
+            colored(ui, &tf("FurnitureData.json is in {file}.", &[("file", &aio_remote::default_catalog::furniture_data())]), 12.0, palette.subtle);
+        });
+    })
+}
+
 /// Remove Fail2Ban. (BuildRemoveFail2Ban)
 pub fn remove_fail2ban(steps: Steps) -> Box<dyn FinishPage> {
     Page::boxed(move |ui, palette| {

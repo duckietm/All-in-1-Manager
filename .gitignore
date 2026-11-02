@@ -35,7 +35,10 @@ out/
 
 # Visual Studio generated folders
 ipch/
-.vscode/
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 
 # NuGet packages
 packages/

@@ -1,0 +1,28 @@
+{
+  // F5 builds the installer and starts it with the debugger (CodeLLDB).
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "All-in-1 Installer",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "-p", "aio-app", "--bin", "all-in-1-installer"],
+        "filter": { "name": "all-in-1-installer", "kind": "bin" }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    },
+    {
+      "name": "All-in-1 Installer (dry run: no server)",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": ["build", "-p", "aio-app", "--bin", "all-in-1-installer"],
+        "filter": { "name": "all-in-1-installer", "kind": "bin" }
+      },
+      "args": ["--dry-run"],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

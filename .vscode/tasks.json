@@ -1,0 +1,44 @@
+{
+  // Ctrl+Shift+B builds the installer; Terminal → Run Task… has the others.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build (debug)",
+      "type": "shell",
+      "command": "cargo build -p aio-app",
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Run (debug)",
+      "type": "shell",
+      "command": "cargo run -p aio-app",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Check (errors only, fast)",
+      "type": "shell",
+      "command": "cargo check -p aio-app",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Test",
+      "type": "shell",
+      "command": "cargo test --workspace",
+      "group": "test",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Build dev into public/dev",
+      "type": "shell",
+      "command": "python source/tools/build.py dev",
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "Build release into public/release",
+      "type": "shell",
+      "command": "python source/tools/build.py release",
+      "problemMatcher": ["$rustc"]
+    }
+  ]
+}

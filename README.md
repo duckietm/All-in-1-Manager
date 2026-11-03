@@ -1373,7 +1373,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 The conversion is `source/crates/remote/sql/plus-to-polaris-furniture.sql` and `plus-to-polaris-catalog.sql`, built into
 the program.
 
-**Settings backup** (no server needed): **Export encrypted settings** writes the whole configuration directory
+**Settings backup** (on the **Settings** page, no server needed): **Export encrypted settings** writes the whole configuration directory
 (SSH keys, .ppk files, MariaDB passwords of every server) to one `.aio-settings` file, encrypted with AES-256-GCM
 and a key derived from your password (PBKDF2-SHA256, 600,000 rounds). **Import encrypted settings** on another
 computer restores it; the settings already there are kept next to it as `configuration.bak-<time>`. A wrong

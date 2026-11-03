@@ -468,7 +468,7 @@ impl App {
                     tf("Live logs on {host}: the emulator, NGINX, Traefik, the firewall, Fail2Ban and CrowdSec.", &[("host", &host)])
                 },
             ),
-            Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, update, and move your settings.").into()),
+            Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, and update.").into()),
             Page::Doctor => (t("Health check").into(), tf("How {host} is doing: services, disk, certificate, backups, updates.", &[("host", &host)])),
             Page::ServerStatus => (t("Server status").into(), tf("Live figures of {host}, every 2 seconds.", &[("host", &host)])),
             Page::Terminal => (
@@ -484,7 +484,7 @@ impl App {
             ),
             Page::History => (t("History").into(), t("What ran on which server, with its log: every install step and tool.").into()),
             Page::About => (t("About").into(), "All-in-1 Installer".into()),
-            Page::Settings => (t("Settings").into(), t("Your servers and default SSH key, your own SSH keys, and the All-in-1 downloader.").into()),
+            Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, your own SSH keys, and the All-in-1 downloader.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
         };
@@ -723,7 +723,10 @@ impl App {
                 self.tools.show(ui, palette, &shared);
                 self.page = self.tools.page();
             }
-            Page::Settings => scroll(ui, |ui| self.settings.show(ui, palette, &shared)),
+            Page::Settings => {
+                let tools = &mut self.tools;
+                scroll(ui, |ui| self.settings.show_with(ui, palette, &shared, |ui| tools.settings_backup_card(ui, palette, &shared)))
+            }
             Page::About => scroll(ui, |ui| self.about.show(ui, palette, &shared)),
             Page::Addons => {
                 let mut clicked = None;

@@ -128,7 +128,7 @@ impl Dashboard {
         let tool_tiles = vec![
             addons::Entry {
                 title: t("Tools").into(),
-                description: t("Restarts, database backup and import, updates, settings backup.").into(),
+                description: t("Restarts, database backup and import, updates.").into(),
                 icon: Icon::Wrench,
                 color: hex("#0E9F9E"),
                 scene: Scene::Parquet,

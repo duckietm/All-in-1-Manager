@@ -858,13 +858,17 @@ impl SettingsView {
     }
 }
 
-impl View for SettingsView {
-    fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+impl SettingsView {
+    /// The page, with `backup` (the settings backup card, kept by the Tools view for its password dialog) after the
+    /// look and the language.
+    pub fn show_with(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared, backup: impl FnOnce(&mut egui::Ui)) {
         self.take_inbox(shared);
         let margin = egui::Margin::symmetric(24, 20);
         widgets::card(ui, palette, margin, |ui| self.look_card(ui, palette, shared));
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.language_card(ui, palette));
+        ui.add_space(18.0);
+        backup(ui);
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.defaults_card(ui, palette));
         ui.add_space(18.0);
@@ -875,6 +879,12 @@ impl View for SettingsView {
         widgets::card(ui, palette, margin, |ui| self.keys_card(ui, palette, shared));
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.downloader_card(ui, palette, shared));
+    }
+}
+
+impl View for SettingsView {
+    fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        self.show_with(ui, palette, shared, |_| {});
     }
 
     /// Creating the emulator's account on the server runs.

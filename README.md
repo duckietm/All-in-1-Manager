@@ -808,7 +808,9 @@ imported assets; with an empty folder it clones the repository into `/var/www/ep
    the step runs that check (`src/env.ts`) itself, so a wrong setting shows in seconds instead of after the build. `HOTEL_NAME`, `APP_URL` and `AUTH_URL` (the site's
    address), `AUTH_TRUST_HOST=true` (behind Traefik), a random `AUTH_SECRET` (made once, so logins stay valid), and
    `RCON_HOST`/`RCON_PORT` from the emulator's `config.ini`.
-4. **Build**: `pnpm install --frozen-lockfile`, the base tables (EpicNext was built on an AtomCMS database and its migrations
+4. **Build**: `pnpm install --frozen-lockfile` (when EpicNext's lockfile pins versions younger than pnpm's minimum
+   release age, such as a Next.js release of yesterday, the step names them and when the newest was published: run it
+   again once they are old enough; the check is never turned off), the base tables (EpicNext was built on an AtomCMS database and its migrations
    expect AtomCMS' tables, such as `website_housekeeping_permissions`: the ones the hotel database lacks are made
    from its own `drizzle/drafts/0000_premium_spirit.sql`, the emulator's tables are not touched),
    `users.password` widened to `VARCHAR(255)` when it is shorter (Polaris makes it `VARCHAR(64)`, too short for

@@ -36,14 +36,15 @@ pub fn title_text(text: &str, size: f32) -> RichText {
 pub fn primary_button(text: &str) -> egui::Button<'static> {
     let button = egui::Button::new(RichText::new(text.to_string()).strong().color(Color32::WHITE)).min_size(egui::vec2(0.0, 32.0));
     if theme::hotel() {
-        button.fill(Fixed::go()).stroke(egui::Stroke::new(2.0_f32, Fixed::go_edge())).corner_radius(6)
+        button.fill(Fixed::go()).stroke(egui::Stroke::new(2.0_f32, Fixed::go_edge())).corner_radius(6).min_size(egui::vec2(0.0, 34.0))
     } else {
-        button.fill(Fixed::brand()).corner_radius(8)
+        button.fill(Fixed::brand()).corner_radius(8).min_size(egui::vec2(0.0, 34.0))
     }
 }
 
+/// Any other action: the tinted button face of the theme, with bold text.
 pub fn secondary_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text.to_string())).corner_radius(if theme::hotel() { 6 } else { 8 }).min_size(egui::vec2(0.0, 32.0))
+    egui::Button::new(RichText::new(text.to_string()).strong()).corner_radius(if theme::hotel() { 6 } else { 8 }).min_size(egui::vec2(0.0, 34.0))
 }
 
 /// A wide button with a bold title and a description under it (the answers of a question).

@@ -225,12 +225,27 @@ pub fn apply(ctx: &egui::Context) {
         visuals.widgets.inactive.corner_radius = corners;
         visuals.widgets.hovered.corner_radius = corners;
         visuals.widgets.active.corner_radius = corners;
-        let width = if hotel { 1.5_f32 } else { 1.0 };
-        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(width, palette.card_border_strong);
-        visuals.widgets.inactive.weak_bg_fill = palette.card;
-        visuals.widgets.hovered.weak_bg_fill = palette.hover;
-        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(width, if hotel { palette.outline } else { palette.card_border_strong });
-        style.spacing.button_padding = egui::vec2(14.0, 7.0);
+        // Buttons stand out from the cards they are on: a tinted face with a clear edge, a highlight under the mouse
+        // (the hotel's yellow in the Hotel look), a pointing hand, and a pressed colour. The fill of an explicit
+        // button (the green "go" button) stays; the edge and the slight grow on hover apply to every button.
+        let (face, face_hover, face_pressed, edge, edge_hover) = match (hotel, dark) {
+            (true, false) => (hex("#CDE7F7"), hex("#FFEDAD"), hex("#FFD95C"), palette.outline, palette.outline),
+            (true, true) => (hex("#21506E"), hex("#4A3F12"), hex("#6A5614"), hex("#6FA3C2"), Fixed::hotel_yellow()),
+            (false, false) => (hex("#E8EBFC"), hex("#DCE1FF"), hex("#C9D0FF"), hex("#AEB7EC"), Fixed::brand()),
+            (false, true) => (hex("#232D4A"), hex("#2C3866"), hex("#36458A"), hex("#4A5794"), Fixed::brand()),
+        };
+        let width = if hotel { 2.0_f32 } else { 1.0 };
+        visuals.widgets.inactive.weak_bg_fill = face;
+        visuals.widgets.inactive.bg_stroke = egui::Stroke::new(width, edge);
+        visuals.widgets.hovered.weak_bg_fill = face_hover;
+        visuals.widgets.hovered.bg_stroke = egui::Stroke::new(width + 0.5, edge_hover);
+        visuals.widgets.hovered.expansion = 1.0;
+        visuals.widgets.active.weak_bg_fill = face_pressed;
+        visuals.widgets.active.bg_stroke = egui::Stroke::new(width + 0.5, edge_hover);
+        visuals.widgets.active.expansion = 0.0;
+        visuals.interact_cursor = Some(egui::CursorIcon::PointingHand);
+        style.text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(13.5));
+        style.spacing.button_padding = egui::vec2(14.0, 8.0);
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
     });
 }

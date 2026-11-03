@@ -1,4 +1,4 @@
-//! The Addons page: every addon as a picture button. The dashboard shows the same buttons.
+//! The Addons page: every addon as a filled button. The dashboard shows the same buttons.
 
 use eframe::egui::{self, Color32};
 
@@ -8,7 +8,7 @@ use crate::gui::theme::{hex, Palette};
 use crate::gui::Page;
 use crate::i18n::{t, tf};
 
-/// One button: title, description, icon, colour, scene and the page it opens.
+/// One button: title, description, icon, colour, fill colour (scene) and the page it opens.
 pub struct Entry {
     pub title: String,
     pub description: String,

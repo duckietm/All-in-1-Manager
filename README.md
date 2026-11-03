@@ -703,9 +703,9 @@ A new step implements `InstallStep` (`source/crates/app/src/gui/step.rs`) and is
 ## Addons
 
 **Addons** (in the sidebar under SERVER) opens a menu with one button per addon, for things that go on top of a
-finished server installation. In the Hotel look every button (the addons, the dashboard and Tools) has its own
-soft Habbo-style picture in the background (a room, the lido, a disco, bricks, a garden, space ...), with the text on a solid
-plate so it reads the same on every picture; the Professional look keeps the plain tiles.
+finished server installation. In the Hotel look every button (the addons, the dashboard and Tools) is filled with its
+own colour (a soft gradient with a few light bubbles), with white text on it; every colour is dark enough for white
+text, which a test checks. The Professional look keeps the plain tiles.
 The addons and Tools use the login from the start of the program: there is no separate login per page. **Back**
 returns to the dashboard and keeps the login (and the SQL Editor's database connection) open.
 

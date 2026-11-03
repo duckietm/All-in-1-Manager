@@ -1233,8 +1233,10 @@ port; **Log in to MariaDB** asks again.
 **Octane and Octane Renderer** as one row (they depend on each other: both versions are shown, the new commits of both
 are counted together, and **Update** updates the renderer first, then Octane, then builds the client); AtomCMS when it is
 installed; and the Docker services **Traefik** and, once installed, **Gitea**. For those the check compares the image on
-the server with Docker Hub's newest for the same tag (`docker buildx imagetools inspect`, which reads only the
-registry's index: nothing is downloaded or changed), and shows **NEW IMAGE WAITING** when a newer image is downloaded but
+the server with Docker Hub's newest for the same tag (a `HEAD` request of the tag's manifest, which does not count
+against Docker Hub's pull limit; `docker buildx imagetools inspect` only when that gives nothing, and to read the newest
+version number; nothing is downloaded or changed), shows **NOT CHECKED** with the reason when Docker Hub does not answer
+or limits the server's requests, and shows **NEW IMAGE WAITING** when a newer image is downloaded but
 the old container still runs (a `docker restart` keeps the image the container was made from; **Update** and
 **Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page. For Traefik
 with a waiting image the button is **Restart** instead: it runs **Restart Traefik**, which makes the new container from

@@ -1445,6 +1445,12 @@ cargo test --workspace                         # all tests, including the parity
 keeps its own `configuration/` (keys, passwords, history) next to the program, and git ignores both. Plain
 `cargo build` / `cargo run -p aio-app` work too and leave the program in `target/`.
 
+On **macOS** (Apple silicon or Intel) `./build.sh release` builds a native program, with no extra libraries: the
+releases have none for macOS, so this build does not update itself (`git pull` and build again instead). Started from
+a terminal it works right away. Started as an app from Finder, macOS asks once for **Local Network** access (System
+Settings → Privacy & Security → Local Network): without it, a server on your own network answers
+`No route to host (os error 65)`.
+
 On Windows both the MSVC and the GNU toolchain work (the GNU one with MinGW, for the icon and version information of
 the `.exe`). The installer runs on your own Windows or Linux desktop and connects to the server, so the server itself
 needs no GUI.

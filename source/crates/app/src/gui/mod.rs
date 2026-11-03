@@ -81,6 +81,8 @@ pub enum Request {
     Login,
     /// Run a Tools update on the Tools page (from the dashboard's components card).
     Update(views::tools::Component),
+    /// Restart a Docker service on the Tools page, so it runs the newer image that is already downloaded.
+    Restart(views::tools::Component),
     RestartForLook,
     /// Fetch GitHub again for the dashboard's card.
     CheckUpdates,
@@ -757,6 +759,12 @@ impl App {
                     if !self.any_busy() && self.shared.session().is_some() {
                         self.go(Page::Tools);
                         self.tools.update(component, &self.shared);
+                    }
+                }
+                Request::Restart(component) => {
+                    if !self.any_busy() && self.shared.session().is_some() {
+                        self.go(Page::Tools);
+                        self.tools.restart(component, &self.shared);
                     }
                 }
                 Request::CheckUpdates => {

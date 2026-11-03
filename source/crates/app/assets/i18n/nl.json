@@ -2140,5 +2140,7 @@
   "■ Stop": "■ Stoppen",
   "▶ Run (F9)": "▶ Uitvoeren (F9)",
   "◀ Previous": "◀ Vorige",
-  "✓ Key found: {key}…": "✓ Sleutel gevonden: {key}…"
+  "✓ Key found: {key}…": "✓ Sleutel gevonden: {key}…",
+  "Recreates the Traefik container with the newer {image} that is already downloaded: the players are disconnected for a few seconds. Docker Hub is not needed.": "Maakt de Traefik-container opnieuw aan met de nieuwere {image} die al gedownload is: de spelers zijn een paar seconden weg. Docker Hub is niet nodig.",
+  "A newer {image} is downloaded, but the container still runs the old one. Restart starts the new one.": "Een nieuwere {image} is gedownload, maar de container draait nog de oude. Herstarten start de nieuwe."
 }

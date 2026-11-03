@@ -2140,5 +2140,7 @@
   "■ Stop": "■ Durdur",
   "▶ Run (F9)": "▶ Çalıştır (F9)",
   "◀ Previous": "◀ Önceki",
-  "✓ Key found: {key}…": "✓ Anahtar bulundu: {key}…"
+  "✓ Key found: {key}…": "✓ Anahtar bulundu: {key}…",
+  "Recreates the Traefik container with the newer {image} that is already downloaded: the players are disconnected for a few seconds. Docker Hub is not needed.": "Traefik konteynerini zaten indirilmiş daha yeni {image} ile yeniden oluşturur: oyuncuların bağlantısı birkaç saniye kopar. Docker Hub gerekmez.",
+  "A newer {image} is downloaded, but the container still runs the old one. Restart starts the new one.": "Daha yeni bir {image} indirildi, ama konteyner hâlâ eskisini çalıştırıyor. Yeniden başlat yenisini başlatır."
 }

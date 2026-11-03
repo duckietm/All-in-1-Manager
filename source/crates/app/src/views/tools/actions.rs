@@ -192,6 +192,8 @@ async fn restart_traefik(job: &Job) -> Result<()> {
     server_tools::restart_traefik(job.server(), &log).await?;
     run.done(t("running"));
     run.result(ResultKind::Success, t("Traefik is running again"), t("It answers on ports 80 and 443 again."));
+    // It now runs the newest downloaded image: the dashboard's Traefik row follows.
+    job.check_quietly().await;
     Ok(())
 }
 

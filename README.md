@@ -1234,7 +1234,10 @@ installed; and the Docker services **Traefik** and, once installed, **Gitea**. F
 the server with Docker Hub's newest for the same tag (`docker buildx imagetools inspect`, which reads only the
 registry's index: nothing is downloaded or changed), and shows **NEW IMAGE WAITING** when a newer image is downloaded but
 the old container still runs (a `docker restart` keeps the image the container was made from; **Update** and
-**Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page.
+**Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page. For Traefik
+with a waiting image the button is **Restart** instead: it runs **Restart Traefik**, which makes the new container from
+the downloaded image without asking Docker Hub (so it also works while Docker Hub limits downloads), and checks again
+afterwards so the row shows the new version.
 
 **Settings** (sidebar, under GENERAL):
 

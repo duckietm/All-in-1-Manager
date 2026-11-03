@@ -2140,5 +2140,7 @@
   "■ Stop": "■ Pysäytä",
   "▶ Run (F9)": "▶ Suorita (F9)",
   "◀ Previous": "◀ Edellinen",
-  "✓ Key found: {key}…": "✓ Avain löytyi: {key}…"
+  "✓ Key found: {key}…": "✓ Avain löytyi: {key}…",
+  "Recreates the Traefik container with the newer {image} that is already downloaded: the players are disconnected for a few seconds. Docker Hub is not needed.": "Luo Traefik-kontin uudelleen jo ladatulla uudemmalla {image}-imagella: pelaajien yhteys katkeaa muutamaksi sekunniksi. Docker Hubia ei tarvita.",
+  "A newer {image} is downloaded, but the container still runs the old one. Restart starts the new one.": "Uudempi {image} on ladattu, mutta kontti ajaa vielä vanhaa. Käynnistä uudelleen käynnistää uuden."
 }

@@ -252,6 +252,14 @@ impl ToolsView {
         self.start_tool(Tool::for_component(component), shared);
     }
 
+    /// Restarts a Docker service so it runs the newer image that is already downloaded (no Docker Hub needed). Only
+    /// Traefik has a restart tool; the others are updated, which recreates them from the downloaded image too.
+    pub fn restart(&mut self, component: Component, shared: &Shared) {
+        self.page = Page::Tools;
+        let tool = if component == Component::Traefik { Tool::RestartTraefik } else { Tool::for_component(component) };
+        self.start_tool(tool, shared);
+    }
+
     /// The last update check for this login (None: not checked yet).
     pub fn last_updates(&self) -> Option<Vec<RepositoryUpdate>> {
         self.state.lock().unwrap().last_updates.clone()

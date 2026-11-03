@@ -284,8 +284,24 @@ impl Dashboard {
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
-                        if image.has_update() {
-                            let component = if traefik { Component::Traefik } else if crowdsec { Component::CrowdSec } else { Component::Gitea };
+                        let component = if traefik { Component::Traefik } else if crowdsec { Component::CrowdSec } else { Component::Gitea };
+                        if traefik && image.not_restarted && !image.newer_on_hub {
+                            // The newer image is already on the server: a restart is all it takes, Docker Hub is not needed.
+                            if ui
+                                .add(widgets::primary_button(t("Restart")))
+                                .on_hover_text(tf(
+                                    "Recreates the Traefik container with the newer {image} that is already downloaded: the players are disconnected for a few seconds. Docker Hub is not needed.",
+                                    &[("image", &image.image)],
+                                ))
+                                .clicked()
+                            {
+                                shared.request(Request::Restart(component));
+                            }
+                            chip(ui, t("NEW IMAGE WAITING"), palette.warning_back, palette.warning_text).on_hover_text(tf(
+                                "A newer {image} is downloaded, but the container still runs the old one. Restart starts the new one.",
+                                &[("image", &image.image)],
+                            ));
+                        } else if image.has_update() {
                             if ui.add(widgets::primary_button(t("Update"))).on_hover_text(if traefik {
                                 t("Pulls the newest image and restarts Traefik: the players are disconnected for a few seconds.")
                             } else if crowdsec {

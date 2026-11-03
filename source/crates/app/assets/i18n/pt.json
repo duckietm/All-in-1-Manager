@@ -2140,5 +2140,7 @@
   "■ Stop": "■ Parar",
   "▶ Run (F9)": "▶ Executar (F9)",
   "◀ Previous": "◀ Anterior",
-  "✓ Key found: {key}…": "✓ Chave encontrada: {key}…"
+  "✓ Key found: {key}…": "✓ Chave encontrada: {key}…",
+  "Recreates the Traefik container with the newer {image} that is already downloaded: the players are disconnected for a few seconds. Docker Hub is not needed.": "Recria o contêiner do Traefik com a {image} mais nova que já foi baixada: os jogadores ficam desconectados por alguns segundos. O Docker Hub não é necessário.",
+  "A newer {image} is downloaded, but the container still runs the old one. Restart starts the new one.": "Uma {image} mais nova foi baixada, mas o contêiner ainda roda a antiga. Reiniciar inicia a nova."
 }

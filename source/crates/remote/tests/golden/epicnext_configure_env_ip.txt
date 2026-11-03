@@ -120,6 +120,7 @@ env_set() {
 }
 env_set HOTEL_NAME '"Hotel"'
 env_set APP_URL 'http://192.0.2.10'
+env_set NEXT_PUBLIC_APP_URL 'http://192.0.2.10'
 env_set AUTH_URL 'http://192.0.2.10'
 env_set AUTH_TRUST_HOST 'true'
 env_set RCON_HOST '127.0.0.1'

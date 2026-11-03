@@ -58,6 +58,8 @@ pub struct Facts {
     pub ufw_installed: bool,
     pub ufw_active: bool,
     pub clock_synchronized: Option<bool>,
+    /// The x86-64-v2 features the processor lacks (see crate::cpu); None when it could not be read or is not x86-64.
+    pub cpu_missing: Option<Vec<String>>,
 }
 
 const SCRIPT: &str = r#"set +e
@@ -105,6 +107,8 @@ echo "reboot=$([ -f /var/run/reboot-required ] && echo yes)"
 echo "ufw_installed=$(command -v ufw >/dev/null 2>&1 && echo yes)"
 echo "ufw=$(ufw status 2>/dev/null | grep -q 'Status: active' && echo yes)"
 echo "ntp=$(timedatectl show -p NTPSynchronized --value 2>/dev/null)"
+echo "machine=$(uname -m)"
+echo "cpu_flags=$(grep -m1 '^flags' /proc/cpuinfo 2>/dev/null | cut -d: -f2)"
 true"#;
 
 /// The script, with this layout's backup folder and the hotel site's port.
@@ -146,6 +150,12 @@ pub fn parse(output: &str) -> Facts {
         ufw_installed: v.yes("ufw_installed"),
         ufw_active: v.yes("ufw"),
         clock_synchronized: v.get("ntp").map(|x| x == "yes"),
+        cpu_missing: match (v.get("machine"), v.get("cpu_flags")) {
+            (Some("x86_64"), Some(flags)) if !flags.trim().is_empty() => {
+                Some(crate::cpu::missing_x86_64_v2("x86_64", flags).into_iter().map(String::from).collect())
+            }
+            _ => None,
+        },
     }
 }
 
@@ -200,6 +210,16 @@ mod tests {
         assert_eq!(facts.clock_synchronized, Some(false));
         assert_eq!(facts.backup_age_days, None);
         assert_eq!(facts.certificate_days, None);
+        assert_eq!(facts.cpu_missing, None);
+    }
+
+    #[test]
+    fn the_processor() {
+        let generic = parse("machine=x86_64\ncpu_flags= fpu sse sse2 pni cx16 lahf_lm hypervisor\n");
+        assert_eq!(generic.cpu_missing, Some(vec!["SSSE3".into(), "SSE4.1".into(), "SSE4.2".into(), "POPCNT".into()]));
+        let real = parse("machine=x86_64\ncpu_flags= sse sse2 pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm avx2\n");
+        assert_eq!(real.cpu_missing, Some(Vec::new()));
+        assert_eq!(parse("machine=aarch64\ncpu_flags=\n").cpu_missing, None);
     }
 
     #[test]

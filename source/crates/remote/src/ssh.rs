@@ -292,6 +292,12 @@ pub async fn connect(login: ServerLogin, log: Log<'_>, stage: &(dyn Fn(ConnectSt
         ))
         .into());
     }
+    // Not a reason to stop: the hotel's own programs run, only some builds and tools fail later. Said now, instead of
+    // halfway through a step.
+    let cpu = exec(&handle, crate::cpu::SCRIPT, None).await?;
+    if let Some(warning) = crate::cpu::warning(&crate::cpu::missing_from_output(&cpu.output)) {
+        log(&warning);
+    }
 
     stage(ConnectStage::Root);
     let mut server = SshServer { login, handle: Arc::new(handle), connected, host_key, login_user, os: Some(os), elevation: Elevation::None };

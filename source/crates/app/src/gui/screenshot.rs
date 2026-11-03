@@ -19,7 +19,7 @@ fn var(name: &str) -> Option<String> {
 const DOCTOR_SAMPLE: &str = "emulator=failed\nemulator_port=\nmariadb=active\nnginx=active\nphp=active\ndocker=active\n\
 traefik=true\ncrowdsec=true\nfail2ban=missing\nhotel=200\ndisk_used=46\ndisk_free=41231686041\nmem_total=8331239424\n\
 mem_available=3123345408\nload=0.62\ncores=4\nhttps=hotel.example.com\ncert_days=12\nbackup_age=9\nupdates=14\n\
-security=3\nreboot=\nufw_installed=yes\nufw=yes\nntp=yes\n";
+security=3\nreboot=\nufw_installed=yes\nufw=yes\nntp=yes\nmachine=x86_64\ncpu_flags= sse sse2 pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm avx2\n";
 
 pub struct Screenshot {
     path: Option<String>,

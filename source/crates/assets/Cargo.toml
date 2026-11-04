@@ -13,3 +13,4 @@ flate2.workspace = true
 zip.workspace = true
 image.workspace = true
 lzma-rs = "0.3"
+roxmltree = "0.19"

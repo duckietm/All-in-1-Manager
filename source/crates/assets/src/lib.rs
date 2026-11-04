@@ -6,5 +6,6 @@ pub mod bundle;
 pub mod hab;
 pub mod nitro;
 pub mod swf;
+pub mod swf_pets;
 
 pub use bundle::{detect, to_hab, AssetKind, Format};

@@ -152,6 +152,7 @@ dependencies = [
  "flate2",
  "image",
  "lzma-rs",
+ "roxmltree",
  "serde",
  "serde_json",
  "zip",

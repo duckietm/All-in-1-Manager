@@ -6,7 +6,7 @@ use crate::gui::icons::Icon;
 use crate::gui::scenes::{self, Scene};
 use crate::gui::theme::{hex, Palette};
 use crate::gui::Page;
-use crate::i18n::{t, tf};
+use crate::i18n::t;
 
 /// One button: title, description, icon, colour, fill colour (scene) and the page it opens.
 pub struct Entry {
@@ -24,24 +24,52 @@ fn entry(title: &str, description: String, icon: Icon, color: &str, scene: Scene
 
 /// Every addon, in the order of the page.
 pub fn entries() -> Vec<Entry> {
-    let gamedata = aio_remote::octane::gamedata();
     vec![
         entry("CMS", t("AtomCMS or your own CMS as the hotel's website; Octane moves to /client.").into(), Icon::Puzzle, "#E8590C", Scene::Room, Page::AtomCms),
         entry("Gitea", t("Your own Git server (like a small GitHub) on git.yourdomain, in Docker behind Traefik.").into(), Icon::Git, "#609926", Scene::Garden, Page::Gitea),
         entry("Fail2Ban", t("Bans addresses that guess SSH passwords; a whitelist for your own IPs (Tools → Fail2Ban).").into(), Icon::Shield, "#DC2626", Scene::Bricks, Page::Fail2Ban),
         entry("CrowdSec", t("Blocks attackers on every route through Traefik, with the community's blocklist. Cloudflare aware.").into(), Icon::Shield, "#7C3AED", Scene::Space, Page::CrowdSec),
         entry(t("Default catalogue"), t("A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.").into(), Icon::Shopping, "#D97706", Scene::Disco, Page::DefaultCatalog),
+        entry("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Scene::Snow, Page::SqlEditor),
+    ]
+}
+
+/// The pages of the sidebar's ASSETS section, for the dashboard.
+pub fn asset_entries() -> Vec<Entry> {
+    let gamedata = aio_remote::octane::gamedata();
+    vec![
         entry(
-            t("Get Assets"),
+            t("Habbo assets"),
             t("Habbo's furniture, clothes, effects, badges, sounds and game data, downloaded here as .hab and JSON.").into(),
             Icon::Download,
             "#0EA5E9",
             Scene::Sky,
             Page::GetAssets,
         ),
-        entry(t("Deploy Assets"), tf("The downloaded assets and the UI texts to {gamedata}.", &[("gamedata", &gamedata)]), Icon::FolderSync, "#8B5CF6", Scene::Beach, Page::DeployAssets),
-        entry("Asset Explorer", tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]), Icon::FolderSync, "#2563EB", Scene::Lido, Page::AssetExplorer),
-        entry("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Scene::Snow, Page::SqlEditor),
+        entry(
+            t("Nitro retro"),
+            t("A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.").into(),
+            Icon::Cube,
+            "#DB2777",
+            Scene::Hearts,
+            Page::RetroAssets,
+        ),
+        entry(
+            t("Deploy Assets"),
+            crate::i18n::tf("The downloaded assets and the UI texts to {gamedata}.", &[("gamedata", &gamedata)]),
+            Icon::ArrowUp,
+            "#8B5CF6",
+            Scene::Beach,
+            Page::DeployAssets,
+        ),
+        entry(
+            "Asset Explorer",
+            crate::i18n::tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]),
+            Icon::FolderSync,
+            "#2563EB",
+            Scene::Lido,
+            Page::AssetExplorer,
+        ),
     ]
 }
 

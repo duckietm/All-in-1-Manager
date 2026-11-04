@@ -38,7 +38,7 @@ fn texts(asset: Asset) -> (&'static str, &'static str) {
     }
 }
 
-/// The two halves of the page.
+/// The two pages of the view: Habbo assets and Nitro retro.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     Habbo,
@@ -139,7 +139,7 @@ impl GetAssetsView {
             icon_source: String::new(),
             folder: PathBuf::new(),
             custom_folder: false,
-            tab: if std::env::var("AIO_SCREENSHOT_TAB").as_deref() == Ok("retro") { Tab::Retro } else { Tab::Habbo },
+            tab: Tab::Habbo,
             retro: RetroUrls::default(),
             retro_saved: RetroUrls::default(),
             retro_furniture: true,
@@ -168,6 +168,11 @@ impl GetAssetsView {
         settings.assets_path = folder.filter(|f| *f != default).map(|f| f.display().to_string());
         let _ = settings.save();
         self.reload_folder();
+    }
+
+    /// Habbo assets or Nitro retro: the sidebar's two pages share this view (and its run and log).
+    pub fn set_retro(&mut self, retro: bool) {
+        self.tab = if retro { Tab::Retro } else { Tab::Habbo };
     }
 
     /// Saves the retro's URLs in Settings, so they are there next time.
@@ -214,7 +219,7 @@ impl GetAssetsView {
             log(&format!("> {from} → {}", habbo_assets::gamedata_folder(&root).display()));
             let result = Downloader::new(&root, Urls::habbo(hotel), options, &log, cancel.clone());
             match result {
-                Err(e) => state.lock().unwrap().results.push((t("Get Assets").into(), Err(e.to_string()))),
+                Err(e) => state.lock().unwrap().results.push((t("Habbo assets").into(), Err(e.to_string()))),
                 Ok(downloader) => {
                     for job in jobs {
                         if cancel.is_cancelled() {
@@ -266,7 +271,7 @@ impl GetAssetsView {
         let state = self.state.clone();
         let start = self.folder.clone();
         shared.spawn(async move {
-            let dialog = rfd::AsyncFileDialog::new().set_title(t("Where Get Assets downloads to")).set_directory(start.parent().unwrap_or(&start));
+            let dialog = rfd::AsyncFileDialog::new().set_title(t("Where the assets are downloaded to")).set_directory(start.parent().unwrap_or(&start));
             if let Some(folder) = dialog.pick_folder().await {
                 state.lock().unwrap().picked_folder = Some(folder.path().to_path_buf());
             }
@@ -396,19 +401,6 @@ impl View for GetAssetsView {
         if std::mem::take(&mut self.scroll_top) {
             ui.scroll_to_cursor(Some(egui::Align::TOP));
         }
-        ui.add_enabled_ui(!running, |ui| {
-            ui.horizontal(|ui| {
-                for (tab, label) in [(Tab::Habbo, t("Habbo hotel")), (Tab::Retro, t("Nitro retro"))] {
-                    let button = egui::Button::new(RichText::new(label).size(13.5).strong())
-                        .selected(self.tab == tab)
-                        .min_size(egui::vec2(150.0, 34.0));
-                    if ui.add(button).clicked() {
-                        self.tab = tab;
-                    }
-                }
-            });
-        });
-        ui.add_space(12.0);
         if self.tab == Tab::Retro {
             self.retro_cards(ui, palette, shared, running, &mut start);
         } else {

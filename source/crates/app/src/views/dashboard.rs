@@ -124,6 +124,11 @@ impl Dashboard {
             click = Some(Click::Page(page));
         }
         ui.add_space(6.0);
+        section(ui, palette, t("ASSETS"));
+        if let Some(page) = entry_grid(ui, palette, &addons::asset_entries()) {
+            click = Some(Click::Page(page));
+        }
+        ui.add_space(6.0);
         section(ui, palette, t("TOOLS"));
         let tool_tiles = vec![
             addons::Entry {

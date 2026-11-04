@@ -56,9 +56,11 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 - **The whole server in one wizard**: SSH key, NGINX, PHP 8.5, MariaDB 12.3, Node.js, the Polaris / Octane clones,
   the emulator as a service, Traefik with Let's Encrypt (and Cloudflare), the Octane client, hardening and SSH keys
   only. Every step says what it will do first, and can be run again.
-- **Addons**: AtomCMS, EpicNext or your own CMS, Gitea, Fail2Ban, CrowdSec, Get Assets (Habbo's own furniture,
-  clothes, effects, badges and game data as .hab and JSON), Deploy Assets, an Asset Explorer and a SQL Editor over the
-  SSH tunnel.
+- **Addons**: AtomCMS, EpicNext or your own CMS, Gitea, Fail2Ban, CrowdSec, the default catalogue and a SQL Editor over the SSH
+  tunnel.
+- **Assets** (its own section in the sidebar): Habbo assets (Habbo's own furniture, clothes, effects, badges and
+  game data as .hab and JSON), Nitro retro (a retro's custom furniture and clothes), Deploy Assets and an Asset
+  Explorer.
 - **Running the hotel**: restarts, updates of the emulator, Octane, AtomCMS and the containers, database backup and
   import (also PlusEMU), live server status, the emulator's wired CPU, an SSH terminal in the window, a **Health
   check** with a fix for each problem, and a **History** of every run with its log.
@@ -71,8 +73,8 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
    [releases](https://github.com/duckietm/All-in-1-installer/releases) and start it (on Linux: `chmod +x` first).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
 3. **Install New Server** and follow the steps. Each one explains what it does; **Skip** leaves it out.
-4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Get Assets** and
-   **Deploy Assets** for the game's files.
+4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Habbo assets** and
+   **Deploy Assets** (sidebar → ASSETS) for the game's files.
 5. Afterwards **Tools** runs the hotel: **Health check** first when something seems wrong.
 
 To look around first: `all-in-1-installer --dry-run` logs in to nothing and only shows the commands.
@@ -82,7 +84,7 @@ To look around first: `all-in-1-installer --dry-run` logs in to nothing and only
 - [Requirements](#requirements)
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
-  [Get Assets](#get-assets), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+  [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -1094,9 +1096,9 @@ A marker in `gamedata/config/.all-in-1-catalog` remembers the installed version,
 installed)** for the same catalogue. Meant for a new hotel: furniture players already own keeps its `items_base`
 number, so on a hotel with a different furniture list it would turn into other furniture.
 
-### Get Assets
+### Habbo assets
 
-**Get Assets** (Addons) downloads Habbo's own assets on this computer, the first part of the
+**Habbo assets** (sidebar → ASSETS) downloads Habbo's own assets on this computer, the first part of the
 [All-in-1 converter](https://github.com/duckietm/all-in-1-converter) moved into the installer. No server connection is
 needed. Everything goes into `Habbo_Assets/gamedata` next to the configuration folder (or a folder you choose), laid
 out exactly like `/var/www/gamedata`, so **Deploy Assets** copies it as it is. Only `.hab` bundles, JSON and images
@@ -1130,9 +1132,9 @@ Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choos
 FigureData.json, the converter's "disable all sellable" question. The `.hab` files are saved as Habbo serves them
 (the converter's optional WebP repacking of their sheets is not part of this yet).
 
-#### Nitro retro (custom assets)
+### Nitro retro (custom assets)
 
-The **Nitro retro** tab downloads a Nitro hotel's own furniture and clothes. Fill in the six values from its
+**Nitro retro** (sidebar → ASSETS) downloads a Nitro hotel's own furniture and clothes. Fill in the six values from its
 `renderer-config.json` (`furnidata.url`, `furni.asset.url`, `furni.asset.icon.url`, `avatar.asset.url`,
 `avatar.figuredata.url`, `avatar.figuremap.url`; a folder or the full `.../%libname%.nitro` pattern) and **Save**:
 they are filled in again next time (also saved when you press **Download**).
@@ -1149,10 +1151,10 @@ installer can use them too.
 
 ### Deploy Assets
 
-**Deploy Assets** copies what **Get Assets** downloaded to `/var/www/gamedata` on the server, where Octane loads it,
+**Deploy Assets** (sidebar → ASSETS) copies what **Habbo assets** downloaded to `/var/www/gamedata` on the server, where Octane loads it,
 folder for folder (`gamedata/furniture` to `/var/www/gamedata/furniture`, and so on). When **Settings** name the
 [All-in-1 downloader](https://github.com/duckietm/all-in-1-converter), its `Habbo_Default` folder is copied too, with
-the mapping below; a file Get Assets already sends to the same place is not sent twice.
+the mapping below; a file from Habbo assets that is already sent to the same place is not sent twice.
 
 ![Deploy Assets](public/docs/screenshots/deploy-assets.png)
 

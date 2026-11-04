@@ -1,10 +1,10 @@
 //! Debug aid: `AIO_SCREENSHOT=<file.png>` (or `HABBO_SCREENSHOT`, as in the converter) saves one screenshot of the
 //! window and closes it. `AIO_SCREENSHOT_PAGE` picks the page (dashboard, install, cms, gitea, fail2ban, crowdsec, catalog, addons,
-//! deploy, assets, explorer, sql, debug, tools, status, doctor, history, monitor, terminal, settings, about, login); `AIO_SCREENSHOT_THEME=dark|light`
+//! deploy, assets, retro, explorer, sql, debug, tools, status, doctor, history, monitor, terminal, settings, about, login); `AIO_SCREENSHOT_THEME=dark|light`
 //! forces the theme, `AIO_SCREENSHOT_LOOK=hotel|professional` the look and `AIO_SCREENSHOT_LANG` the language.
 //! `AIO_SCREENSHOT_CONNECT=1` logs in to the dry-run recorder first, so the pages show their logged-in state, and
-//! `AIO_SCREENSHOT_STEP=<n>` opens the n-th step of the page's wizard, `AIO_SCREENSHOT_LANGUAGES=1` opens the
-//! language list at the top right, and `AIO_SCREENSHOT_TAB=retro` opens Get Assets on its Nitro retro tab.
+//! `AIO_SCREENSHOT_STEP=<n>` opens the n-th step of the page's wizard, and `AIO_SCREENSHOT_LANGUAGES=1` opens the
+//! language list at the top right.
 
 use eframe::egui;
 
@@ -84,6 +84,7 @@ impl Screenshot {
                 "deploy" => Page::DeployAssets,
                 "explorer" => Page::AssetExplorer,
                 "assets" => Page::GetAssets,
+                "retro" => Page::RetroAssets,
                 "sql" => Page::SqlEditor,
                 "debug" => Page::Debug,
                 "history" => Page::History,

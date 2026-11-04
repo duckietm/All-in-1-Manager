@@ -2232,5 +2232,14 @@
   "Saved: they are filled in again next time.": "Tallennettu: ne ovat täällä taas ensi kerralla.",
   "Upload the custom folder by hand.": "Lataa oma kansio käsin.",
   "Convert the kept .swf files": "Muunna tallennetut .swf-tiedostot",
-  "Converts the .swf files in source/ to .hab, without downloading them again.": "Muuntaa source/-kansion .swf-tiedostot .hab-muotoon lataamatta niitä uudelleen."
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "Muuntaa source/-kansion .swf-tiedostot .hab-muotoon lataamatta niitä uudelleen.",
+  "ASSETS": "ASSETIT",
+  "Habbo assets": "Habbon assetit",
+  "A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.": "Nitro-hotellin omat kalusteet ja vaatteet, ladattuna tälle tietokoneelle .hab-muodossa, ladattavaksi käsin.",
+  "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.": "Kopioi ladatut Habbon assetit ({folder}) palvelimen kansioon {gamedata}, josta Octane lataa ne, kansio kerrallaan; ja myös All-in-1 downloaderin Habbo_Default-kansion, kun se on asetettu Asetuksissa.",
+  "Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).": "Lataa ensin kohdasta Assetit → Habbon assetit. Uudet kalusteet tarvitsevat myös rivit tauluihin items_base ja catalog_items: All-in-1 converter tekee SQL:n (Hotel Tools → Generate SQL).",
+  "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Lataa ensin assetteja kohdasta Assetit → Habbon assetit (tai valitse All-in-1 downloader Asetuksissa) ja palaa sitten tänne.",
+  "{count} files here, all on the server. Download more with Habbo assets and sync again.": "Täällä {count} tiedostoa, kaikki palvelimella. Lataa lisää kohdasta Habbon assetit ja synkronoi uudelleen.",
+  "Nothing downloaded yet: use Assets → Habbo assets first.": "Mitään ei ole vielä ladattu: käytä ensin kohtaa Assetit → Habbon assetit.",
+  "Where the assets are downloaded to": "Mihin assetit ladataan"
 }

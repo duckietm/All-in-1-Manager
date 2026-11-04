@@ -2232,5 +2232,14 @@
   "Saved: they are filled in again next time.": "Salvo: na próxima vez eles estarão aqui de novo.",
   "Upload the custom folder by hand.": "Envie a pasta própria à mão.",
   "Convert the kept .swf files": "Converter os .swf guardados",
-  "Converts the .swf files in source/ to .hab, without downloading them again.": "Converte os arquivos .swf em source/ para .hab, sem baixá-los de novo."
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "Converte os arquivos .swf em source/ para .hab, sem baixá-los de novo.",
+  "ASSETS": "ASSETS",
+  "Habbo assets": "Assets do Habbo",
+  "A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.": "Os mobis e roupas próprios de um hotel Nitro, baixados neste computador como .hab, para enviar à mão.",
+  "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.": "Copia os assets do Habbo baixados ({folder}) para {gamedata} no servidor, onde o Octane os carrega, pasta por pasta; e também a pasta Habbo_Default do All-in-1 downloader quando as Configurações a indicam.",
+  "Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).": "Baixe primeiro com Assets → Assets do Habbo. Mobis novos também precisam de linhas em items_base e catalog_items: o All-in-1 converter gera o SQL (Hotel Tools → Generate SQL).",
+  "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Baixe primeiro assets com Assets → Assets do Habbo (ou escolha o All-in-1 downloader nas Configurações) e depois volte aqui.",
+  "{count} files here, all on the server. Download more with Habbo assets and sync again.": "{count} arquivos aqui, todos no servidor. Baixe mais com Assets do Habbo e sincronize de novo.",
+  "Nothing downloaded yet: use Assets → Habbo assets first.": "Nada baixado ainda: use primeiro Assets → Assets do Habbo.",
+  "Where the assets are downloaded to": "Para onde os assets são baixados"
 }

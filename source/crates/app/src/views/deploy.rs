@@ -149,7 +149,7 @@ impl InstallStep for AssetSyncStep {
             icon: Icon::Download,
             heading: t("Sync the downloaded assets").into(),
             description: tf(
-                "Copies what Get Assets downloaded ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.",
+                "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.",
                 &[
                     ("folder", &aio_remote::habbo_assets::gamedata_folder(&aio_core::InstallerSettings::load().assets_folder()).display().to_string()),
                     ("gamedata", &octane::gamedata()),
@@ -162,7 +162,7 @@ impl InstallStep for AssetSyncStep {
                 t("Config JSON (FurnitureData, ProductData, ExternalTexts ...) is only added when missing, unless you tick that it may be replaced: hotels and the emulator edit those files.").into(),
                 tf("Then gives the emulator and NGINX access again ({script}).", &[("script", octane::PERMISSIONS_SCRIPT)]),
             ],
-            footnote: Some(t("Download with Addons → Get Assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).").into()),
+            footnote: Some(t("Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).").into()),
         }
     }
 
@@ -213,7 +213,7 @@ impl InstallStep for AssetSyncStep {
             ui.detected(
                 ResultKind::Warning,
                 t("Nothing downloaded yet"),
-                t("Download assets with Addons → Get Assets first (or choose the All-in-1 downloader in Settings), then come back here."),
+                t("Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here."),
             );
             return Ok(false);
         }
@@ -226,7 +226,7 @@ impl InstallStep for AssetSyncStep {
             ui.detected(
                 ResultKind::Success,
                 t("The server has every downloaded file"),
-                &tf("{count} files here, all on the server. Download more with Get Assets and sync again.", &[("count", &local.to_string())]),
+                &tf("{count} files here, all on the server. Download more with Habbo assets and sync again.", &[("count", &local.to_string())]),
             );
             return Ok(true);
         }
@@ -244,7 +244,7 @@ impl InstallStep for AssetSyncStep {
         let server = server.as_ref();
         let sources = sources();
         if sources.is_empty() {
-            fail!("{}", t("Nothing downloaded yet: use Addons → Get Assets first."));
+            fail!("{}", t("Nothing downloaded yet: use Assets → Habbo assets first."));
         }
         log(&format!("> Comparing {} with {} ...", source_list(&sources), octane::gamedata()));
         let (overwrite, selected) = {

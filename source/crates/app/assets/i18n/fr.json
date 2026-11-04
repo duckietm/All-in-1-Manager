@@ -2232,5 +2232,14 @@
   "Saved: they are filled in again next time.": "Enregistré : ils seront de nouveau là la prochaine fois.",
   "Upload the custom folder by hand.": "Envoie le dossier perso à la main.",
   "Convert the kept .swf files": "Convertir les .swf conservés",
-  "Converts the .swf files in source/ to .hab, without downloading them again.": "Convertit les fichiers .swf de source/ en .hab, sans les retélécharger."
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "Convertit les fichiers .swf de source/ en .hab, sans les retélécharger.",
+  "ASSETS": "ASSETS",
+  "Habbo assets": "Assets Habbo",
+  "A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.": "Les mobis et vêtements perso d'un hôtel Nitro, téléchargés sur cet ordinateur en .hab, à envoyer à la main.",
+  "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.": "Copie les assets Habbo téléchargés ({folder}) vers {gamedata} sur le serveur, où Octane les charge, dossier par dossier ; et aussi le dossier Habbo_Default de l'All-in-1 downloader quand les Paramètres l'indiquent.",
+  "Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).": "Télécharge d'abord avec Assets → Assets Habbo. Les nouveaux mobis ont aussi besoin de lignes dans items_base et catalog_items : l'All-in-1 converter génère le SQL (Hotel Tools → Generate SQL).",
+  "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Télécharge d'abord des assets avec Assets → Assets Habbo (ou choisis l'All-in-1 downloader dans les Paramètres), puis reviens ici.",
+  "{count} files here, all on the server. Download more with Habbo assets and sync again.": "{count} fichiers ici, tous sur le serveur. Télécharge-en plus avec Assets Habbo et synchronise à nouveau.",
+  "Nothing downloaded yet: use Assets → Habbo assets first.": "Rien de téléchargé pour l'instant : utilise d'abord Assets → Assets Habbo.",
+  "Where the assets are downloaded to": "Où les assets sont téléchargés"
 }

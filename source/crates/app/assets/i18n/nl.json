@@ -2232,5 +2232,14 @@
   "Saved: they are filled in again next time.": "Opgeslagen: ze staan er de volgende keer weer.",
   "Upload the custom folder by hand.": "Upload de eigen map zelf.",
   "Convert the kept .swf files": "Bewaarde .swf-bestanden omzetten",
-  "Converts the .swf files in source/ to .hab, without downloading them again.": "Zet de .swf-bestanden in source/ om naar .hab, zonder ze opnieuw te downloaden."
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "Zet de .swf-bestanden in source/ om naar .hab, zonder ze opnieuw te downloaden.",
+  "ASSETS": "ASSETS",
+  "Habbo assets": "Habbo-assets",
+  "A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.": "De eigen meubi en kleding van een Nitro-hotel, op deze computer gedownload als .hab, om zelf te uploaden.",
+  "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.": "Kopieert de gedownloade Habbo-assets ({folder}) naar {gamedata} op de server, waar Octane ze laadt, map voor map; en ook de map Habbo_Default van de All-in-1 downloader als die in Instellingen staat.",
+  "Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).": "Download eerst met Assets → Habbo-assets. Nieuwe meubi hebben ook rijen nodig in items_base en catalog_items: de All-in-1 converter maakt de SQL (Hotel Tools → Generate SQL).",
+  "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Download eerst assets met Assets → Habbo-assets (of kies de All-in-1 downloader in Instellingen) en kom dan hier terug.",
+  "{count} files here, all on the server. Download more with Habbo assets and sync again.": "{count} bestanden hier, allemaal op de server. Download meer met Habbo-assets en synchroniseer opnieuw.",
+  "Nothing downloaded yet: use Assets → Habbo assets first.": "Nog niets gedownload: gebruik eerst Assets → Habbo-assets.",
+  "Where the assets are downloaded to": "Waar de assets naartoe worden gedownload"
 }

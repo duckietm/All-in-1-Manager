@@ -49,6 +49,7 @@ pub enum Page {
     DefaultCatalog,
     DeployAssets,
     GetAssets,
+    RetroAssets,
     AssetExplorer,
     SqlEditor,
     Debug,
@@ -446,8 +447,12 @@ impl App {
             ),
             Page::RemoveCms => (t("Remove the CMS").into(), t("Addon: Octane as the hotel's website again, as after the server installation.").into()),
             Page::GetAssets => (
-                t("Get Assets").into(),
+                t("Habbo assets").into(),
                 t("Habbo's furniture, clothes, effects, badges and game data, downloaded on this computer, ready for Deploy Assets.").into(),
+            ),
+            Page::RetroAssets => (
+                t("Nitro retro").into(),
+                t("A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.").into(),
             ),
             Page::AssetExplorer => (
                 "Asset Explorer".into(),
@@ -547,9 +552,6 @@ impl App {
                             | Page::CrowdSec
                             | Page::RemoveCrowdSec
                             | Page::DefaultCatalog
-                            | Page::DeployAssets
-                            | Page::GetAssets
-                            | Page::AssetExplorer
                             | Page::SqlEditor
                     ),
                     Page::Tools => matches!(current, Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor),
@@ -560,28 +562,42 @@ impl App {
                         clicked = Some(page);
                     }
                 };
-                nav(ui, t("Dashboard"), Icon::Home, Page::Dashboard);
-                // Each group folds away with a click on its heading; a folded group still shows the page you are on.
-                let groups: [(&str, &str, Vec<(&str, Icon, Page)>); 3] = [
-                    // The addons are one page of picture buttons, not a long list here.
-                    (
-                        "sidebar:server",
-                        t("SERVER"),
-                        vec![(t("Install New Server"), Icon::ServerPlus, Page::Install), (t("Addons"), Icon::Puzzle, Page::Addons)],
-                    ),
-                    ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
-                    ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
-                ];
-                for (key, heading, items) in groups {
-                    ui.add_space(14.0);
-                    let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
-                    ui.add_space(2.0);
-                    for (label, icon, page) in items {
-                        if open || selected(page) {
-                            nav(ui, label, icon, page);
+                // The menu scrolls when the window is too low for every item; the line at the bottom stays.
+                let list_height = (ui.available_height() - 44.0).max(80.0);
+                egui::ScrollArea::vertical().id_salt("sidebar-nav").max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
+                    nav(ui, t("Dashboard"), Icon::Home, Page::Dashboard);
+                    // Each group folds away with a click on its heading; a folded group still shows the page you are on.
+                    let groups: [(&str, &str, Vec<(&str, Icon, Page)>); 4] = [
+                        // The addons are one page of picture buttons, not a long list here.
+                        (
+                            "sidebar:server",
+                            t("SERVER"),
+                            vec![(t("Install New Server"), Icon::ServerPlus, Page::Install), (t("Addons"), Icon::Puzzle, Page::Addons)],
+                        ),
+                        (
+                            "sidebar:assets",
+                            t("ASSETS"),
+                            vec![
+                                (t("Habbo assets"), Icon::Download, Page::GetAssets),
+                                (t("Nitro retro"), Icon::Cube, Page::RetroAssets),
+                                (t("Deploy Assets"), Icon::ArrowUp, Page::DeployAssets),
+                                ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
+                            ],
+                        ),
+                        ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
+                        ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
+                    ];
+                    for (key, heading, items) in groups {
+                        ui.add_space(14.0);
+                        let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
+                        ui.add_space(2.0);
+                        for (label, icon, page) in items {
+                            if open || selected(page) {
+                                nav(ui, label, icon, page);
+                            }
                         }
                     }
-                }
+                });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.label(RichText::new(t("Targets Ubuntu Server and Debian")).size(11.5).color(Fixed::sidebar_muted()));
                     ui.add_space(4.0);
@@ -649,7 +665,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::SqlEditor | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::SqlEditor | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -725,7 +741,10 @@ impl App {
         }
         match page {
             Page::AssetExplorer => self.explorer.show(ui, palette, &shared),
-            Page::GetAssets => scroll(ui, |ui| self.get_assets.show(ui, palette, &shared)),
+            Page::GetAssets | Page::RetroAssets => {
+                self.get_assets.set_retro(page == Page::RetroAssets);
+                scroll(ui, |ui| self.get_assets.show(ui, palette, &shared))
+            }
             Page::SqlEditor => self.sql.show(ui, palette, &shared),
             Page::Debug => self.debug.show(ui, palette, &shared),
             Page::History => self.history.show(ui, palette, &shared),

@@ -2232,5 +2232,14 @@
   "Saved: they are filled in again next time.": "Kaydedildi: bir dahaki sefere yine burada olacaklar.",
   "Upload the custom folder by hand.": "Özel klasörü elle yükle.",
   "Convert the kept .swf files": "Saklanan .swf dosyalarını dönüştür",
-  "Converts the .swf files in source/ to .hab, without downloading them again.": "source/ içindeki .swf dosyalarını yeniden indirmeden .hab'a dönüştürür."
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "source/ içindeki .swf dosyalarını yeniden indirmeden .hab'a dönüştürür.",
+  "ASSETS": "ASSET'LER",
+  "Habbo assets": "Habbo asset'leri",
+  "A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.": "Bir Nitro otelinin özel mobileri ve kıyafetleri, bu bilgisayara .hab olarak indirilir, elle yüklemek için.",
+  "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.": "İndirilen Habbo asset'lerini ({folder}) sunucudaki {gamedata} klasörüne, Octane'in yüklediği yere, klasör klasör kopyalar; Ayarlar'da belirtildiyse All-in-1 downloader'ın Habbo_Default klasörünü de.",
+  "Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).": "Önce Asset'ler → Habbo asset'leri ile indir. Yeni mobilerin items_base ve catalog_items içinde satırlara da ihtiyacı var: SQL'i All-in-1 converter oluşturur (Otel araçları → SQL oluştur).",
+  "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Önce Asset'ler → Habbo asset'leri ile asset indir (veya Ayarlar'da All-in-1 downloader'ı seç), sonra buraya dön.",
+  "{count} files here, all on the server. Download more with Habbo assets and sync again.": "Burada {count} dosya var, hepsi sunucuda. Habbo asset'leri ile daha fazla indir ve yeniden eşitle.",
+  "Nothing downloaded yet: use Assets → Habbo assets first.": "Henüz bir şey indirilmedi: önce Asset'ler → Habbo asset'leri kullan.",
+  "Where the assets are downloaded to": "Asset'lerin indirileceği yer"
 }

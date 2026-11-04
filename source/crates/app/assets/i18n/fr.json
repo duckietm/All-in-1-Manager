@@ -2212,5 +2212,7 @@
   "Where Get Assets downloads to": "Où Get Assets télécharge",
   "external_variables as JSON, to read here (not sent to the server)": "external_variables en JSON, à lire ici (pas envoyé au serveur)",
   "fx_icon_<type> for the avatar editor, from the Habbo Classic app": "fx_icon_<type> pour l'éditeur d'avatar, depuis l'app Habbo Classic",
-  "{count} files here, all on the server. Download more with Get Assets and sync again.": "{count} fichiers ici, tous sur le serveur. Télécharges-en plus avec Get Assets et synchronise à nouveau."
+  "{count} files here, all on the server. Download more with Get Assets and sync again.": "{count} fichiers ici, tous sur le serveur. Télécharges-en plus avec Get Assets et synchronise à nouveau.",
+  "Done": "Terminé",
+  "Clears the result and the log, so you can start over.": "Efface le résultat et le journal, pour que tu puisses recommencer."
 }

@@ -58,6 +58,8 @@ pub struct GetAssetsView {
     /// The download folder, read from Settings once and again after a change.
     folder: PathBuf,
     custom_folder: bool,
+    /// Done was pressed: back to the top of the page on the next frame.
+    scroll_top: bool,
 }
 
 fn open_folder(path: &Path) {
@@ -78,6 +80,7 @@ impl GetAssetsView {
             icon_source: String::new(),
             folder: PathBuf::new(),
             custom_folder: false,
+            scroll_top: false,
         }
         .with_folder_from_settings()
     }
@@ -202,6 +205,10 @@ impl View for GetAssetsView {
         let folder = self.folder.clone();
         let margin = egui::Margin::symmetric(24, 20);
         let mut start: Option<Vec<Asset>> = None;
+        let mut done = false;
+        if std::mem::take(&mut self.scroll_top) {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
 
         widgets::card(ui, palette, margin, |ui| {
             ui.spacing_mut().item_spacing.y = 10.0;
@@ -367,6 +374,9 @@ impl View for GetAssetsView {
                         if ui.add(widgets::secondary_button(t("Open the folder"))).clicked() {
                             open_folder(&habbo_assets::gamedata_folder(&folder));
                         }
+                        if ui.add(widgets::secondary_button(t("Done"))).on_hover_text(t("Clears the result and the log, so you can start over.")).clicked() {
+                            done = true;
+                        }
                     });
                 }
                 let mut state = self.state.lock().unwrap();
@@ -374,6 +384,13 @@ impl View for GetAssetsView {
             });
         }
 
+        if done {
+            let mut state = self.state.lock().unwrap();
+            state.results.clear();
+            state.log.clear();
+            state.stopped = false;
+            self.scroll_top = true;
+        }
         if let Some(assets) = start {
             self.start(shared, assets);
         }

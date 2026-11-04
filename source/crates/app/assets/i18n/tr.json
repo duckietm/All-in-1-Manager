@@ -2212,5 +2212,7 @@
   "Where Get Assets downloads to": "Get Assets'in indirdiği yer",
   "external_variables as JSON, to read here (not sent to the server)": "external_variables JSON olarak, burada okumak için (sunucuya gönderilmez)",
   "fx_icon_<type> for the avatar editor, from the Habbo Classic app": "Avatar düzenleyici için fx_icon_<type>, Habbo Classic uygulamasından",
-  "{count} files here, all on the server. Download more with Get Assets and sync again.": "Burada {count} dosya var, hepsi sunucuda. Get Assets ile daha fazlasını indir ve yeniden eşitle."
+  "{count} files here, all on the server. Download more with Get Assets and sync again.": "Burada {count} dosya var, hepsi sunucuda. Get Assets ile daha fazlasını indir ve yeniden eşitle.",
+  "Done": "Tamam",
+  "Clears the result and the log, so you can start over.": "Sonucu ve günlüğü temizler, böylece baştan başlayabilirsin."
 }

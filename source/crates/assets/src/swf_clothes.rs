@@ -24,9 +24,9 @@ const FRAME_PADDING: u32 = 2;
 const MAX_SHEET_SIZE: u32 = 14000;
 const NUM_ROWS: usize = 10;
 
-/// System.Text.Json's indented writer ends lines with Environment.NewLine: "\r\n" on Windows, where the converter
-/// is mostly run (on Linux it would be "\n").
-const NEWLINE: &str = "\r\n";
+/// System.Text.Json's indented writer ends lines with Environment.NewLine: "\r\n" on Windows, "\n" on Linux. Every
+/// converter of this crate writes "\n" (Octane reads either).
+const NEWLINE: &str = "\n";
 
 /// One manifest asset: its offset and, for a flipped/aliased asset, the asset whose image it uses.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -756,8 +756,9 @@ mod tests {
         crate::swf::read(&data, true).unwrap()
     }
 
+    /// The expected text with the converter's line ends.
     fn crlf(text: &str) -> String {
-        text.replace('\n', "\r\n")
+        text.replace('\n', NEWLINE)
     }
 
     fn frame(x: u32, y: u32, w: u32, h: u32) -> String {
@@ -881,7 +882,7 @@ mod tests {
         assert_eq!(json["assets"], serde_json::json!({}));
         assert_eq!(json["name"], "");
         let text = String::from_utf8(files[0].1.clone()).unwrap();
-        assert!(text.starts_with("{\r\n  \"assets\": {},\r\n  \"name\": \"\",\r\n"));
+        assert!(text.starts_with("{\n  \"assets\": {},\n  \"name\": \"\",\n"));
         let frames = json["spritesheet"]["frames"].as_object().unwrap();
         assert_eq!(frames.keys().cloned().collect::<Vec<_>>(), names);
         let at = |key: &str| {

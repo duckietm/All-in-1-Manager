@@ -2226,7 +2226,6 @@
   "Furniture icons": "Icônes des mobis",
   "FurnitureData.json, every furniture bundle and its icons": "FurnitureData.json, chaque bundle de mobi et ses icônes",
   "Habbo hotel": "Hôtel Habbo",
-  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab; a .swf is kept in source/ until the SWF converter is built in.": "Dans {folder}, organisé comme gamedata, à envoyer à la main (Asset Explorer). Un rétro fournit du .hab, .nitro ou .swf : chaque bundle est enregistré en .hab ; un .swf reste dans source/ jusqu'à l'arrivée du convertisseur SWF.",
   "Nitro retro": "Rétro Nitro",
   "Not saved yet": "Pas encore enregistré",
   "Saved: they are filled in again next time.": "Enregistré : ils seront de nouveau là la prochaine fois.",
@@ -2241,5 +2240,6 @@
   "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Télécharge d'abord des assets avec Assets → Assets Habbo (ou choisis l'All-in-1 downloader dans les Paramètres), puis reviens ici.",
   "{count} files here, all on the server. Download more with Habbo assets and sync again.": "{count} fichiers ici, tous sur le serveur. Télécharge-en plus avec Assets Habbo et synchronise à nouveau.",
   "Nothing downloaded yet: use Assets → Habbo assets first.": "Rien de téléchargé pour l'instant : utilise d'abord Assets → Assets Habbo.",
-  "Where the assets are downloaded to": "Où les assets sont téléchargés"
+  "Where the assets are downloaded to": "Où les assets sont téléchargés",
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.": "Dans {folder}, organisé comme gamedata, à envoyer à la main (Asset Explorer). Un rétro fournit du .hab, .nitro ou .swf : chaque bundle est enregistré en .hab (un .nitro réemballé, un .swf converti) ; un .swf impossible à convertir reste dans source/."
 }

@@ -1,6 +1,7 @@
 //! Habbo's asset bundles, shared by every part of the installer that handles assets: the .hab bundle Octane loads,
-//! Nitro's .nitro, Flash's .swf (converted to .hab), and the Habbo Classic app's .asar. No network and no server here:
-//! bytes in, bytes out. (All-in-1 Converter: NitroCompiler, SWF_*_Compiler)
+//! Nitro's .nitro, Flash's .swf (furniture, clothes, pets and effects converted to .hab: the swf_* modules), and the
+//! Habbo Classic app's .asar. No network and no server here: bytes in, bytes out. (All-in-1 Converter: NitroCompiler,
+//! SWF_*_Compiler, Tools/NativeSwfExtractor.cs)
 
 pub mod bundle;
 pub mod hab;

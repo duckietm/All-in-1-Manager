@@ -2226,7 +2226,6 @@
   "Furniture icons": "Ícones dos mobis",
   "FurnitureData.json, every furniture bundle and its icons": "FurnitureData.json, cada bundle de mobi e seus ícones",
   "Habbo hotel": "Hotel Habbo",
-  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab; a .swf is kept in source/ until the SWF converter is built in.": "Em {folder}, organizada como gamedata, para enviar à mão (Asset Explorer). Um retrô serve .hab, .nitro ou .swf: cada bundle é salvo como .hab; um .swf fica em source/ até o conversor de SWF chegar.",
   "Nitro retro": "Retrô Nitro",
   "Not saved yet": "Ainda não salvo",
   "Saved: they are filled in again next time.": "Salvo: na próxima vez eles estarão aqui de novo.",
@@ -2241,5 +2240,6 @@
   "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Baixe primeiro assets com Assets → Assets do Habbo (ou escolha o All-in-1 downloader nas Configurações) e depois volte aqui.",
   "{count} files here, all on the server. Download more with Habbo assets and sync again.": "{count} arquivos aqui, todos no servidor. Baixe mais com Assets do Habbo e sincronize de novo.",
   "Nothing downloaded yet: use Assets → Habbo assets first.": "Nada baixado ainda: use primeiro Assets → Assets do Habbo.",
-  "Where the assets are downloaded to": "Para onde os assets são baixados"
+  "Where the assets are downloaded to": "Para onde os assets são baixados",
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.": "Em {folder}, organizada como gamedata, para enviar à mão (Asset Explorer). Um retrô serve .hab, .nitro ou .swf: cada bundle é salvo como .hab (um .nitro reempacotado, um .swf convertido); um .swf que não pode ser convertido fica em source/."
 }

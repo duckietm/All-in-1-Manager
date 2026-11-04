@@ -336,7 +336,7 @@ impl GetAssetsView {
                 ui,
                 palette,
                 &tf(
-                    "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab; a .swf is kept in source/ until the SWF converter is built in.",
+                    "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.",
                     &[("folder", &custom.display().to_string())],
                 ),
                 12.5,

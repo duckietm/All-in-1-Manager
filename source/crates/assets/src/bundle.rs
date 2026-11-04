@@ -57,13 +57,25 @@ pub fn detect(data: &[u8]) -> Option<Format> {
     }
 }
 
-/// The bundle as a .hab named `name`: a .hab as it is, a .nitro repacked with the same files.
+/// The bundle as a .hab named `name`: a .hab as it is, a .nitro repacked with the same files, a .swf converted by the
+/// converter of its kind (furniture, clothes, pets, effects) into the JSON and sprite sheet Octane loads.
 pub fn to_hab(name: &str, kind: AssetKind, data: &[u8]) -> Result<Vec<u8>> {
     match detect(data) {
         Some(Format::Hab) => Ok(data.to_vec()),
         Some(Format::Nitro) => Ok(hab::write(name, &nitro::read(data)?)),
-        Some(Format::Swf) => bail!("Converting a {kind:?} .swf to .hab is not built yet."),
+        Some(Format::Swf) => Ok(hab::write(name, &from_swf(name, kind, data)?)),
         None => bail!("{name} is not a .hab, .nitro or .swf bundle."),
+    }
+}
+
+/// A .swf as the files of its .hab (the JSON and the PNG sheet).
+pub fn from_swf(name: &str, kind: AssetKind, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
+    let swf = crate::swf::read(data, true)?;
+    match kind {
+        AssetKind::Furniture => crate::swf_furniture::convert(name, &swf),
+        AssetKind::Clothes => crate::swf_clothes::convert(name, &swf),
+        AssetKind::Pets => crate::swf_pets::convert(name, &swf),
+        AssetKind::Effects => crate::swf_effects::convert(name, &swf),
     }
 }
 
@@ -83,5 +95,16 @@ mod tests {
         assert_eq!(hab::read(&to_hab("chair", AssetKind::Furniture, &nitro_bundle).unwrap()).unwrap(), files);
         assert_eq!(to_hab("chair", AssetKind::Furniture, &hab_bundle).unwrap(), hab_bundle);
         assert!(to_hab("x", AssetKind::Furniture, b"<html>").is_err());
+        assert!(to_hab("x", AssetKind::Pets, b"CWS\x0a....").is_err(), "a damaged .swf is an error, not a broken .hab");
+    }
+
+    /// A real pet from the converter's samples, through to_hab, read back as its JSON and sheet.
+    #[test]
+    fn a_real_pet_swf_becomes_a_hab() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../../duckietm/all-in-1-converter/Compiled/SWFCompiler/import/pets/dog.swf");
+        let Ok(data) = std::fs::read(folder) else { return };
+        let files = hab::read(&to_hab("dog", AssetKind::Pets, &data).unwrap()).unwrap();
+        let names: Vec<&str> = files.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["dog.json", "dog.png"]);
     }
 }

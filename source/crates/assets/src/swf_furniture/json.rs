@@ -7,9 +7,9 @@ use std::hash::Hash;
 
 use anyhow::{bail, Result};
 
-/// Utf8JsonWriter indents with Environment.NewLine. The converter is a Windows tool first (its file listing order,
-/// modelled in `names::ntfs_order`, is Windows' too), so this is "\r\n"; on Linux the C# writes "\n".
-pub const NEWLINE: &str = "\r\n";
+/// Utf8JsonWriter indents with Environment.NewLine: "\r\n" on Windows, "\n" on Linux. Every converter of this crate
+/// writes "\n" (Octane reads either).
+pub const NEWLINE: &str = "\n";
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Json {

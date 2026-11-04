@@ -240,7 +240,7 @@ async fn a_retro_in_any_format_ends_up_as_hab() {
     let furniture = downloader.retro_furniture(&urls).await.unwrap();
     assert!(furniture.contains("2 new furniture .hab"), "{furniture}");
     assert!(furniture.contains("1 not on Habbo"), "poster: {furniture}");
-    assert!(furniture.contains("1 .swf kept in source/"), "{furniture}");
+    assert!(furniture.contains("1 .swf could not be converted and are kept in source/"), "a damaged .swf: {furniture}");
     let g = root.path().join("gamedata");
     let chair = std::fs::read(g.join("furniture/chair.hab")).unwrap();
     assert_eq!(aio_assets::hab::read(&chair).unwrap(), files, "the .nitro is repacked as .hab");

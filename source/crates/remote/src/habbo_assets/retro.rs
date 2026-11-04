@@ -1,7 +1,7 @@
 //! Custom assets from a Nitro retro: the URLs of its renderer-config.json (furnidata.url, furni.asset.url,
 //! furni.asset.icon.url, avatar.asset.url, avatar.figuredata.url, avatar.figuremap.url), downloaded into a folder of
 //! their own laid out like gamedata, to upload by hand. A retro serves .hab, .nitro or .swf: every bundle ends up as
-//! .hab; a .swf that cannot be converted yet stays in source/. (All-in-1 Converter: NitroFurniture.cs, NitroClothes.cs)
+//! .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted stays in source/. (All-in-1 Converter: NitroFurniture.cs, NitroClothes.cs)
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -41,7 +41,7 @@ const ORDER: [Format; 3] = [Format::Hab, Format::Nitro, Format::Swf];
 #[derive(Default)]
 struct BundleCounts {
     counts: Counts,
-    /// .swf files kept in source/ (no SWF converter for them yet).
+    /// .swf files kept in source/ because they could not be converted.
     swf_waiting: AtomicUsize,
     by_format: [AtomicUsize; 3],
 }
@@ -62,7 +62,7 @@ impl BundleCounts {
         }
         let waiting = self.swf_waiting.load(Ordering::Relaxed);
         if waiting > 0 {
-            text += &format!("; {waiting} .swf kept in source/ for the SWF converter");
+            text += &format!("; {waiting} .swf could not be converted and are kept in source/");
         }
         text
     }
@@ -111,7 +111,10 @@ impl Downloader<'_> {
                                         result.counts.failed.fetch_add(1, Ordering::Relaxed);
                                     }
                                 }
-                                Err(_) if format == Format::Swf => {
+                                Err(e) if format == Format::Swf => {
+                                    if result.swf_waiting.load(Ordering::Relaxed) < 10 {
+                                        (self.log)(&format!("  ! {name}.swf: {e} (kept in source/)"));
+                                    }
                                     if save(&kept, &data).is_ok() {
                                         result.swf_waiting.fetch_add(1, Ordering::Relaxed);
                                     } else {

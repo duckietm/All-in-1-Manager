@@ -2226,7 +2226,6 @@
   "Furniture icons": "Icone dei furni",
   "FurnitureData.json, every furniture bundle and its icons": "FurnitureData.json, ogni bundle di furni e le sue icone",
   "Habbo hotel": "Hotel Habbo",
-  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab; a .swf is kept in source/ until the SWF converter is built in.": "In {folder}, organizzata come gamedata, da caricare a mano (Asset Explorer). Un retro fornisce .hab, .nitro o .swf: ogni bundle viene salvato come .hab; un .swf resta in source/ finché non arriva il convertitore SWF.",
   "Nitro retro": "Retro Nitro",
   "Not saved yet": "Non ancora salvato",
   "Saved: they are filled in again next time.": "Salvato: la prossima volta saranno di nuovo qui.",
@@ -2241,5 +2240,6 @@
   "Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here.": "Scarica prima gli asset con Asset → Asset di Habbo (o scegli l'All-in-1 downloader nelle Impostazioni), poi torna qui.",
   "{count} files here, all on the server. Download more with Habbo assets and sync again.": "{count} file qui, tutti sul server. Scaricane altri con Asset di Habbo e sincronizza di nuovo.",
   "Nothing downloaded yet: use Assets → Habbo assets first.": "Ancora niente scaricato: usa prima Asset → Asset di Habbo.",
-  "Where the assets are downloaded to": "Dove vengono scaricati gli asset"
+  "Where the assets are downloaded to": "Dove vengono scaricati gli asset",
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.": "In {folder}, organizzata come gamedata, da caricare a mano (Asset Explorer). Un retro fornisce .hab, .nitro o .swf: ogni bundle viene salvato come .hab (un .nitro reimpacchettato, un .swf convertito); un .swf che non si può convertire resta in source/."
 }

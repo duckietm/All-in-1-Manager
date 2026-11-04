@@ -215,7 +215,15 @@ impl Downloader<'_> {
                             break;
                         }
                         if !found {
-                            result.counts.missing.fetch_add(1, Ordering::Relaxed);
+                            // For the first few: the address asked for and what the server answered.
+                            if result.counts.missing.fetch_add(1, Ordering::Relaxed) < 3 {
+                                let url = format!("{base}/{}.{}", stems[0], order[0].extension());
+                                let answer = match self.client.get(&url).send().await {
+                                    Ok(response) => format!("{} ({} bytes)", response.status(), response.content_length().map_or("?".into(), |n| n.to_string())),
+                                    Err(e) => format!("no answer: {e}"),
+                                };
+                                (self.log)(&format!("  ! not found: {url} answered {answer}"));
+                            }
                         }
                     }
                     let done = done.fetch_add(1, Ordering::Relaxed) + 1;

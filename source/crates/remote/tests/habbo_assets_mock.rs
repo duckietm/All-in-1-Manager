@@ -308,6 +308,28 @@ async fn a_flash_retro_with_furnidata_xml() {
 }
 
 #[tokio::test]
+async fn furnidata_from_a_file_with_the_bundles_from_the_retro() {
+    let hab = aio_assets::hab::write("chair", &[("x.json".to_string(), b"{}".to_vec())]);
+    let mut f: HashMap<String, Vec<u8>> = HashMap::new();
+    f.insert("/libraries/furniture/chair.hab".into(), hab.clone());
+    let base = serve(f).await;
+    let root = tempfile::tempdir().unwrap();
+    let json = root.path().join("leet_furni.json");
+    std::fs::write(&json, br#"{"roomitemtypes":{"furnitype":[{"classname":"chair"}]},"wallitemtypes":{"furnitype":[]}}"#).unwrap();
+    let urls = aio_remote::habbo_assets::retro::RetroUrls {
+        furnidata: format!("\"{}\"", json.display()),
+        furniture: format!("{base}/libraries/furniture/%libname%.nitro"),
+        ..Default::default()
+    };
+    let log = |_: &str| {};
+    let downloader = Downloader::new(root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), Options::default(), &log, CancellationToken::new()).unwrap();
+    let summary = downloader.retro_furniture(&urls).await.unwrap();
+    assert!(summary.contains("1 new furniture .hab"), "{summary}");
+    assert!(root.path().join("gamedata/config/FurnitureData.json").is_file());
+    assert_eq!(std::fs::read(root.path().join("gamedata/furniture/chair.hab")).unwrap(), hab);
+}
+
+#[tokio::test]
 async fn a_stopped_run_stops() {
     let base = serve(fake_habbo()).await;
     let mut urls = Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]);

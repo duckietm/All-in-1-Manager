@@ -33,12 +33,28 @@ impl Downloader<'_> {
     /// A JSON or XML file of the retro, fresh (see [`fresh`]); when the address with the timestamp fails, the address
     /// as given is tried once more.
     async fn fresh_text(&self, url: &str) -> Result<String> {
+        // A file on this computer (saved from the browser, for example) instead of a link.
+        if let Some(path) = local_file(url) {
+            (self.log)(&format!("  reading {}", path.display()));
+            let data = std::fs::read(&path).map_err(|e| error(format!("{}: {e}", path.display())))?;
+            return Ok(String::from_utf8_lossy(data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&data)).into_owned());
+        }
         let with_time = fresh(url);
         match self.text(&with_time).await {
             Err(_) if with_time != url.trim() => self.text(url.trim()).await,
             other => other,
         }
     }
+}
+
+/// The path when a JSON field holds a file on this computer instead of a link (a plain path or file:///...).
+pub fn local_file(value: &str) -> Option<PathBuf> {
+    let value = value.trim().trim_matches('"');
+    if value.starts_with("http://") || value.starts_with("https://") || value.is_empty() {
+        return None;
+    }
+    let value = value.strip_prefix("file:///").or_else(|| value.strip_prefix("file://")).unwrap_or(value);
+    Some(PathBuf::from(value))
 }
 
 /// XML (a Flash retro's or Habbo's furnidata, figuredata or figuremap) rather than JSON.
@@ -361,5 +377,8 @@ mod tests {
         assert_eq!(fresh(url), url);
         assert!(fresh(" https://x/FurnitureData.json ").starts_with("https://x/FurnitureData.json?t="));
         assert_eq!(folder_url("https://x/libraries/figure/%libname%.nitro?v=3"), "https://x/libraries/figure");
+        assert_eq!(local_file("https://x/a.json"), None);
+        assert_eq!(local_file(r#" "C:\Users\me\leet_furni.json" "#), Some(PathBuf::from(r"C:\Users\me\leet_furni.json")));
+        assert_eq!(local_file("file:///home/me/a.json"), Some(PathBuf::from("home/me/a.json")));
     }
 }

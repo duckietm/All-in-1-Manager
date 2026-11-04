@@ -2279,5 +2279,7 @@
   "the edited folders packed as .hab again": "le cartelle modificate di nuovo impacchettate come .hab",
   "Download .hab and .swf": "Scarica .hab e .swf",
   "Download only .hab": "Scarica solo .hab",
-  "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": "Con .swf attivo, furni, vestiti, effetti e animali ricevono anche il loro .swf, in Assets_tools\\Original_SWF_Files, per gli strumenti per asset. Non vengono mai inviati al server."
+  "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": "Con .swf attivo, furni, vestiti, effetti e animali ricevono anche il loro .swf, in Assets_tools\\Original_SWF_Files, per gli strumenti per asset. Non vengono mai inviati al server.",
+  "A JSON or XML file on this computer, saved from the browser for example.": "Un file JSON o XML su questo computer, salvato dal browser per esempio.",
+  "https:// or a file on this computer": "https:// o un file su questo computer"
 }

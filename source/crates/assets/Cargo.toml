@@ -14,3 +14,6 @@ zip.workspace = true
 image.workspace = true
 lzma-rs = "0.3"
 roxmltree = "0.19"
+
+[dev-dependencies]
+tempfile.workspace = true

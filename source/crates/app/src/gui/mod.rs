@@ -50,6 +50,7 @@ pub enum Page {
     DeployAssets,
     GetAssets,
     RetroAssets,
+    AssetTools,
     AssetExplorer,
     SqlEditor,
     Debug,
@@ -197,6 +198,7 @@ pub struct App {
     tools: views::tools::ToolsView,
     explorer: views::asset_explorer::AssetExplorerView,
     get_assets: views::get_assets::GetAssetsView,
+    asset_tools: views::asset_tools::AssetToolsView,
     sql: views::sql_editor::SqlEditorView,
     debug: views::debug::DebugView,
     history: views::history::HistoryView,
@@ -239,6 +241,7 @@ impl App {
             tools: views::tools::ToolsView::new(&shared),
             explorer: views::asset_explorer::AssetExplorerView::new(&shared),
             get_assets: views::get_assets::GetAssetsView::new(&shared),
+            asset_tools: views::asset_tools::AssetToolsView::new(&shared),
             sql: views::sql_editor::SqlEditorView::new(&shared),
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
@@ -450,6 +453,10 @@ impl App {
                 t("Habbo assets").into(),
                 t("Habbo's furniture, clothes, effects, badges and game data, downloaded on this computer, ready for Deploy Assets.").into(),
             ),
+            Page::AssetTools => (
+                t("Asset tools").into(),
+                t("Decompile SWF and HAB files, compile edited HAB files, and convert SWF and NITRO to HAB, on this computer.").into(),
+            ),
             Page::RetroAssets => (
                 t("Nitro retro").into(),
                 t("A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.").into(),
@@ -580,6 +587,7 @@ impl App {
                             vec![
                                 (t("Habbo assets"), Icon::Download, Page::GetAssets),
                                 (t("Nitro retro"), Icon::Cube, Page::RetroAssets),
+                            (t("Asset tools"), Icon::Swap, Page::AssetTools),
                                 (t("Deploy Assets"), Icon::ArrowUp, Page::DeployAssets),
                                 ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
                             ],
@@ -665,7 +673,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::SqlEditor | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -741,6 +749,7 @@ impl App {
         }
         match page {
             Page::AssetExplorer => self.explorer.show(ui, palette, &shared),
+            Page::AssetTools => scroll(ui, |ui| self.asset_tools.show(ui, palette, &shared)),
             Page::GetAssets | Page::RetroAssets => {
                 self.get_assets.set_retro(page == Page::RetroAssets);
                 scroll(ui, |ui| self.get_assets.show(ui, palette, &shared))

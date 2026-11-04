@@ -4,6 +4,7 @@
 pub mod about;
 pub mod addons;
 pub mod asset_explorer;
+pub mod asset_tools;
 pub mod get_assets;
 pub mod atom_cms;
 pub mod clone;

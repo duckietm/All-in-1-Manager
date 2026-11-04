@@ -59,8 +59,8 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 - **Addons**: AtomCMS, EpicNext or your own CMS, Gitea, Fail2Ban, CrowdSec, the default catalogue and a SQL Editor over the SSH
   tunnel.
 - **Assets** (its own section in the sidebar): Habbo assets (Habbo's own furniture, clothes, effects, badges and
-  game data as .hab and JSON), Nitro retro (a retro's custom furniture and clothes), Deploy Assets and an Asset
-  Explorer.
+  game data as .hab and JSON), Nitro retro (a retro's custom furniture and clothes), Asset tools (decompile and
+  compile .hab, SWF / NITRO to HAB), Deploy Assets and an Asset Explorer.
 - **Running the hotel**: restarts, updates of the emulator, Octane, AtomCMS and the containers, database backup and
   import (also PlusEMU), live server status, the emulator's wired CPU, an SSH terminal in the window, a **Health
   check** with a fix for each problem, and a **History** of every run with its log.
@@ -84,7 +84,7 @@ To look around first: `all-in-1-installer --dry-run` logs in to nothing and only
 - [Requirements](#requirements)
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
-  [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+  [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -1155,6 +1155,30 @@ with the same files, a `.swf` is converted (furniture, clothes, pets and effects
 compilers ported to Rust, the JSON and sprite sheet as it makes them; the sheet stays PNG). A `.swf` that cannot be
 converted is kept in `custom/<name>/source/`; **Convert the kept .swf files** tries those again without downloading. The bundle formats and conversions live in their own crate, `aio-assets`, so other parts of the
 installer can use them too.
+
+### Asset tools
+
+**Asset tools** (sidebar → ASSETS) works on files on this computer, in `Habbo_Assets/Assets_tools`, the All-in-1
+converter's Hotel Tools for bundles with one clear folder layout (the folders are made for you):
+
+```text
+Assets_tools/
+  Original_SWF_Files/<type>/       put .swf files here (type: furni, clothes, pets, effects)
+  Original_NITRO_Files/<type>/     put .nitro files here
+  converted/<type>/                the .hab files SWF / NITRO to HAB makes
+  Decompiled_SWF_Files/<type>/<name>/   debugging: images/, binaryData/ (the XML), symbolClass/symbols.csv
+  Decompiled_HAB_Files/<type>/<name>/   each .hab as its .json and image, to edit
+  Compiled_HAB_Files/<type>/       the edited folders packed as .hab again
+```
+
+- **Decompile SWF files**: Original_SWF_Files → Decompiled_SWF_Files, for debugging (images, XML and symbols, like
+  FFDEC's export; no ActionScript or sounds).
+- **Decompile HAB files**: converted → Decompiled_HAB_Files; **Compile HAB files**: Decompiled_HAB_Files →
+  Compiled_HAB_Files (every file in the folder goes in, as edited).
+- **SWF / NITRO furniture, clothes, pets, effects to HAB**: Original_SWF_Files/<type> or Original_NITRO_Files/<type>
+  → converted/<type>. The .swf can also come from a Nitro retro profile (**Custom: <name>**: the .swf it kept in
+  `custom/<name>/source/`). A .hab already in converted is skipped unless **Replace** is ticked. The work runs on
+  all CPU cores but one; one broken file fails alone.
 
 ### Deploy Assets
 

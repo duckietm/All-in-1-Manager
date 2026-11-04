@@ -55,6 +55,14 @@ pub fn asset_entries() -> Vec<Entry> {
             Page::RetroAssets,
         ),
         entry(
+            t("Asset tools"),
+            t("Decompile SWF and HAB files, compile edited HAB files, and convert SWF and NITRO to HAB, on this computer.").into(),
+            Icon::Swap,
+            "#059669",
+            Scene::Garden,
+            Page::AssetTools,
+        ),
+        entry(
             t("Deploy Assets"),
             crate::i18n::tf("The downloaded assets and the UI texts to {gamedata}.", &[("gamedata", &gamedata)]),
             Icon::ArrowUp,

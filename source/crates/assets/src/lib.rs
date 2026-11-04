@@ -9,5 +9,6 @@ pub mod swf;
 pub mod swf_pets;
 pub mod swf_effects;
 pub mod swf_clothes;
+pub mod swf_furniture;
 
 pub use bundle::{detect, to_hab, AssetKind, Format};

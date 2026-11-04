@@ -5,5 +5,6 @@
 pub mod bundle;
 pub mod hab;
 pub mod nitro;
+pub mod swf;
 
 pub use bundle::{detect, to_hab, AssetKind, Format};

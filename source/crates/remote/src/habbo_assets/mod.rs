@@ -254,8 +254,13 @@ fn save(path: &Path, data: &[u8]) -> std::io::Result<()> {
 
 impl<'a> Downloader<'a> {
     pub fn new(root: &Path, urls: Urls, options: Options, log: Log<'a>, cancel: CancellationToken) -> Result<Self> {
+        // The headers a browser sends with every request, so a CDN answers the downloader as it answers a browser.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("*/*"));
+        headers.insert(reqwest::header::ACCEPT_LANGUAGE, reqwest::header::HeaderValue::from_static("en-US,en;q=0.9,nl;q=0.8"));
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
+            .default_headers(headers)
             .connect_timeout(Duration::from_secs(20))
             .timeout(Duration::from_secs(180))
             .build()

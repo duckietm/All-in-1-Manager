@@ -29,15 +29,32 @@ pub fn folder_url(url: &str) -> String {
     url.trim_end_matches('/').to_string()
 }
 
+impl Downloader<'_> {
+    /// A JSON or XML file of the retro, fresh (see [`fresh`]); when the address with the timestamp fails, the address
+    /// as given is tried once more.
+    async fn fresh_text(&self, url: &str) -> Result<String> {
+        let with_time = fresh(url);
+        match self.text(&with_time).await {
+            Err(_) if with_time != url.trim() => self.text(url.trim()).await,
+            other => other,
+        }
+    }
+}
+
 /// XML (a Flash retro's or Habbo's furnidata, figuredata or figuremap) rather than JSON.
 fn is_xml(text: &str) -> bool {
     text.trim_start_matches('\u{feff}').trim_start().starts_with('<')
 }
 
 /// The URL with a timestamp, so a cache in front of the retro gives the newest file (as the converter does).
+/// An address that has a query already (a "?v=..." version of the retro's own) is used exactly as given: some CDNs
+/// answer 404 to a query they do not know.
 fn fresh(url: &str) -> String {
-    let separator = if url.contains('?') { '&' } else { '?' };
-    format!("{}{separator}t={}", url.trim(), chrono::Utc::now().timestamp())
+    let url = url.trim();
+    if url.contains('?') {
+        return url.to_string();
+    }
+    format!("{url}?t={}", chrono::Utc::now().timestamp())
 }
 
 const ORDER: [Format; 3] = [Format::Hab, Format::Nitro, Format::Swf];
@@ -181,7 +198,7 @@ impl Downloader<'_> {
         if urls.furnidata.trim().is_empty() || urls.furniture.trim().is_empty() {
             return Err(error("Fill in FurnitureData.json and the furniture folder of the retro first."));
         }
-        let text = self.text(&fresh(&urls.furnidata)).await?;
+        let text = self.fresh_text(&urls.furnidata).await?;
         // A Nitro retro serves FurnitureData.json; a Flash one (and Habbo) the furnidata XML, with a revision per furni.
         let (json, entries, xml): (Value, Vec<(String, Option<i64>)>, bool) = if is_xml(&text) {
             let json = crate::furniture_language::xml_to_json(&text)?;
@@ -248,7 +265,7 @@ impl Downloader<'_> {
         if urls.figuremap.trim().is_empty() || urls.clothes.trim().is_empty() {
             return Err(error("Fill in FigureMap.json and the clothes folder of the retro first."));
         }
-        let mut map = self.text(&fresh(&urls.figuremap)).await?;
+        let mut map = self.fresh_text(&urls.figuremap).await?;
         // A Flash retro serves figuremap.xml and figuredata.xml: they become the JSON Octane loads.
         let json: Value = if is_xml(&map) {
             let (json, _) = convert::figuremap(&map)?;
@@ -272,7 +289,7 @@ impl Downloader<'_> {
         self.save_raw("config/FigureMap.json", &map)?;
         let mut summary = String::new();
         if !urls.figuredata.trim().is_empty() {
-            let mut data = self.text(&fresh(&urls.figuredata)).await?;
+            let mut data = self.fresh_text(&urls.figuredata).await?;
             if is_xml(&data) {
                 data = serde_json::to_string_pretty(&convert::figuredata(&data, false)?).map_err(|e| error(e.to_string()))?;
             } else {
@@ -332,4 +349,17 @@ pub fn convert_sources(custom: &std::path::Path, log: crate::server::Log<'_>, ca
         log(&format!("  ! ... and {} more", failed - 10));
     }
     Ok(format!("{converted} .swf converted to .hab, {skipped} already converted, {failed} failed"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_with_its_own_version_is_kept() {
+        let url = "https://images.leet.city/leet-asset-bundles/gamedata/leet_furni.json?v=94c2f8f6";
+        assert_eq!(fresh(url), url);
+        assert!(fresh(" https://x/FurnitureData.json ").starts_with("https://x/FurnitureData.json?t="));
+        assert_eq!(folder_url("https://x/libraries/figure/%libname%.nitro?v=3"), "https://x/libraries/figure");
+    }
 }

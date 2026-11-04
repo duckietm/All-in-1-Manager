@@ -352,6 +352,8 @@
   "Connection failed",
   "Connection log",
   "Container and route",
+  "Convert the kept .swf files",
+  "Converts the .swf files in source/ to .hab, without downloading them again.",
   "Copied",
   "Copied {count} characters.",
   "Copied {n} line",

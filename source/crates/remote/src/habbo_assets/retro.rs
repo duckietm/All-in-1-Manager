@@ -223,3 +223,45 @@ impl Downloader<'_> {
 pub fn custom_folder(assets_folder: &std::path::Path) -> PathBuf {
     assets_folder.join(CUSTOM)
 }
+
+/// The kind of asset each gamedata folder holds, for the .swf files kept in source/<folder>/.
+pub const SOURCE_FOLDERS: [(&str, AssetKind); 4] =
+    [("furniture", AssetKind::Furniture), ("clothes", AssetKind::Clothes), ("pets", AssetKind::Pets), ("effect", AssetKind::Effects)];
+
+/// Converts the .swf files kept in `<custom>/source/<folder>/` into `<custom>/gamedata/<folder>/<name>.hab` (on this
+/// computer, no download). A .swf whose .hab is there already is skipped; the .swf files stay. Returns the summary.
+pub fn convert_sources(custom: &std::path::Path, log: crate::server::Log<'_>, cancel: &tokio_util::sync::CancellationToken) -> Result<String> {
+    let (mut converted, mut skipped, mut failed) = (0, 0, 0);
+    for (folder, kind) in SOURCE_FOLDERS {
+        let source = custom.join("source").join(folder);
+        let Ok(entries) = std::fs::read_dir(&source) else { continue };
+        let mut files: Vec<PathBuf> =
+            entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("swf"))).collect();
+        files.sort();
+        for path in files {
+            if cancel.is_cancelled() {
+                return Err(error("Stopped."));
+            }
+            let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            let target = custom.join(super::GAMEDATA).join(folder).join(format!("{name}.hab"));
+            if target.is_file() {
+                skipped += 1;
+                continue;
+            }
+            let result = std::fs::read(&path).map_err(anyhow::Error::from).and_then(|data| aio_assets::to_hab(&name, kind, &data));
+            match result.and_then(|hab| save(&target, &hab).map_err(anyhow::Error::from)) {
+                Ok(()) => converted += 1,
+                Err(e) => {
+                    failed += 1;
+                    if failed <= 10 {
+                        log(&format!("  ! {folder}/{name}.swf: {e}"));
+                    }
+                }
+            }
+        }
+    }
+    if failed > 10 {
+        log(&format!("  ! ... and {} more", failed - 10));
+    }
+    Ok(format!("{converted} .swf converted to .hab, {skipped} already converted, {failed} failed"))
+}

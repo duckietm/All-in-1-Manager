@@ -51,6 +51,8 @@ enum Job {
     Habbo(Asset),
     RetroFurniture,
     RetroClothes,
+    /// The .swf files kept in custom/source/ converted to .hab (no download).
+    ConvertSwf,
 }
 
 impl Job {
@@ -59,6 +61,7 @@ impl Job {
             Job::Habbo(asset) => texts(asset).0,
             Job::RetroFurniture => n("Custom furniture"),
             Job::RetroClothes => n("Custom clothes"),
+            Job::ConvertSwf => n("Convert the kept .swf files"),
         }
     }
 }
@@ -223,6 +226,8 @@ impl GetAssetsView {
                             Job::Habbo(asset) => downloader.run(asset).await,
                             Job::RetroFurniture => downloader.retro_furniture(&retro_urls).await,
                             Job::RetroClothes => downloader.retro_clothes(&retro_urls).await,
+                            // CPU work: on this worker thread, without holding up the others.
+                            Job::ConvertSwf => tokio::task::block_in_place(|| retro::convert_sources(&root, &log, &cancel)),
                         }
                         .map_err(|e| e.to_string());
                         match &outcome {
@@ -357,6 +362,13 @@ impl GetAssetsView {
                 }
                 if ui.add(widgets::secondary_button(t("Open the folder"))).clicked() {
                     open_folder(&custom);
+                }
+                if ui
+                    .add_enabled(!running, widgets::secondary_button(t("Convert the kept .swf files")))
+                    .on_hover_text(t("Converts the .swf files in source/ to .hab, without downloading them again."))
+                    .clicked()
+                {
+                    *start = Some(vec![Job::ConvertSwf]);
                 }
                 if running && ui.add(widgets::secondary_button(t("Stop"))).clicked() {
                     if let Some(cancel) = &self.state.lock().unwrap().cancel {

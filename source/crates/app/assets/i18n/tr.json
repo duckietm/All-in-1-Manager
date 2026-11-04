@@ -2230,5 +2230,7 @@
   "Nitro retro": "Nitro retro",
   "Not saved yet": "Henüz kaydedilmedi",
   "Saved: they are filled in again next time.": "Kaydedildi: bir dahaki sefere yine burada olacaklar.",
-  "Upload the custom folder by hand.": "Özel klasörü elle yükle."
+  "Upload the custom folder by hand.": "Özel klasörü elle yükle.",
+  "Convert the kept .swf files": "Saklanan .swf dosyalarını dönüştür",
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "source/ içindeki .swf dosyalarını yeniden indirmeden .hab'a dönüştürür."
 }

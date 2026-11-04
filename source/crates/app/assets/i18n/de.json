@@ -2230,5 +2230,7 @@
   "Nitro retro": "Nitro-Retro",
   "Not saved yet": "Noch nicht gespeichert",
   "Saved: they are filled in again next time.": "Gespeichert: Beim nächsten Mal sind sie wieder da.",
-  "Upload the custom folder by hand.": "Lade den eigenen Ordner von Hand hoch."
+  "Upload the custom folder by hand.": "Lade den eigenen Ordner von Hand hoch.",
+  "Convert the kept .swf files": "Gespeicherte .swf-Dateien umwandeln",
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "Wandelt die .swf-Dateien in source/ in .hab um, ohne sie erneut herunterzuladen."
 }

@@ -2230,5 +2230,7 @@
   "Nitro retro": "Nitro-retro",
   "Not saved yet": "Nog niet opgeslagen",
   "Saved: they are filled in again next time.": "Opgeslagen: ze staan er de volgende keer weer.",
-  "Upload the custom folder by hand.": "Upload de eigen map zelf."
+  "Upload the custom folder by hand.": "Upload de eigen map zelf.",
+  "Convert the kept .swf files": "Bewaarde .swf-bestanden omzetten",
+  "Converts the .swf files in source/ to .hab, without downloading them again.": "Zet de .swf-bestanden in source/ om naar .hab, zonder ze opnieuw te downloaden."
 }

@@ -63,3 +63,6 @@ Thumbs.db
 # The program after source/tools/build.py, with its own configuration/ (keys, passwords, history)
 /public/dev/
 /public/release/
+
+# Working copies of helper agents
+.claude/worktrees/

@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use aio_remote::furniture_language;
-use aio_remote::habbo_assets::retro::{self, RetroUrls};
+use aio_core::settings::{RetroProfile, RetroUrls};
+use aio_remote::habbo_assets::retro;
 use aio_remote::habbo_assets::{self, Asset, Downloader, Options, Urls};
 use eframe::egui::{self, RichText};
 use tokio_util::sync::CancellationToken;
@@ -97,6 +98,8 @@ struct State {
     stopped: bool,
     /// The last run was the retro's (its folder is uploaded by hand, not by Deploy Assets).
     last_retro: bool,
+    /// The folder the last run downloaded into.
+    last_root: PathBuf,
     /// A folder or file the pickers chose, taken over by the page on the next frame.
     picked_folder: Option<PathBuf>,
     picked_source: Option<PathBuf>,
@@ -112,9 +115,10 @@ pub struct GetAssetsView {
     folder: PathBuf,
     custom_folder: bool,
     tab: Tab,
-    /// The retro's URLs as edited, and as last saved in Settings.
-    retro: RetroUrls,
-    retro_saved: RetroUrls,
+    /// The saved retro profiles, the one being edited (None: a new one) and its name and URLs as edited.
+    profiles: Vec<RetroProfile>,
+    current: Option<usize>,
+    edit: RetroProfile,
     retro_furniture: bool,
     retro_clothes: bool,
     /// Done was pressed: back to the top of the page on the next frame.
@@ -140,8 +144,9 @@ impl GetAssetsView {
             folder: PathBuf::new(),
             custom_folder: false,
             tab: Tab::Habbo,
-            retro: RetroUrls::default(),
-            retro_saved: RetroUrls::default(),
+            profiles: Vec::new(),
+            current: None,
+            edit: RetroProfile::default(),
             retro_furniture: true,
             retro_clothes: true,
             scroll_top: false,
@@ -156,8 +161,10 @@ impl GetAssetsView {
 
     fn reload_folder(&mut self) {
         let settings = aio_core::InstallerSettings::load();
-        self.retro = settings.retro.clone().unwrap_or_default();
-        self.retro_saved = self.retro.clone();
+        self.profiles = settings.retro_profiles();
+        let selected = settings.retro_selected.as_deref().and_then(|name| self.profiles.iter().position(|p| p.name == name));
+        self.current = selected.or(if self.profiles.is_empty() { None } else { Some(0) });
+        self.edit = self.current.map(|i| self.profiles[i].clone()).unwrap_or_default();
         self.folder = settings.assets_folder();
         self.custom_folder = settings.assets_path.is_some();
     }
@@ -175,12 +182,67 @@ impl GetAssetsView {
         self.tab = if retro { Tab::Retro } else { Tab::Habbo };
     }
 
-    /// Saves the retro's URLs in Settings, so they are there next time.
-    fn save_retro(&mut self) {
+    /// The edited profile differs from what is saved (or is a new one with something in it).
+    fn retro_changed(&self) -> bool {
+        match self.current {
+            Some(i) => self.profiles.get(i) != Some(&self.edit),
+            None => !self.edit.name.trim().is_empty() || !self.edit.urls.is_empty(),
+        }
+    }
+
+    fn write_profiles(&self) {
         let mut settings = aio_core::InstallerSettings::load();
-        settings.retro = (!self.retro.is_empty()).then(|| self.retro.clone());
-        if settings.save().is_ok() {
-            self.retro_saved = self.retro.clone();
+        settings.retros = self.profiles.clone();
+        settings.retro = None;
+        settings.retro_selected = self.current.and_then(|i| self.profiles.get(i)).map(|p| p.name.clone());
+        let _ = settings.save();
+    }
+
+    /// Saves the edited profile, so it is there next time. Without a name it is named after its host; a new profile
+    /// with the name of a saved one replaces that one.
+    fn save_retro(&mut self) {
+        self.edit.name = self.edit.name.trim().to_string();
+        if self.edit.name.is_empty() {
+            self.edit.name = self.edit.urls.host().unwrap_or_else(|| "retro".into());
+        }
+        let same_name = self.profiles.iter().position(|p| p.name.eq_ignore_ascii_case(&self.edit.name));
+        let index = match (self.current, same_name) {
+            (Some(i), Some(j)) if i != j => {
+                self.profiles[j] = self.edit.clone();
+                self.profiles.remove(i);
+                if j > i { j - 1 } else { j }
+            }
+            (Some(i), _) => {
+                self.profiles[i] = self.edit.clone();
+                i
+            }
+            (None, Some(j)) => {
+                self.profiles[j] = self.edit.clone();
+                j
+            }
+            (None, None) => {
+                self.profiles.push(self.edit.clone());
+                self.profiles.len() - 1
+            }
+        };
+        self.current = Some(index);
+        self.write_profiles();
+    }
+
+    fn select_profile(&mut self, index: Option<usize>) {
+        self.current = index.filter(|i| *i < self.profiles.len());
+        self.edit = self.current.map(|i| self.profiles[i].clone()).unwrap_or_default();
+        if self.current.is_some() {
+            self.write_profiles();
+        }
+    }
+
+    fn delete_profile(&mut self) {
+        if let Some(i) = self.current {
+            self.profiles.remove(i);
+            self.current = if self.profiles.is_empty() { None } else { Some(0) };
+            self.edit = self.current.map(|i| self.profiles[i].clone()).unwrap_or_default();
+            self.write_profiles();
         }
     }
 
@@ -200,8 +262,9 @@ impl GetAssetsView {
             state.log.clear();
         }
         let retro_run = jobs.iter().any(|j| !matches!(j, Job::Habbo(_)));
-        let root = if retro_run { retro::custom_folder(&self.folder) } else { self.folder.clone() };
-        let retro_urls = self.retro.clone();
+        let root = if retro_run { retro::custom_folder(&self.folder, &self.edit) } else { self.folder.clone() };
+        self.state.lock().unwrap().last_root = root.clone();
+        let retro_urls = self.edit.urls.clone();
         let options = Options {
             not_sellable: self.not_sellable,
             effect_icons_source: Some(self.icon_source.trim().to_string()).filter(|s| !s.is_empty()),
@@ -293,14 +356,45 @@ impl GetAssetsView {
     /// The Nitro retro tab: its renderer-config.json URLs (saved in Settings) and what to download from it.
     fn retro_cards(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared, running: bool, start: &mut Option<Vec<Job>>) {
         let margin = egui::Margin::symmetric(24, 20);
-        let custom = habbo_assets::gamedata_folder(&retro::custom_folder(&self.folder));
+        let custom = habbo_assets::gamedata_folder(&retro::custom_folder(&self.folder, &self.edit));
         widgets::card(ui, palette, margin, |ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
             ui.label(widgets::title_text(t("Nitro retro"), 15.0));
             widgets::muted(ui, palette, t("Custom downloads from a Nitro hotel; copy the values from its renderer-config.json."), 12.5);
             ui.add_space(4.0);
+            // The saved profiles, one click to switch; a new one starts empty.
+            let mut pick: Option<Option<usize>> = None;
+            ui.add_enabled_ui(!running, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(t("Profiles:")).size(12.5).color(palette.muted));
+                    for (i, profile) in self.profiles.iter().enumerate() {
+                        let button = egui::Button::new(RichText::new(&profile.name).size(13.0).strong()).selected(self.current == Some(i));
+                        if ui.add(button).clicked() {
+                            pick = Some(Some(i));
+                        }
+                    }
+                    let new = egui::Button::new(RichText::new(t("+ New profile")).size(13.0)).selected(self.current.is_none());
+                    if ui.add(new).clicked() {
+                        pick = Some(None);
+                    }
+                });
+            });
+            if let Some(index) = pick {
+                self.select_profile(index);
+            }
+            ui.add_space(4.0);
             ui.add_enabled_ui(!running, |ui| {
                 egui::Grid::new("retro_urls").num_columns(2).spacing(egui::vec2(18.0, 10.0)).show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_min_width(230.0);
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(RichText::new(t("Name")).size(13.0).strong());
+                        ui.label(RichText::new(format!("custom/{}", self.edit.folder_name())).size(11.0).color(palette.subtle));
+                    });
+                    let width = (ui.available_width() - 4.0).max(240.0);
+                    let hint = self.edit.urls.host().unwrap_or_else(|| t("For example the hotel's name").into());
+                    ui.add(egui::TextEdit::singleline(&mut self.edit.name).hint_text(hint).desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                    ui.end_row();
                     for (i, (label, key)) in RETRO_FIELDS.iter().enumerate() {
                         ui.vertical(|ui| {
                             ui.set_min_width(230.0);
@@ -309,20 +403,25 @@ impl GetAssetsView {
                             ui.label(RichText::new(format!("renderer-config.json: {key}")).size(11.0).color(palette.subtle));
                         });
                         let width = (ui.available_width() - 4.0).max(240.0);
-                        ui.add(egui::TextEdit::singleline(retro_field(&mut self.retro, i)).hint_text("https://").desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                        ui.add(egui::TextEdit::singleline(retro_field(&mut self.edit.urls, i)).hint_text("https://").desired_width(width).margin(egui::vec2(8.0, 6.0)));
                         ui.end_row();
                     }
                 });
             });
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let changed = self.retro != self.retro_saved;
+                let changed = self.retro_changed();
                 if ui.add_enabled(!running && changed, widgets::primary_button(t("Save"))).clicked() {
                     self.save_retro();
                 }
+                if self.current.is_some()
+                    && ui.add_enabled(!running, widgets::secondary_button(t("Delete profile"))).on_hover_text(t("Removes the profile; its downloaded folder stays.")).clicked()
+                {
+                    self.delete_profile();
+                }
                 if changed {
                     ui.label(RichText::new(t("Not saved yet")).size(12.0).color(palette.warning_text));
-                } else if !self.retro_saved.is_empty() {
+                } else if self.current.is_some() {
                     ui.label(RichText::new(t("Saved: they are filled in again next time.")).size(12.0).color(palette.muted));
                 }
             });
@@ -360,7 +459,7 @@ impl GetAssetsView {
                     .collect();
                 if ui.add_enabled(!running && !jobs.is_empty(), widgets::primary_button(t("Download"))).clicked() {
                     // What is downloaded from is kept too.
-                    if self.retro != self.retro_saved {
+                    if self.retro_changed() {
                         self.save_retro();
                     }
                     *start = Some(jobs);
@@ -573,7 +672,7 @@ impl View for GetAssetsView {
                         } else if ui.add(widgets::primary_button(t("Deploy to the server"))).on_hover_text(t("Addons → Deploy Assets copies the folder to the server.")).clicked() {
                             shared.request(Request::Go(Page::DeployAssets));
                         }
-                        let shown = if last_retro { retro::custom_folder(&folder) } else { folder.clone() };
+                        let shown = if last_retro { self.state.lock().unwrap().last_root.clone() } else { folder.clone() };
                         if ui.add(widgets::secondary_button(t("Open the folder"))).clicked() {
                             open_folder(&habbo_assets::gamedata_folder(&shown));
                         }

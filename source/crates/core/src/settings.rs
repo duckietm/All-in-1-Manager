@@ -27,9 +27,15 @@ pub struct InstallerSettings {
     /// The All-in-1 downloader's executable. Deploy Assets reads Habbo_Default from its folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downloader_path: Option<String>,
-    /// A Nitro retro's renderer-config.json URLs, for Get Assets' custom downloads. New in the Rust port.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// The one Nitro retro of the first version (before profiles); read once into `retros`, never written again.
+    #[serde(default, skip_serializing)]
     pub retro: Option<RetroUrls>,
+    /// The Nitro retro profiles: a name and its renderer-config.json URLs. New in the Rust port.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retros: Vec<RetroProfile>,
+    /// The name of the profile last worked with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retro_selected: Option<String>,
     /// Where Get Assets downloads to (its gamedata/ mirrors the server's); None means [`default_assets_folder`].
     /// New in the Rust port.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -112,6 +118,34 @@ impl RetroUrls {
     }
 }
 
+/// A named Nitro retro: its downloads go to Habbo_Assets/custom/<folder name>.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetroProfile {
+    pub name: String,
+    #[serde(flatten)]
+    pub urls: RetroUrls,
+}
+
+impl RetroProfile {
+    /// The name as a folder name: characters Windows refuses become '_', no leading or trailing dots and spaces.
+    pub fn folder_name(&self) -> String {
+        let cleaned: String =
+            self.name.trim().chars().map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect();
+        let cleaned = cleaned.trim_matches(|c: char| c == '.' || c == ' ').to_string();
+        if cleaned.is_empty() { "retro".into() } else { cleaned }
+    }
+}
+
+impl RetroUrls {
+    /// The host of the FurnitureData.json URL ("dinohotel.nl"), a name for a profile made from it.
+    pub fn host(&self) -> Option<String> {
+        let url = [&self.furnidata, &self.furniture, &self.clothes, &self.figuremap].into_iter().find(|u| !u.trim().is_empty())?;
+        let rest = url.trim().split("://").nth(1).unwrap_or(url.trim());
+        let host = rest.split(['/', '?', ':']).next().unwrap_or("").trim_start_matches("www.");
+        (!host.is_empty()).then(|| host.to_string())
+    }
+}
+
 /// Get Assets' folder when Settings name none: Habbo_Assets next to the configuration folder.
 pub fn default_assets_folder() -> PathBuf {
     let configuration = config_dir::directory();
@@ -158,6 +192,17 @@ impl InstallerSettings {
         list
     }
 
+    /// The retro profiles; the single retro of the first version becomes a profile named after its host.
+    pub fn retro_profiles(&self) -> Vec<RetroProfile> {
+        let mut profiles = self.retros.clone();
+        if profiles.is_empty() {
+            if let Some(urls) = self.retro.clone().filter(|u| !u.is_empty()) {
+                profiles.push(RetroProfile { name: urls.host().unwrap_or_else(|| "retro".into()), urls });
+            }
+        }
+        profiles
+    }
+
     /// Get Assets' folder: the one chosen in Settings, or [`default_assets_folder`].
     pub fn assets_folder(&self) -> PathBuf {
         self.assets_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(default_assets_folder)
@@ -197,6 +242,21 @@ pub fn relative_key(full_path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_first_retro_becomes_a_profile() {
+        let old = r#"{"Servers":[],"Branches":{},"Retro":{"furnidata":"https://www.dinohotel.nl/gamedata/config/FurnitureData.json"}}"#;
+        let settings: InstallerSettings = serde_json::from_str(old).unwrap();
+        let profiles = settings.retro_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "dinohotel.nl");
+        let saved = serde_json::to_string(&InstallerSettings { retros: profiles, ..settings }).unwrap();
+        assert!(!saved.contains("\"Retro\":") && saved.contains("\"Retros\":"), "{saved}");
+        let profile = RetroProfile { name: " My: Hotel. ".into(), urls: RetroUrls::default() };
+        assert_eq!(profile.folder_name(), "My_ Hotel");
+        assert_eq!(RetroProfile::default().folder_name(), "retro");
+    }
+
     use super::*;
 
     #[test]

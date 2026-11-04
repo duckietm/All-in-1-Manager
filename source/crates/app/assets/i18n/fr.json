@@ -2241,5 +2241,10 @@
   "{count} files here, all on the server. Download more with Habbo assets and sync again.": "{count} fichiers ici, tous sur le serveur. Télécharge-en plus avec Assets Habbo et synchronise à nouveau.",
   "Nothing downloaded yet: use Assets → Habbo assets first.": "Rien de téléchargé pour l'instant : utilise d'abord Assets → Assets Habbo.",
   "Where the assets are downloaded to": "Où les assets sont téléchargés",
-  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.": "Dans {folder}, organisé comme gamedata, à envoyer à la main (Asset Explorer). Un rétro fournit du .hab, .nitro ou .swf : chaque bundle est enregistré en .hab (un .nitro réemballé, un .swf converti) ; un .swf impossible à convertir reste dans source/."
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.": "Dans {folder}, organisé comme gamedata, à envoyer à la main (Asset Explorer). Un rétro fournit du .hab, .nitro ou .swf : chaque bundle est enregistré en .hab (un .nitro réemballé, un .swf converti) ; un .swf impossible à convertir reste dans source/.",
+  "+ New profile": "+ Nouveau profil",
+  "Delete profile": "Supprimer le profil",
+  "For example the hotel's name": "Par exemple le nom de l'hôtel",
+  "Profiles:": "Profils :",
+  "Removes the profile; its downloaded folder stays.": "Supprime le profil ; le dossier téléchargé reste."
 }

@@ -222,9 +222,9 @@ impl Downloader<'_> {
     }
 }
 
-/// The retro's own folder below the assets folder.
-pub fn custom_folder(assets_folder: &std::path::Path) -> PathBuf {
-    assets_folder.join(CUSTOM)
+/// A retro profile's own folder below the assets folder: custom/<name>.
+pub fn custom_folder(assets_folder: &std::path::Path, profile: &aio_core::settings::RetroProfile) -> PathBuf {
+    assets_folder.join(CUSTOM).join(profile.folder_name())
 }
 
 /// The kind of asset each gamedata folder holds, for the .swf files kept in source/<folder>/.

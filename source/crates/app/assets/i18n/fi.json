@@ -2241,5 +2241,10 @@
   "{count} files here, all on the server. Download more with Habbo assets and sync again.": "Täällä {count} tiedostoa, kaikki palvelimella. Lataa lisää kohdasta Habbon assetit ja synkronoi uudelleen.",
   "Nothing downloaded yet: use Assets → Habbo assets first.": "Mitään ei ole vielä ladattu: käytä ensin kohtaa Assetit → Habbon assetit.",
   "Where the assets are downloaded to": "Mihin assetit ladataan",
-  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.": "Kansioon {folder}, järjestettynä kuten gamedata, ladattavaksi käsin (Asset Explorer). Retro tarjoaa .hab-, .nitro- tai .swf-tiedostoja: jokainen paketti tallennetaan .hab-muodossa (.nitro pakataan uudelleen, .swf muunnetaan); .swf, jota ei voi muuntaa, jää source/-kansioon."
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab (a .nitro repacked, a .swf converted); a .swf that cannot be converted is kept in source/.": "Kansioon {folder}, järjestettynä kuten gamedata, ladattavaksi käsin (Asset Explorer). Retro tarjoaa .hab-, .nitro- tai .swf-tiedostoja: jokainen paketti tallennetaan .hab-muodossa (.nitro pakataan uudelleen, .swf muunnetaan); .swf, jota ei voi muuntaa, jää source/-kansioon.",
+  "+ New profile": "+ Uusi profiili",
+  "Delete profile": "Poista profiili",
+  "For example the hotel's name": "Esimerkiksi hotellin nimi",
+  "Profiles:": "Profiilit:",
+  "Removes the profile; its downloaded folder stays.": "Poistaa profiilin; ladattu kansio jää."
 }

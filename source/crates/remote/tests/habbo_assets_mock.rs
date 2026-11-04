@@ -47,7 +47,8 @@ async fn serve_requiring(files: HashMap<String, Vec<u8>>, required: Vec<String>)
                     Some(body) => ("200 OK", body.clone()),
                     None => ("404 Not Found", b"not found".to_vec()),
                 };
-                let head = format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let challenge = if allowed { "" } else { "cf-mitigated: challenge\r\n" };
+                let head = format!("HTTP/1.1 {status}\r\n{challenge}Content-Length: {}\r\nConnection: close\r\n\r\n", body.len());
                 let _ = socket.write_all(head.as_bytes()).await;
                 let _ = socket.write_all(&body).await;
             });
@@ -376,10 +377,11 @@ async fn a_retro_cdn_that_wants_a_referer_and_headers() {
     let log = |_: &str| {};
     let hotel = Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]);
 
-    // Without them the CDN refuses.
+    // Without them the CDN refuses, and the error says it is Cloudflare's bot check.
     let root = tempfile::tempdir().unwrap();
     let plain = Downloader::new(root.path(), hotel.clone(), Options::default(), &log, CancellationToken::new()).unwrap();
-    assert!(plain.retro_furniture(&urls).await.unwrap_err().to_string().contains("403"));
+    let refused = plain.retro_furniture(&urls).await.unwrap_err().to_string();
+    assert!(refused.contains("403") && refused.contains("Cloudflare") && refused.contains("Download with curl"), "{refused}");
 
     urls.referer = "https://leet.city/".into();
     urls.headers = "User-Agent: mybrowser/1.0\nX-Token: abc".into();
@@ -389,5 +391,24 @@ async fn a_retro_cdn_that_wants_a_referer_and_headers() {
     assert!(summary.contains("1 new furniture .hab"), "{summary}");
 
     let bad = Options { headers: vec![("Bad Name".into(), "x".into())], ..Options::default() };
-    assert!(Downloader::new(root.path(), hotel, bad, &log, CancellationToken::new()).is_err());
+    assert!(Downloader::new(root.path(), hotel.clone(), bad, &log, CancellationToken::new()).is_err());
+
+    // The same through the system's curl (skipped where there is none), 4 at a time.
+    if std::process::Command::new("curl").arg("--version").output().is_err() {
+        return;
+    }
+    let curl_root = tempfile::tempdir().unwrap();
+    let options = Options { headers: urls.request_headers().unwrap(), use_curl: true, parallel: 4, ..Options::default() };
+    let curl = Downloader::new(curl_root.path(), hotel.clone(), options, &log, CancellationToken::new()).unwrap();
+    let summary = curl.retro_furniture(&urls).await.unwrap();
+    assert!(summary.contains("1 new furniture .hab"), "{summary}");
+    assert!(curl_root.path().join("gamedata/furniture/chair.hab").is_file());
+    // curl without the Referer: the bot check is recognised from the response headers as well.
+    let lines = Mutex::new(Vec::<String>::new());
+    let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+    let no_referer = Options { use_curl: true, ..Options::default() };
+    let other_root = tempfile::tempdir().unwrap();
+    let curl = Downloader::new(other_root.path(), hotel, no_referer, &log, CancellationToken::new()).unwrap();
+    assert!(curl.retro_furniture(&urls).await.unwrap_err().to_string().contains("Cloudflare"));
+    assert!(lines.lock().unwrap().iter().any(|l| l.contains("downloading with curl")));
 }

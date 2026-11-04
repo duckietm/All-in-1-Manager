@@ -2287,5 +2287,10 @@
   "what the retro serves": "retronun sunduğu",
   "Custom headers": "Özel başlıklar",
   "sent with every request (optional)": "her istekle gönderilir (isteğe bağlı)",
-  "one \"Name: value\" per line (optional)": "satır başına bir \"Ad: değer\" (isteğe bağlı)"
+  "one \"Name: value\" per line (optional)": "satır başına bir \"Ad: değer\" (isteğe bağlı)",
+  "Connection": "Bağlantı",
+  "for a retro behind Cloudflare": "Cloudflare arkasındaki bir retro için",
+  "Download with curl": "curl ile indir",
+  "At once:": "Aynı anda:",
+  "Every request through the system's curl (curl.exe on Windows 10 and later). Cloudflare's bot check often lets curl through where the built-in downloader is blocked.": "Her istek sistemin curl'ü üzerinden (Windows 10 ve sonrasında curl.exe). Cloudflare'in bot denetimi, yerleşik indiricinin engellendiği yerde curl'ü çoğu zaman geçirir."
 }

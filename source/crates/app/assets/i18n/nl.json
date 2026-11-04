@@ -2287,5 +2287,10 @@
   "what the retro serves": "wat de retro levert",
   "Custom headers": "Eigen headers",
   "sent with every request (optional)": "meegestuurd met elk verzoek (optioneel)",
-  "one \"Name: value\" per line (optional)": "één \"Naam: waarde\" per regel (optioneel)"
+  "one \"Name: value\" per line (optional)": "één \"Naam: waarde\" per regel (optioneel)",
+  "Connection": "Verbinding",
+  "for a retro behind Cloudflare": "voor een retro achter Cloudflare",
+  "Download with curl": "Downloaden met curl",
+  "At once:": "Tegelijk:",
+  "Every request through the system's curl (curl.exe on Windows 10 and later). Cloudflare's bot check often lets curl through where the built-in downloader is blocked.": "Elk verzoek via de curl van het systeem (curl.exe op Windows 10 en later). De botcontrole van Cloudflare laat curl vaak door waar de ingebouwde downloader wordt geblokkeerd."
 }

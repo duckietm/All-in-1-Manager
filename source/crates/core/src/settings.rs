@@ -122,6 +122,16 @@ pub struct RetroUrls {
     /// Extra request headers, one "Name: value" per line (a User-Agent here replaces the built-in one).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub headers: String,
+    /// Download through the system's curl instead of the built-in client (for a CDN behind Cloudflare's bot check).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_curl: bool,
+    /// Downloads at the same time; 0 is the default (16).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub parallel: u8,
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
 }
 
 impl RetroUrls {
@@ -305,7 +315,8 @@ mod tests {
         assert!(RetroUrls { headers: "no colon here".into(), ..RetroUrls::default() }.request_headers().is_err());
         assert!(RetroUrls::default().request_headers().unwrap().is_empty());
         // Empty ones are not written to the settings file.
-        assert!(!serde_json::to_string(&RetroUrls::default()).unwrap().contains("referer"));
+        let empty = serde_json::to_string(&RetroUrls::default()).unwrap();
+        assert!(!empty.contains("referer") && !empty.contains("use_curl") && !empty.contains("parallel"), "{empty}");
     }
 
     use super::*;

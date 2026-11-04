@@ -281,6 +281,8 @@ impl GetAssetsView {
             effect_icons_source: Some(self.icon_source.trim().to_string()).filter(|s| !s.is_empty()),
             also_swf: self.also_swf,
             headers,
+            use_curl: retro_run && retro_urls.use_curl,
+            parallel: if retro_run { retro_urls.parallel as usize } else { 0 },
         };
         let (state, task_shared) = (self.state.clone(), shared.clone());
         shared.set_status(t("Getting the assets ..."));
@@ -458,6 +460,23 @@ impl GetAssetsView {
                         if let Err(e) = self.edit.urls.request_headers() {
                             ui.label(RichText::new(e).size(11.5).color(palette.warning_text));
                         }
+                    });
+                    ui.end_row();
+                    ui.vertical(|ui| {
+                        ui.set_min_width(230.0);
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(RichText::new(t("Connection")).size(13.0).strong());
+                        ui.label(RichText::new(t("for a retro behind Cloudflare")).size(11.0).color(palette.subtle));
+                    });
+                    ui.vertical(|ui| {
+                        ui.checkbox(&mut self.edit.urls.use_curl, RichText::new(t("Download with curl")).size(13.0))
+                            .on_hover_text(t("Every request through the system's curl (curl.exe on Windows 10 and later). Cloudflare's bot check often lets curl through where the built-in downloader is blocked."));
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(t("At once:")).size(12.5).color(palette.muted));
+                            for (value, label) in [(0u8, "16"), (8, "8"), (4, "4"), (1, "1")] {
+                                ui.radio_value(&mut self.edit.urls.parallel, value, label);
+                            }
+                        });
                     });
                     ui.end_row();
                     for (i, (label, key)) in RETRO_FIELDS.iter().enumerate() {

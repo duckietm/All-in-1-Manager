@@ -2287,5 +2287,10 @@
   "what the retro serves": "mitä retro tarjoaa",
   "Custom headers": "Omat otsakkeet",
   "sent with every request (optional)": "lähetetään jokaisen pyynnön mukana (valinnainen)",
-  "one \"Name: value\" per line (optional)": "yksi \"Nimi: arvo\" riviä kohden (valinnainen)"
+  "one \"Name: value\" per line (optional)": "yksi \"Nimi: arvo\" riviä kohden (valinnainen)",
+  "Connection": "Yhteys",
+  "for a retro behind Cloudflare": "Cloudflaren takana olevalle retrolle",
+  "Download with curl": "Lataa curlilla",
+  "At once:": "Yhtä aikaa:",
+  "Every request through the system's curl (curl.exe on Windows 10 and later). Cloudflare's bot check often lets curl through where the built-in downloader is blocked.": "Jokainen pyyntö järjestelmän curlilla (curl.exe Windows 10:stä alkaen). Cloudflaren bottitarkistus päästää curlin usein läpi, kun sisäänrakennettu lataaja estetään."
 }

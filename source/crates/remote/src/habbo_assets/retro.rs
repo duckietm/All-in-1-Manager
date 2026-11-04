@@ -11,7 +11,7 @@ use aio_assets::{AssetKind, Format};
 use futures::stream::{self, StreamExt};
 use serde_json::Value;
 
-use super::{convert, error, save, Counts, Downloader, Item, Kind, PARALLEL};
+use super::{convert, error, save, Counts, Downloader, Item, Kind};
 use crate::server::Result;
 
 /// The folder below the assets folder for a retro's custom assets (its own gamedata/ and source/).
@@ -218,8 +218,9 @@ impl Downloader<'_> {
                             // For the first few: the address asked for and what the server answered.
                             if result.counts.missing.fetch_add(1, Ordering::Relaxed) < 3 {
                                 let url = format!("{base}/{}.{}", stems[0], order[0].extension());
-                                let answer = match self.client.get(&url).send().await {
-                                    Ok(response) => format!("{} ({} bytes)", response.status(), response.content_length().map_or("?".into(), |n| n.to_string())),
+                                let answer = match self.get(&url).await {
+                                    Ok(answer) if answer.challenge => format!("{} (blocked by Cloudflare's bot check)", answer.status),
+                                    Ok(answer) => format!("{} ({} bytes)", answer.status, answer.body.len()),
                                     Err(e) => format!("no answer: {e}"),
                                 };
                                 (self.log)(&format!("  ! not found: {url} answered {answer}"));
@@ -232,7 +233,7 @@ impl Downloader<'_> {
                     }
                 }
             })
-            .buffer_unordered(PARALLEL)
+            .buffer_unordered(self.parallel())
             .collect::<Vec<()>>()
             .await;
         self.stopped()?;
@@ -309,6 +310,7 @@ impl Downloader<'_> {
             counts.existing.fetch_sub(found.min(counts.existing.load(Ordering::Relaxed)), Ordering::Relaxed);
             summary += &format!("; {}", counts.summary("icons"));
         }
+        summary += &self.blocked_note();
         Ok(summary.replace("not on Habbo", "not found on the retro"))
     }
 
@@ -352,7 +354,7 @@ impl Downloader<'_> {
         }
         let names = names.into_iter().map(|n| (n, None)).collect();
         let bundles = self.fetch_bundles("clothes", &folder_url(&urls.clothes), "clothes", names, AssetKind::Clothes, Format::from_extension(&urls.format)).await?;
-        Ok(format!("{summary}FigureMap.json; {}", bundles.summary("clothes .hab")).replace("not on Habbo", "not found on the retro"))
+        Ok(format!("{summary}FigureMap.json; {}{}", bundles.summary("clothes .hab"), self.blocked_note()).replace("not on Habbo", "not found on the retro"))
     }
 }
 

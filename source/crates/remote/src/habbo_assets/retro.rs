@@ -57,6 +57,24 @@ pub fn local_file(value: &str) -> Option<PathBuf> {
     Some(PathBuf::from(value))
 }
 
+/// Why an answer is not a bundle of `format`: its size, its first bytes, and what the reader says.
+fn rejection(format: Format, data: &[u8]) -> String {
+    let head: Vec<String> = data.iter().take(8).map(|b| format!("{b:02X}")).collect();
+    let reason = match format {
+        Format::Nitro => aio_assets::nitro::read(data).err().map(|e| e.to_string()),
+        Format::Hab => aio_assets::hab::read(data).err().map(|e| e.to_string()),
+        Format::Swf => (!aio_assets::bundle::is_swf(data)).then(|| "no FWS/CWS/ZWS header".to_string()),
+    };
+    let text = if data.first() == Some(&b'<') { " (an HTML page)" } else { "" };
+    format!(
+        "the answer is not a .{} ({} bytes, starts with {}{text}){}",
+        format.extension(),
+        data.len(),
+        head.join(" "),
+        reason.map(|r| format!(": {r}")).unwrap_or_default()
+    )
+}
+
 /// XML (a Flash retro's or Habbo's furnidata, figuredata or figuremap) rather than JSON.
 fn is_xml(text: &str) -> bool {
     text.trim_start_matches('\u{feff}').trim_start().starts_with('<')
@@ -82,6 +100,8 @@ struct BundleCounts {
     /// .swf files kept in source/ because they could not be converted.
     swf_waiting: AtomicUsize,
     by_format: [AtomicUsize; 3],
+    /// Answers that were not the format asked for (logged for the first few).
+    rejected: AtomicUsize,
 }
 
 impl BundleCounts {
@@ -154,6 +174,10 @@ impl Downloader<'_> {
                                     if aio_assets::detect(&data) == Some(format) {
                                         hit = Some((stem.contains('/'), data));
                                         break;
+                                    }
+                                    // The server answered, but not with this format: say why, for the first few.
+                                    if result.rejected.fetch_add(1, Ordering::Relaxed) < 5 {
+                                        (self.log)(&format!("  ! {stem}.{}: {}", format.extension(), rejection(format, &data)));
                                     }
                                 }
                             }

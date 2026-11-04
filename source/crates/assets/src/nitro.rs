@@ -15,7 +15,11 @@ fn take<'a>(data: &'a [u8], at: &mut usize, length: usize) -> Result<&'a [u8]> {
     Ok(slice)
 }
 
+/// An entry unpacked; one that is not compressed (some tools store images as they are) is kept as it is.
 fn decompress(data: &[u8]) -> Result<Vec<u8>> {
+    if data.starts_with(&[0x89, b'P', b'N', b'G']) || data.starts_with(b"RIFF") || data.starts_with(b"{") || data.starts_with(b"[") {
+        return Ok(data.to_vec());
+    }
     let mut out = Vec::new();
     let result = if data.starts_with(&[0x1F, 0x8B]) {
         flate2::read::GzDecoder::new(data).read_to_end(&mut out)
@@ -73,6 +77,21 @@ mod tests {
         assert_eq!(read(&write(&files)).unwrap(), files);
         assert!(read(&write(&files)[..10]).is_err(), "cut short");
         assert!(read(&[0, 0]).is_err(), "empty");
+    }
+
+    #[test]
+    fn uncompressed_entries_are_kept() {
+        let png = [0x89, b'P', b'N', b'G', 13, 10, 26, 10, 1];
+        let mut bundle = 2u16.to_be_bytes().to_vec();
+        for (name, data) in [("a.png", &png[..]), ("a.json", &b"{\"x\":1}"[..])] {
+            bundle.extend_from_slice(&(name.len() as u16).to_be_bytes());
+            bundle.extend_from_slice(name.as_bytes());
+            bundle.extend_from_slice(&(data.len() as i32).to_be_bytes());
+            bundle.extend_from_slice(data);
+        }
+        let files = read(&bundle).unwrap();
+        assert_eq!(files[0].1, png);
+        assert_eq!(files[1].1, b"{\"x\":1}");
     }
 
     #[test]

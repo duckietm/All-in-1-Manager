@@ -77,6 +77,8 @@ fn fake_habbo() -> HashMap<String, Vec<u8>> {
     add("/img/gordon/REL1/bear.hab", HAB);
     add("/img/gordon/REL1/dog.hab", HAB);
     add("/img/dcr/hof_furni/5/chair.hab", HAB);
+    add("/img/dcr/hof_furni/5/chair.swf", b"CWS\x0a1234567");
+    add("/img/gordon/REL1/bear.swf", b"FWS\x0a1234567");
     add("/img/dcr/hof_furni/3/chair_icon.png", PNG);
     add("/img/dcr/hof_furni/5/chair_2_icon.png", PNG);
     // An error page answered with 200: never saved as an asset.
@@ -118,7 +120,7 @@ async fn every_download_lands_in_the_gamedata_layout() {
     std::fs::create_dir_all(&icons).unwrap();
     std::fs::write(icons.join("fx_icon_5.png"), PNG).unwrap();
     std::fs::write(icons.join("fx_icon_bad.png"), PNG).unwrap();
-    let options = Options { not_sellable: true, effect_icons_source: Some(icons.display().to_string()) };
+    let options = Options { not_sellable: true, effect_icons_source: Some(icons.display().to_string()), also_swf: true };
     let lines = Mutex::new(Vec::<String>::new());
     let log = |line: &str| lines.lock().unwrap().push(line.to_string());
     let downloader = Downloader::new(root.path(), urls, options, &log, CancellationToken::new()).unwrap();
@@ -155,6 +157,10 @@ async fn every_download_lands_in_the_gamedata_layout() {
         assert!(exists(r, path), "{path} is missing; log:\n{}", lines.lock().unwrap().join("\n"));
     }
     assert!(!exists(r, "furniture/poster.hab"), "an error page is not a .hab");
+    // With also_swf the .swf goes to the asset tools, never into gamedata.
+    let tools = r.join("Assets_tools/Original_SWF_Files");
+    assert!(tools.join("furni/chair.swf").is_file() && tools.join("pets/bear.swf").is_file());
+    assert!(!r.join("gamedata/furniture/chair.swf").exists());
     assert!(!exists(r, "clothes/hh_gone.hab"));
     assert!(r.join("downloads/ExternalVariables.json").is_file());
     assert!(!r.join("gamedata/config/ExternalVariables.json").exists(), "the variables stay on this computer");

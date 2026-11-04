@@ -2276,5 +2276,8 @@
   "put .nitro files here, per type": "metti qui i file .nitro, per tipo",
   "put .swf files here, per type (furni, clothes, pets, effects)": "metti qui i file .swf, per tipo (furni, clothes, pets, effects)",
   "the .hab files SWF / NITRO to HAB makes, per type": "i file .hab creati da SWF / NITRO in HAB, per tipo",
-  "the edited folders packed as .hab again": "le cartelle modificate di nuovo impacchettate come .hab"
+  "the edited folders packed as .hab again": "le cartelle modificate di nuovo impacchettate come .hab",
+  "Download .hab and .swf": "Scarica .hab e .swf",
+  "Download only .hab": "Scarica solo .hab",
+  "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": "Con .swf attivo, furni, vestiti, effetti e animali ricevono anche il loro .swf, in Assets_tools\\Original_SWF_Files, per gli strumenti per asset. Non vengono mai inviati al server."
 }

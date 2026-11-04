@@ -2276,5 +2276,8 @@
   "put .nitro files here, per type": "laita .nitro-tiedostot tähän, tyypeittäin",
   "put .swf files here, per type (furni, clothes, pets, effects)": "laita .swf-tiedostot tähän, tyypeittäin (furni, clothes, pets, effects)",
   "the .hab files SWF / NITRO to HAB makes, per type": ".hab-tiedostot, jotka SWF / NITRO → HAB tekee, tyypeittäin",
-  "the edited folders packed as .hab again": "muokatut kansiot taas .hab-tiedostoiksi pakattuina"
+  "the edited folders packed as .hab again": "muokatut kansiot taas .hab-tiedostoiksi pakattuina",
+  "Download .hab and .swf": "Lataa .hab ja .swf",
+  "Download only .hab": "Lataa vain .hab",
+  "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": "Kun .swf on päällä, kalusteet, vaatteet, efektit ja lemmikit saavat myös .swf-tiedostonsa kansioon Assets_tools\\Original_SWF_Files asset-työkaluja varten. Niitä ei koskaan lähetetä palvelimelle."
 }

@@ -111,6 +111,8 @@ pub struct GetAssetsView {
     selected: BTreeSet<Asset>,
     not_sellable: bool,
     icon_source: String,
+    /// Also the .swf of every library (into the asset tools); kept in Settings.
+    also_swf: bool,
     /// The download folder, read from Settings once and again after a change.
     folder: PathBuf,
     custom_folder: bool,
@@ -141,6 +143,7 @@ impl GetAssetsView {
             selected: Asset::ALL.iter().copied().filter(|a| a.in_download_all()).collect(),
             not_sellable: false,
             icon_source: String::new(),
+            also_swf: aio_core::InstallerSettings::load().assets_with_swf,
             folder: PathBuf::new(),
             custom_folder: false,
             tab: Tab::Habbo,
@@ -268,6 +271,7 @@ impl GetAssetsView {
         let options = Options {
             not_sellable: self.not_sellable,
             effect_icons_source: Some(self.icon_source.trim().to_string()).filter(|s| !s.is_empty()),
+            also_swf: self.also_swf,
         };
         let (state, task_shared) = (self.state.clone(), shared.clone());
         shared.set_status(t("Getting the assets ..."));
@@ -589,6 +593,21 @@ impl View for GetAssetsView {
                     });
                     ui.add_space(4.0);
                     ui.checkbox(&mut self.not_sellable, t("Clothes: make every clothing set wearable (sellable off in FigureData.json)"));
+                ui.horizontal(|ui| {
+                    if widgets::switch(ui, palette, &mut self.also_swf).changed() {
+                        let mut settings = aio_core::InstallerSettings::load();
+                        settings.assets_with_swf = self.also_swf;
+                        let _ = settings.save();
+                    }
+                    let label = if self.also_swf { t("Download .hab and .swf") } else { t("Download only .hab") };
+                    ui.label(RichText::new(label).size(13.0).strong());
+                });
+                widgets::muted(
+                    ui,
+                    palette,
+                    t("With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server."),
+                    11.5,
+                );
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(t("Effect icons from:")).size(12.5));
                         let typed = ui.add(

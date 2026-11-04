@@ -30,6 +30,9 @@ pub struct InstallerSettings {
     /// The one Nitro retro of the first version (before profiles); read once into `retros`, never written again.
     #[serde(default, skip_serializing)]
     pub retro: Option<RetroUrls>,
+    /// Habbo assets: also the .swf of furniture, clothes, effects and pets (into the asset tools). New in the Rust port.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub assets_with_swf: bool,
     /// The Nitro retro profiles: a name and its renderer-config.json URLs. New in the Rust port.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub retros: Vec<RetroProfile>,

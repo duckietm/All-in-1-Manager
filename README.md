@@ -1107,7 +1107,9 @@ saved. A file that is already there is not downloaded again, and an error page f
 asset.
 
 Pick the hotel (its language goes into the furnidata, productdata and texts), tick what you want and press
-**Download the selected**, or **Download all**:
+**Download the selected**, or **Download all**. The switch **Download only .hab** / **Download .hab and .swf** (off,
+only .hab, by default; remembered) also fetches the .swf of furniture, clothes, effects and pets, into the asset
+tools' `Assets_tools/Original_SWF_Files/<type>`, never into gamedata, so never to the server:
 
 | Download | Into `gamedata/` |
 |---|---|

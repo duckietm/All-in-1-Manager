@@ -32,6 +32,28 @@ pub fn title_text(text: &str, size: f32) -> RichText {
     if theme::hotel() { text } else { text.strong() }
 }
 
+/// An on/off switch (a pill with a knob); true when it was flipped.
+pub fn switch(ui: &mut egui::Ui, palette: &Palette, on: &mut bool) -> egui::Response {
+    let size = egui::vec2(40.0, 22.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let t = ui.ctx().animate_bool_responsive(response.id, *on);
+    let enabled = ui.is_enabled();
+    let track = if *on { Fixed::go() } else { palette.card_border_strong };
+    let track = if enabled { track } else { theme::with_alpha(track, 110) };
+    let painter = ui.painter();
+    painter.rect_filled(rect, rect.height() / 2.0, track);
+    let x = egui::lerp(rect.left() + 11.0..=rect.right() - 11.0, t);
+    painter.circle_filled(egui::pos2(x, rect.center().y), 8.0, Color32::WHITE);
+    if response.hovered() && enabled {
+        painter.rect_stroke(rect, rect.height() / 2.0, egui::Stroke::new(1.5_f32, palette.outline), egui::StrokeKind::Outside);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// The main action: the hotel's green "go" button with a darker edge, or the brand colour.
 pub fn primary_button(text: &str) -> egui::Button<'static> {
     let button = egui::Button::new(RichText::new(text.to_string()).strong().color(Color32::WHITE)).min_size(egui::vec2(0.0, 32.0));

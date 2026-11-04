@@ -156,7 +156,15 @@ pub struct Options {
     /// Effect icons: HabboClassicWin.zip, its app.asar, habbo-inventory-com.hab, a folder with any of them or with
     /// fx_icon_<type>.png files, or a link to one of them. None: `<root>/import/effect_icons`.
     pub effect_icons_source: Option<String>,
+    /// Furniture, clothes, effects and pets: also the .swf of every library, into the asset tools'
+    /// Assets_tools/Original_SWF_Files/<type> (never into gamedata, so never to the server).
+    pub also_swf: bool,
 }
+
+/// The asset tools' folder below the assets folder.
+pub const ASSETS_TOOLS: &str = "Assets_tools";
+/// An Item path starting with this goes below Assets_tools/Original_SWF_Files instead of gamedata.
+const SWF_PREFIX: &str = "swf:";
 
 /// How many files of one kind were saved, were there already, or Habbo does not have.
 #[derive(Debug, Default)]
@@ -185,7 +193,8 @@ impl Counts {
     }
 }
 
-/// One file to fetch: the URL and the path below gamedata/.
+/// One file to fetch: the URL and the path below gamedata/ (or, with SWF_PREFIX, below Original_SWF_Files).
+#[derive(Clone)]
 struct Item {
     url: String,
     path: String,
@@ -202,6 +211,7 @@ enum Kind {
     Png,
     Image,
     Mp3,
+    Swf,
 }
 
 impl Kind {
@@ -211,6 +221,7 @@ impl Kind {
             Kind::Png => hab::is_png(data),
             Kind::Image => hab::is_png(data) || data.starts_with(b"GIF8") || data.starts_with(&[0xFF, 0xD8, 0xFF]),
             Kind::Mp3 => data.starts_with(b"ID3") || (data.len() > 2 && data[0] == 0xFF && data[1] & 0xE0 == 0xE0),
+            Kind::Swf => aio_assets::bundle::is_swf(data),
         }
     }
 }
@@ -253,7 +264,10 @@ impl<'a> Downloader<'a> {
     }
 
     fn path(&self, below_gamedata: &str) -> PathBuf {
-        let mut path = gamedata_folder(&self.root);
+        let (mut path, below_gamedata) = match below_gamedata.strip_prefix(SWF_PREFIX) {
+            Some(rest) => (self.root.join(ASSETS_TOOLS).join(aio_assets::workshop::ORIGINAL_SWF), rest),
+            None => (gamedata_folder(&self.root), below_gamedata),
+        };
         for part in below_gamedata.split('/') {
             path.push(part);
         }
@@ -423,6 +437,27 @@ impl<'a> Downloader<'a> {
         Ok(counts)
     }
 
+    /// Libraries (.hab into gamedata) and, with `also_swf`, their .swf into Original_SWF_Files/`swf_type`.
+    async fn libraries(&self, what: &str, items: Vec<Item>, hab_what: &str, swf_type: &str) -> Result<String> {
+        let swf: Vec<Item> = if self.options.also_swf {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let url = item.url.strip_suffix(".hab")?;
+                    let name = item.path.rsplit('/').next()?.strip_suffix(".hab")?;
+                    Some(Item { url: format!("{url}.swf"), path: format!("{SWF_PREFIX}{swf_type}/{name}.swf") })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut summary = self.fetch_many(what, items, Kind::Hab).await?.summary(hab_what);
+        if !swf.is_empty() {
+            summary += &format!("; {}", self.fetch_many(&format!("{what} (.swf)"), swf, Kind::Swf).await?.summary(&format!(".swf into {ASSETS_TOOLS}/{}/{swf_type}", aio_assets::workshop::ORIGINAL_SWF)));
+        }
+        Ok(summary)
+    }
+
     /// Runs one download and returns its summary line.
     pub async fn run(&self, asset: Asset) -> Result<String> {
         match asset {
@@ -478,7 +513,7 @@ impl<'a> Downloader<'a> {
             .filter(|l| convert::safe_name(l))
             .map(|l| Item { url: format!("{gordon}/{l}.hab"), path: format!("clothes/{l}.hab") })
             .collect();
-        Ok(self.fetch_many("clothes libraries", items, Kind::Hab).await?.summary("clothes .hab"))
+        self.libraries("clothes libraries", items, "clothes .hab", "clothes").await
     }
 
     async fn effects(&self) -> Result<String> {
@@ -494,7 +529,7 @@ impl<'a> Downloader<'a> {
             .filter(|l| convert::safe_name(l))
             .map(|l| Item { url: format!("{gordon}/{l}.hab"), path: format!("effect/{l}.hab") })
             .collect();
-        Ok(self.fetch_many("effect libraries", items, Kind::Hab).await?.summary("effect .hab"))
+        self.libraries("effect libraries", items, "effect .hab", "effects").await
     }
 
     async fn furnidata(&self) -> Result<String> {
@@ -524,7 +559,7 @@ impl<'a> Downloader<'a> {
             .filter(|(name, _)| convert::safe_name(name))
             .map(|(name, revision)| Item { url: format!("{base}/{revision}/{name}.hab"), path: format!("furniture/{name}.hab") })
             .collect();
-        let bundles = self.fetch_many("furniture libraries", items, Kind::Hab).await?;
+        let bundles = self.libraries("furniture libraries", items, "furniture .hab", "furni").await?;
         let mut icons = BTreeSet::new();
         let items: Vec<Item> = entries
             .iter()
@@ -535,7 +570,7 @@ impl<'a> Downloader<'a> {
             })
             .collect();
         let icons = self.fetch_many("furniture icons", items, Kind::Png).await?;
-        Ok(format!("{}; {}", bundles.summary("furniture .hab"), icons.summary("icons")))
+        Ok(format!("{bundles}; {}", icons.summary("icons")))
     }
 
     async fn catalogue_icons(&self) -> Result<String> {
@@ -610,7 +645,7 @@ impl<'a> Downloader<'a> {
         let release = self.release().await?;
         let gordon = self.urls.gordon(&release);
         let items = PETS.iter().map(|p| Item { url: format!("{gordon}/{p}.hab"), path: format!("pets/{p}.hab") }).collect();
-        Ok(self.fetch_many("pet libraries", items, Kind::Hab).await?.summary("pet .hab"))
+        self.libraries("pet libraries", items, "pet .hab", "pets").await
     }
 
     /// The effect icons from the Habbo Classic app (Habbo has no CDN link for them).

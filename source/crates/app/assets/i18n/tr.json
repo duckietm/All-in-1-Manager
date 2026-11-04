@@ -2276,5 +2276,8 @@
   "put .nitro files here, per type": "tür başına .nitro dosyalarını buraya koy",
   "put .swf files here, per type (furni, clothes, pets, effects)": "tür başına .swf dosyalarını buraya koy (furni, clothes, pets, effects)",
   "the .hab files SWF / NITRO to HAB makes, per type": "SWF / NITRO → HAB'nin oluşturduğu .hab dosyaları, tür başına",
-  "the edited folders packed as .hab again": "yeniden .hab olarak paketlenen düzenlenmiş klasörler"
+  "the edited folders packed as .hab again": "yeniden .hab olarak paketlenen düzenlenmiş klasörler",
+  "Download .hab and .swf": ".hab ve .swf indir",
+  "Download only .hab": "Yalnızca .hab indir",
+  "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": ".swf açıkken mobiler, kıyafetler, efektler ve evcil hayvanlar asset araçları için .swf dosyalarını da Assets_tools\\Original_SWF_Files içine alır. Bunlar asla sunucuya gönderilmez."
 }

@@ -27,6 +27,10 @@ pub struct InstallerSettings {
     /// The All-in-1 downloader's executable. Deploy Assets reads Habbo_Default from its folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downloader_path: Option<String>,
+    /// Where Get Assets downloads to (its gamedata/ mirrors the server's); None means [`default_assets_folder`].
+    /// New in the Rust port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assets_path: Option<String>,
     /// The branch chosen per repository ("duckietm/Octane" to "dev"); a repository that is not in here uses main.
     pub branches: BTreeMap<String, String>,
     /// Paths on the server and the emulator's account; None means the defaults. Read once at startup.
@@ -75,6 +79,12 @@ fn file() -> PathBuf {
     config_dir::directory().join("settings.json")
 }
 
+/// Get Assets' folder when Settings name none: Habbo_Assets next to the configuration folder.
+pub fn default_assets_folder() -> PathBuf {
+    let configuration = config_dir::directory();
+    configuration.parent().map(|p| p.join("Habbo_Assets")).unwrap_or_else(|| configuration.join("Habbo_Assets"))
+}
+
 impl InstallerSettings {
     pub fn load() -> Self {
         Self::load_from(&file())
@@ -113,6 +123,11 @@ impl InstallerSettings {
             }
         });
         list
+    }
+
+    /// Get Assets' folder: the one chosen in Settings, or [`default_assets_folder`].
+    pub fn assets_folder(&self) -> PathBuf {
+        self.assets_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(default_assets_folder)
     }
 
     /// The default key as a full path, when it still exists.

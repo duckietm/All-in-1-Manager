@@ -31,7 +31,15 @@ pub fn entries() -> Vec<Entry> {
         entry("Fail2Ban", t("Bans addresses that guess SSH passwords; a whitelist for your own IPs (Tools → Fail2Ban).").into(), Icon::Shield, "#DC2626", Scene::Bricks, Page::Fail2Ban),
         entry("CrowdSec", t("Blocks attackers on every route through Traefik, with the community's blocklist. Cloudflare aware.").into(), Icon::Shield, "#7C3AED", Scene::Space, Page::CrowdSec),
         entry(t("Default catalogue"), t("A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.").into(), Icon::Shopping, "#D97706", Scene::Disco, Page::DefaultCatalog),
-        entry(t("Deploy Assets"), tf("The All-in-1 downloader's assets and the UI texts to {gamedata}.", &[("gamedata", &gamedata)]), Icon::Download, "#8B5CF6", Scene::Beach, Page::DeployAssets),
+        entry(
+            t("Get Assets"),
+            t("Habbo's furniture, clothes, effects, badges, sounds and game data, downloaded here as .hab and JSON.").into(),
+            Icon::Download,
+            "#0EA5E9",
+            Scene::Sky,
+            Page::GetAssets,
+        ),
+        entry(t("Deploy Assets"), tf("The downloaded assets and the UI texts to {gamedata}.", &[("gamedata", &gamedata)]), Icon::FolderSync, "#8B5CF6", Scene::Beach, Page::DeployAssets),
         entry("Asset Explorer", tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]), Icon::FolderSync, "#2563EB", Scene::Lido, Page::AssetExplorer),
         entry("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Scene::Snow, Page::SqlEditor),
     ]

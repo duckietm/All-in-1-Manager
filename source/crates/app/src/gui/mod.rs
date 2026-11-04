@@ -48,6 +48,7 @@ pub enum Page {
     RemoveCrowdSec,
     DefaultCatalog,
     DeployAssets,
+    GetAssets,
     AssetExplorer,
     SqlEditor,
     Debug,
@@ -194,6 +195,7 @@ pub struct App {
     settings: views::settings::SettingsView,
     tools: views::tools::ToolsView,
     explorer: views::asset_explorer::AssetExplorerView,
+    get_assets: views::get_assets::GetAssetsView,
     sql: views::sql_editor::SqlEditorView,
     debug: views::debug::DebugView,
     history: views::history::HistoryView,
@@ -235,6 +237,7 @@ impl App {
             settings: views::settings::SettingsView::new(&shared),
             tools: views::tools::ToolsView::new(&shared),
             explorer: views::asset_explorer::AssetExplorerView::new(&shared),
+            get_assets: views::get_assets::GetAssetsView::new(&shared),
             sql: views::sql_editor::SqlEditorView::new(&shared),
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
@@ -442,6 +445,10 @@ impl App {
                 t("Addon: a complete catalogue for a new hotel, with its furniture list and FurnitureData.json.").into(),
             ),
             Page::RemoveCms => (t("Remove the CMS").into(), t("Addon: Octane as the hotel's website again, as after the server installation.").into()),
+            Page::GetAssets => (
+                t("Get Assets").into(),
+                t("Habbo's furniture, clothes, effects, badges and game data, downloaded on this computer, ready for Deploy Assets.").into(),
+            ),
             Page::AssetExplorer => (
                 "Asset Explorer".into(),
                 if session.is_none() {
@@ -541,6 +548,7 @@ impl App {
                             | Page::RemoveCrowdSec
                             | Page::DefaultCatalog
                             | Page::DeployAssets
+                            | Page::GetAssets
                             | Page::AssetExplorer
                             | Page::SqlEditor
                     ),
@@ -641,7 +649,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::SqlEditor | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::SqlEditor | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -717,6 +725,7 @@ impl App {
         }
         match page {
             Page::AssetExplorer => self.explorer.show(ui, palette, &shared),
+            Page::GetAssets => scroll(ui, |ui| self.get_assets.show(ui, palette, &shared)),
             Page::SqlEditor => self.sql.show(ui, palette, &shared),
             Page::Debug => self.debug.show(ui, palette, &shared),
             Page::History => self.history.show(ui, palette, &shared),

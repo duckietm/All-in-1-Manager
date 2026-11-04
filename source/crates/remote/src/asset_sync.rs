@@ -153,14 +153,81 @@ fn scan(folder: &Path, mapping: &AssetMapping) -> Vec<LocalFile> {
     files
 }
 
-/// Compares every folder with the server using a single listing command.
+/// Where Deploy Assets copies from: a folder on this computer and its mappings to /var/www/gamedata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    /// The folder shown in the window.
+    pub label: PathBuf,
+    /// What the mappings' `source` paths are relative to.
+    pub base: PathBuf,
+    pub mappings: Vec<AssetMapping>,
+}
+
+/// Get Assets' folder (`<assets>/gamedata`, laid out like the server's gamedata) as one mapping per folder that holds
+/// files, each to the same folder on the server. config/ is only added when missing, like the downloader's JSON.
+pub fn gamedata_mappings(assets_folder: &Path) -> Vec<AssetMapping> {
+    let root = assets_folder.join(crate::habbo_assets::GAMEDATA);
+    let mut folders = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(folder) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        let mut has_files = false;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(entry.path()),
+                Ok(kind) if kind.is_file() => has_files = true,
+                _ => {}
+            }
+        }
+        if has_files && folder != root {
+            let relative: Vec<String> =
+                folder.strip_prefix(&root).unwrap_or(&folder).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            folders.push(relative.join("/"));
+        }
+    }
+    folders.sort();
+    folders
+        .into_iter()
+        .map(|target| AssetMapping {
+            add_only: target == "config",
+            ..AssetMapping::new(&target, &format!("{}/{target}", crate::habbo_assets::GAMEDATA), &target, "*")
+        })
+        .collect()
+}
+
+/// What Deploy Assets copies from: Get Assets' folder when it holds files, then the All-in-1 downloader's
+/// Habbo_Default when Settings name it.
+pub fn sources(assets_folder: &Path, downloader_executable: Option<&str>) -> Vec<Source> {
+    let mut sources = Vec::new();
+    let own = gamedata_mappings(assets_folder);
+    if !own.is_empty() {
+        sources.push(Source { label: assets_folder.join(crate::habbo_assets::GAMEDATA), base: assets_folder.to_path_buf(), mappings: own });
+    }
+    if let Some(folder) = downloader_folder(downloader_executable) {
+        sources.push(Source { label: folder.join(DEFAULT_FOLDER), base: folder, mappings: mappings() });
+    }
+    sources
+}
+
+/// Compares every folder with the server using a single listing command (the All-in-1 downloader alone).
 pub async fn plan(server: &dyn Server, downloader_folder: &Path, overwrite_config: bool) -> Result<Vec<AssetPlan>> {
-    let mappings = mappings();
+    let source = Source { label: downloader_folder.join(DEFAULT_FOLDER), base: downloader_folder.to_path_buf(), mappings: mappings() };
+    plan_sources(server, &[source], overwrite_config).await
+}
+
+/// Compares every folder of every source with the server using a single listing command. A file an earlier source
+/// already sends to the same place is not sent again by a later one.
+pub async fn plan_sources(server: &dyn Server, sources: &[Source], overwrite_config: bool) -> Result<Vec<AssetPlan>> {
+    let all: Vec<(&Path, &AssetMapping)> = sources.iter().flat_map(|s| s.mappings.iter().map(move |m| (s.base.as_path(), m))).collect();
     let gamedata = crate::octane::gamedata();
-    let mut script: String = mappings
+    let mut script: String = all
         .iter()
         .enumerate()
-        .map(|(i, m)| {
+        .map(|(i, (_, m))| {
             format!(
                 "echo '== {i}'; find {} -maxdepth 1 -type f -printf '%f\\t%s\\t%T@\\n' 2>/dev/null",
                 shell_quote(&format!("{gamedata}/{}", m.target))
@@ -172,31 +239,43 @@ pub async fn plan(server: &dyn Server, downloader_folder: &Path, overwrite_confi
     let result = server.run_as_root(&script).await?;
     let remote = parse_listing(&result.output);
 
+    let mut planned: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut plans = Vec::new();
-    for (i, mapping) in mappings.into_iter().enumerate() {
-        let mut source = downloader_folder.to_path_buf();
+    for (i, (base, mapping)) in all.into_iter().enumerate() {
+        let mut source = base.to_path_buf();
         for part in mapping.source.split('/') {
             source.push(part);
         }
-        let local = scan(&source, &mapping);
+        let local = scan(&source, mapping);
         let empty = HashMap::new();
         let there = remote.get(&i).unwrap_or(&empty);
         let mut fresh = Vec::new();
         let mut changed = Vec::new();
         for file in &local {
-            match there.get(&file.name) {
-                None => fresh.push(file.clone()),
+            if planned.contains(&(mapping.target.clone(), file.name.clone())) {
+                continue;
+            }
+            let chosen = match there.get(&file.name) {
+                None => {
+                    fresh.push(file.clone());
+                    true
+                }
                 Some(&(size, modified)) => {
-                    if (!mapping.add_only || overwrite_config) && (size != file.size || file.modified as f64 > modified + 2.0) {
+                    let differs = (!mapping.add_only || overwrite_config) && (size != file.size || file.modified as f64 > modified + 2.0);
+                    if differs {
                         changed.push(file.clone());
                     }
+                    differs
                 }
+            };
+            if chosen {
+                planned.insert((mapping.target.clone(), file.name.clone()));
             }
         }
         plans.push(AssetPlan {
             local_count: local.len(),
             local_bytes: local.iter().map(|f| f.size).sum(),
-            mapping,
+            mapping: mapping.clone(),
             source_path: source,
             new: fresh,
             changed,
@@ -567,6 +646,34 @@ mod tests {
             assert_eq!(list[0].mode, 0o755);
             assert_eq!(list[2].mode, 0o755);
         }
+    }
+
+    #[test]
+    fn get_assets_folder_maps_one_to_one() {
+        let root = tempfile::tempdir().unwrap();
+        let g = root.path().join("gamedata");
+        for (folder, file) in [("furniture", "chair.hab"), ("config", "FurnitureData.json"), ("c_images/album1584", "ADM.gif"), ("c_images/reception/x", "bg.png")] {
+            std::fs::create_dir_all(g.join(folder)).unwrap();
+            std::fs::write(g.join(folder).join(file), b"1").unwrap();
+        }
+        std::fs::create_dir_all(g.join("empty")).unwrap();
+        std::fs::create_dir_all(g.join(".hidden")).unwrap();
+        std::fs::write(g.join(".hidden/a"), b"1").unwrap();
+        let mappings = gamedata_mappings(root.path());
+        let targets: Vec<(&str, &str, bool)> = mappings.iter().map(|m| (m.target.as_str(), m.source.as_str(), m.add_only)).collect();
+        assert_eq!(
+            targets,
+            [
+                ("c_images/album1584", "gamedata/c_images/album1584", false),
+                ("c_images/reception/x", "gamedata/c_images/reception/x", false),
+                ("config", "gamedata/config", true),
+                ("furniture", "gamedata/furniture", false),
+            ]
+        );
+        let sources = sources(root.path(), None);
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].label, g);
+        assert!(super::sources(&root.path().join("nothing"), None).is_empty());
     }
 
     #[test]

@@ -83,8 +83,14 @@ pub struct AssetSyncStep {
     summary: Mutex<Option<String>>,
 }
 
-fn downloader_folder() -> Option<PathBuf> {
-    asset_sync::downloader_folder(aio_core::InstallerSettings::load().downloader_path.as_deref())
+/// Get Assets' folder and, when Settings name it, the All-in-1 downloader's Habbo_Default.
+fn sources() -> Vec<asset_sync::Source> {
+    let settings = aio_core::InstallerSettings::load();
+    asset_sync::sources(&settings.assets_folder(), settings.downloader_path.as_deref())
+}
+
+fn source_list(sources: &[asset_sync::Source]) -> String {
+    sources.iter().map(|s| s.label.display().to_string()).collect::<Vec<_>>().join(" + ")
 }
 
 /// The "To upload" column of a folder.
@@ -104,12 +110,9 @@ impl AssetSyncStep {
         self.summary.lock().unwrap().clone()
     }
 
-    fn show_plans(&self, folder: &Path, plans: &[AssetPlan]) {
+    fn show_plans(&self, sources: &[asset_sync::Source], plans: &[AssetPlan]) {
         let mut form = self.form.lock().unwrap();
-        form.source = tf(
-            "From {source} to {gamedata} on the server:",
-            &[("source", &folder.join(asset_sync::DEFAULT_FOLDER).display().to_string()), ("gamedata", &octane::gamedata())],
-        );
+        form.source = tf("From {source} to {gamedata} on the server:", &[("source", &source_list(sources)), ("gamedata", &octane::gamedata())]);
         form.rows = plans
             .iter()
             .map(|plan| PlanRow {
@@ -130,7 +133,7 @@ impl InstallStep for AssetSyncStep {
     }
 
     fn caption(&self) -> String {
-        t("Downloader").into()
+        t("Assets").into()
     }
 
     fn install_label(&self) -> String {
@@ -144,10 +147,13 @@ impl InstallStep for AssetSyncStep {
     fn intro(&self) -> Intro {
         Intro {
             icon: Icon::Download,
-            heading: t("Sync from the All-in-1 downloader").into(),
+            heading: t("Sync the downloaded assets").into(),
             description: tf(
-                "Copies the Habbo assets the All-in-1 downloader saved in its Habbo_Default folder to {gamedata} on the server, where Octane loads them.",
-                &[("gamedata", &octane::gamedata())],
+                "Copies what Get Assets downloaded ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.",
+                &[
+                    ("folder", &aio_remote::habbo_assets::gamedata_folder(&aio_core::InstallerSettings::load().assets_folder()).display().to_string()),
+                    ("gamedata", &octane::gamedata()),
+                ],
             ),
             bullets: vec![
                 t("Compares every folder with the server first: only files that are not there yet, or that differ (size, or newer here), are sent.").into(),
@@ -156,12 +162,12 @@ impl InstallStep for AssetSyncStep {
                 t("Config JSON (FurnitureData, ProductData, ExternalTexts ...) is only added when missing, unless you tick that it may be replaced: hotels and the emulator edit those files.").into(),
                 tf("Then gives the emulator and NGINX access again ({script}).", &[("script", octane::PERMISSIONS_SCRIPT)]),
             ],
-            footnote: Some(t("Set the downloader's executable in Settings first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).").into()),
+            footnote: Some(t("Download with Addons → Get Assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).").into()),
         }
     }
 
     fn checks(&self) -> Vec<String> {
-        [n("Compare the downloader with the server"), n("Check the free space"), n("Upload new and changed files"), n("Permissions (www-data)")]
+        [n("Compare the assets with the server"), n("Check the free space"), n("Upload new and changed files"), n("Permissions (www-data)")]
             .iter()
             .map(|c| t(c).to_string())
             .collect()
@@ -197,7 +203,8 @@ impl InstallStep for AssetSyncStep {
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
-        let Some(folder) = downloader_folder() else {
+        let sources = sources();
+        if sources.is_empty() {
             {
                 let mut form = self.form.lock().unwrap();
                 form.source.clear();
@@ -205,24 +212,21 @@ impl InstallStep for AssetSyncStep {
             }
             ui.detected(
                 ResultKind::Warning,
-                t("The All-in-1 downloader is not set"),
-                t("Open Settings → All-in-1 downloader and choose its executable (its folder holds Habbo_Default), then come back here."),
+                t("Nothing downloaded yet"),
+                t("Download assets with Addons → Get Assets first (or choose the All-in-1 downloader in Settings), then come back here."),
             );
             return Ok(false);
-        };
+        }
         let overwrite = self.form.lock().unwrap().overwrite_config;
-        let plans = asset_sync::plan(server.as_ref(), &folder, overwrite).await?;
-        self.show_plans(&folder, &plans);
+        let plans = asset_sync::plan_sources(server.as_ref(), &sources, overwrite).await?;
+        self.show_plans(&sources, &plans);
         let count: usize = plans.iter().map(|p| p.upload_count()).sum();
         if count == 0 {
             let local: usize = plans.iter().map(|p| p.local_count).sum();
             ui.detected(
                 ResultKind::Success,
-                t("The server has everything the downloader has"),
-                &tf(
-                    "{count} files in {folder}, all on the server. Download more with the All-in-1 downloader and sync again.",
-                    &[("count", &local.to_string()), ("folder", asset_sync::DEFAULT_FOLDER)],
-                ),
+                t("The server has every downloaded file"),
+                &tf("{count} files here, all on the server. Download more with Get Assets and sync again.", &[("count", &local.to_string())]),
             );
             return Ok(true);
         }
@@ -238,13 +242,16 @@ impl InstallStep for AssetSyncStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let Some(folder) = downloader_folder() else { fail!("{}", t("Set the All-in-1 downloader in Settings first.")) };
-        log(&format!("> Comparing {} with {} ...", folder.join(asset_sync::DEFAULT_FOLDER).display(), octane::gamedata()));
+        let sources = sources();
+        if sources.is_empty() {
+            fail!("{}", t("Nothing downloaded yet: use Addons → Get Assets first."));
+        }
+        log(&format!("> Comparing {} with {} ...", source_list(&sources), octane::gamedata()));
         let (overwrite, selected) = {
             let form = self.form.lock().unwrap();
             (form.overwrite_config, form.selected.clone())
         };
-        let plans = asset_sync::plan(server, &folder, overwrite).await?;
+        let plans = asset_sync::plan_sources(server, &sources, overwrite).await?;
         let is_chosen = |p: &AssetPlan| p.upload_count() > 0 && selected.get(&p.mapping.name).copied() != Some(false);
         for plan in plans.iter().filter(|p| p.local_count > 0) {
             let skipped = if plan.upload_count() > 0 && !is_chosen(plan) { " (skipped: unticked)" } else { "" };

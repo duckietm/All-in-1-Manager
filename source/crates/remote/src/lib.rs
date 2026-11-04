@@ -26,6 +26,7 @@ pub mod furniture_language;
 pub mod gamedata_files;
 pub mod git_clone;
 pub mod gitea;
+pub mod habbo_assets;
 pub mod harden;
 pub mod hotel_site;
 pub mod local_ports;

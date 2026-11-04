@@ -8,5 +8,6 @@ pub mod nitro;
 pub mod swf;
 pub mod swf_pets;
 pub mod swf_effects;
+pub mod swf_clothes;
 
 pub use bundle::{detect, to_hab, AssetKind, Format};

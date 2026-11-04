@@ -2281,5 +2281,8 @@
   "Download only .hab": "Download alleen .hab",
   "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": "Met .swf aan krijgen meubi, kleding, effecten en huisdieren ook hun .swf, in Assets_tools\\Original_SWF_Files, voor de asset-tools. Die gaan nooit naar de server.",
   "A JSON or XML file on this computer, saved from the browser for example.": "Een JSON- of XML-bestand op deze computer, bijvoorbeeld opgeslagen vanuit de browser.",
-  "https:// or a file on this computer": "https:// of een bestand op deze computer"
+  "https:// or a file on this computer": "https:// of een bestand op deze computer",
+  "Auto (try all)": "Automatisch (alles proberen)",
+  "Format": "Formaat",
+  "what the retro serves": "wat de retro levert"
 }

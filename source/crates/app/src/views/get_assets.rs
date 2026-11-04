@@ -405,6 +405,18 @@ impl GetAssetsView {
                     let hint = self.edit.urls.host().unwrap_or_else(|| t("For example the hotel's name").into());
                     ui.add(egui::TextEdit::singleline(&mut self.edit.name).hint_text(hint).desired_width(width).margin(egui::vec2(8.0, 6.0)));
                     ui.end_row();
+                    ui.vertical(|ui| {
+                        ui.set_min_width(230.0);
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(RichText::new(t("Format")).size(13.0).strong());
+                        ui.label(RichText::new(t("what the retro serves")).size(11.0).color(palette.subtle));
+                    });
+                    ui.horizontal(|ui| {
+                        for (value, label) in [("", t("Auto (try all)")), ("hab", ".hab"), ("nitro", ".nitro"), ("swf", ".swf")] {
+                            ui.radio_value(&mut self.edit.urls.format, value.to_string(), label);
+                        }
+                    });
+                    ui.end_row();
                     for (i, (label, key)) in RETRO_FIELDS.iter().enumerate() {
                         ui.vertical(|ui| {
                             ui.set_min_width(230.0);

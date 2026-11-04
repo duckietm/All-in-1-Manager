@@ -2281,5 +2281,8 @@
   "Download only .hab": "Yalnızca .hab indir",
   "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": ".swf açıkken mobiler, kıyafetler, efektler ve evcil hayvanlar asset araçları için .swf dosyalarını da Assets_tools\\Original_SWF_Files içine alır. Bunlar asla sunucuya gönderilmez.",
   "A JSON or XML file on this computer, saved from the browser for example.": "Bu bilgisayardaki bir JSON veya XML dosyası, örneğin tarayıcıdan kaydedilmiş.",
-  "https:// or a file on this computer": "https:// veya bu bilgisayardaki bir dosya"
+  "https:// or a file on this computer": "https:// veya bu bilgisayardaki bir dosya",
+  "Auto (try all)": "Otomatik (hepsini dene)",
+  "Format": "Biçim",
+  "what the retro serves": "retronun sunduğu"
 }

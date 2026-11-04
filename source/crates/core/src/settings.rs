@@ -113,6 +113,9 @@ pub struct RetroUrls {
     /// avatar.figuremap.url: FigureMap.json.
     #[serde(default)]
     pub figuremap: String,
+    /// The bundle format the retro serves: "hab", "nitro" or "swf"; empty tries all three (Auto).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
 }
 
 impl RetroUrls {

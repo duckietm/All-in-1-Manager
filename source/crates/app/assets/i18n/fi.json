@@ -2281,5 +2281,8 @@
   "Download only .hab": "Lataa vain .hab",
   "With .swf on, furniture, clothes, effects and pets also get their .swf, into Assets_tools\\Original_SWF_Files, for the asset tools. They are never sent to the server.": "Kun .swf on päällä, kalusteet, vaatteet, efektit ja lemmikit saavat myös .swf-tiedostonsa kansioon Assets_tools\\Original_SWF_Files asset-työkaluja varten. Niitä ei koskaan lähetetä palvelimelle.",
   "A JSON or XML file on this computer, saved from the browser for example.": "JSON- tai XML-tiedosto tällä tietokoneella, esimerkiksi selaimesta tallennettu.",
-  "https:// or a file on this computer": "https:// tai tiedosto tällä tietokoneella"
+  "https:// or a file on this computer": "https:// tai tiedosto tällä tietokoneella",
+  "Auto (try all)": "Automaattinen (kokeile kaikkia)",
+  "Format": "Muoto",
+  "what the retro serves": "mitä retro tarjoaa"
 }

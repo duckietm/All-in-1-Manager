@@ -239,13 +239,14 @@ async fn a_retro_in_any_format_ends_up_as_hab() {
         clothes: format!("{base}/gamedata/clothes"),
         figuredata: format!("{base}/gamedata/config/FigureData.json"),
         figuremap: format!("{base}/gamedata/config/FigureMap.json"),
+        format: String::new(),
     };
     let root = tempfile::tempdir().unwrap();
     let log = |_: &str| {};
     let downloader = Downloader::new(root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), Options::default(), &log, CancellationToken::new()).unwrap();
     let furniture = downloader.retro_furniture(&urls).await.unwrap();
     assert!(furniture.contains("2 new furniture .hab"), "{furniture}");
-    assert!(furniture.contains("1 not on Habbo"), "poster: {furniture}");
+    assert!(furniture.contains("1 not found on the retro"), "poster: {furniture}");
     assert!(furniture.contains("1 .swf could not be converted and are kept in source/"), "a damaged .swf: {furniture}");
     let g = root.path().join("gamedata");
     let chair = std::fs::read(g.join("furniture/chair.hab")).unwrap();
@@ -260,6 +261,13 @@ async fn a_retro_in_any_format_ends_up_as_hab() {
     assert!(g.join("clothes/hh_shirt.hab").is_file() && !g.join("clothes/hh_human_fx.hab").exists());
     // A second run finds everything, also the kept .swf.
     assert!(downloader.retro_furniture(&urls).await.unwrap().contains("0 new furniture .hab, 3 already there"));
+
+    // With .nitro chosen in the profile only .nitro is asked for: the lamp (only a .hab there) is not found.
+    let fresh_root = tempfile::tempdir().unwrap();
+    let only_nitro = Downloader::new(fresh_root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), Options::default(), &log, CancellationToken::new()).unwrap();
+    let summary = only_nitro.retro_furniture(&aio_remote::habbo_assets::retro::RetroUrls { format: "nitro".into(), ..urls.clone() }).await.unwrap();
+    assert!(summary.contains("1 new furniture .hab") && summary.contains("3 not found on the retro"), "{summary}");
+    assert!(fresh_root.path().join("gamedata/furniture/chair.hab").is_file() && !fresh_root.path().join("gamedata/furniture/lamp.hab").exists());
 }
 
 #[tokio::test]
@@ -286,13 +294,14 @@ async fn a_flash_retro_with_furnidata_xml() {
         clothes: format!("{base}/gordon/REL"),
         figuredata: format!("{base}/gamedata/figuredata/1"),
         figuremap: format!("{base}/gordon/REL/figuremap.xml"),
+        format: String::new(),
     };
     let root = tempfile::tempdir().unwrap();
     let log = |_: &str| {};
     let downloader = Downloader::new(root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), Options::default(), &log, CancellationToken::new()).unwrap();
     let furniture = downloader.retro_furniture(&urls).await.unwrap();
     assert!(furniture.starts_with("FurnitureData.json (from the furnidata XML) with 3 furniture; 2 new furniture .hab"), "{furniture}");
-    assert!(furniture.ends_with("2 new icons, 0 already there, 1 not on Habbo"), "{furniture}");
+    assert!(furniture.ends_with("2 new icons, 0 already there, 1 not found on the retro"), "{furniture}");
     let g = root.path().join("gamedata");
     let data: serde_json::Value = serde_json::from_slice(&std::fs::read(g.join("config/FurnitureData.json")).unwrap()).unwrap();
     assert_eq!(data["roomitemtypes"]["furnitype"][0]["classname"], "shelves_norja", "the XML is saved as FurnitureData.json");

@@ -110,7 +110,7 @@ impl Downloader<'_> {
     /// Bundles named `names` from `base`/<name>.<hab|nitro|swf> into gamedata/`folder`/<name>.hab. With a revision
     /// (from a furnidata XML) `base`/<revision>/<name>.<ext> is tried too, as Habbo's hof_furni serves them. The format
     /// and the path that worked last are tried first, so a retro costs one request per bundle.
-    async fn fetch_bundles(&self, what: &str, base: &str, folder: &str, names: Vec<(String, Option<i64>)>, kind: AssetKind) -> Result<BundleCounts> {
+    async fn fetch_bundles(&self, what: &str, base: &str, folder: &str, names: Vec<(String, Option<i64>)>, kind: AssetKind, only: Option<Format>) -> Result<BundleCounts> {
         let result = BundleCounts::default();
         let preferred = AtomicU8::new(0);
         let plain_first = std::sync::atomic::AtomicBool::new(false);
@@ -131,7 +131,11 @@ impl Downloader<'_> {
                         result.counts.existing.fetch_add(1, Ordering::Relaxed);
                     } else {
                         let first = preferred.load(Ordering::Relaxed) as usize;
-                        let order = [ORDER[first], ORDER[(first + 1) % 3], ORDER[(first + 2) % 3]];
+                        // A format chosen in the profile is the only one tried; Auto tries all three, the last hit first.
+                        let order: Vec<Format> = match only {
+                            Some(format) => vec![format],
+                            None => vec![ORDER[first], ORDER[(first + 1) % 3], ORDER[(first + 2) % 3]],
+                        };
                         let mut stems = vec![name.clone()];
                         if let Some(revision) = revision {
                             let with_revision = format!("{revision}/{name}");
@@ -251,7 +255,7 @@ impl Downloader<'_> {
             slot.1 = slot.1.max(*revision);
         }
         let names: Vec<(String, Option<i64>)> = libraries.into_values().collect();
-        let bundles = self.fetch_bundles("furniture", &folder_url(&urls.furniture), "furniture", names, AssetKind::Furniture).await?;
+        let bundles = self.fetch_bundles("furniture", &folder_url(&urls.furniture), "furniture", names, AssetKind::Furniture, Format::from_extension(&urls.format)).await?;
         let from = if xml { " (from the furnidata XML)" } else { "" };
         let mut summary = format!("FurnitureData.json{from} with {} furniture; {}", classnames.len(), bundles.summary("furniture .hab"));
         if !urls.furniture_icons.trim().is_empty() {
@@ -273,7 +277,7 @@ impl Downloader<'_> {
             counts.existing.fetch_sub(found.min(counts.existing.load(Ordering::Relaxed)), Ordering::Relaxed);
             summary += &format!("; {}", counts.summary("icons"));
         }
-        Ok(summary)
+        Ok(summary.replace("not on Habbo", "not found on the retro"))
     }
 
     /// The retro's FigureData.json, FigureMap.json and its clothes (as .hab); hh_human_fx and hh_pets are no clothes.
@@ -315,8 +319,8 @@ impl Downloader<'_> {
             summary += "FigureData.json and ";
         }
         let names = names.into_iter().map(|n| (n, None)).collect();
-        let bundles = self.fetch_bundles("clothes", &folder_url(&urls.clothes), "clothes", names, AssetKind::Clothes).await?;
-        Ok(format!("{summary}FigureMap.json; {}", bundles.summary("clothes .hab")))
+        let bundles = self.fetch_bundles("clothes", &folder_url(&urls.clothes), "clothes", names, AssetKind::Clothes, Format::from_extension(&urls.format)).await?;
+        Ok(format!("{summary}FigureMap.json; {}", bundles.summary("clothes .hab")).replace("not on Habbo", "not found on the retro"))
     }
 }
 

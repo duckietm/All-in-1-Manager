@@ -166,7 +166,7 @@ impl Downloader<'_> {
                             }
                         }
                         let mut found = false;
-                        'formats: for format in order {
+                        'formats: for &format in &order {
                             let mut hit = None;
                             for stem in &stems {
                                 let url = format!("{base}/{stem}.{}", format.extension());

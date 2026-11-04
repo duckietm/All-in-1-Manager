@@ -1130,6 +1130,23 @@ Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choos
 FigureData.json, the converter's "disable all sellable" question. The `.hab` files are saved as Habbo serves them
 (the converter's optional WebP repacking of their sheets is not part of this yet).
 
+#### Nitro retro (custom assets)
+
+The **Nitro retro** tab downloads a Nitro hotel's own furniture and clothes. Fill in the six values from its
+`renderer-config.json` (`furnidata.url`, `furni.asset.url`, `furni.asset.icon.url`, `avatar.asset.url`,
+`avatar.figuredata.url`, `avatar.figuremap.url`; a folder or the full `.../%libname%.nitro` pattern) and **Save**:
+they are filled in again next time (also saved when you press **Download**).
+
+- **Custom furniture**: the retro's FurnitureData.json, every furniture bundle and the icon of every colour.
+- **Custom clothes**: FigureData.json, FigureMap.json and every clothing bundle (not hh_human_fx and hh_pets).
+
+They go into `Habbo_Assets/custom/gamedata` (laid out like gamedata), which Deploy Assets does **not** copy: upload
+what you want by hand with the Asset Explorer. A retro serves `.hab`, `.nitro` or `.swf`; the step finds out which
+for each bundle (trying the one that worked last first) and saves every bundle as `.hab`: a `.nitro` is repacked
+with the same files, a `.swf` is kept in `custom/source/` until the SWF converter (furniture, clothes, pets, effects)
+is built in. The bundle formats and conversions live in their own crate, `aio-assets`, so other parts of the
+installer can use them too.
+
 ### Deploy Assets
 
 **Deploy Assets** copies what **Get Assets** downloaded to `/var/www/gamedata` on the server, where Octane loads it,
@@ -1570,6 +1587,8 @@ source/                          The code
     src/credentials.rs           Generated MariaDB passwords and their file format
     src/keys.rs                  SSH keys: generation (encrypted OpenSSH + PuTTY .ppk v2), public key formats, .ppk reader
     src/backup.rs                Encrypted export / import of the configuration folder (AES-256-GCM, PBKDF2)
+  crates/assets/                 Habbo's asset bundles: .hab, .nitro and .asar read and written, and the
+                                 conversions to .hab every part of the installer uses (no network, no server)
   crates/remote/                 Everything that happens on the server
     src/server.rs                The Server trait: commands as root, streaming, follow, stdin, SFTP, tunnel, shell
     src/ssh.rs                   The SSH login (russh): password, keyboard-interactive or key, the OS check, sudo -> root

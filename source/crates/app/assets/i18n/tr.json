@@ -2216,5 +2216,19 @@
   "Done": "Tamam",
   "Clears the result and the log, so you can start over.": "Sonucu ve günlüğü temizler, böylece baştan başlayabilirsin.",
   "Habbo has no download link for the effect icons: they are in {bundle}, inside the Habbo Classic app's resources/app.asar. Choose that app.asar.": "Habbo'da efekt simgeleri için indirme bağlantısı yok: Habbo Classic uygulamasının resources/app.asar dosyasındaki {bundle} içindeler. O app.asar dosyasını seç.",
-  "The app.asar of the Habbo Classic app": "Habbo Classic uygulamasının app.asar dosyası"
+  "The app.asar of the Habbo Classic app": "Habbo Classic uygulamasının app.asar dosyası",
+  "Clothes folder": "Kıyafet klasörü",
+  "Custom clothes": "Özel kıyafetler",
+  "Custom downloads from a Nitro hotel; copy the values from its renderer-config.json.": "Bir Nitro otelinden özel indirmeler; değerleri onun renderer-config.json dosyasından kopyala.",
+  "Custom furniture": "Özel mobiler",
+  "FigureData.json, FigureMap.json and every clothing bundle": "FigureData.json, FigureMap.json ve her kıyafet paketi",
+  "Furniture folder": "Mobi klasörü",
+  "Furniture icons": "Mobi simgeleri",
+  "FurnitureData.json, every furniture bundle and its icons": "FurnitureData.json, her mobi paketi ve simgeleri",
+  "Habbo hotel": "Habbo oteli",
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab; a .swf is kept in source/ until the SWF converter is built in.": "{folder} klasörüne, gamedata gibi düzenlenmiş olarak, elle yüklemek için (Asset Explorer). Bir retro .hab, .nitro veya .swf sunar: her paket .hab olarak kaydedilir; bir .swf, SWF dönüştürücü eklenene kadar source/ içinde kalır.",
+  "Nitro retro": "Nitro retro",
+  "Not saved yet": "Henüz kaydedilmedi",
+  "Saved: they are filled in again next time.": "Kaydedildi: bir dahaki sefere yine burada olacaklar.",
+  "Upload the custom folder by hand.": "Özel klasörü elle yükle."
 }

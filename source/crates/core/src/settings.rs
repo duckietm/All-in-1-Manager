@@ -27,6 +27,9 @@ pub struct InstallerSettings {
     /// The All-in-1 downloader's executable. Deploy Assets reads Habbo_Default from its folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub downloader_path: Option<String>,
+    /// A Nitro retro's renderer-config.json URLs, for Get Assets' custom downloads. New in the Rust port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retro: Option<RetroUrls>,
     /// Where Get Assets downloads to (its gamedata/ mirrors the server's); None means [`default_assets_folder`].
     /// New in the Rust port.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,6 +80,36 @@ pub fn choice_for(branch: &str) -> BranchChoice {
 
 fn file() -> PathBuf {
     config_dir::directory().join("settings.json")
+}
+
+/// A Nitro retro's renderer-config.json values for Get Assets' custom downloads. A folder may also be given as the
+/// full pattern (".../furniture/%libname%.nitro").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetroUrls {
+    /// furnidata.url: the retro's FurnitureData.json.
+    #[serde(default)]
+    pub furnidata: String,
+    /// furni.asset.url: the furniture folder.
+    #[serde(default)]
+    pub furniture: String,
+    /// furni.asset.icon.url: the furniture icons folder.
+    #[serde(default)]
+    pub furniture_icons: String,
+    /// avatar.asset.url: the clothes folder.
+    #[serde(default)]
+    pub clothes: String,
+    /// avatar.figuredata.url: FigureData.json.
+    #[serde(default)]
+    pub figuredata: String,
+    /// avatar.figuremap.url: FigureMap.json.
+    #[serde(default)]
+    pub figuremap: String,
+}
+
+impl RetroUrls {
+    pub fn is_empty(&self) -> bool {
+        [&self.furnidata, &self.furniture, &self.furniture_icons, &self.clothes, &self.figuredata, &self.figuremap].iter().all(|v| v.trim().is_empty())
+    }
 }
 
 /// Get Assets' folder when Settings name none: Habbo_Assets next to the configuration folder.

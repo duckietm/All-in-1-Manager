@@ -9,7 +9,8 @@
 //! only for reading here (external_variables as JSON) and is never copied to the server.
 
 pub mod convert;
-pub mod hab;
+pub use aio_assets::hab;
+pub mod retro;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

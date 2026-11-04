@@ -2216,5 +2216,19 @@
   "Done": "Terminé",
   "Clears the result and the log, so you can start over.": "Efface le résultat et le journal, pour que tu puisses recommencer.",
   "Habbo has no download link for the effect icons: they are in {bundle}, inside the Habbo Classic app's resources/app.asar. Choose that app.asar.": "Habbo n'a pas de lien de téléchargement pour les icônes d'effets : elles sont dans {bundle}, dans resources/app.asar de l'app Habbo Classic. Choisis cette app.asar.",
-  "The app.asar of the Habbo Classic app": "L'app.asar de l'app Habbo Classic"
+  "The app.asar of the Habbo Classic app": "L'app.asar de l'app Habbo Classic",
+  "Clothes folder": "Dossier des vêtements",
+  "Custom clothes": "Vêtements perso",
+  "Custom downloads from a Nitro hotel; copy the values from its renderer-config.json.": "Téléchargements perso depuis un hôtel Nitro ; copie les valeurs de son renderer-config.json.",
+  "Custom furniture": "Mobis perso",
+  "FigureData.json, FigureMap.json and every clothing bundle": "FigureData.json, FigureMap.json et chaque bundle de vêtements",
+  "Furniture folder": "Dossier des mobis",
+  "Furniture icons": "Icônes des mobis",
+  "FurnitureData.json, every furniture bundle and its icons": "FurnitureData.json, chaque bundle de mobi et ses icônes",
+  "Habbo hotel": "Hôtel Habbo",
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab; a .swf is kept in source/ until the SWF converter is built in.": "Dans {folder}, organisé comme gamedata, à envoyer à la main (Asset Explorer). Un rétro fournit du .hab, .nitro ou .swf : chaque bundle est enregistré en .hab ; un .swf reste dans source/ jusqu'à l'arrivée du convertisseur SWF.",
+  "Nitro retro": "Rétro Nitro",
+  "Not saved yet": "Pas encore enregistré",
+  "Saved: they are filled in again next time.": "Enregistré : ils seront de nouveau là la prochaine fois.",
+  "Upload the custom folder by hand.": "Envoie le dossier perso à la main."
 }

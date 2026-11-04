@@ -2216,5 +2216,19 @@
   "Done": "Valmis",
   "Clears the result and the log, so you can start over.": "Tyhjentää tuloksen ja lokin, jotta voit aloittaa alusta.",
   "Habbo has no download link for the effect icons: they are in {bundle}, inside the Habbo Classic app's resources/app.asar. Choose that app.asar.": "Habbolla ei ole latauslinkkiä efektikuvakkeille: ne ovat tiedostossa {bundle}, Habbo Classic -sovelluksen resources/app.asar-tiedoston sisällä. Valitse se app.asar.",
-  "The app.asar of the Habbo Classic app": "Habbo Classic -sovelluksen app.asar"
+  "The app.asar of the Habbo Classic app": "Habbo Classic -sovelluksen app.asar",
+  "Clothes folder": "Vaatekansio",
+  "Custom clothes": "Omat vaatteet",
+  "Custom downloads from a Nitro hotel; copy the values from its renderer-config.json.": "Omat lataukset Nitro-hotellista; kopioi arvot sen renderer-config.json-tiedostosta.",
+  "Custom furniture": "Omat kalusteet",
+  "FigureData.json, FigureMap.json and every clothing bundle": "FigureData.json, FigureMap.json ja jokainen vaatepaketti",
+  "Furniture folder": "Kalustekansio",
+  "Furniture icons": "Kalustekuvakkeet",
+  "FurnitureData.json, every furniture bundle and its icons": "FurnitureData.json, jokainen kalustepaketti ja sen kuvakkeet",
+  "Habbo hotel": "Habbo-hotelli",
+  "Into {folder}, laid out like gamedata, to upload by hand (Asset Explorer). A retro serves .hab, .nitro or .swf: every bundle is saved as .hab; a .swf is kept in source/ until the SWF converter is built in.": "Kansioon {folder}, järjestettynä kuten gamedata, ladattavaksi käsin (Asset Explorer). Retro tarjoaa .hab-, .nitro- tai .swf-tiedostoja: jokainen paketti tallennetaan .hab-muodossa; .swf jää source/-kansioon, kunnes SWF-muunnin on mukana.",
+  "Nitro retro": "Nitro-retro",
+  "Not saved yet": "Ei vielä tallennettu",
+  "Saved: they are filled in again next time.": "Tallennettu: ne ovat täällä taas ensi kerralla.",
+  "Upload the custom folder by hand.": "Lataa oma kansio käsin."
 }

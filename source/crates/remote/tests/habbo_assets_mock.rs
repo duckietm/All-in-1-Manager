@@ -33,7 +33,7 @@ async fn serve(files: HashMap<String, Vec<u8>>) -> String {
                     }
                 }
                 let line = String::from_utf8_lossy(&request);
-                let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let path = line.split_whitespace().nth(1).unwrap_or("/").split('?').next().unwrap_or("/").to_string();
                 let (status, body) = match files.get(&path) {
                     Some(body) => ("200 OK", body.clone()),
                     None => ("404 Not Found", b"not found".to_vec()),
@@ -206,6 +206,54 @@ async fn effect_icons_from_app_asar_unpacked() {
     let downloader = Downloader::new(root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), options, &log, CancellationToken::new()).unwrap();
     assert_eq!(downloader.run(Asset::EffectIcons).await.unwrap(), "1 effect icons written, 0 already up to date");
     assert!(root.path().join("gamedata/c_images/fx_icons/fx_icon_9.png").is_file());
+}
+
+#[tokio::test]
+async fn a_retro_in_any_format_ends_up_as_hab() {
+    let files = vec![("x.json".to_string(), b"{}".to_vec())];
+    let nitro = aio_assets::nitro::write(&files);
+    let hab = aio_assets::hab::write("lamp", &files);
+    let mut f: HashMap<String, Vec<u8>> = HashMap::new();
+    f.insert(
+        "/gamedata/config/FurnitureData.json".into(),
+        br#"{"roomitemtypes":{"furnitype":[{"classname":"chair"},{"classname":"chair*2"},{"classname":"lamp"},{"classname":"plant"}]},"wallitemtypes":{"furnitype":[{"classname":"poster"}]}}"#.to_vec(),
+    );
+    f.insert("/gamedata/furniture/chair.nitro".into(), nitro.clone());
+    f.insert("/gamedata/furniture/lamp.hab".into(), hab.clone());
+    f.insert("/gamedata/furniture/plant.swf".into(), b"CWS\x0a1234".to_vec());
+    f.insert("/gamedata/icons/chair_2_icon.png".into(), PNG.to_vec());
+    f.insert("/gamedata/config/FigureMap.json".into(), br#"{"libraries":[{"id":"hh_shirt"},{"id":"hh_human_fx"}]}"#.to_vec());
+    f.insert("/gamedata/config/FigureData.json".into(), br#"{"palettes":[]}"#.to_vec());
+    f.insert("/gamedata/clothes/hh_shirt.nitro".into(), nitro.clone());
+    let base = serve(f).await;
+    let urls = aio_remote::habbo_assets::retro::RetroUrls {
+        furnidata: format!("{base}/gamedata/config/FurnitureData.json"),
+        furniture: format!("{base}/gamedata/furniture/%libname%.nitro"),
+        furniture_icons: format!("{base}/gamedata/icons/"),
+        clothes: format!("{base}/gamedata/clothes"),
+        figuredata: format!("{base}/gamedata/config/FigureData.json"),
+        figuremap: format!("{base}/gamedata/config/FigureMap.json"),
+    };
+    let root = tempfile::tempdir().unwrap();
+    let log = |_: &str| {};
+    let downloader = Downloader::new(root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), Options::default(), &log, CancellationToken::new()).unwrap();
+    let furniture = downloader.retro_furniture(&urls).await.unwrap();
+    assert!(furniture.contains("2 new furniture .hab"), "{furniture}");
+    assert!(furniture.contains("1 not on Habbo"), "poster: {furniture}");
+    assert!(furniture.contains("1 .swf kept in source/"), "{furniture}");
+    let g = root.path().join("gamedata");
+    let chair = std::fs::read(g.join("furniture/chair.hab")).unwrap();
+    assert_eq!(aio_assets::hab::read(&chair).unwrap(), files, "the .nitro is repacked as .hab");
+    assert_eq!(std::fs::read(g.join("furniture/lamp.hab")).unwrap(), hab, "a .hab is kept as it is");
+    assert!(root.path().join("source/furniture/plant.swf").is_file());
+    assert!(g.join("icons/chair_2_icon.png").is_file());
+    assert!(g.join("config/FurnitureData.json").is_file());
+
+    let clothes = downloader.retro_clothes(&urls).await.unwrap();
+    assert!(clothes.starts_with("FigureData.json and FigureMap.json; 1 new clothes .hab"), "{clothes}");
+    assert!(g.join("clothes/hh_shirt.hab").is_file() && !g.join("clothes/hh_human_fx.hab").exists());
+    // A second run finds everything, also the kept .swf.
+    assert!(downloader.retro_furniture(&urls).await.unwrap().contains("0 new furniture .hab, 3 already there"));
 }
 
 #[tokio::test]

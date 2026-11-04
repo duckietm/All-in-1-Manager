@@ -1,5 +1,6 @@
 //! Habbo's .hab bundle and the Electron .asar archive of the Habbo Classic app, read far enough to take the effect
-//! icons out of habbo-inventory-com.hab (All-in-1 Converter: NitroCompiler/HabBundle.cs, Download Classes/EffectIcons.cs).
+//! icons out of habbo-inventory-com.hab, and the .hab writer every conversion ends with (All-in-1 Converter:
+//! NitroCompiler/HabBundle.cs, Download Classes/EffectIcons.cs).
 //!
 //! A .hab is "HAB\0", u16 version, u16 flags, u32 index length, u32 raw index length, u32 data length (little-endian),
 //! a zlib JSON index { format: "hab", entries: [{ name, offset, storedLength, originalLength, compression }] } and the
@@ -10,7 +11,7 @@ use std::io::Read;
 
 use serde::Deserialize;
 
-use crate::server::{Result, ServerError};
+use anyhow::Result;
 
 const HEADER: usize = 20;
 pub const INVENTORY_BUNDLE: &str = "habbo-inventory-com.hab";
@@ -24,7 +25,7 @@ pub fn is_png(data: &[u8]) -> bool {
 }
 
 fn bad(message: impl Into<String>) -> anyhow::Error {
-    ServerError(message.into()).into()
+    anyhow::anyhow!(message.into())
 }
 
 fn u32_at(data: &[u8], at: usize) -> usize {
@@ -94,6 +95,60 @@ pub fn read(buffer: &[u8]) -> Result<Vec<(String, Vec<u8>)>> {
         files.push((entry.name, bytes));
     }
     Ok(files)
+}
+
+/// The mime type Habbo's index gives a file (HabBundle.MimeTypeOf).
+pub fn mime_type(name: &str) -> &'static str {
+    match name.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "json" => "application/json",
+        "png" => "image/png",
+        "webp" => "image/webp",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "xml" => "application/xml",
+        _ => "text/plain",
+    }
+}
+
+fn zlib(data: &[u8]) -> Vec<u8> {
+    use std::io::Write;
+    let mut encoder = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(data).expect("writing to memory");
+    encoder.finish().expect("writing to memory")
+}
+
+/// Packs the files (name, bytes) into one .hab named `name`. Like Habbo's own bundles, an entry is zlib-compressed
+/// only when that makes it smaller; an already compressed image is stored as it is ("none"). (HabBundle.Write)
+pub fn write(name: &str, files: &[(String, Vec<u8>)]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut entries = Vec::with_capacity(files.len());
+    for (file, bytes) in files {
+        let deflated = zlib(bytes);
+        let compress = deflated.len() < bytes.len();
+        let stored = if compress { deflated } else { bytes.clone() };
+        entries.push(serde_json::json!({
+            "name": file,
+            "mimeType": mime_type(file),
+            "offset": data.len(),
+            "storedLength": stored.len(),
+            "originalLength": bytes.len(),
+            "compression": if compress { "deflate" } else { "none" },
+        }));
+        data.extend_from_slice(&stored);
+    }
+    let raw = serde_json::to_vec(&serde_json::json!({ "format": "hab", "version": 1, "name": name, "entries": entries })).expect("json");
+    let index = zlib(&raw);
+    let mut out = Vec::with_capacity(HEADER + index.len() + data.len());
+    out.extend_from_slice(b"HAB\0");
+    out.extend_from_slice(&1u16.to_le_bytes());
+    // Habbo's own furni bundles carry flags 1.
+    out.extend_from_slice(&1u16.to_le_bytes());
+    for length in [index.len(), raw.len(), data.len()] {
+        out.extend_from_slice(&(length as u32).to_le_bytes());
+    }
+    out.extend(index);
+    out.extend(data);
+    out
 }
 
 /// The inventory bundle from an Electron .asar: u32 4, u32 header size, the header pickle (u32 payload size, u32 json
@@ -199,7 +254,7 @@ pub(crate) mod tests {
 
     pub const PNG: &[u8] = &[0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0];
 
-    /// A .hab like Habbo's: entries zlib-compressed only when that is smaller.
+    /// A .hab like Habbo's (the test's own copy of the format, to check [`write`] against).
     pub fn hab(files: &[(&str, &[u8])]) -> Vec<u8> {
         let zlib = |bytes: &[u8]| {
             let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
@@ -262,6 +317,16 @@ pub(crate) mod tests {
         assert_eq!(icons_from("fx_icon_7.png", PNG).unwrap().keys().copied().collect::<Vec<_>>(), [7]);
         assert!(icons_from("page.html", b"<html>").is_err());
         assert!(icons_from("app.asar", &asar("other.hab", &bundle)).is_err(), "no inventory bundle in it");
+    }
+
+    #[test]
+    fn written_bundles_read_back_like_habbos() {
+        let files = vec![("chair.json".to_string(), b"{\"name\":\"chair\"}".repeat(20)), ("chair.png".to_string(), PNG.to_vec())];
+        let written = write("chair", &files);
+        let expected = hab(&[("chair.json", &files[0].1), ("chair.png", PNG)]);
+        assert_eq!(read(&written).unwrap(), read(&expected).unwrap());
+        assert_eq!(&written[..4], b"HAB\0");
+        assert_eq!(mime_type("x.WEBP"), "image/webp");
     }
 
     #[test]

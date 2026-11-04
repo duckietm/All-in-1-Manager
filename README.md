@@ -805,7 +805,7 @@ imported assets; with an empty folder it clones the repository into `/var/www/ep
    the one already in `.env`, AtomCMS' `cms` login, or else a MariaDB account of its own, `epicnext` (made with root,
    with the cms account's rights on the hotel database only). `REDIS_URL` is left unset when no Valkey/Redis runs, and empty settings from `.env.example` (such as
    `DISCORD_WEBHOOK_URL=`) are commented out: EpicNext's settings check refuses empty values. Before the migrations
-   the step runs that check (`src/env.ts`) itself, so a wrong setting shows in seconds instead of after the build. `HOTEL_NAME`, `APP_URL` and `AUTH_URL` (the site's
+   the step runs that check (`src/env.ts`) itself, so a wrong setting shows in seconds instead of after the build. `HOTEL_NAME`, `APP_URL`, `NEXT_PUBLIC_APP_URL` and `AUTH_URL` (the site's
    address), `AUTH_TRUST_HOST=true` (behind Traefik), a random `AUTH_SECRET` (made once, so logins stay valid), and
    `RCON_HOST`/`RCON_PORT` from the emulator's `config.ini`.
 4. **Build**: `pnpm install --frozen-lockfile` (when EpicNext's lockfile pins versions younger than pnpm's minimum

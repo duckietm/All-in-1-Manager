@@ -354,9 +354,11 @@ pub async fn configure_env(
     credentials: Option<&DatabaseCredentials>,
     log: Log<'_>,
 ) -> Result<()> {
-    let values: [(&str, String); 5] = [
+    let values: [(&str, String); 6] = [
         ("HOTEL_NAME", env_value(hotel_name)),
         ("APP_URL", site.url()),
+        // The address the browser code is built with; EpicNext's checks require it to equal APP_URL.
+        ("NEXT_PUBLIC_APP_URL", site.url()),
         ("AUTH_URL", site.url()),
         // Behind Traefik and NGINX: NextAuth takes the host from the forwarded headers.
         ("AUTH_TRUST_HOST", "true".into()),

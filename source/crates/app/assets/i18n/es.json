@@ -2284,5 +2284,8 @@
   "https:// or a file on this computer": "https:// o un archivo en este ordenador",
   "Auto (try all)": "Auto (probar todos)",
   "Format": "Formato",
-  "what the retro serves": "lo que sirve el retro"
+  "what the retro serves": "lo que sirve el retro",
+  "Custom headers": "Cabeceras personalizadas",
+  "sent with every request (optional)": "enviado con cada petición (opcional)",
+  "one \"Name: value\" per line (optional)": "un \"Nombre: valor\" por línea (opcional)"
 }

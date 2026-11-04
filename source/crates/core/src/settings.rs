@@ -116,11 +116,35 @@ pub struct RetroUrls {
     /// The bundle format the retro serves: "hab", "nitro" or "swf"; empty tries all three (Auto).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub format: String,
+    /// The Referer sent with every request ("https://leet.city/"), for a CDN that only answers its own hotel.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub referer: String,
+    /// Extra request headers, one "Name: value" per line (a User-Agent here replaces the built-in one).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub headers: String,
 }
 
 impl RetroUrls {
     pub fn is_empty(&self) -> bool {
         [&self.furnidata, &self.furniture, &self.furniture_icons, &self.clothes, &self.figuredata, &self.figuremap].iter().all(|v| v.trim().is_empty())
+    }
+
+    /// The Referer and the extra headers as (name, value) pairs, in the order given; empty lines and lines starting
+    /// with '#' are skipped. A line without "Name: value" is an error that names it.
+    pub fn request_headers(&self) -> Result<Vec<(String, String)>, String> {
+        let mut headers = Vec::new();
+        if !self.referer.trim().is_empty() {
+            headers.push(("Referer".to_string(), self.referer.trim().to_string()));
+        }
+        for line in self.headers.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            match line.split_once(':') {
+                Some((name, value)) if !name.trim().is_empty() && !name.trim().contains(' ') => {
+                    headers.push((name.trim().to_string(), value.trim().to_string()));
+                }
+                _ => return Err(format!("Header \"{line}\" is not \"Name: value\".")),
+            }
+        }
+        Ok(headers)
     }
 }
 
@@ -261,6 +285,27 @@ mod tests {
         let profile = RetroProfile { name: " My: Hotel. ".into(), urls: RetroUrls::default() };
         assert_eq!(profile.folder_name(), "My_ Hotel");
         assert_eq!(RetroProfile::default().folder_name(), "retro");
+    }
+
+    #[test]
+    fn referer_and_custom_headers() {
+        let urls = RetroUrls {
+            referer: " https://leet.city/ ".into(),
+            headers: "User-Agent: Mozilla/5.0 (Windows NT 10.0)\n\n# a comment\nX-Token:abc:def\n".into(),
+            ..RetroUrls::default()
+        };
+        assert_eq!(
+            urls.request_headers().unwrap(),
+            vec![
+                ("Referer".into(), "https://leet.city/".into()),
+                ("User-Agent".into(), "Mozilla/5.0 (Windows NT 10.0)".into()),
+                ("X-Token".into(), "abc:def".into()),
+            ]
+        );
+        assert!(RetroUrls { headers: "no colon here".into(), ..RetroUrls::default() }.request_headers().is_err());
+        assert!(RetroUrls::default().request_headers().unwrap().is_empty());
+        // Empty ones are not written to the settings file.
+        assert!(!serde_json::to_string(&RetroUrls::default()).unwrap().contains("referer"));
     }
 
     use super::*;

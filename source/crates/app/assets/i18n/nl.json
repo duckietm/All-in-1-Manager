@@ -2284,5 +2284,8 @@
   "https:// or a file on this computer": "https:// of een bestand op deze computer",
   "Auto (try all)": "Automatisch (alles proberen)",
   "Format": "Formaat",
-  "what the retro serves": "wat de retro levert"
+  "what the retro serves": "wat de retro levert",
+  "Custom headers": "Eigen headers",
+  "sent with every request (optional)": "meegestuurd met elk verzoek (optioneel)",
+  "one \"Name: value\" per line (optional)": "één \"Naam: waarde\" per regel (optioneel)"
 }

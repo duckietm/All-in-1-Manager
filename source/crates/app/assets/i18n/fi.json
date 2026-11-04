@@ -2284,5 +2284,8 @@
   "https:// or a file on this computer": "https:// tai tiedosto tällä tietokoneella",
   "Auto (try all)": "Automaattinen (kokeile kaikkia)",
   "Format": "Muoto",
-  "what the retro serves": "mitä retro tarjoaa"
+  "what the retro serves": "mitä retro tarjoaa",
+  "Custom headers": "Omat otsakkeet",
+  "sent with every request (optional)": "lähetetään jokaisen pyynnön mukana (valinnainen)",
+  "one \"Name: value\" per line (optional)": "yksi \"Nimi: arvo\" riviä kohden (valinnainen)"
 }

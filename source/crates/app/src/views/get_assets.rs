@@ -270,10 +270,17 @@ impl GetAssetsView {
         let root = if retro_run { retro::custom_folder(&self.folder, &self.edit) } else { self.folder.clone() };
         self.state.lock().unwrap().last_root = root.clone();
         let retro_urls = self.edit.urls.clone();
+        // The profile's Referer and custom headers, for a retro run only (Habbo's CDN needs none).
+        let headers = if retro_run { retro_urls.request_headers() } else { Ok(Vec::new()) };
+        let (headers, header_error) = match headers {
+            Ok(headers) => (headers, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
         let options = Options {
             not_sellable: self.not_sellable,
             effect_icons_source: Some(self.icon_source.trim().to_string()).filter(|s| !s.is_empty()),
             also_swf: self.also_swf,
+            headers,
         };
         let (state, task_shared) = (self.state.clone(), shared.clone());
         shared.set_status(t("Getting the assets ..."));
@@ -286,7 +293,14 @@ impl GetAssetsView {
             };
             let from = if retro_run { retro::folder_url(&retro_urls.furnidata) } else { hotel.domain.to_string() };
             log(&format!("> {from} → {}", habbo_assets::gamedata_folder(&root).display()));
-            let result = Downloader::new(&root, Urls::habbo(hotel), options, &log, cancel.clone());
+            if !options.headers.is_empty() {
+                let names: Vec<&str> = options.headers.iter().map(|(name, _)| name.as_str()).collect();
+                log(&format!("  with the headers {}", names.join(", ")));
+            }
+            let result = match header_error {
+                Some(e) => Err(anyhow::anyhow!(e)),
+                None => Downloader::new(&root, Urls::habbo(hotel), options, &log, cancel.clone()),
+            };
             match result {
                 Err(e) => state.lock().unwrap().results.push((t("Habbo assets").into(), Err(e.to_string()))),
                 Ok(downloader) => {
@@ -414,6 +428,35 @@ impl GetAssetsView {
                     ui.horizontal(|ui| {
                         for (value, label) in [("", t("Auto (try all)")), ("hab", ".hab"), ("nitro", ".nitro"), ("swf", ".swf")] {
                             ui.radio_value(&mut self.edit.urls.format, value.to_string(), label);
+                        }
+                    });
+                    ui.end_row();
+                    ui.vertical(|ui| {
+                        ui.set_min_width(230.0);
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(RichText::new("Referer").size(13.0).strong());
+                        ui.label(RichText::new(t("sent with every request (optional)")).size(11.0).color(palette.subtle));
+                    });
+                    let width = (ui.available_width() - 4.0).max(240.0);
+                    ui.add(egui::TextEdit::singleline(&mut self.edit.urls.referer).hint_text("https://leet.city/").desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                    ui.end_row();
+                    ui.vertical(|ui| {
+                        ui.set_min_width(230.0);
+                        ui.spacing_mut().item_spacing.y = 1.0;
+                        ui.label(RichText::new(t("Custom headers")).size(13.0).strong());
+                        ui.label(RichText::new(t("one \"Name: value\" per line (optional)")).size(11.0).color(palette.subtle));
+                    });
+                    ui.vertical(|ui| {
+                        let width = (ui.available_width() - 4.0).max(240.0);
+                        ui.add(
+                            egui::TextEdit::multiline(&mut self.edit.urls.headers)
+                                .hint_text("User-Agent: Mozilla/5.0 ...\nOrigin: https://leet.city")
+                                .desired_rows(2)
+                                .desired_width(width)
+                                .margin(egui::vec2(8.0, 6.0)),
+                        );
+                        if let Err(e) = self.edit.urls.request_headers() {
+                            ui.label(RichText::new(e).size(11.5).color(palette.warning_text));
                         }
                     });
                     ui.end_row();

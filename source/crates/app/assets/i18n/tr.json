@@ -2284,5 +2284,8 @@
   "https:// or a file on this computer": "https:// veya bu bilgisayardaki bir dosya",
   "Auto (try all)": "Otomatik (hepsini dene)",
   "Format": "Biçim",
-  "what the retro serves": "retronun sunduğu"
+  "what the retro serves": "retronun sunduğu",
+  "Custom headers": "Özel başlıklar",
+  "sent with every request (optional)": "her istekle gönderilir (isteğe bağlı)",
+  "one \"Name: value\" per line (optional)": "satır başına bir \"Ad: değer\" (isteğe bağlı)"
 }

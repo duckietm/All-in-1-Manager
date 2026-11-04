@@ -122,6 +122,7 @@ dependencies = [
 name = "aio-app"
 version = "2.0.11"
 dependencies = [
+ "aio-assets",
  "aio-core",
  "aio-remote",
  "aio-terminal",
@@ -146,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "aio-assets"
-version = "2.0.9"
+version = "2.0.11"
 dependencies = [
  "anyhow",
  "flate2",
@@ -155,6 +156,7 @@ dependencies = [
  "roxmltree",
  "serde",
  "serde_json",
+ "tempfile",
  "zip",
 ]
 

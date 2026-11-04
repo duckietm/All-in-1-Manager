@@ -159,6 +159,9 @@ pub struct Options {
     /// Furniture, clothes, effects and pets: also the .swf of every library, into the asset tools'
     /// Assets_tools/Original_SWF_Files/<type> (never into gamedata, so never to the server).
     pub also_swf: bool,
+    /// Extra headers sent with every request (a retro profile's Referer and custom headers); a User-Agent here
+    /// replaces the built-in one.
+    pub headers: Vec<(String, String)>,
 }
 
 /// The asset tools' folder below the assets folder.
@@ -258,6 +261,11 @@ impl<'a> Downloader<'a> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::ACCEPT, reqwest::header::HeaderValue::from_static("*/*"));
         headers.insert(reqwest::header::ACCEPT_LANGUAGE, reqwest::header::HeaderValue::from_static("en-US,en;q=0.9,nl;q=0.8"));
+        for (name, value) in &options.headers {
+            let name = reqwest::header::HeaderName::from_bytes(name.as_bytes()).map_err(|_| error(format!("\"{name}\" is not a valid header name.")))?;
+            let value = reqwest::header::HeaderValue::from_str(value).map_err(|_| error(format!("The value of header {name} is not valid.")))?;
+            headers.insert(name, value);
+        }
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .default_headers(headers)

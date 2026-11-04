@@ -187,6 +187,28 @@ async fn every_download_lands_in_the_gamedata_layout() {
 }
 
 #[tokio::test]
+async fn effect_icons_from_app_asar_unpacked() {
+    // An app.asar whose bundle Electron keeps outside it, in app.asar.unpacked/client/generated/.
+    let root = tempfile::tempdir().unwrap();
+    let json = br#"{"files":{"client":{"files":{"generated":{"files":{"habbo-inventory-com.hab":{"size":10,"unpacked":true}}}}}}}"#;
+    let mut asar = 4u32.to_le_bytes().to_vec();
+    asar.extend_from_slice(&((json.len() + 8) as u32).to_le_bytes());
+    asar.extend_from_slice(&((json.len() + 4) as u32).to_le_bytes());
+    asar.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    asar.extend_from_slice(json);
+    let app = root.path().join("resources");
+    std::fs::create_dir_all(app.join("app.asar.unpacked/client/generated")).unwrap();
+    std::fs::write(app.join("app.asar"), &asar).unwrap();
+    // The unpacked "bundle" here is a folder-search hit by name; a real one is a .hab, an icon PNG is read as is.
+    std::fs::write(app.join("app.asar.unpacked/client/generated/fx_icon_9.png"), PNG).unwrap();
+    let options = Options { effect_icons_source: Some(app.join("app.asar").display().to_string()), ..Options::default() };
+    let log = |_: &str| {};
+    let downloader = Downloader::new(root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), options, &log, CancellationToken::new()).unwrap();
+    assert_eq!(downloader.run(Asset::EffectIcons).await.unwrap(), "1 effect icons written, 0 already up to date");
+    assert!(root.path().join("gamedata/c_images/fx_icons/fx_icon_9.png").is_file());
+}
+
+#[tokio::test]
 async fn a_stopped_run_stops() {
     let base = serve(fake_habbo()).await;
     let mut urls = Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]);

@@ -2214,5 +2214,7 @@
   "fx_icon_<type> for the avatar editor, from the Habbo Classic app": "fx_icon_<type> para o editor de avatar, do app Habbo Classic",
   "{count} files here, all on the server. Download more with Get Assets and sync again.": "{count} arquivos aqui, todos no servidor. Baixe mais com o Get Assets e sincronize de novo.",
   "Done": "Concluído",
-  "Clears the result and the log, so you can start over.": "Limpa o resultado e o log, para você começar de novo."
+  "Clears the result and the log, so you can start over.": "Limpa o resultado e o log, para você começar de novo.",
+  "Habbo has no download link for the effect icons: they are in {bundle}, inside the Habbo Classic app's resources/app.asar. Choose that app.asar.": "O Habbo não tem link de download para os ícones de efeitos: eles ficam em {bundle}, dentro de resources/app.asar do app Habbo Classic. Escolha esse app.asar.",
+  "The app.asar of the Habbo Classic app": "O app.asar do app Habbo Classic"
 }

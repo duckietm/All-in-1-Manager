@@ -2214,5 +2214,7 @@
   "fx_icon_<type> for the avatar editor, from the Habbo Classic app": "fx_icon_<type> avatar-editoria varten, Habbo Classic -sovelluksesta",
   "{count} files here, all on the server. Download more with Get Assets and sync again.": "{count} tiedostoa täällä, kaikki palvelimella. Lataa lisää Get Assetsilla ja synkronoi uudelleen.",
   "Done": "Valmis",
-  "Clears the result and the log, so you can start over.": "Tyhjentää tuloksen ja lokin, jotta voit aloittaa alusta."
+  "Clears the result and the log, so you can start over.": "Tyhjentää tuloksen ja lokin, jotta voit aloittaa alusta.",
+  "Habbo has no download link for the effect icons: they are in {bundle}, inside the Habbo Classic app's resources/app.asar. Choose that app.asar.": "Habbolla ei ole latauslinkkiä efektikuvakkeille: ne ovat tiedostossa {bundle}, Habbo Classic -sovelluksen resources/app.asar-tiedoston sisällä. Valitse se app.asar.",
+  "The app.asar of the Habbo Classic app": "Habbo Classic -sovelluksen app.asar"
 }

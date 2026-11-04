@@ -637,7 +637,7 @@ impl<'a> Downloader<'a> {
         }
         if icons.is_empty() {
             return Err(error(format!(
-                "No effect icons found. Choose HabboClassicWin.zip, its resources/app.asar, {} or a folder of fx_icon_<type>.png files (or put one in {}).",
+                "No effect icons found. Choose the app.asar of the Habbo Classic app (its resources/app.asar, with {} inside), or put it in {}.",
                 hab::INVENTORY_BUNDLE,
                 default.display()
             )));
@@ -661,8 +661,22 @@ fn read_icon_source(path: &Path, icons: &mut BTreeMap<u32, Vec<u8>>) -> Result<(
     if path.is_file() {
         let data = std::fs::read(path).map_err(|e| error(format!("{}: {e}", path.display())))?;
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        for (kind, png) in hab::icons_from(&name, &data)? {
-            icons.entry(kind).or_insert(png);
+        match hab::icons_from(&name, &data) {
+            Ok(found) => {
+                for (kind, png) in found {
+                    icons.entry(kind).or_insert(png);
+                }
+            }
+            Err(e) => {
+                // Electron keeps some files outside the archive, in app.asar.unpacked next to it.
+                let mut unpacked = path.as_os_str().to_owned();
+                unpacked.push(".unpacked");
+                let unpacked = PathBuf::from(unpacked);
+                if !(name.to_lowercase().ends_with(".asar") && unpacked.is_dir()) {
+                    return Err(e);
+                }
+                read_icon_source(&unpacked, icons)?;
+            }
         }
         return Ok(());
     }

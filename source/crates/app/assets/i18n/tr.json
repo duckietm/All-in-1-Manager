@@ -2214,5 +2214,7 @@
   "fx_icon_<type> for the avatar editor, from the Habbo Classic app": "Avatar düzenleyici için fx_icon_<type>, Habbo Classic uygulamasından",
   "{count} files here, all on the server. Download more with Get Assets and sync again.": "Burada {count} dosya var, hepsi sunucuda. Get Assets ile daha fazlasını indir ve yeniden eşitle.",
   "Done": "Tamam",
-  "Clears the result and the log, so you can start over.": "Sonucu ve günlüğü temizler, böylece baştan başlayabilirsin."
+  "Clears the result and the log, so you can start over.": "Sonucu ve günlüğü temizler, böylece baştan başlayabilirsin.",
+  "Habbo has no download link for the effect icons: they are in {bundle}, inside the Habbo Classic app's resources/app.asar. Choose that app.asar.": "Habbo'da efekt simgeleri için indirme bağlantısı yok: Habbo Classic uygulamasının resources/app.asar dosyasındaki {bundle} içindeler. O app.asar dosyasını seç.",
+  "The app.asar of the Habbo Classic app": "Habbo Classic uygulamasının app.asar dosyası"
 }

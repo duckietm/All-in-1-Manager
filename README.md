@@ -1125,9 +1125,8 @@ Pick the hotel (its language goes into the furnidata, productdata and texts), ti
 | Effect icons | `c_images/fx_icons` |
 
 Habbo has no download link for the effect icons (`fx_icon_<type>` for the avatar editor): they are inside the Habbo
-Classic app, at `HabboClassicWin.zip` → `resources/app.asar` → `habbo-inventory-com.hab`. Choose the zip, the
-`app.asar`, the `.hab` or a folder of `fx_icon_*.png` files (or paste a link to one of them); **Download all** takes
-them along when a source is set. **Clothes: make every clothing set wearable** turns off `sellable` in
+Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choose that `app.asar` (choosing it ticks
+**Effect icons**); **Download all** takes them along when it is set. **Clothes: make every clothing set wearable** turns off `sellable` in
 FigureData.json, the converter's "disable all sellable" question. The `.hab` files are saved as Habbo serves them
 (the converter's optional WebP repacking of their sheets is not part of this yet).
 

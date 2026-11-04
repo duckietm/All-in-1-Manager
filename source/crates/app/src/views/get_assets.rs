@@ -171,6 +171,8 @@ impl GetAssetsView {
         }
         if let Some(source) = source {
             self.icon_source = source.display().to_string();
+            // Choosing the app.asar means: get the effect icons.
+            self.selected.insert(Asset::EffectIcons);
         }
     }
 
@@ -189,8 +191,8 @@ impl GetAssetsView {
         let state = self.state.clone();
         shared.spawn(async move {
             let dialog = rfd::AsyncFileDialog::new()
-                .set_title(t("HabboClassicWin.zip, app.asar or habbo-inventory-com.hab"))
-                .add_filter(t("Habbo Classic app"), &["zip", "asar", "hab"]);
+                .set_title(t("The app.asar of the Habbo Classic app"))
+                .add_filter("app.asar", &["asar"]);
             if let Some(file) = dialog.pick_file().await {
                 state.lock().unwrap().picked_source = Some(file.path().to_path_buf());
             }
@@ -297,11 +299,12 @@ impl View for GetAssetsView {
                 ui.checkbox(&mut self.not_sellable, t("Clothes: make every clothing set wearable (sellable off in FigureData.json)"));
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(t("Effect icons from:")).size(12.5));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.icon_source)
-                            .hint_text(t("HabboClassicWin.zip, app.asar, the .hab, a folder or a link"))
-                            .desired_width(360.0),
+                    let typed = ui.add(
+                        egui::TextEdit::singleline(&mut self.icon_source).hint_text(t("The app.asar of the Habbo Classic app")).desired_width(360.0),
                     );
+                    if typed.changed() && !self.icon_source.trim().is_empty() {
+                        self.selected.insert(Asset::EffectIcons);
+                    }
                     if ui.add(widgets::secondary_button(t("Choose ..."))).clicked() {
                         self.pick_source(shared);
                     }
@@ -310,7 +313,7 @@ impl View for GetAssetsView {
                     ui,
                     palette,
                     &tf(
-                        "Habbo has no download link for the effect icons: they are inside the Habbo Classic app (HabboClassicWin.zip → resources/app.asar → {bundle}).",
+                        "Habbo has no download link for the effect icons: they are in {bundle}, inside the Habbo Classic app's resources/app.asar. Choose that app.asar.",
                         &[("bundle", aio_remote::habbo_assets::hab::INVENTORY_BUNDLE)],
                     ),
                     11.5,

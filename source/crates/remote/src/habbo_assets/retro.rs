@@ -29,6 +29,11 @@ pub fn folder_url(url: &str) -> String {
     url.trim_end_matches('/').to_string()
 }
 
+/// XML (a Flash retro's or Habbo's furnidata, figuredata or figuremap) rather than JSON.
+fn is_xml(text: &str) -> bool {
+    text.trim_start_matches('\u{feff}').trim_start().starts_with('<')
+}
+
 /// The URL with a timestamp, so a cache in front of the retro gives the newest file (as the converter does).
 fn fresh(url: &str) -> String {
     let separator = if url.contains('?') { '&' } else { '?' };
@@ -69,18 +74,20 @@ impl BundleCounts {
 }
 
 impl Downloader<'_> {
-    /// Bundles named `names` from `base`/<name>.<hab|nitro|swf> into gamedata/`folder`/<name>.hab. The format that
-    /// worked last is tried first, so a retro that serves one format costs one request per bundle.
-    async fn fetch_bundles(&self, what: &str, base: &str, folder: &str, names: Vec<String>, kind: AssetKind) -> Result<BundleCounts> {
+    /// Bundles named `names` from `base`/<name>.<hab|nitro|swf> into gamedata/`folder`/<name>.hab. With a revision
+    /// (from a furnidata XML) `base`/<revision>/<name>.<ext> is tried too, as Habbo's hof_furni serves them. The format
+    /// and the path that worked last are tried first, so a retro costs one request per bundle.
+    async fn fetch_bundles(&self, what: &str, base: &str, folder: &str, names: Vec<(String, Option<i64>)>, kind: AssetKind) -> Result<BundleCounts> {
         let result = BundleCounts::default();
         let preferred = AtomicU8::new(0);
+        let plain_first = std::sync::atomic::AtomicBool::new(false);
         let total = names.len();
         let done = AtomicUsize::new(0);
         (self.log)(&format!("  {total} {what} to check"));
         let source = self.root.join("source").join(folder);
         stream::iter(names)
-            .map(|name| {
-                let (result, preferred, done, source) = (&result, &preferred, &done, &source);
+            .map(|(name, revision)| {
+                let (result, preferred, plain_first, done, source) = (&result, &preferred, &plain_first, &done, &source);
                 async move {
                     if self.cancel.is_cancelled() {
                         return;
@@ -92,12 +99,30 @@ impl Downloader<'_> {
                     } else {
                         let first = preferred.load(Ordering::Relaxed) as usize;
                         let order = [ORDER[first], ORDER[(first + 1) % 3], ORDER[(first + 2) % 3]];
+                        let mut stems = vec![name.clone()];
+                        if let Some(revision) = revision {
+                            let with_revision = format!("{revision}/{name}");
+                            if plain_first.load(Ordering::Relaxed) {
+                                stems.push(with_revision);
+                            } else {
+                                stems.insert(0, with_revision);
+                            }
+                        }
                         let mut found = false;
-                        for format in order {
-                            let url = format!("{base}/{name}.{}", format.extension());
-                            let Ok(Some(data)) = self.bytes(&url).await else { continue };
-                            if aio_assets::detect(&data) != Some(format) {
-                                continue;
+                        'formats: for format in order {
+                            let mut hit = None;
+                            for stem in &stems {
+                                let url = format!("{base}/{stem}.{}", format.extension());
+                                if let Ok(Some(data)) = self.bytes(&url).await {
+                                    if aio_assets::detect(&data) == Some(format) {
+                                        hit = Some((stem.contains('/'), data));
+                                        break;
+                                    }
+                                }
+                            }
+                            let Some((used_revision, data)) = hit else { continue 'formats };
+                            if revision.is_some() {
+                                plain_first.store(!used_revision, Ordering::Relaxed);
                             }
                             found = true;
                             let index = ORDER.iter().position(|f| *f == format).unwrap_or(0);
@@ -157,35 +182,63 @@ impl Downloader<'_> {
             return Err(error("Fill in FurnitureData.json and the furniture folder of the retro first."));
         }
         let text = self.text(&fresh(&urls.furnidata)).await?;
-        let json: Value = serde_json::from_str(&text).map_err(|e| error(format!("{} is not JSON: {e}", urls.furnidata.trim())))?;
-        let classnames: Vec<String> = ["roomitemtypes", "wallitemtypes"]
-            .iter()
-            .flat_map(|section| json[section]["furnitype"].as_array().cloned().unwrap_or_default())
-            .filter_map(|f| f["classname"].as_str().map(str::to_string))
-            .filter(|c| !c.is_empty())
-            .collect();
-        if classnames.is_empty() {
+        // A Nitro retro serves FurnitureData.json; a Flash one (and Habbo) the furnidata XML, with a revision per furni.
+        let (json, entries, xml): (Value, Vec<(String, Option<i64>)>, bool) = if is_xml(&text) {
+            let json = crate::furniture_language::xml_to_json(&text)?;
+            let entries = convert::furnidata_entries(&text)?.into_iter().map(|(c, r)| (c, (r > 0).then_some(r))).collect();
+            (json, entries, true)
+        } else {
+            let json: Value = serde_json::from_str(&text).map_err(|e| error(format!("{} is neither JSON nor furnidata XML: {e}", urls.furnidata.trim())))?;
+            let entries = ["roomitemtypes", "wallitemtypes"]
+                .iter()
+                .flat_map(|section| json[section]["furnitype"].as_array().cloned().unwrap_or_default())
+                .filter_map(|f| f["classname"].as_str().map(|c| (c.to_string(), f["revision"].as_i64().filter(|r| *r > 0))))
+                .collect();
+            (json, entries, false)
+        };
+        let entries: Vec<(String, Option<i64>)> = entries.into_iter().filter(|(c, _)| !c.is_empty()).collect();
+        if entries.is_empty() {
             return Err(error(format!("{} lists no furniture (roomitemtypes / wallitemtypes).", urls.furnidata.trim())));
         }
-        self.save_raw("config/FurnitureData.json", &text)?;
-        let mut libraries = BTreeSet::new();
-        let names: Vec<String> = classnames
-            .iter()
-            .map(|c| c.split('*').next().unwrap_or("").to_string())
-            .filter(|n| convert::safe_name(n) && libraries.insert(n.to_lowercase()))
-            .collect();
+        if xml {
+            let pretty = serde_json::to_string_pretty(&json).map_err(|e| error(e.to_string()))?;
+            self.save_raw("config/FurnitureData.json", &pretty)?;
+        } else {
+            self.save_raw("config/FurnitureData.json", &text)?;
+        }
+        let classnames: Vec<String> = entries.iter().map(|(c, _)| c.clone()).collect();
+        // One library per furni (its colours share it), at the highest revision.
+        let mut libraries: std::collections::BTreeMap<String, (String, Option<i64>)> = std::collections::BTreeMap::new();
+        for (classname, revision) in &entries {
+            let name = classname.split('*').next().unwrap_or("").to_string();
+            if !convert::safe_name(&name) {
+                continue;
+            }
+            let slot = libraries.entry(name.to_lowercase()).or_insert((name, *revision));
+            slot.1 = slot.1.max(*revision);
+        }
+        let names: Vec<(String, Option<i64>)> = libraries.into_values().collect();
         let bundles = self.fetch_bundles("furniture", &folder_url(&urls.furniture), "furniture", names, AssetKind::Furniture).await?;
-        let mut summary = format!("FurnitureData.json with {} furniture; {}", classnames.len(), bundles.summary("furniture .hab"));
+        let from = if xml { " (from the furnidata XML)" } else { "" };
+        let mut summary = format!("FurnitureData.json{from} with {} furniture; {}", classnames.len(), bundles.summary("furniture .hab"));
         if !urls.furniture_icons.trim().is_empty() {
             let base = folder_url(&urls.furniture_icons);
             let mut seen = BTreeSet::new();
-            let items: Vec<Item> = classnames
+            let icons: Vec<(String, Option<i64>)> = entries
                 .iter()
-                .map(|c| c.replacen('*', "_", 1))
-                .filter(|icon| convert::safe_name(icon) && seen.insert(icon.clone()))
-                .map(|icon| Item { url: format!("{base}/{icon}_icon.png"), path: format!("icons/{icon}_icon.png") })
+                .map(|(c, r)| (c.replacen('*', "_", 1), *r))
+                .filter(|(icon, _)| convert::safe_name(icon) && seen.insert(icon.clone()))
                 .collect();
-            summary += &format!("; {}", self.fetch_many("furniture icons", items, Kind::Png).await?.summary("icons"));
+            let item = |icon: &str, url: String| Item { url, path: format!("icons/{icon}_icon.png") };
+            // With revisions (hof_furni) the icon is at <revision>/<icon>_icon.png; the plain folder is tried for the rest.
+            let with_revision: Vec<Item> =
+                icons.iter().filter_map(|(icon, r)| r.map(|r| item(icon, format!("{base}/{r}/{icon}_icon.png")))).collect();
+            let found = if with_revision.is_empty() { 0 } else { self.fetch_many("furniture icons", with_revision, Kind::Png).await?.get().0 };
+            let plain: Vec<Item> = icons.iter().map(|(icon, _)| item(icon, format!("{base}/{icon}_icon.png"))).collect();
+            let counts = self.fetch_many("furniture icons", plain, Kind::Png).await?;
+            counts.new.fetch_add(found, Ordering::Relaxed);
+            counts.existing.fetch_sub(found.min(counts.existing.load(Ordering::Relaxed)), Ordering::Relaxed);
+            summary += &format!("; {}", counts.summary("icons"));
         }
         Ok(summary)
     }
@@ -195,8 +248,15 @@ impl Downloader<'_> {
         if urls.figuremap.trim().is_empty() || urls.clothes.trim().is_empty() {
             return Err(error("Fill in FigureMap.json and the clothes folder of the retro first."));
         }
-        let map = self.text(&fresh(&urls.figuremap)).await?;
-        let json: Value = serde_json::from_str(&map).map_err(|e| error(format!("{} is not JSON: {e}", urls.figuremap.trim())))?;
+        let mut map = self.text(&fresh(&urls.figuremap)).await?;
+        // A Flash retro serves figuremap.xml and figuredata.xml: they become the JSON Octane loads.
+        let json: Value = if is_xml(&map) {
+            let (json, _) = convert::figuremap(&map)?;
+            map = serde_json::to_string_pretty(&json).map_err(|e| error(e.to_string()))?;
+            json
+        } else {
+            serde_json::from_str(&map).map_err(|e| error(format!("{} is neither JSON nor figuremap XML: {e}", urls.figuremap.trim())))?
+        };
         let mut seen = BTreeSet::new();
         let names: Vec<String> = json["libraries"]
             .as_array()
@@ -212,11 +272,16 @@ impl Downloader<'_> {
         self.save_raw("config/FigureMap.json", &map)?;
         let mut summary = String::new();
         if !urls.figuredata.trim().is_empty() {
-            let data = self.text(&fresh(&urls.figuredata)).await?;
-            serde_json::from_str::<Value>(&data).map_err(|e| error(format!("{} is not JSON: {e}", urls.figuredata.trim())))?;
+            let mut data = self.text(&fresh(&urls.figuredata)).await?;
+            if is_xml(&data) {
+                data = serde_json::to_string_pretty(&convert::figuredata(&data, false)?).map_err(|e| error(e.to_string()))?;
+            } else {
+                serde_json::from_str::<Value>(&data).map_err(|e| error(format!("{} is neither JSON nor figuredata XML: {e}", urls.figuredata.trim())))?;
+            }
             self.save_raw("config/FigureData.json", &data)?;
             summary += "FigureData.json and ";
         }
+        let names = names.into_iter().map(|n| (n, None)).collect();
         let bundles = self.fetch_bundles("clothes", &folder_url(&urls.clothes), "clothes", names, AssetKind::Clothes).await?;
         Ok(format!("{summary}FigureMap.json; {}", bundles.summary("clothes .hab")))
     }

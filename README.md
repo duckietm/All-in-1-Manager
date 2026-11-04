@@ -1141,8 +1141,11 @@ name and **Save**. Every retro is a **profile**: switch between them with one cl
 empty one, **Delete profile** removes one (its downloaded folder stays). Profiles are kept in Settings, so they are
 there next time (also saved when you press **Download**).
 
-- **Custom furniture**: the retro's FurnitureData.json, every furniture bundle and the icon of every colour.
-- **Custom clothes**: FigureData.json, FigureMap.json and every clothing bundle (not hh_human_fx and hh_pets).
+- **Custom furniture**: the retro's FurnitureData.json, every furniture bundle and the icon of every colour. An old
+  Flash retro's (or Habbo's) furnidata XML works too: it is saved as FurnitureData.json, and its revision per furni
+  is used for hof_furni-style folders (`<folder>/<revision>/<name>.swf`, then `<folder>/<name>.swf`).
+- **Custom clothes**: FigureData.json, FigureMap.json and every clothing bundle (not hh_human_fx and hh_pets);
+  figuredata and figuremap XML are converted to JSON.
 
 Each profile downloads into `Habbo_Assets/custom/<name>/gamedata` (laid out like gamedata; characters a folder name
 cannot have become `_`), which Deploy Assets does **not** copy: upload

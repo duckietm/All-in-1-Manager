@@ -257,6 +257,51 @@ async fn a_retro_in_any_format_ends_up_as_hab() {
 }
 
 #[tokio::test]
+async fn a_flash_retro_with_furnidata_xml() {
+    let files = vec![("x.json".to_string(), b"{}".to_vec())];
+    let hab = aio_assets::hab::write("x", &files);
+    let mut f: HashMap<String, Vec<u8>> = HashMap::new();
+    f.insert(
+        "/gamedata/furnidata_xml/1".into(),
+        br#"<?xml version="1.0" encoding="UTF-8"?><furnidata><roomitemtypes><furnitype id="13" classname="shelves_norja"><revision>61856</revision><name>Boekenkast</name></furnitype><furnitype id="14" classname="shelves_norja*2"><revision>61856</revision><name>Boekenkast</name></furnitype></roomitemtypes><wallitemtypes><furnitype id="20" classname="poster"><revision>0</revision><name>Poster</name></furnitype></wallitemtypes></furnidata>"#.to_vec(),
+    );
+    f.insert("/dcr/hof_furni/61856/shelves_norja.hab".into(), hab.clone());
+    f.insert("/dcr/hof_furni/61856/shelves_norja_2_icon.png".into(), PNG.to_vec());
+    f.insert("/dcr/hof_furni/poster.hab".into(), hab.clone());
+    f.insert("/dcr/hof_furni/poster_icon.png".into(), PNG.to_vec());
+    f.insert("/gordon/REL/figuremap.xml".into(), br#"<map><lib id="hh_shirt" revision="3"><part id="1" type="ch"/></lib></map>"#.to_vec());
+    f.insert("/gamedata/figuredata/1".into(), br#"<figuredata><colors/><sets/></figuredata>"#.to_vec());
+    f.insert("/gordon/REL/hh_shirt.hab".into(), hab.clone());
+    let base = serve(f).await;
+    let urls = aio_remote::habbo_assets::retro::RetroUrls {
+        furnidata: format!("{base}/gamedata/furnidata_xml/1"),
+        furniture: format!("{base}/dcr/hof_furni"),
+        furniture_icons: format!("{base}/dcr/hof_furni"),
+        clothes: format!("{base}/gordon/REL"),
+        figuredata: format!("{base}/gamedata/figuredata/1"),
+        figuremap: format!("{base}/gordon/REL/figuremap.xml"),
+    };
+    let root = tempfile::tempdir().unwrap();
+    let log = |_: &str| {};
+    let downloader = Downloader::new(root.path(), Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]), Options::default(), &log, CancellationToken::new()).unwrap();
+    let furniture = downloader.retro_furniture(&urls).await.unwrap();
+    assert!(furniture.starts_with("FurnitureData.json (from the furnidata XML) with 3 furniture; 2 new furniture .hab"), "{furniture}");
+    assert!(furniture.ends_with("2 new icons, 0 already there, 1 not on Habbo"), "{furniture}");
+    let g = root.path().join("gamedata");
+    let data: serde_json::Value = serde_json::from_slice(&std::fs::read(g.join("config/FurnitureData.json")).unwrap()).unwrap();
+    assert_eq!(data["roomitemtypes"]["furnitype"][0]["classname"], "shelves_norja", "the XML is saved as FurnitureData.json");
+    assert!(g.join("furniture/shelves_norja.hab").is_file() && g.join("furniture/poster.hab").is_file());
+    assert!(g.join("icons/shelves_norja_2_icon.png").is_file() && g.join("icons/poster_icon.png").is_file());
+
+    let clothes = downloader.retro_clothes(&urls).await.unwrap();
+    assert!(clothes.starts_with("FigureData.json and FigureMap.json; 1 new clothes .hab"), "{clothes}");
+    let map: serde_json::Value = serde_json::from_slice(&std::fs::read(g.join("config/FigureMap.json")).unwrap()).unwrap();
+    assert_eq!(map["libraries"][0]["id"], "hh_shirt", "figuremap.xml saved as FigureMap.json");
+    let figure: serde_json::Value = serde_json::from_slice(&std::fs::read(g.join("config/FigureData.json")).unwrap()).unwrap();
+    assert!(figure.get("palettes").is_some(), "figuredata XML saved as FigureData.json");
+}
+
+#[tokio::test]
 async fn a_stopped_run_stops() {
     let base = serve(fake_habbo()).await;
     let mut urls = Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]);

@@ -958,3 +958,42 @@ mod tests {
         assert!(ASSETS.iter().all(|(folder, contents)| !folder.is_empty() && !contents.is_empty()));
     }
 }
+
+/// Import Assets' finish page: where the furniture went, how to move it, and the way back.
+pub fn import_assets(imported: super::import_assets::Imported, steps: Steps) -> Box<dyn FinishPage> {
+    Page::boxed(move |ui, palette| {
+        let ok = clean(&steps);
+        let heading = match (&imported.result, ok) {
+            (Some(_), true) => tf("{count} furniture imported", &[("count", &imported.furniture.to_string())]),
+            (None, true) => t("Nothing was imported.").into(),
+            (_, false) => t("The furniture was not imported").into(),
+        };
+        let message = match (&imported.result, ok) {
+            (Some(r), true) => tf(
+                "{items} catalogue items on the page {caption} (id {id}). Players see it after they reload the hotel.",
+                &[("items", &imported.catalogue_items.to_string()), ("caption", &imported.caption), ("id", &r.page_id.to_string())],
+            ),
+            (None, true) => t("Every downloaded Habbo furniture was in the database already.").into(),
+            (_, false) => t(RUN_AGAIN).to_string(),
+        };
+        widgets::result_banner(ui, palette, if ok { ResultKind::Success } else { ResultKind::Warning }, &heading, &message);
+        step_list(ui, palette, &steps);
+        let Some(r) = &imported.result else { return };
+        let page = r.page_id.to_string();
+        section(ui, t("1. Put the page where you want it"), |ui| {
+            widgets::text(ui, t("Under another page (the id of that page as parent_id), and visible:"), 13.0);
+            copy_box(ui, palette, &format!("UPDATE `catalog_pages` SET `parent_id` = <parent id>, `visible` = '1' WHERE `id` = {page};"));
+            widgets::text(ui, t("Or move its furniture to a page you have, and the empty page away:"), 13.0);
+            copy_box(ui, palette, &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` = {page};\nDELETE FROM `catalog_pages` WHERE `id` = {page};"));
+            widgets::text(ui, t("Run it in the SQL Editor, then restart the emulator (Tools) or reload the catalogue in the hotel."), 13.0);
+        });
+        section(ui, t("2. As it was before"), |ui| {
+            widgets::text(ui, t("The database before the import (Tools → Import full database puts it back):"), 13.0);
+            code(ui, palette, &r.safety_backup);
+            if let Some(sql) = &imported.local_sql {
+                widgets::text(ui, t("The SQL that ran, on this computer:"), 13.0);
+                code(ui, palette, &sql.display().to_string());
+            }
+        });
+    })
+}

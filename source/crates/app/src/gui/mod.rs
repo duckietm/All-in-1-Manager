@@ -48,6 +48,7 @@ pub enum Page {
     RemoveCrowdSec,
     DefaultCatalog,
     DeployAssets,
+    ImportAssets,
     GetAssets,
     RetroAssets,
     AssetTools,
@@ -148,6 +149,7 @@ pub(crate) struct Wizards {
     pub(crate) remove_crowdsec: Wizard,
     pub(crate) default_catalog: Wizard,
     pub(crate) deploy: Wizard,
+    pub(crate) import_assets: Wizard,
 }
 
 impl Wizards {
@@ -166,11 +168,12 @@ impl Wizards {
             Page::RemoveCrowdSec => &mut self.remove_crowdsec,
             Page::DefaultCatalog => &mut self.default_catalog,
             Page::DeployAssets => &mut self.deploy,
+            Page::ImportAssets => &mut self.import_assets,
             _ => return None,
         })
     }
 
-    fn all(&self) -> [&Wizard; 13] {
+    fn all(&self) -> [&Wizard; 14] {
         [
             &self.install,
             &self.atom,
@@ -185,6 +188,7 @@ impl Wizards {
             &self.remove_crowdsec,
             &self.default_catalog,
             &self.deploy,
+            &self.import_assets,
         ]
     }
 }
@@ -481,6 +485,10 @@ impl App {
                 t("Deploy Assets").into(),
                 tf("Addon: copy the hotel's assets, the client's UI texts and the emulator's images to {gamedata} on the server.", &[("gamedata", &gamedata)]),
             ),
+            Page::ImportAssets => (
+                t("Import Assets").into(),
+                t("The Habbo furniture the hotel database lacks into items_base and the catalogue, with an overview first.").into(),
+            ),
             Page::Debug => (
                 "Debug".into(),
                 if session.is_none() {
@@ -589,6 +597,7 @@ impl App {
                                 (t("Nitro retro"), Icon::Cube, Page::RetroAssets),
                             (t("Asset tools"), Icon::Swap, Page::AssetTools),
                                 (t("Deploy Assets"), Icon::ArrowUp, Page::DeployAssets),
+                                (t("Import Assets"), Icon::Database, Page::ImportAssets),
                                 ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
                             ],
                         ),
@@ -712,6 +721,7 @@ impl App {
             Page::RemoveCrowdSec => &self.wizards.remove_crowdsec,
             Page::DefaultCatalog => &self.wizards.default_catalog,
             Page::DeployAssets => &self.wizards.deploy,
+            Page::ImportAssets => &self.wizards.import_assets,
             _ => return None,
         };
         Some(wizard.status()).filter(|s| s != t("Ready."))

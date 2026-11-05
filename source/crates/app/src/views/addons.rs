@@ -71,6 +71,14 @@ pub fn asset_entries() -> Vec<Entry> {
             Page::DeployAssets,
         ),
         entry(
+            t("Import Assets"),
+            t("The Habbo furniture the database lacks into items_base and the catalogue, with an overview first.").into(),
+            Icon::Database,
+            "#D97706",
+            Scene::Parquet,
+            Page::ImportAssets,
+        ),
+        entry(
             "Asset Explorer",
             crate::i18n::tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]),
             Icon::FolderSync,

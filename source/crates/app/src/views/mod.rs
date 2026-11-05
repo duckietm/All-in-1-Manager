@@ -12,6 +12,7 @@ pub mod crowdsec;
 pub mod custom_cms;
 pub mod dashboard;
 pub mod default_catalog;
+pub mod import_assets;
 pub mod debug;
 pub mod deploy;
 pub mod dev_tools;
@@ -83,5 +84,6 @@ pub(crate) fn wizards(shared: &Shared) -> crate::gui::Wizards {
         remove_crowdsec: remove_crowdsec::wizard(shared),
         default_catalog: default_catalog::wizard(shared),
         deploy: deploy::wizard(shared),
+        import_assets: import_assets::wizard(shared),
     }
 }

@@ -22,6 +22,7 @@ pub mod emulator_monitor;
 pub mod external_texts;
 pub mod epicnext;
 pub mod fail2ban;
+pub mod furni_import;
 pub mod furniture_language;
 pub mod gamedata_files;
 pub mod git_clone;

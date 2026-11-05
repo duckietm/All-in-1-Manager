@@ -88,6 +88,14 @@ const CONNECTION_HELP: &str = n(
     "Off (default): the built-in downloader. On: every file is downloaded with curl on this computer; Cloudflare's bot check often lets curl through where the built-in downloader is blocked. At once: how many files are downloaded at the same time; fewer is slower but less likely to be blocked.",
 );
 
+/// A placeholder of a field the user can fill in: italic, 80 % the text colour and 20 % grey (black and grey in the
+/// light theme), so an example reads as an example and not as something filled in.
+fn example(text: impl Into<String>, palette: &Palette) -> RichText {
+    let (a, b) = (palette.text, palette.subtle);
+    let mix = |x: u8, y: u8| ((x as f32) * 0.8 + (y as f32) * 0.2).round() as u8;
+    RichText::new(text).italics().color(egui::Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b())))
+}
+
 fn retro_field(urls: &mut RetroUrls, index: usize) -> &mut String {
     match index {
         0 => &mut urls.furnidata,
@@ -430,7 +438,7 @@ impl GetAssetsView {
                     });
                     let width = (ui.available_width() - 4.0).max(240.0);
                     let hint = self.edit.urls.host().unwrap_or_else(|| t("For example the hotel's name").into());
-                    ui.add(egui::TextEdit::singleline(&mut self.edit.name).hint_text(hint).desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                    ui.add(egui::TextEdit::singleline(&mut self.edit.name).hint_text(example(hint, palette)).desired_width(width).margin(egui::vec2(8.0, 6.0)));
                     ui.end_row();
                     ui.vertical(|ui| {
                         ui.set_min_width(230.0);
@@ -453,7 +461,7 @@ impl GetAssetsView {
                     // The examples are hints only: an empty field means the default.
                     ui.vertical(|ui| {
                         let width = (ui.available_width() - 4.0).max(240.0);
-                        ui.add(egui::TextEdit::singleline(&mut self.edit.urls.referer).hint_text("https://example.com/").desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                        ui.add(egui::TextEdit::singleline(&mut self.edit.urls.referer).hint_text(example("https://example.com/", palette)).desired_width(width).margin(egui::vec2(8.0, 6.0)));
                         ui.label(RichText::new(t(REFERER_HELP)).size(11.5).color(palette.muted));
                     });
                     ui.end_row();
@@ -467,7 +475,7 @@ impl GetAssetsView {
                         let width = (ui.available_width() - 4.0).max(240.0);
                         ui.add(
                             egui::TextEdit::multiline(&mut self.edit.urls.headers)
-                                .hint_text(format!("User-Agent:{}\nOrigin:https://example.com/", furniture_language::USER_AGENT))
+                                .hint_text(example(format!("User-Agent:{}\nOrigin:https://example.com/", furniture_language::USER_AGENT), palette))
                                 .desired_rows(4)
                                 .desired_width(width)
                                 .margin(egui::vec2(8.0, 6.0)),
@@ -508,7 +516,7 @@ impl GetAssetsView {
                         ui.horizontal(|ui| {
                             let width = (ui.available_width() - if json { 104.0 } else { 4.0 }).max(200.0);
                             let hint = if json { t("https:// or a file on this computer") } else { "https://" };
-                            ui.add(egui::TextEdit::singleline(retro_field(&mut self.edit.urls, i)).hint_text(hint).desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                            ui.add(egui::TextEdit::singleline(retro_field(&mut self.edit.urls, i)).hint_text(example(hint, palette)).desired_width(width).margin(egui::vec2(8.0, 6.0)));
                             if json && ui.add(widgets::secondary_button(t("Choose ..."))).on_hover_text(t("A JSON or XML file on this computer, saved from the browser for example.")).clicked() {
                                 let state = self.state.clone();
                                 shared.spawn(async move {

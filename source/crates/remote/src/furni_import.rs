@@ -315,7 +315,8 @@ pub fn name_group(classname: &str) -> String {
 pub fn pages(names: &[&str], per_page: usize) -> Vec<(String, Vec<usize>)> {
     let per_page = per_page.max(1);
     let mut order: Vec<usize> = (0..names.len()).collect();
-    order.sort_by_key(|&i| (name_group(names[i]), names[i].to_lowercase()));
+    // Each key made once: 26 000 names sorted with keys made per comparison took long enough to notice.
+    order.sort_by_cached_key(|&i| (name_group(names[i]), names[i].to_lowercase()));
     let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
     for i in order {
         let group = name_group(names[i]);

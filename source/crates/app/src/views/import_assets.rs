@@ -159,6 +159,112 @@ struct Form {
     problem: Option<String>,
     /// The merged FurnitureData.json to the server with the import.
     put_furnidata: bool,
+    /// The merge order shown for the chosen profile ("Habbo → one → two (new)"), worked out when it is chosen.
+    merge_order: String,
+    /// Get Assets' folder, read from Settings when the page checks (not on every frame).
+    assets: PathBuf,
+    /// Counts up whenever `plan` changes, so the cached lists below know to make themselves again.
+    version: u64,
+    /// The rows of the list shown, and the catalogue pages, made when what they show changes (the page is drawn
+    /// on every frame and mouse move; 26 000 rows each time made it slow).
+    rows: Option<(RowsKey, Arc<Vec<Vec<String>>>)>,
+    page_list: Option<(PagesKey, Arc<Vec<(String, usize)>>)>,
+}
+
+/// What the cached rows show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RowsKey {
+    version: u64,
+    list: List,
+    filter: String,
+    pages: PagesKey,
+}
+
+/// What the cached catalogue pages are made of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PagesKey {
+    version: u64,
+    per_page: String,
+    caption: String,
+    with_uncatalogued: bool,
+}
+
+impl Form {
+    fn set_plan(&mut self, plan: Option<Plan>) {
+        self.plan = plan;
+        self.version += 1;
+    }
+
+    fn pages_key(&self) -> PagesKey {
+        PagesKey { version: self.version, per_page: self.per_page.trim().into(), caption: self.caption.trim().into(), with_uncatalogued: self.with_uncatalogued }
+    }
+
+    /// The catalogue pages of the plan, made again only when they change.
+    fn pages(&mut self) -> Arc<Vec<(String, usize)>> {
+        let key = self.pages_key();
+        if let Some((have, pages)) = &self.page_list {
+            if *have == key {
+                return pages.clone();
+            }
+        }
+        let pages = match (&self.plan, per_page(&key.per_page)) {
+            (Some(plan), Ok(n)) => page_list(plan, &key.caption, key.with_uncatalogued, n),
+            _ => Vec::new(),
+        };
+        let pages = Arc::new(pages);
+        self.page_list = Some((key, pages.clone()));
+        pages
+    }
+
+    /// The rows of the list shown, filtered, made again only when they change.
+    fn rows(&mut self) -> Arc<Vec<Vec<String>>> {
+        let key = RowsKey { version: self.version, list: self.list, filter: self.filter.trim().to_lowercase(), pages: self.pages_key() };
+        if let Some((have, rows)) = &self.rows {
+            if *have == key {
+                return rows.clone();
+            }
+        }
+        let pages = self.pages();
+        let filter = key.filter.clone();
+        let matches = |name: &str| filter.is_empty() || name.to_lowercase().contains(&filter);
+        let names = |list: &[String]| -> Vec<Vec<String>> { list.iter().filter(|n| matches(n)).map(|n| vec![n.clone()]).collect() };
+        let rows = match (&self.plan, self.list, &self.prepared) {
+            (None, _, _) => Vec::new(),
+            (Some(plan), List::New, _) => plan
+                .new
+                .iter()
+                .filter(|f| matches(&f.classname))
+                .map(|f| {
+                    vec![
+                        f.classname.clone(),
+                        if f.kind == 'i' { t("wall").into() } else { t("floor").into() },
+                        size(f),
+                        f.modes.to_string(),
+                        allows(f),
+                        f.interaction_type.to_string(),
+                        f.sprite_id.map_or("–".into(), |s| s.to_string()),
+                        f.offer_id.to_string(),
+                    ]
+                })
+                .collect(),
+            (Some(plan), List::NoBundle, _) => names(&plan.no_bundle),
+            (Some(plan), List::Uncatalogued, _) => plan
+                .uncatalogued
+                .iter()
+                .filter(|u| matches(&u.name))
+                .map(|u| vec![u.name.clone(), u.id.to_string(), u.sprite_id.to_string(), u.offer_id.to_string()])
+                .collect(),
+            (Some(_), List::Duplicates, Some(p)) => names(&p.report().duplicates),
+            (Some(_), List::Already, Some(p)) => names(&p.report().already),
+            (Some(_), List::Renumbered, Some(p)) => p.report().renumbered.iter().filter(|r| matches(&r.0)).map(|(name, old, new)| vec![name.clone(), old.to_string(), new.to_string()]).collect(),
+            (Some(plan), List::Moved, _) => plan.moved.iter().filter(|m| matches(&m.name)).map(|m| vec![m.name.clone(), m.from.to_string(), m.to.to_string()]).collect(),
+            (Some(_), List::Pages, _) => pages.iter().filter(|(c, _)| matches(c)).map(|(caption, count)| vec![caption.clone(), count.to_string()]).collect(),
+            _ => Vec::new(),
+        };
+        let rows = Arc::new(rows);
+        self.rows = Some((key, rows.clone()));
+        rows
+    }
 }
 
 impl Form {
@@ -187,6 +293,11 @@ impl Form {
             preparing: false,
             problem: None,
             put_furnidata: true,
+            merge_order: String::new(),
+            assets: sources().2,
+            version: 0,
+            rows: None,
+            page_list: None,
         }
     }
 }
@@ -224,9 +335,15 @@ impl ImportAssetsStep {
         form.caption = format!("custom_{}_{}", RetroProfile { name: profile.clone(), ..RetroProfile::default() }.folder_name().to_lowercase().replace(' ', "_"), chrono::Local::now().format("%Y%m%d"));
         form.preparing = true;
         form.problem = None;
-        form.plan = None;
+        form.set_plan(None);
         form.prepared = None;
         form.list = List::New;
+        // The merge order, read once here rather than on every frame.
+        let state = load_state(&form.assets);
+        let steps: Vec<String> = std::iter::once("Habbo".to_string())
+            .chain(state.order_with(&profile).iter().map(|p| if state.profiles.contains(p) { p.clone() } else { format!("{p} ({})", t("new")) }))
+            .collect();
+        form.merge_order = steps.join(" → ");
         drop(form);
         let shared = self.form.clone();
         std::thread::spawn(move || {
@@ -237,7 +354,7 @@ impl ImportAssetsStep {
             if form.profile.as_deref() == Some(profile.as_str()) {
                 match result {
                     Ok(prepared) => {
-                        form.plan = Some(prepared.plan.clone());
+                        form.set_plan(Some(prepared.plan.clone()));
                         form.prepared = Some(Arc::new(prepared));
                     }
                     Err(problem) => form.problem = Some(problem),
@@ -339,12 +456,12 @@ async fn restart_emulator(server: &dyn Server, ui: &StepUi, log: &(dyn Fn(&str) 
 impl ImportAssetsStep {
     /// The profile buttons and the merge's result (custom furniture).
     fn custom_options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let (profiles, current, preparing, problem, prepared) = {
+        let (profiles, current, preparing, problem, prepared, merge_order) = {
             let form = self.form.lock().unwrap();
             if form.db.is_none() {
                 return;
             }
-            (form.profiles.clone(), form.profile.clone(), form.preparing, form.problem.clone(), form.prepared.clone())
+            (form.profiles.clone(), form.profile.clone(), form.preparing, form.problem.clone(), form.prepared.clone(), form.merge_order.clone())
         };
         ui.add_space(8.0);
         ui.label(RichText::new(t("Nitro retro profile")).size(14.0).strong());
@@ -365,14 +482,8 @@ impl ImportAssetsStep {
             self.start_preparing(name, ui.ctx().clone());
             return;
         }
-        let (_, _, assets) = sources();
-        let state = load_state(&assets);
-        if let Some(profile) = &current {
-            let order = state.order_with(profile);
-            let steps: Vec<String> = std::iter::once("Habbo".to_string())
-                .chain(order.iter().map(|p| if state.profiles.contains(p) { p.clone() } else { format!("{p} ({})", t("new")) }))
-                .collect();
-            widgets::muted(ui, palette, &tf("Merge order: {order}. Habbo's furniture and ids lead; every profile adds what is not there yet.", &[("order", &steps.join(" → "))]), 12.0);
+        if current.is_some() && !merge_order.is_empty() {
+            widgets::muted(ui, palette, &tf("Merge order: {order}. Habbo's furniture and ids lead; every profile adds what is not there yet.", &[("order", &merge_order)]), 12.0);
         }
         if preparing {
             ui.horizontal(|ui| {
@@ -433,7 +544,7 @@ impl InstallStep for ImportAssetsStep {
     }
 
     fn intro(&self) -> Intro {
-        let (_, _, folder) = sources();
+        let folder = self.form.lock().unwrap().assets.clone();
         let common = [
             t("catalog_items: 5 credits, amount 1, the offer id of FurnitureData.json.").to_string(),
             t("Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.").into(),
@@ -483,6 +594,11 @@ impl InstallStep for ImportAssetsStep {
         }
         let mut form = self.form.lock().unwrap();
         let form = &mut *form;
+        if form.plan.is_none() {
+            return;
+        }
+        let page_count = form.pages().len();
+        let rows = form.rows();
         let Some(plan) = &form.plan else { return };
         let prepared = form.prepared.clone();
         ui.add_space(8.0);
@@ -518,7 +634,7 @@ impl InstallStep for ImportAssetsStep {
                     }
                 }
             }
-            let pages = per_page(&form.per_page).map(|n| page_list(plan, form.caption.trim(), form.with_uncatalogued, n).len()).unwrap_or(0);
+            let pages = page_count;
             lists.push((List::Pages, tf("Pages ({count})", &[("count", &pages.to_string())])));
             for (list, label) in lists {
                 ui.selectable_value(&mut form.list, list, RichText::new(label).size(12.5));
@@ -526,76 +642,46 @@ impl InstallStep for ImportAssetsStep {
             ui.add_space(12.0);
             ui.add(egui::TextEdit::singleline(&mut form.filter).hint_text(RichText::new(t("Search ...")).italics()).desired_width(180.0));
         });
-        let filter = form.filter.trim().to_lowercase();
-        let matches = |name: &str| filter.is_empty() || name.to_lowercase().contains(&filter);
-        let names = |list: &[String]| -> Vec<Vec<String>> { list.iter().filter(|n| matches(n)).map(|n| vec![n.clone()]).collect() };
         match (form.list, &prepared) {
             (List::New, _) => {
-                let rows: Vec<Vec<String>> = plan
-                    .new
-                    .iter()
-                    .filter(|f| matches(&f.classname))
-                    .map(|f| {
-                        vec![
-                            f.classname.clone(),
-                            if f.kind == 'i' { t("wall").into() } else { t("floor").into() },
-                            size(f),
-                            f.modes.to_string(),
-                            allows(f),
-                            f.interaction_type.to_string(),
-                            f.sprite_id.map_or("–".into(), |s| s.to_string()),
-                            f.offer_id.to_string(),
-                        ]
-                    })
-                    .collect();
                 let header = ["item_name", t("Type"), t("Size"), t("Modes"), t("Allows"), "interaction", "sprite_id", "offer_id"];
                 table(ui, palette, "import_new", &[230.0, 50.0, 100.0, 50.0, 130.0, 90.0, 70.0, 70.0], &header, &rows);
             }
             (List::NoBundle, None) => {
                 widgets::muted(ui, palette, t("Missing in the database, but their .hab file is not in the download (or cannot be read): they are left out. Download Furniture in Habbo assets again to get them."), 12.0);
-                table(ui, palette, "import_no_bundle", &[400.0], &["item_name"], &names(&plan.no_bundle));
+                table(ui, palette, "import_no_bundle", &[400.0], &["item_name"], &rows);
             }
             (List::NoBundle, Some(_)) => {
                 widgets::muted(ui, palette, t("Missing in the database, but their .hab file is not in the profile's folder (or cannot be read): they are left out. Download Custom furniture in Nitro retro again to get them."), 12.0);
-                table(ui, palette, "import_no_bundle", &[400.0], &["item_name"], &names(&plan.no_bundle));
+                table(ui, palette, "import_no_bundle", &[400.0], &["item_name"], &rows);
             }
             (List::Uncatalogued, _) => {
                 widgets::muted(ui, palette, t("Floor and wall furniture in items_base that no catalogue item sells (often on purpose: prizes, gifts, internal furni). Only with the option below do they get a catalogue item on the new page."), 12.0);
-                let rows: Vec<Vec<String>> = plan
-                    .uncatalogued
-                    .iter()
-                    .filter(|u| matches(&u.name))
-                    .map(|u| vec![u.name.clone(), u.id.to_string(), u.sprite_id.to_string(), u.offer_id.to_string()])
-                    .collect();
                 table(ui, palette, "import_uncatalogued", &[260.0, 100.0, 80.0, 80.0], &["item_name", "id", "sprite_id", "offer_id"], &rows);
             }
-            (List::Duplicates, Some(p)) => {
+            (List::Duplicates, Some(_)) => {
                 widgets::muted(ui, palette, t("Listed more than once in the profile's FurnitureData.json: the first entry counts, these extra ones are left out."), 12.0);
-                table(ui, palette, "import_duplicates", &[400.0], &["classname"], &names(&p.report().duplicates));
+                table(ui, palette, "import_duplicates", &[400.0], &["classname"], &rows);
             }
-            (List::Already, Some(p)) => {
+            (List::Already, Some(_)) => {
                 widgets::muted(ui, palette, t("Habbo's FurnitureData.json or an earlier profile has these classnames already: theirs stays, the profile's entry is left out."), 12.0);
-                table(ui, palette, "import_already", &[400.0], &["classname"], &names(&p.report().already));
+                table(ui, palette, "import_already", &[400.0], &["classname"], &rows);
             }
-            (List::Renumbered, Some(p)) => {
+            (List::Renumbered, Some(_)) => {
                 widgets::muted(ui, palette, t("Their id was taken (by Habbo or an earlier profile): they get a free id above 100000, in FurnitureData.json and in items_base.sprite_id alike."), 12.0);
-                let rows: Vec<Vec<String>> = p.report().renumbered.iter().filter(|r| matches(&r.0)).map(|(name, old, new)| vec![name.clone(), old.to_string(), new.to_string()]).collect();
                 table(ui, palette, "import_renumbered", &[260.0, 100.0, 100.0], &["classname", t("Its id"), t("New id")], &rows);
             }
             (List::Moved, Some(_)) => {
                 widgets::muted(ui, palette, t("Already in items_base, but FurnitureData.json now has them under another id (Habbo took theirs): their sprite_id is updated, so the client keeps showing them."), 12.0);
-                let rows: Vec<Vec<String>> = plan.moved.iter().filter(|m| matches(&m.name)).map(|m| vec![m.name.clone(), m.from.to_string(), m.to.to_string()]).collect();
                 table(ui, palette, "import_moved", &[260.0, 100.0, 100.0], &["item_name", t("Now"), t("New id")], &rows);
             }
             (List::Pages, _) => match per_page(&form.per_page) {
                 Ok(n) => {
-                    let list = page_list(plan, form.caption.trim(), form.with_uncatalogued, n);
-                    if list.len() > 1 {
+                    if page_count > 1 {
                         widgets::muted(ui, palette, &tf("More than {count} furni: they go on these pages, under the page {caption}. Furni whose names start alike (adobe_kaars2, adobe_kekook) stay on one page; a name that has more gets pages of its own (name-1, name-2).", &[("count", &n.to_string()), ("caption", form.caption.trim())]), 12.0);
                     } else {
                         widgets::muted(ui, palette, &tf("Up to {count} furni go on one page.", &[("count", &n.to_string())]), 12.0);
                     }
-                    let rows: Vec<Vec<String>> = list.iter().filter(|(c, _)| matches(c)).map(|(caption, count)| vec![caption.clone(), count.to_string()]).collect();
                     table(ui, palette, "import_pages", &[300.0, 100.0], &["caption", t("Furni")], &rows);
                 }
                 Err(e) => {
@@ -671,11 +757,12 @@ impl InstallStep for ImportAssetsStep {
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         {
             let mut form = self.form.lock().unwrap();
-            form.plan = None;
+            form.set_plan(None);
             form.prepared = None;
             form.db = None;
         }
         let (furnidata_path, furniture, assets) = sources();
+        self.form.lock().unwrap().assets = assets.clone();
         let furnidata = match read_json(&furnidata_path) {
             Ok(json) => json,
             Err(_) => {
@@ -721,7 +808,7 @@ impl InstallStep for ImportAssetsStep {
             let mut form = self.form.lock().unwrap();
             form.database = database.clone();
             form.pages = pages;
-            form.plan = Some(plan);
+            form.set_plan(Some(plan));
         }
         let skipped =
             if no_bundle > 0 { format!(" {}", tf("{count} more are missing but have no .hab file in the download.", &[("count", &no_bundle.to_string())])) } else { String::new() };

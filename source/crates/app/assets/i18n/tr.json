@@ -2470,5 +2470,7 @@
   "The database before the update (Tools → Import full database puts it back):": "Güncellemeden önceki veritabanı (Tools → Tam veritabanını içe aktar onu geri getirir):",
   "The new one, on this computer:": "Yenisi, bu bilgisayarda:",
   "catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.": "catalog_items.offer_id ile FurnitureData.json uyumlu, böylece her mobi satın alınabilir.",
-  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "Sunucudaki FurnitureData.json kontrolden bu yana değişti: düzeltmenin yenisinden başlaması için Yeniden denetle'ye bas."
+  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "Sunucudaki FurnitureData.json kontrolden bu yana değişti: düzeltmenin yenisinden başlaması için Yeniden denetle'ye bas.",
+  "offer_id to update ({count})": "Güncellenecek offer_id ({count})",
+  "Custom furniture already in the catalogue whose offer id is another one now (Habbo's furni keep theirs, every custom furni gets its own): their catalogue items follow, so they can be bought.": "Katalogda zaten olan ve şimdi başka bir offer id'si olan özel mobiler (Habbo'nun mobileri kendi id'lerini korur, her özel mobi kendine ait birini alır): satın alınabilmeleri için katalog öğeleri de değişir."
 }

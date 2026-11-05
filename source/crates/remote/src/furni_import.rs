@@ -120,6 +120,10 @@ pub struct DbState {
     pub items_base: usize,
     /// The sprite_id and type of every items_base row, by item_name in lower case (the first row of a name).
     pub sprites: HashMap<String, (i64, char)>,
+    /// The offer ids the catalogue items use (above 0).
+    pub offer_ids: HashSet<i64>,
+    /// (catalogue item id, offer_id) by catalog_name in lower case.
+    pub catalog: HashMap<String, Vec<(i64, i64)>>,
     pub catalog_items: usize,
     /// The catalogue pages by id, with their caption (for choosing the new page's parent).
     pub pages: BTreeMap<i64, String>,
@@ -140,6 +144,8 @@ pub struct Plan {
     /// Classnames longer than items_base.item_name holds (varchar(70)): left out, cut they would not match
     /// FurnitureData.json.
     pub too_long: Vec<String>,
+    /// Catalogue items whose offer_id has to follow FurnitureData.json: (id, catalog_name, offer_id now, new).
+    pub offers: Vec<(i64, String, i64, i64)>,
 }
 
 /// items_base.item_name is a varchar(70), public_name a varchar(56).
@@ -167,7 +173,7 @@ pub struct Moved {
 impl Plan {
     /// Something to do: new furni, catalogue items, or sprite ids to follow.
     pub fn work(&self, with_uncatalogued: bool) -> usize {
-        self.new.len() + self.moved.len() + if with_uncatalogued { self.uncatalogued.len() } else { 0 }
+        self.new.len() + self.moved.len() + self.offers.len() + if with_uncatalogued { self.uncatalogued.len() } else { 0 }
     }
 
     pub fn floor(&self) -> usize {
@@ -413,6 +419,10 @@ pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncat
             moved.from
         ));
     }
+    // FurnitureData.json gave these furni another offer id: their catalogue items follow, or they cannot be bought.
+    for (id, name, from, to) in &plan.offers {
+        out.push_str(&format!("UPDATE `catalog_items` SET `offer_id` = {to} WHERE `id` = {id} AND `offer_id` = {from}; -- {}\n", sql_literal(name).replace('\n', " ")));
+    }
     // Every catalogue item: (name, the SQL of its items_base id, offer id).
     let mut items: Vec<(&str, String, i64)> = plan.new.iter().enumerate().map(|(i, f)| (f.classname.as_str(), new_id("@item", i + 1), f.offer_id)).collect();
     if with_uncatalogued {
@@ -474,7 +484,7 @@ for table in items_base catalog_pages catalog_items; do
 done
 echo "DB=$db"
 mariadb -N -B -r "$db" -e "SELECT 'B', id, sprite_id, type, item_name FROM items_base"
-mariadb -N -B -r "$db" -e "SELECT 'C', item_ids, offer_id FROM catalog_items"
+mariadb -N -B -r "$db" -e "SELECT 'C', item_ids, offer_id, id, catalog_name FROM catalog_items"
 mariadb -N -B -r "$db" -e "SELECT 'P', id, caption FROM catalog_pages""#;
 
 /// Parses the inspect output: "B<TAB>id<TAB>sprite<TAB>type<TAB>name" and "C<TAB>item_ids<TAB>offer_id" lines.
@@ -490,7 +500,7 @@ pub fn parse_state(output: &str) -> DbState {
             state.database = db.trim().to_string();
             continue;
         }
-        let fields: Vec<&str> = line.split('\t').collect();
+        let fields: Vec<&str> = line.splitn(6, '\t').collect();
         match fields.as_slice() {
             ["B", id, sprite, kind, name] => {
                 state.items_base += 1;
@@ -508,8 +518,18 @@ pub fn parse_state(output: &str) -> DbState {
                     state.pages.insert(id, caption.to_string());
                 }
             }
-            ["C", ids, _offer] => {
+            ["C", ids, offer, rest @ ..] => {
                 state.catalog_items += 1;
+                if let Ok(offer) = offer.trim().parse::<i64>() {
+                    if offer > 0 {
+                        state.offer_ids.insert(offer);
+                    }
+                    if let [id, name] = rest {
+                        if let Ok(id) = id.trim().parse::<i64>() {
+                            state.catalog.entry(name.trim().to_lowercase()).or_default().push((id, offer));
+                        }
+                    }
+                }
                 sold.extend(ids.split([',', ';']).filter_map(|id| id.trim().split(':').next()?.trim().parse::<i64>().ok()));
             }
             _ => {}
@@ -862,13 +882,15 @@ mod tests {
 
     #[test]
     fn reads_the_database_state() {
-        let output = "DB=hotel\nP\t2\tMeubels\nB\t1\t13\ts\tshelves_norja\nB\t2\t14\ts\tChair_Norja\nB\t3\t15\ti\tposter\nB\t4\t16\ts\ta0 pet0\nB\t5\t17\tr\trobot\nC\t1,3\t5\nC\t\t-1\n";
+        let output = "DB=hotel\nP\t2\tMeubels\nB\t1\t13\ts\tshelves_norja\nB\t2\t14\ts\tChair_Norja\nB\t3\t15\ti\tposter\nB\t4\t16\ts\ta0 pet0\nB\t5\t17\tr\trobot\nC\t1,3\t5\t40\tshelves_norja\nC\t\t-1\t41\tdeal\n";
         let state = parse_state(output);
         assert_eq!(state.database, "hotel");
         assert_eq!((state.items_base, state.catalog_items), (5, 2));
         assert!(state.names.contains("chair_norja"));
         assert_eq!(state.pages.get(&2).map(String::as_str), Some("Meubels"));
         assert_eq!(state.sprites.get("chair_norja"), Some(&(14, 's')));
+        assert_eq!(state.catalog.get("shelves_norja"), Some(&vec![(40, 5)]));
+        assert!(state.offer_ids.contains(&5) && !state.offer_ids.contains(&-1));
         assert_eq!(state.uncatalogued, vec![Uncatalogued { id: 2, name: "Chair_Norja".into(), sprite_id: 14, offer_id: -1 }]);
     }
 }

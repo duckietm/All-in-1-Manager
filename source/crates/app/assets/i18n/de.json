@@ -2470,5 +2470,7 @@
   "The database before the update (Tools → Import full database puts it back):": "Die Datenbank vor der Aktualisierung (Tools → Vollständige Datenbank importieren stellt sie wieder her):",
   "The new one, on this computer:": "Die neue, auf diesem Computer:",
   "catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.": "catalog_items.offer_id und FurnitureData.json stimmen überein, sodass jedes Möbel gekauft werden kann.",
-  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "FurnitureData.json auf dem Server hat sich seit der Prüfung geändert: Drücke Erneut prüfen, damit die Korrektur von der neuen ausgeht."
+  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "FurnitureData.json auf dem Server hat sich seit der Prüfung geändert: Drücke Erneut prüfen, damit die Korrektur von der neuen ausgeht.",
+  "offer_id to update ({count})": "offer_id zu aktualisieren ({count})",
+  "Custom furniture already in the catalogue whose offer id is another one now (Habbo's furni keep theirs, every custom furni gets its own): their catalogue items follow, so they can be bought.": "Eigene Möbel, die schon im Katalog sind und jetzt eine andere Offer-ID haben (Habbos Möbel behalten ihre, jedes eigene Möbel bekommt eine eigene): Ihre Katalog-Items folgen, damit man sie kaufen kann."
 }

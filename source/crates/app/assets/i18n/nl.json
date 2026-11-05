@@ -2470,7 +2470,6 @@
   "The database before the update (Tools → Import full database puts it back):": "De database van vóór de update (Tools → Volledige database importeren zet hem terug):",
   "The new one, on this computer:": "De nieuwe, op deze computer:",
   "catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.": "catalog_items.offer_id en FurnitureData.json op elkaar afgestemd, zodat elk meubi gekocht kan worden.",
-  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "FurnitureData.json op de server is veranderd sinds de controle: druk op Opnieuw controleren, zodat de correctie van de nieuwe uitgaat.",
   "offer_id to update ({count})": "offer_id bij te werken ({count})",
   "Custom furniture already in the catalogue whose offer id is another one now (Habbo's furni keep theirs, every custom furni gets its own): their catalogue items follow, so they can be bought.": "Eigen meubi die al in de catalogus staan en nu een ander offer-id hebben (Habbo's meubi houden het hunne, elk eigen meubi krijgt een eigen): hun catalogusitems volgen, zodat ze te koop zijn.",
   "Fix items_base": "items_base herstellen",
@@ -2509,5 +2508,9 @@
   "{rows} furni got {changes} new values. Players see it after they reload the hotel.": "{rows} meubi kregen {changes} nieuwe waarden. Spelers zien het nadat ze het hotel opnieuw laden.",
   "items_base fixed": "items_base hersteld",
   "items_base was not fixed": "items_base is niet hersteld",
-  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "sprite_id, grootte, zitten / liggen / lopen en interactiemodi van de meubi in items_base, zoals FurnitureData.json en de .hab-bestanden ze geven."
+  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "sprite_id, grootte, zitten / liggen / lopen en interactiemodi van de meubi in items_base, zoals FurnitureData.json en de .hab-bestanden ze geven.",
+  "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "FurnitureData.json op de server is veranderd sinds de controle: ga Terug en open deze pagina opnieuw, zodat de correctie van de nieuwe uitgaat.",
+  "{database}: {checked} furni checked, nothing to change.": "{database}: {checked} meubi gecontroleerd, niets te veranderen.",
+  "Nothing changes with what is chosen": "Met wat gekozen is verandert er niets",
+  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} meubi gecontroleerd; een andere keuze hieronder verandert wel iets."
 }

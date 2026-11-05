@@ -164,8 +164,9 @@ impl InstallStep for ItemFixStep {
         t("Fix items_base").into()
     }
 
+    /// The button runs the fix (there is no separate check button).
     fn rerun_label(&self) -> String {
-        t("Check again").into()
+        t("Fix items_base").into()
     }
 
     fn intro(&self) -> Intro {
@@ -279,14 +280,22 @@ impl InstallStep for ItemFixStep {
         })
         .await?;
         let (count, changes, checked) = (plan.rows(), plan.changes.len(), plan.checked);
+        // "Done" only when no choice on the page could change anything: the button is set from this once, and
+        // ticking another box must not leave it at Skip.
+        let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true, stack: true };
+        let nothing_at_all = item_fix::plan(&read.rows, &read.furnidata, &read.bundles, all).updates.is_empty();
         {
             let mut form = self.form.lock().unwrap();
             form.read = Some(Arc::new(read));
             form.plan = Some((fields, Arc::new(plan)));
         }
-        if count == 0 {
-            ui.detected(ResultKind::Success, t("items_base is in line"), &tf("{database}: {checked} furni checked, nothing to change with what is chosen.", &[("database", &database), ("checked", &checked.to_string())]));
+        if nothing_at_all {
+            ui.detected(ResultKind::Success, t("items_base is in line"), &tf("{database}: {checked} furni checked, nothing to change.", &[("database", &database), ("checked", &checked.to_string())]));
             return Ok(true);
+        }
+        if count == 0 {
+            ui.detected(ResultKind::Info, t("Nothing changes with what is chosen"), &tf("{database}: {checked} furni checked; another choice below does change something.", &[("database", &database), ("checked", &checked.to_string())]));
+            return Ok(false);
         }
         ui.detected(
             ResultKind::Info,
@@ -306,7 +315,7 @@ impl InstallStep for ItemFixStep {
         };
         log("> Reading the server's FurnitureData.json again ...");
         if super::offer_fix::download_furnidata(server).await? != read.furnidata {
-            fail!("{}", t("FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one."));
+            fail!("{}", t("FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one."));
         }
         log("> Checking the database again ...");
         // From items_base as it is now, with the .hab files the check read.

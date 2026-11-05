@@ -143,8 +143,9 @@ impl InstallStep for OfferFixStep {
         t("Fix the offer IDs").into()
     }
 
+    /// The button runs the fix (there is no separate check button).
     fn rerun_label(&self) -> String {
-        t("Check again").into()
+        t("Fix the offer IDs").into()
     }
 
     fn intro(&self) -> Intro {
@@ -256,7 +257,7 @@ impl InstallStep for OfferFixStep {
         // The fix is worked out from the file the check read; a file changed since (a new merge or custom file)
         // would be overwritten with the old one.
         if download_furnidata(server).await? != *source {
-            fail!("{}", t("FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one."));
+            fail!("{}", t("FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one."));
         }
         log("  unchanged since the check");
         log("> Checking the database again ...");

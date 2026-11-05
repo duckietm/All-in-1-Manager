@@ -2470,7 +2470,6 @@
   "The database before the update (Tools → Import full database puts it back):": "O banco de dados de antes da atualização (Tools → Importar o banco de dados completo o traz de volta):",
   "The new one, on this computer:": "O novo, neste computador:",
   "catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.": "catalog_items.offer_id e FurnitureData.json alinhados, para que todo mobi possa ser comprado.",
-  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "O FurnitureData.json do servidor mudou desde a verificação: clique em Verificar de novo, para que a correção parta do novo.",
   "offer_id to update ({count})": "offer_id a atualizar ({count})",
   "Custom furniture already in the catalogue whose offer id is another one now (Habbo's furni keep theirs, every custom furni gets its own): their catalogue items follow, so they can be bought.": "Mobis próprios que já estão no catálogo e agora têm outro offer id (os mobis do Habbo mantêm o seu, cada mobi próprio recebe um próprio): seus itens de catálogo acompanham, para que possam ser comprados.",
   "Fix items_base": "Corrigir items_base",
@@ -2509,5 +2508,9 @@
   "{rows} furni got {changes} new values. Players see it after they reload the hotel.": "{rows} mobis receberam {changes} valores novos. Os jogadores veem depois de recarregar o hotel.",
   "items_base fixed": "items_base corrigido",
   "items_base was not fixed": "O items_base não foi corrigido",
-  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "sprite_id, tamanho, sentar / deitar / andar e modos de interação dos mobis do items_base, como o FurnitureData.json e os arquivos .hab os dão."
+  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "sprite_id, tamanho, sentar / deitar / andar e modos de interação dos mobis do items_base, como o FurnitureData.json e os arquivos .hab os dão.",
+  "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "O FurnitureData.json do servidor mudou desde a verificação: clique em Voltar e abra esta página de novo, para que a correção parta do novo.",
+  "{database}: {checked} furni checked, nothing to change.": "{database}: {checked} mobis verificados, nada a mudar.",
+  "Nothing changes with what is chosen": "Com o que foi escolhido nada muda",
+  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} mobis verificados; outra escolha abaixo muda algo."
 }

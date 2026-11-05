@@ -2470,7 +2470,6 @@
   "The database before the update (Tools → Import full database puts it back):": "Tietokanta ennen päivitystä (Tools → Tuo täysi tietokanta palauttaa sen):",
   "The new one, on this computer:": "Uusi tällä tietokoneella:",
   "catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.": "catalog_items.offer_id ja FurnitureData.json yhteensopiviksi, jotta jokaisen kalusteen voi ostaa.",
-  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "Palvelimen FurnitureData.json on muuttunut tarkistuksen jälkeen: paina Tarkista uudelleen, jotta korjaus lähtee uudesta.",
   "offer_id to update ({count})": "Päivitettävät offer_id:t ({count})",
   "Custom furniture already in the catalogue whose offer id is another one now (Habbo's furni keep theirs, every custom furni gets its own): their catalogue items follow, so they can be bought.": "Omat kalusteet, jotka ovat jo katalogissa ja joilla on nyt toinen offer-id (Habbon kalusteet pitävät omansa, jokainen oma kaluste saa omansa): niiden katalogituotteet seuraavat, jotta ne voi ostaa.",
   "Fix items_base": "Korjaa items_base",
@@ -2509,5 +2508,9 @@
   "{rows} furni got {changes} new values. Players see it after they reload the hotel.": "{rows} kalustetta sai {changes} uutta arvoa. Pelaajat näkevät sen ladattuaan hotellin uudelleen.",
   "items_base fixed": "items_base korjattu",
   "items_base was not fixed": "items_basea ei korjattu",
-  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "items_basen kalusteiden sprite_id, koko, istua / maata / kävellä ja vuorovaikutustilat sellaisina kuin FurnitureData.json ja .hab-tiedostot ne antavat."
+  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "items_basen kalusteiden sprite_id, koko, istua / maata / kävellä ja vuorovaikutustilat sellaisina kuin FurnitureData.json ja .hab-tiedostot ne antavat.",
+  "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "Palvelimen FurnitureData.json on muuttunut tarkistuksen jälkeen: paina Takaisin ja avaa tämä sivu uudelleen, jotta korjaus lähtee uudesta.",
+  "{database}: {checked} furni checked, nothing to change.": "{database}: {checked} kalustetta tarkistettu, ei mitään muutettavaa.",
+  "Nothing changes with what is chosen": "Valinnoilla mikään ei muutu",
+  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} kalustetta tarkistettu; jokin muu valinta alla muuttaa jotain."
 }

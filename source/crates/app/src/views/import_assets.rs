@@ -840,7 +840,7 @@ impl InstallStep for ImportAssetsStep {
         }
         // Thousands of .hab files on a new hotel: not on the window's thread.
         let plan = tokio::task::spawn_blocking(move || furni_import::plan(&furnidata, &furniture, &state)).await?;
-        let (new, no_bundle) = (plan.new.len(), plan.no_bundle.len());
+        let (new, no_bundle, uncatalogued) = (plan.new.len(), plan.no_bundle.len(), plan.uncatalogued.len());
         {
             let mut form = self.form.lock().unwrap();
             form.database = database.clone();
@@ -851,7 +851,8 @@ impl InstallStep for ImportAssetsStep {
             if no_bundle > 0 { format!(" {}", tf("{count} more are missing but have no .hab file in the download.", &[("count", &no_bundle.to_string())])) } else { String::new() };
         if new == 0 {
             ui.detected(ResultKind::Success, t("Every downloaded Habbo furniture is in the database"), &format!("{now}{skipped}"));
-            return Ok(true);
+            // Done, unless the option for the furniture without a catalogue item has something to do.
+            return Ok(uncatalogued == 0);
         }
         ui.detected(ResultKind::Info, &tf("{count} furniture can be imported", &[("count", &new.to_string())]), &format!("{now}{skipped} {}", t("Check the list below first.")));
         Ok(false)

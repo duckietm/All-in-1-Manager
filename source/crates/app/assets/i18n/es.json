@@ -2470,7 +2470,6 @@
   "The database before the update (Tools → Import full database puts it back):": "La base de datos de antes de la actualización (Tools → Importar base de datos completa la devuelve):",
   "The new one, on this computer:": "El nuevo, en este ordenador:",
   "catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.": "catalog_items.offer_id y FurnitureData.json de acuerdo, para que se pueda comprar cada furni.",
-  "FurnitureData.json on the server changed since the check: press Check again, so the fix starts from the new one.": "FurnitureData.json del servidor cambió desde la comprobación: pulsa Comprobar de nuevo para que la corrección parta del nuevo.",
   "offer_id to update ({count})": "offer_id por actualizar ({count})",
   "Custom furniture already in the catalogue whose offer id is another one now (Habbo's furni keep theirs, every custom furni gets its own): their catalogue items follow, so they can be bought.": "Furnis propios que ya están en el catálogo y ahora tienen otro offer id (los furnis de Habbo conservan el suyo, cada furni propio recibe uno propio): sus items de catálogo lo siguen, para que se puedan comprar.",
   "Fix items_base": "Corregir items_base",
@@ -2509,5 +2508,9 @@
   "{rows} furni got {changes} new values. Players see it after they reload the hotel.": "{rows} furnis recibieron {changes} valores nuevos. Los jugadores lo ven después de recargar el hotel.",
   "items_base fixed": "items_base corregido",
   "items_base was not fixed": "items_base no se corrigió",
-  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "sprite_id, tamaño, sentarse / tumbarse / caminar y modos de interacción de los furnis de items_base, tal como los dan FurnitureData.json y los archivos .hab."
+  "sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.": "sprite_id, tamaño, sentarse / tumbarse / caminar y modos de interacción de los furnis de items_base, tal como los dan FurnitureData.json y los archivos .hab.",
+  "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "FurnitureData.json del servidor cambió desde la comprobación: pulsa Atrás y abre esta página de nuevo, para que la corrección parta del nuevo.",
+  "{database}: {checked} furni checked, nothing to change.": "{database}: {checked} furnis comprobados, nada que cambiar.",
+  "Nothing changes with what is chosen": "Con lo elegido no cambia nada",
+  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} furnis comprobados; otra opción de abajo sí cambia algo."
 }

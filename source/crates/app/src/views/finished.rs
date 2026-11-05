@@ -969,6 +969,7 @@ pub fn import_assets(imported: super::import_assets::Imported, steps: Steps) -> 
             (_, false) => t("The furniture was not imported").into(),
         };
         let message = match (&imported.result, ok) {
+            (Some(r), true) if r.page_id <= 0 => t("items_base follows the merged FurnitureData.json again; there was no new furniture to import.").into(),
             (Some(r), true) => tf(
                 "{items} catalogue items on the page {caption} (id {id}). Players see it after they reload the hotel.",
                 &[("items", &imported.catalogue_items.to_string()), ("caption", &imported.caption), ("id", &r.page_id.to_string())],
@@ -980,19 +981,29 @@ pub fn import_assets(imported: super::import_assets::Imported, steps: Steps) -> 
         step_list(ui, palette, &steps);
         let Some(r) = &imported.result else { return };
         let page = r.page_id.to_string();
-        section(ui, t("1. Put the page where you want it"), |ui| {
-            widgets::text(ui, t("Under another page (the id of that page as parent_id), and visible:"), 13.0);
-            copy_box(ui, palette, &format!("UPDATE `catalog_pages` SET `parent_id` = <parent id>, `visible` = '1' WHERE `id` = {page};"));
-            widgets::text(ui, t("Or move its furniture to a page you have, and the empty page away:"), 13.0);
-            copy_box(ui, palette, &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` = {page};\nDELETE FROM `catalog_pages` WHERE `id` = {page};"));
-            widgets::text(ui, t("Run it in the SQL Editor, then restart the emulator (Tools) or reload the catalogue in the hotel."), 13.0);
-        });
+        if r.page_id > 0 {
+            section(ui, t("1. Put the page where you want it"), |ui| {
+                widgets::text(ui, t("Under another page (the id of that page as parent_id), and visible:"), 13.0);
+                copy_box(ui, palette, &format!("UPDATE `catalog_pages` SET `parent_id` = <parent id>, `visible` = '1' WHERE `id` = {page};"));
+                widgets::text(ui, t("Or move its furniture to a page you have, and the empty page away:"), 13.0);
+                copy_box(ui, palette, &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` = {page};\nDELETE FROM `catalog_pages` WHERE `id` = {page};"));
+                widgets::text(ui, t("Run it in the SQL Editor, then restart the emulator (Tools) or reload the catalogue in the hotel."), 13.0);
+            });
+        }
         section(ui, t("2. As it was before"), |ui| {
             widgets::text(ui, t("The database before the import (Tools → Import full database puts it back):"), 13.0);
             code(ui, palette, &r.safety_backup);
             if let Some(sql) = &imported.local_sql {
                 widgets::text(ui, t("The SQL that ran, on this computer:"), 13.0);
                 code(ui, palette, &sql.display().to_string());
+            }
+            if let Some((merged, old)) = &imported.furnidata {
+                widgets::text(ui, t("The merged FurnitureData.json, on this computer:"), 13.0);
+                code(ui, palette, &merged.display().to_string());
+                if let Some(old) = old {
+                    widgets::text(ui, t("The FurnitureData.json that was on the server:"), 13.0);
+                    code(ui, palette, old);
+                }
             }
         });
     })

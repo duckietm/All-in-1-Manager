@@ -1,14 +1,24 @@
-//! Import Assets: the Habbo furniture of Get Assets' download that the hotel database lacks into items_base, with a
-//! catalogue item each on a new page "import_<date>" (parent_id -1). The page shows what will be imported first.
-//! The items_base values are the All-in-1 Converter's Generate SQL (see aio_remote::furni_import).
+//! Import Assets: furniture the hotel database lacks into items_base, with a catalogue item each on a new page
+//! (parent_id -1 or a page you choose). The page shows what will be imported first. The items_base values are the
+//! All-in-1 Converter's Generate SQL (see aio_remote::furni_import).
+//!
+//! Two pages use it: Habbo's furniture (Get Assets' download), and a Nitro retro profile's custom furniture. For a
+//! profile, its FurnitureData.json is merged into Habbo's first (aio_remote::furni_merge): Habbo's furniture and ids
+//! lead, then the profiles in the order they were merged, without a classname twice or an id twice. The merged
+//! FurnitureData.json goes to the server with the import, so the client knows the custom furni's new ids.
 
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use aio_remote::furni_import::{self, ImportResult, NewFurni, Plan};
+use aio_core::settings::RetroProfile;
+use aio_remote::furni_import::{self, DbState, ImportResult, NewFurni, Plan};
+use aio_remote::furni_merge::{self, MergeState, Merged};
+use aio_remote::habbo_assets::{self, retro};
 use aio_remote::{fail, server_tools, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use serde_json::Value;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -18,11 +28,91 @@ use crate::gui::wizard::Wizard;
 use crate::gui::Shared;
 use crate::i18n::{t, tf};
 
+/// Habbo's furniture, or a Nitro retro profile's custom furniture.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    Habbo,
+    Custom,
+}
+
 /// Get Assets' Habbo download: (FurnitureData.json, the furniture folder, the assets folder).
 fn sources() -> (PathBuf, PathBuf, PathBuf) {
     let folder = aio_core::InstallerSettings::load().assets_folder();
-    let gamedata = aio_remote::habbo_assets::gamedata_folder(&folder);
+    let gamedata = habbo_assets::gamedata_folder(&folder);
     (gamedata.join("config").join("FurnitureData.json"), gamedata.join("furniture"), folder)
+}
+
+/// A profile's own gamedata folder (custom/<name>/gamedata), by its name: also for a profile deleted since.
+fn profile_gamedata(assets: &Path, name: &str) -> PathBuf {
+    habbo_assets::gamedata_folder(&retro::custom_folder(assets, &RetroProfile { name: name.into(), ..RetroProfile::default() }))
+}
+
+/// Where the merge keeps its state (the profiles' order and ids) and the merged FurnitureData.json.
+fn merge_files(assets: &Path) -> (PathBuf, PathBuf) {
+    let folder = assets.join(retro::CUSTOM);
+    (folder.join("merge.json"), folder.join("FurnitureData.json"))
+}
+
+fn read_json(path: &Path) -> Result<Value, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    serde_json::from_slice(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes)).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn load_state(assets: &Path) -> MergeState {
+    read_json(&merge_files(assets).0).ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+}
+
+/// A profile merged and planned: the merged FurnitureData.json, which report is the profile's, and its import.
+struct Prepared {
+    profile: String,
+    merged: Merged,
+    index: usize,
+    plan: Plan,
+}
+
+impl Prepared {
+    fn report(&self) -> &furni_merge::ProfileReport {
+        &self.merged.reports[self.index]
+    }
+}
+
+/// Merges `profile` (after the profiles merged before it) into Habbo's `original` and plans the import of its furni.
+/// Reads .hab files: not on the window's thread.
+fn prepare(original: &Value, profile: &str, db: &DbState, assets: &Path) -> Result<Prepared, String> {
+    let state = load_state(assets);
+    let order = state.order_with(profile);
+    let mut profiles = Vec::new();
+    for name in &order {
+        let file = profile_gamedata(assets, name).join("config").join("FurnitureData.json");
+        let json = read_json(&file).map_err(|e| {
+            if name == profile {
+                tf("{file} is not there: download Custom furniture for this profile in Nitro retro first.", &[("file", &file.display().to_string())])
+            } else {
+                tf("The profile {name} was merged before, but its FurnitureData.json cannot be read ({error}): download it again in Nitro retro.", &[("name", name), ("error", &e)])
+            }
+        })?;
+        profiles.push((name.clone(), json));
+    }
+    let merged = furni_merge::merge_new(original, &profiles, &state);
+    let index = order.iter().position(|p| p == profile).unwrap_or(0);
+    let mut plan = furni_import::plan(&merged.reports[index].added, &profile_gamedata(assets, profile).join("furniture"), db);
+    // Furni without a catalogue item are the Habbo page's business.
+    plan.uncatalogued.clear();
+    // Custom furni of every merged profile that items_base has with another sprite_id than they have now (Habbo
+    // took their id): items_base follows, or the client shows other furniture.
+    for report in &merged.reports {
+        for (section, kind) in [("roomitemtypes", 's'), ("wallitemtypes", 'i')] {
+            for entry in report.added[section]["furnitype"].as_array().map(Vec::as_slice).unwrap_or_default() {
+                let (Some(name), Some(id)) = (entry["classname"].as_str(), entry["id"].as_i64()) else { continue };
+                if let Some(&(sprite, db_kind)) = db.sprites.get(&name.trim().to_lowercase()) {
+                    if db_kind == kind && sprite != id {
+                        plan.moved.push(furni_import::Moved { name: name.trim().to_string(), kind, from: sprite, to: id });
+                    }
+                }
+            }
+        }
+    }
+    Ok(Prepared { profile: profile.into(), merged, index, plan })
 }
 
 /// Which list of the overview is shown.
@@ -32,6 +122,10 @@ enum List {
     New,
     NoBundle,
     Uncatalogued,
+    Duplicates,
+    Already,
+    Renumbered,
+    Moved,
 }
 
 struct Form {
@@ -41,7 +135,7 @@ struct Form {
     /// The page the new page goes under, as typed: -1 (default) is the top of the catalogue.
     parent: String,
     /// The catalogue pages of the database (id -> caption), to check the parent.
-    pages: std::collections::BTreeMap<i64, String>,
+    pages: BTreeMap<i64, String>,
     /// The new page is shown in the catalogue straight away (off: hidden until it is moved).
     visible: bool,
     /// Also a catalogue item for the items_base furni no catalogue item sells.
@@ -49,14 +143,31 @@ struct Form {
     restart: bool,
     list: List,
     filter: String,
+    // Custom furniture only:
+    /// The Nitro retro profiles, and the one chosen.
+    profiles: Vec<String>,
+    profile: Option<String>,
+    /// Habbo's FurnitureData.json and the database, read by detect, for preparing another profile.
+    original: Option<Arc<Value>>,
+    db: Option<Arc<DbState>>,
+    /// Shared: it holds the whole merged FurnitureData.json, and the page is drawn every frame.
+    prepared: Option<Arc<Prepared>>,
+    preparing: bool,
+    problem: Option<String>,
+    /// The merged FurnitureData.json to the server with the import.
+    put_furnidata: bool,
 }
 
-impl Default for Form {
-    fn default() -> Self {
+impl Form {
+    fn new(mode: Mode) -> Self {
+        let date = chrono::Local::now().date_naive();
         Self {
             plan: None,
             database: String::new(),
-            caption: furni_import::page_caption(chrono::Local::now().date_naive()),
+            caption: match mode {
+                Mode::Habbo => furni_import::page_caption(date),
+                Mode::Custom => format!("custom_{}", date.format("%Y%m%d")),
+            },
             parent: "-1".into(),
             pages: Default::default(),
             visible: false,
@@ -64,6 +175,14 @@ impl Default for Form {
             restart: true,
             list: List::New,
             filter: String::new(),
+            profiles: Vec::new(),
+            profile: None,
+            original: None,
+            db: None,
+            prepared: None,
+            preparing: false,
+            problem: None,
+            put_furnidata: true,
         }
     }
 }
@@ -75,31 +194,60 @@ struct Output {
     furniture: usize,
     catalogue_items: usize,
     local_sql: Option<PathBuf>,
+    furnidata: Option<(PathBuf, Option<String>)>,
 }
 
 pub struct ImportAssetsStep {
-    form: Mutex<Form>,
+    mode: Mode,
+    form: Arc<Mutex<Form>>,
     output: Mutex<Output>,
 }
 
 impl ImportAssetsStep {
-    pub fn new() -> Self {
-        Self { form: Mutex::new(Form::default()), output: Mutex::new(Output::default()) }
+    pub fn new(mode: Mode) -> Self {
+        Self { mode, form: Arc::new(Mutex::new(Form::new(mode))), output: Mutex::new(Output::default()) }
     }
 
     fn output(&self) -> Output {
         self.output.lock().unwrap().clone()
     }
-}
 
-impl Default for ImportAssetsStep {
-    fn default() -> Self {
-        Self::new()
+    /// Merges and plans `profile` on a thread of its own; the form shows it when done.
+    fn start_preparing(&self, profile: String, ctx: egui::Context) {
+        let mut form = self.form.lock().unwrap();
+        let (Some(original), Some(db)) = (form.original.clone(), form.db.clone()) else { return };
+        form.profile = Some(profile.clone());
+        form.caption = format!("custom_{}_{}", RetroProfile { name: profile.clone(), ..RetroProfile::default() }.folder_name().to_lowercase().replace(' ', "_"), chrono::Local::now().format("%Y%m%d"));
+        form.preparing = true;
+        form.problem = None;
+        form.plan = None;
+        form.prepared = None;
+        form.list = List::New;
+        drop(form);
+        let shared = self.form.clone();
+        std::thread::spawn(move || {
+            let (_, _, assets) = sources();
+            let result = prepare(&original, &profile, &db, &assets);
+            let mut form = shared.lock().unwrap();
+            // Another profile was chosen meanwhile: that one counts.
+            if form.profile.as_deref() == Some(profile.as_str()) {
+                match result {
+                    Ok(prepared) => {
+                        form.plan = Some(prepared.plan.clone());
+                        form.prepared = Some(Arc::new(prepared));
+                    }
+                    Err(problem) => form.problem = Some(problem),
+                }
+                form.preparing = false;
+            }
+            drop(form);
+            ctx.request_repaint();
+        });
     }
 }
 
 /// The parent_id typed in: -1 or the id of a catalogue page of the database.
-fn parent_id(typed: &str, pages: &std::collections::BTreeMap<i64, String>) -> Result<i64, String> {
+fn parent_id(typed: &str, pages: &BTreeMap<i64, String>) -> Result<i64, String> {
     let typed = typed.trim();
     let id: i64 = typed.parse().map_err(|_| tf("parent_id \"{value}\" is not a number.", &[("value", typed)]))?;
     if id == -1 || pages.contains_key(&id) {
@@ -154,14 +302,102 @@ fn table(ui: &mut egui::Ui, palette: &Palette, id: &str, widths: &[f32], header:
     });
 }
 
+/// Restarts the emulator (when it is there) and says how that went.
+async fn restart_emulator(server: &dyn Server, ui: &StepUi, log: &(dyn Fn(&str) + Send + Sync)) -> anyhow::Result<()> {
+    let stopped = server_tools::stop_emulator(server, log).await?;
+    if stopped {
+        server_tools::start_emulator(server, log).await?;
+    }
+    ui.done(if stopped { t("restarted") } else { t("not installed") });
+    Ok(())
+}
+
+impl ImportAssetsStep {
+    /// The profile buttons and the merge's result (custom furniture).
+    fn custom_options(&self, ui: &mut egui::Ui, palette: &Palette) {
+        let (profiles, current, preparing, problem, prepared) = {
+            let form = self.form.lock().unwrap();
+            if form.db.is_none() {
+                return;
+            }
+            (form.profiles.clone(), form.profile.clone(), form.preparing, form.problem.clone(), form.prepared.clone())
+        };
+        ui.add_space(8.0);
+        ui.label(RichText::new(t("Nitro retro profile")).size(14.0).strong());
+        if profiles.is_empty() {
+            widgets::muted(ui, palette, t("There is no Nitro retro profile yet: make one in Nitro retro and download its custom furniture first."), 12.0);
+            return;
+        }
+        let mut clicked = None;
+        ui.horizontal_wrapped(|ui| {
+            for name in &profiles {
+                let button = egui::Button::new(RichText::new(name).size(13.0).strong()).selected(current.as_deref() == Some(name.as_str()));
+                if ui.add_enabled(!preparing, button).clicked() {
+                    clicked = Some(name.clone());
+                }
+            }
+        });
+        if let Some(name) = clicked {
+            self.start_preparing(name, ui.ctx().clone());
+            return;
+        }
+        let (_, _, assets) = sources();
+        let state = load_state(&assets);
+        if let Some(profile) = &current {
+            let order = state.order_with(profile);
+            let steps: Vec<String> = std::iter::once("Habbo".to_string())
+                .chain(order.iter().map(|p| if state.profiles.contains(p) { p.clone() } else { format!("{p} ({})", t("new")) }))
+                .collect();
+            widgets::muted(ui, palette, &tf("Merge order: {order}. Habbo's furniture and ids lead; every profile adds what is not there yet.", &[("order", &steps.join(" → "))]), 12.0);
+        }
+        if preparing {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(RichText::new(t("Merging and reading the .hab files ...")).size(12.5).color(palette.muted));
+            });
+            return;
+        }
+        if let Some(problem) = problem {
+            ui.label(RichText::new(problem).size(12.5).color(palette.warning_text));
+            return;
+        }
+        let Some(prepared) = prepared else {
+            widgets::muted(ui, palette, t("Choose the profile whose custom furniture you want to import."), 12.0);
+            return;
+        };
+        let report = prepared.report();
+        ui.label(
+            RichText::new(tf(
+                "{profile}: {entries} entries in its FurnitureData.json; {duplicates} listed twice, {already} that Habbo or an earlier profile has, {renumbered} with a new id. {added} custom furniture added.",
+                &[
+                    ("profile", &prepared.profile),
+                    ("entries", &report.entries.to_string()),
+                    ("duplicates", &report.duplicates.len().to_string()),
+                    ("already", &report.already.len().to_string()),
+                    ("renumbered", &report.renumbered.len().to_string()),
+                    ("added", &report.added_count().to_string()),
+                ],
+            ))
+            .size(12.5)
+            .color(palette.muted),
+        );
+    }
+}
+
 #[async_trait]
 impl InstallStep for ImportAssetsStep {
     fn title(&self) -> String {
-        t("Import Assets").into()
+        match self.mode {
+            Mode::Habbo => t("Import Assets").into(),
+            Mode::Custom => t("Import custom furniture").into(),
+        }
     }
 
     fn caption(&self) -> String {
-        t("Missing Habbo furniture").into()
+        match self.mode {
+            Mode::Habbo => t("Missing Habbo furniture").into(),
+            Mode::Custom => t("From a Nitro retro profile").into(),
+        }
     }
 
     fn install_label(&self) -> String {
@@ -174,31 +410,57 @@ impl InstallStep for ImportAssetsStep {
 
     fn intro(&self) -> Intro {
         let (_, _, folder) = sources();
-        Intro {
-            icon: Icon::Database,
-            heading: t("Import the missing Habbo furniture").into(),
-            description: tf(
-                "Compares the Habbo furniture you downloaded ({folder}) with the hotel database, and adds what it lacks to items_base with a catalogue item each, the way the All-in-1 Converter's Generate SQL does.",
-                &[("folder", &folder.display().to_string())],
-            ),
-            bullets: vec![
-                t("items_base: size, height, sit / lay / walk / stack and the interaction modes from each furni's .hab file and FurnitureData.json; a colour variant (rare_dragonlamp*5) uses the .hab of its base.").into(),
-                t("catalog_items: 5 credits, amount 1, the offer id of FurnitureData.json.").into(),
-                t("Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.").into(),
-                tf("A backup of the database comes first ({folder}); the import runs as one transaction, so it is done completely or not at all.", &[("folder", &server_tools::backup_directory())]),
-            ],
-            footnote: Some(t("Download Furnidata and Furniture in Habbo assets first; Deploy Assets puts the .hab files on the server, so the client shows the furniture.").into()),
+        let common = [
+            t("catalog_items: 5 credits, amount 1, the offer id of FurnitureData.json.").to_string(),
+            t("Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.").into(),
+            tf("A backup of the database comes first ({folder}); the import runs as one transaction, so it is done completely or not at all.", &[("folder", &server_tools::backup_directory())]),
+        ];
+        match self.mode {
+            Mode::Habbo => Intro {
+                icon: Icon::Database,
+                heading: t("Import the missing Habbo furniture").into(),
+                description: tf(
+                    "Compares the Habbo furniture you downloaded ({folder}) with the hotel database, and adds what it lacks to items_base with a catalogue item each, the way the All-in-1 Converter's Generate SQL does.",
+                    &[("folder", &folder.display().to_string())],
+                ),
+                bullets: std::iter::once(t("items_base: size, height, sit / lay / walk / stack and the interaction modes from each furni's .hab file and FurnitureData.json; a colour variant (rare_dragonlamp*5) uses the .hab of its base.").to_string()).chain(common).collect(),
+                footnote: Some(t("Download Furnidata and Furniture in Habbo assets first; Deploy Assets puts the .hab files on the server, so the client shows the furniture.").into()),
+            },
+            Mode::Custom => Intro {
+                icon: Icon::Cube,
+                heading: t("Import a retro's custom furniture").into(),
+                description: t("Merges the profile's FurnitureData.json into Habbo's, then adds its furniture the database lacks to items_base with a catalogue item each, like Import Assets does for Habbo's.").into(),
+                bullets: [
+                    t("Habbo's FurnitureData.json (Habbo assets → Furnidata) is the source of truth: its furniture and ids stay as they are.").to_string(),
+                    t("From the profile: a classname listed twice counts once, a classname that is already there is left out, and an id that is taken gets a free one above 100000.").into(),
+                    t("Several profiles: they are merged in the order you import them, every time, so a later profile never changes an earlier one, and a newer Habbo download is merged in the same way.").into(),
+                    tf("The merged FurnitureData.json goes to the server with the import (the old one is kept as .bak-<time>), and is kept in {folder}.", &[("folder", &merge_files(&folder).1.display().to_string())]),
+                ]
+                .into_iter()
+                .chain(common)
+                .collect(),
+                footnote: Some(t("Download Furnidata in Habbo assets and the profile's Custom furniture in Nitro retro first; upload the profile's .hab files to the server's gamedata/furniture (Asset Explorer).").into()),
+            },
         }
     }
 
     fn checks(&self) -> Vec<String> {
-        vec![t("Check the database").into(), t("Upload the SQL").into(), t("Backup and import").into(), t("Restart the emulator").into()]
+        let mut checks: Vec<String> = vec![t("Check the database").into(), t("Upload the SQL").into(), t("Backup and import").into()];
+        if self.mode == Mode::Custom {
+            checks.push("FurnitureData.json".into());
+        }
+        checks.push(t("Restart the emulator").into());
+        checks
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
+        if self.mode == Mode::Custom {
+            self.custom_options(ui, palette);
+        }
         let mut form = self.form.lock().unwrap();
         let form = &mut *form;
         let Some(plan) = &form.plan else { return };
+        let prepared = form.prepared.clone();
         ui.add_space(8.0);
         ui.label(RichText::new(t("What will be imported")).size(14.0).strong());
         ui.label(
@@ -216,11 +478,22 @@ impl InstallStep for ImportAssetsStep {
         );
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
-            let lists = [
+            let mut lists = vec![
                 (List::New, tf("To import ({count})", &[("count", &plan.new.len().to_string())])),
                 (List::NoBundle, tf("No .hab file ({count})", &[("count", &plan.no_bundle.len().to_string())])),
-                (List::Uncatalogued, tf("Not in the catalogue ({count})", &[("count", &plan.uncatalogued.len().to_string())])),
             ];
+            match &prepared {
+                None => lists.push((List::Uncatalogued, tf("Not in the catalogue ({count})", &[("count", &plan.uncatalogued.len().to_string())]))),
+                Some(p) => {
+                    let r = p.report();
+                    lists.push((List::Duplicates, tf("Listed twice ({count})", &[("count", &r.duplicates.len().to_string())])));
+                    lists.push((List::Already, tf("Already there ({count})", &[("count", &r.already.len().to_string())])));
+                    lists.push((List::Renumbered, tf("New id ({count})", &[("count", &r.renumbered.len().to_string())])));
+                    if !plan.moved.is_empty() {
+                        lists.push((List::Moved, tf("sprite_id to update ({count})", &[("count", &plan.moved.len().to_string())])));
+                    }
+                }
+            }
             for (list, label) in lists {
                 ui.selectable_value(&mut form.list, list, RichText::new(label).size(12.5));
             }
@@ -229,8 +502,9 @@ impl InstallStep for ImportAssetsStep {
         });
         let filter = form.filter.trim().to_lowercase();
         let matches = |name: &str| filter.is_empty() || name.to_lowercase().contains(&filter);
-        match form.list {
-            List::New => {
+        let names = |list: &[String]| -> Vec<Vec<String>> { list.iter().filter(|n| matches(n)).map(|n| vec![n.clone()]).collect() };
+        match (form.list, &prepared) {
+            (List::New, _) => {
                 let rows: Vec<Vec<String>> = plan
                     .new
                     .iter()
@@ -251,12 +525,15 @@ impl InstallStep for ImportAssetsStep {
                 let header = ["item_name", t("Type"), t("Size"), t("Modes"), t("Allows"), "interaction", "sprite_id", "offer_id"];
                 table(ui, palette, "import_new", &[230.0, 50.0, 100.0, 50.0, 130.0, 90.0, 70.0, 70.0], &header, &rows);
             }
-            List::NoBundle => {
+            (List::NoBundle, None) => {
                 widgets::muted(ui, palette, t("Missing in the database, but their .hab file is not in the download (or cannot be read): they are left out. Download Furniture in Habbo assets again to get them."), 12.0);
-                let rows: Vec<Vec<String>> = plan.no_bundle.iter().filter(|n| matches(n)).map(|n| vec![n.clone()]).collect();
-                table(ui, palette, "import_no_bundle", &[400.0], &["item_name"], &rows);
+                table(ui, palette, "import_no_bundle", &[400.0], &["item_name"], &names(&plan.no_bundle));
             }
-            List::Uncatalogued => {
+            (List::NoBundle, Some(_)) => {
+                widgets::muted(ui, palette, t("Missing in the database, but their .hab file is not in the profile's folder (or cannot be read): they are left out. Download Custom furniture in Nitro retro again to get them."), 12.0);
+                table(ui, palette, "import_no_bundle", &[400.0], &["item_name"], &names(&plan.no_bundle));
+            }
+            (List::Uncatalogued, _) => {
                 widgets::muted(ui, palette, t("Floor and wall furniture in items_base that no catalogue item sells (often on purpose: prizes, gifts, internal furni). Only with the option below do they get a catalogue item on the new page."), 12.0);
                 let rows: Vec<Vec<String>> = plan
                     .uncatalogued
@@ -266,6 +543,25 @@ impl InstallStep for ImportAssetsStep {
                     .collect();
                 table(ui, palette, "import_uncatalogued", &[260.0, 100.0, 80.0, 80.0], &["item_name", "id", "sprite_id", "offer_id"], &rows);
             }
+            (List::Duplicates, Some(p)) => {
+                widgets::muted(ui, palette, t("Listed more than once in the profile's FurnitureData.json: the first entry counts, these extra ones are left out."), 12.0);
+                table(ui, palette, "import_duplicates", &[400.0], &["classname"], &names(&p.report().duplicates));
+            }
+            (List::Already, Some(p)) => {
+                widgets::muted(ui, palette, t("Habbo's FurnitureData.json or an earlier profile has these classnames already: theirs stays, the profile's entry is left out."), 12.0);
+                table(ui, palette, "import_already", &[400.0], &["classname"], &names(&p.report().already));
+            }
+            (List::Renumbered, Some(p)) => {
+                widgets::muted(ui, palette, t("Their id was taken (by Habbo or an earlier profile): they get a free id above 100000, in FurnitureData.json and in items_base.sprite_id alike."), 12.0);
+                let rows: Vec<Vec<String>> = p.report().renumbered.iter().filter(|r| matches(&r.0)).map(|(name, old, new)| vec![name.clone(), old.to_string(), new.to_string()]).collect();
+                table(ui, palette, "import_renumbered", &[260.0, 100.0, 100.0], &["classname", t("Its id"), t("New id")], &rows);
+            }
+            (List::Moved, Some(_)) => {
+                widgets::muted(ui, palette, t("Already in items_base, but FurnitureData.json now has them under another id (Habbo took theirs): their sprite_id is updated, so the client keeps showing them."), 12.0);
+                let rows: Vec<Vec<String>> = plan.moved.iter().filter(|m| matches(&m.name)).map(|m| vec![m.name.clone(), m.from.to_string(), m.to.to_string()]).collect();
+                table(ui, palette, "import_moved", &[260.0, 100.0, 100.0], &["item_name", t("Now"), t("New id")], &rows);
+            }
+            _ => {}
         }
 
         ui.add_space(10.0);
@@ -284,16 +580,32 @@ impl InstallStep for ImportAssetsStep {
         widgets::muted(ui, palette, t("caption and caption_save of the new page, and the page it goes under: -1 (default) puts it at the top of the catalogue, or fill in the id of one of your pages (catalog_pages.id)."), 11.5);
         ui.checkbox(&mut form.visible, t("Show the page in the catalogue straight away"));
         widgets::muted(ui, palette, t("Off (default): the page is hidden, so players do not see the new furniture (rares too, at 5 credits) before you have checked the prices and moved it."), 11.5);
-        ui.checkbox(
-            &mut form.with_uncatalogued,
-            tf("Also a catalogue item for the {count} furniture that is in items_base but not in the catalogue", &[("count", &plan.uncatalogued.len().to_string())]),
-        );
+        if self.mode == Mode::Habbo {
+            ui.checkbox(
+                &mut form.with_uncatalogued,
+                tf("Also a catalogue item for the {count} furniture that is in items_base but not in the catalogue", &[("count", &plan.uncatalogued.len().to_string())]),
+            );
+        } else {
+            ui.checkbox(&mut form.put_furnidata, t("Put the merged FurnitureData.json on the server"));
+            widgets::muted(ui, palette, t("On (default): the client then knows the custom furniture with the ids the database gets. The old one is kept next to it as .bak-<time>."), 11.5);
+        }
         ui.checkbox(&mut form.restart, t("Restart the emulator afterwards"));
         widgets::muted(ui, palette, t("The emulator reads items_base and the catalogue when it starts: players are disconnected for a moment. Off: restart it yourself later (Tools)."), 11.5);
     }
 
     fn validate(&self) -> Option<String> {
         let form = self.form.lock().unwrap();
+        if self.mode == Mode::Custom {
+            if form.preparing {
+                return Some(t("Wait until the profile is merged.").into());
+            }
+            if let Some(problem) = &form.problem {
+                return Some(problem.clone());
+            }
+            if form.prepared.is_none() {
+                return Some(t("Choose the profile whose custom furniture you want to import.").into());
+            }
+        }
         let Some(plan) = &form.plan else { return Some(t("Nothing to import: see the message above.").into()) };
         if form.caption.trim().is_empty() {
             return Some(t("Give the catalogue page a name.").into());
@@ -301,15 +613,19 @@ impl InstallStep for ImportAssetsStep {
         if let Err(e) = parent_id(&form.parent, &form.pages) {
             return Some(e);
         }
-        let extra = if form.with_uncatalogued { plan.uncatalogued.len() } else { 0 };
-        (plan.new.is_empty() && extra == 0).then(|| t("There is nothing to import.").into())
+        (plan.work(form.with_uncatalogued) == 0).then(|| t("There is nothing to import.").into())
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
-        self.form.lock().unwrap().plan = None;
-        let (furnidata_path, furniture, _) = sources();
-        let furnidata = match std::fs::read(&furnidata_path) {
-            Ok(bytes) => bytes,
+        {
+            let mut form = self.form.lock().unwrap();
+            form.plan = None;
+            form.prepared = None;
+            form.db = None;
+        }
+        let (furnidata_path, furniture, assets) = sources();
+        let furnidata = match read_json(&furnidata_path) {
+            Ok(json) => json,
             Err(_) => {
                 ui.detected(
                     ResultKind::Warning,
@@ -319,9 +635,33 @@ impl InstallStep for ImportAssetsStep {
                 return Ok(false);
             }
         };
-        let furnidata: serde_json::Value = serde_json::from_slice(furnidata.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&furnidata))?;
         let state = furni_import::inspect(server.as_ref()).await?;
         let (database, items_base, catalog_items, pages) = (state.database.clone(), state.items_base, state.catalog_items, state.pages.clone());
+        let now = tf(
+            "The database {database} has {furniture} furniture and {items} catalogue items.",
+            &[("database", &database), ("furniture", &items_base.to_string()), ("items", &catalog_items.to_string())],
+        );
+        if self.mode == Mode::Custom {
+            let profiles: Vec<String> = aio_core::InstallerSettings::load().retro_profiles().into_iter().map(|p| p.name).collect();
+            let chosen = {
+                let mut form = self.form.lock().unwrap();
+                form.database = database.clone();
+                form.pages = pages;
+                form.original = Some(Arc::new(furnidata));
+                form.db = Some(Arc::new(state));
+                // The profile chosen before, else the last one merged, else the first.
+                let merged_last = load_state(&assets).profiles.last().cloned();
+                let chosen = form.profile.clone().filter(|p| profiles.contains(p)).or(merged_last.filter(|p| profiles.contains(p))).or(profiles.first().cloned());
+                form.profiles = profiles;
+                chosen
+            };
+            match chosen {
+                Some(profile) => self.start_preparing(profile, ui_ctx(&ui)),
+                None => self.form.lock().unwrap().profile = None,
+            }
+            ui.detected(ResultKind::Info, t("Choose the profile and check the list below"), &now);
+            return Ok(false);
+        }
         // Thousands of .hab files on a new hotel: not on the window's thread.
         let plan = tokio::task::spawn_blocking(move || furni_import::plan(&furnidata, &furniture, &state)).await?;
         let (new, no_bundle) = (plan.new.len(), plan.no_bundle.len());
@@ -331,10 +671,6 @@ impl InstallStep for ImportAssetsStep {
             form.pages = pages;
             form.plan = Some(plan);
         }
-        let now = tf(
-            "The database {database} has {furniture} furniture and {items} catalogue items.",
-            &[("database", &database), ("furniture", &items_base.to_string()), ("items", &catalog_items.to_string())],
-        );
         let skipped =
             if no_bundle > 0 { format!(" {}", tf("{count} more are missing but have no .hab file in the download.", &[("count", &no_bundle.to_string())])) } else { String::new() };
         if new == 0 {
@@ -348,11 +684,23 @@ impl InstallStep for ImportAssetsStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let (mut plan, caption, parent, visible, with_uncatalogued, restart) = {
+        let (mut plan, caption, parent, visible, with_uncatalogued, restart, prepared, put_furnidata) = {
             let form = self.form.lock().unwrap();
             let Some(plan) = form.plan.clone() else { fail!("Nothing to import.") };
-            (plan, form.caption.trim().to_string(), form.parent.clone(), form.visible, form.with_uncatalogued, form.restart)
+            (
+                plan,
+                form.caption.trim().to_string(),
+                form.parent.clone(),
+                form.visible,
+                form.with_uncatalogued && self.mode == Mode::Habbo,
+                form.restart,
+                form.prepared.clone(),
+                form.put_furnidata,
+            )
         };
+        if self.mode == Mode::Custom && prepared.is_none() {
+            fail!("{}", t("Choose the profile whose custom furniture you want to import."));
+        }
         log("> Checking the database again ...");
         // Something may have been added since the overview: that is left out now.
         let state = furni_import::inspect(server).await?;
@@ -363,11 +711,19 @@ impl InstallStep for ImportAssetsStep {
         if plan.new.len() < before {
             log(&format!("  {} furniture were added in the meantime and are left out", before - plan.new.len()));
         }
+        // A sprite_id that moved meanwhile is not touched (the UPDATE names the one it had).
+        plan.moved.retain(|m| state.sprites.get(&m.name.to_lowercase()) == Some(&(m.from, m.kind)));
         let extra = if with_uncatalogued { plan.uncatalogued.len() } else { 0 };
-        if plan.new.is_empty() && extra == 0 {
+        if plan.work(with_uncatalogued) == 0 {
             fail!("There is nothing to import any more.");
         }
-        log(&format!("  {}: {} new furniture, {} catalogue items for furniture without one", state.database, plan.new.len(), extra));
+        log(&format!(
+            "  {}: {} new furniture, {} catalogue items for furniture without one, {} sprite_ids to update",
+            state.database,
+            plan.new.len(),
+            extra,
+            plan.moved.len()
+        ));
         ui.done(&state.database);
 
         // The parent must still be there (checked against the database as it is now).
@@ -393,19 +749,45 @@ impl InstallStep for ImportAssetsStep {
         ui.done(&format!("{:.0} KB", sql.len() as f64 / 1024.0));
 
         let result = furni_import::import(server, &remote_sql, &log).await?;
-        log(&format!("  The catalogue page {caption} has id {}", result.page_id));
-        ui.done(&tf("page {id}", &[("id", &result.page_id.to_string())]));
-        *self.output.lock().unwrap() =
-            Output { result: Some(result.clone()), caption: caption.clone(), furniture: plan.new.len(), catalogue_items: plan.new.len() + extra, local_sql: Some(local_sql) };
+        if result.page_id > 0 {
+            log(&format!("  The catalogue page {caption} has id {}", result.page_id));
+            ui.done(&tf("page {id}", &[("id", &result.page_id.to_string())]));
+        } else {
+            ui.done(&tf("{count} sprite_ids", &[("count", &plan.moved.len().to_string())]));
+        }
+        let mut output =
+            Output { result: Some(result.clone()), caption: caption.clone(), furniture: plan.new.len(), catalogue_items: plan.new.len() + extra, local_sql: Some(local_sql), furnidata: None };
+
+        if let Some(prepared) = prepared {
+            // The ids are in the database now: the merge keeps them, and the merged file is kept here.
+            let (state_file, merged_file) = merge_files(&folder);
+            std::fs::create_dir_all(state_file.parent().unwrap_or(&folder))?;
+            std::fs::write(&merged_file, serde_json::to_string_pretty(&prepared.merged.furnidata)?)?;
+            std::fs::write(&state_file, serde_json::to_string_pretty(&prepared.merged.state)?)?;
+            log(&format!("  The merged FurnitureData.json is kept in {}", merged_file.display()));
+            if put_furnidata {
+                let remote_json = format!("{directory}/import-assets-{stamp}.json");
+                server.upload(&merged_file, &remote_json, &|_| {}).await?;
+                let old = furni_import::put_furniture_data(server, &remote_json, &log).await?;
+                output.furnidata = Some((merged_file.clone(), old));
+                ui.done(t("on the server"));
+            } else {
+                output.furnidata = Some((merged_file.clone(), None));
+                ui.done(t("kept here"));
+            }
+        }
+        *self.output.lock().unwrap() = output;
 
         if restart {
-            let stopped = server_tools::stop_emulator(server, &log).await?;
-            if stopped {
-                server_tools::start_emulator(server, &log).await?;
-            }
-            ui.done(if stopped { t("restarted") } else { t("not installed") });
+            restart_emulator(server, &ui, &log).await?;
         } else {
             ui.done(t("skipped"));
+        }
+        if result.page_id <= 0 {
+            return Ok(ui.succeeded(
+                &tf("{count} sprite_ids updated", &[("count", &plan.moved.len().to_string())]),
+                t("items_base follows the merged FurnitureData.json again; there was no new furniture to import."),
+            ));
         }
         Ok(ui.succeeded(
             &tf("{count} furniture imported", &[("count", &plan.new.len().to_string())]),
@@ -417,8 +799,13 @@ impl InstallStep for ImportAssetsStep {
     }
 }
 
-pub fn wizard(shared: &Shared) -> Wizard {
-    let step = Arc::new(ImportAssetsStep::new());
+/// The window's context, to draw again when a thread is done.
+fn ui_ctx(ui: &StepUi) -> egui::Context {
+    ui.context()
+}
+
+pub fn wizard(shared: &Shared, mode: Mode) -> Wizard {
+    let step = Arc::new(ImportAssetsStep::new(mode));
     let finish_step = step.clone();
     Wizard::new(
         shared.runtime.clone(),
@@ -439,10 +826,12 @@ pub struct Imported {
     pub furniture: usize,
     pub catalogue_items: usize,
     pub local_sql: Option<PathBuf>,
+    /// The merged FurnitureData.json kept here, and the server's old one (custom furniture).
+    pub furnidata: Option<(PathBuf, Option<String>)>,
 }
 
 impl From<Output> for Imported {
     fn from(o: Output) -> Self {
-        Self { result: o.result, caption: o.caption, furniture: o.furniture, catalogue_items: o.catalogue_items, local_sql: o.local_sql }
+        Self { result: o.result, caption: o.caption, furniture: o.furniture, catalogue_items: o.catalogue_items, local_sql: o.local_sql, furnidata: o.furnidata }
     }
 }

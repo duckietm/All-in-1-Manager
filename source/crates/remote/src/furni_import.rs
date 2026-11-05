@@ -118,6 +118,8 @@ pub struct DbState {
     /// Floor and wall furni of items_base that no catalogue item sells (pets "a0 ..." and the like left out).
     pub uncatalogued: Vec<Uncatalogued>,
     pub items_base: usize,
+    /// The sprite_id and type of every items_base row, by item_name in lower case (the first row of a name).
+    pub sprites: HashMap<String, (i64, char)>,
     pub catalog_items: usize,
     /// The catalogue pages by id, with their caption (for choosing the new page's parent).
     pub pages: BTreeMap<i64, String>,
@@ -130,9 +132,26 @@ pub struct Plan {
     /// Furnidata classnames the database lacks but whose bundle is not in the furniture folder (or unreadable).
     pub no_bundle: Vec<String>,
     pub uncatalogued: Vec<Uncatalogued>,
+    /// Furni in items_base whose sprite_id has to follow FurnitureData.json (a custom furni got another id).
+    pub moved: Vec<Moved>,
+}
+
+/// An items_base furni whose sprite_id changes: its FurnitureData.json id moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub name: String,
+    /// 's' (floor) or 'i' (wall).
+    pub kind: char,
+    pub from: i64,
+    pub to: i64,
 }
 
 impl Plan {
+    /// Something to do: new furni, catalogue items, or sprite ids to follow.
+    pub fn work(&self, with_uncatalogued: bool) -> usize {
+        self.new.len() + self.moved.len() + if with_uncatalogued { self.uncatalogued.len() } else { 0 }
+    }
+
     pub fn floor(&self) -> usize {
         self.new.iter().filter(|f| f.kind == 's').count()
     }
@@ -297,6 +316,21 @@ pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncat
         if with_uncatalogued { plan.uncatalogued.len() } else { 0 }
     ));
     out.push_str("SET NAMES utf8mb4;\nSTART TRANSACTION;\n");
+    // FurnitureData.json moved these furni to another id: items_base follows, or the client shows other furniture.
+    for moved in &plan.moved {
+        out.push_str(&format!(
+            "UPDATE `items_base` SET `sprite_id` = {} WHERE `item_name` = {} AND `type` = '{}' AND `sprite_id` = {};\n",
+            moved.to,
+            sql_literal(&moved.name),
+            moved.kind,
+            moved.from
+        ));
+    }
+    let items = plan.new.len() + if with_uncatalogued { plan.uncatalogued.len() } else { 0 };
+    if items == 0 {
+        out.push_str("COMMIT;\n");
+        return out;
+    }
     out.push_str(&format!(
         "INSERT INTO `catalog_pages` (`parent_id`, `page_layout`, `caption_save`, `caption`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`) VALUES ({parent_id}, 'default_3x3', {c}, {c}, 1, 1, 1, 99, {}, '1');\n",
         yes(visible),
@@ -362,6 +396,9 @@ pub fn parse_state(output: &str) -> DbState {
             ["B", id, sprite, kind, name] => {
                 state.items_base += 1;
                 state.names.insert(name.trim().to_lowercase());
+                if let (Ok(sprite), Some(kind)) = (sprite.parse::<i64>(), kind.chars().next()) {
+                    state.sprites.entry(name.trim().to_lowercase()).or_insert((sprite, kind));
+                }
                 // Floor and wall furni only; pets ("a0 pet0") and the like have no furni of their own. (HabFurniScan)
                 if let (Ok(id), true) = (id.parse::<i64>(), matches!(*kind, "s" | "i") && !name.starts_with("a0")) {
                     furni.push((id, name.to_string(), sprite.parse().unwrap_or(0)));
@@ -438,6 +475,35 @@ pub async fn import(server: &dyn Server, remote_sql: &str, log: Log<'_>) -> Resu
     let body = fill(IMPORT, &[("DatabaseName", &server_tools::database_name()), ("SqlFile", &crate::server::shell_quote(remote_sql))]);
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Importing the furniture failed", &["PAGE"], None).await?;
     Ok(ImportResult { safety_backup: backup.remote_path, page_id: values.long("PAGE") })
+}
+
+const PUT_FURNITURE_DATA: &str = r#"set -o pipefail
+json={{JsonFile}}
+trap 'rm -f "$json"' EXIT
+[ -s "$json" ] || fail "The uploaded FurnitureData.json is missing or empty."
+gamedata={{Gamedata}}
+config="$gamedata/config"
+[ -d "$gamedata" ] || fail "$gamedata does not exist: run the Octane step first."
+install -d -o www-data -g www-data -m 2775 "$config"
+if [ -f "$config/FurnitureData.json" ]; then
+  old="$config/FurnitureData.json.bak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$config/FurnitureData.json" "$old"
+  echo "  The old one is kept as $old"
+  echo "OLD=$old"
+fi
+install -o www-data -g www-data -m 664 "$json" "$config/FurnitureData.json"
+echo "  $config/FurnitureData.json ($(du -h "$config/FurnitureData.json" | cut -f1))""#;
+
+/// Puts the uploaded `remote_json` in gamedata/config as FurnitureData.json; the one that was there is kept next to
+/// it as .bak-<time> (returned).
+pub async fn put_furniture_data(server: &dyn Server, remote_json: &str, log: Log<'_>) -> Result<Option<String>> {
+    log("> FurnitureData.json to the server");
+    let body = fill(
+        PUT_FURNITURE_DATA,
+        &[("Gamedata", &crate::server::shell_quote(&crate::octane::gamedata())), ("JsonFile", &crate::server::shell_quote(remote_json))],
+    );
+    let values = script::run_capturing(server, &script::with_prelude(&body), log, "Putting FurnitureData.json on the server failed", &["OLD"], None).await?;
+    Ok(values.string("OLD"))
 }
 
 #[cfg(test)]
@@ -543,6 +609,11 @@ mod tests {
         assert!(text.contains("(CAST(@offer + 2 AS UNSIGNED), CAST(77 AS CHAR), @page, 3, 0, 99, 'lamp',"), "{text}");
         assert!(text.contains("(CAST(@item + 1 AS UNSIGNED), 18, 'chair_o"), "{text}");
         assert!(!sql(&plan, "x", -1, true, false).contains("'lamp'"));
+        let moved = Plan { moved: vec![Moved { name: "leet_table".into(), kind: 's', from: 600, to: 123456 }], ..Plan::default() };
+        assert_eq!(moved.work(false), 1);
+        let text = sql(&moved, "x", -1, false, false);
+        assert!(text.contains("UPDATE `items_base` SET `sprite_id` = 123456 WHERE `item_name` = 'leet_table' AND `type` = 's' AND `sprite_id` = 600;"), "{text}");
+        assert!(!text.contains("catalog_pages") && text.trim_end().ends_with("COMMIT;"), "no page without catalogue items");
         assert!(sql(&plan, "x", 2, true, false).contains("VALUES (2, 'default_3x3', 'x', 'x', 1, 1, 1, 99, '1', '1');"));
     }
 
@@ -554,6 +625,7 @@ mod tests {
         assert_eq!((state.items_base, state.catalog_items), (5, 2));
         assert!(state.names.contains("chair_norja"));
         assert_eq!(state.pages.get(&2).map(String::as_str), Some("Meubels"));
+        assert_eq!(state.sprites.get("chair_norja"), Some(&(14, 's')));
         assert_eq!(state.uncatalogued, vec![Uncatalogued { id: 2, name: "Chair_Norja".into(), sprite_id: 14, offer_id: -1 }]);
     }
 }

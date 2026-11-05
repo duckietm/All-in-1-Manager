@@ -79,6 +79,14 @@ pub fn asset_entries() -> Vec<Entry> {
             Page::ImportAssets,
         ),
         entry(
+            t("Import custom furniture"),
+            t("A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.").into(),
+            Icon::Cube,
+            "#BE185D",
+            Scene::Hotel,
+            Page::ImportCustom,
+        ),
+        entry(
             "Asset Explorer",
             crate::i18n::tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]),
             Icon::FolderSync,

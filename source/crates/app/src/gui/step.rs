@@ -87,6 +87,11 @@ impl StepUi {
         self.ctx.request_repaint();
     }
 
+    /// The window's context (for a thread that has to draw it again when it is done).
+    pub fn context(&self) -> egui::Context {
+        self.ctx.clone()
+    }
+
     /// Asks the window to draw again (after a task reported something).
     pub fn wake(&self) {
         self.ctx.request_repaint();

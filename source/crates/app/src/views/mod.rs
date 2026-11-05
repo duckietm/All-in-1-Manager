@@ -84,6 +84,7 @@ pub(crate) fn wizards(shared: &Shared) -> crate::gui::Wizards {
         remove_crowdsec: remove_crowdsec::wizard(shared),
         default_catalog: default_catalog::wizard(shared),
         deploy: deploy::wizard(shared),
-        import_assets: import_assets::wizard(shared),
+        import_assets: import_assets::wizard(shared, import_assets::Mode::Habbo),
+        import_custom: import_assets::wizard(shared, import_assets::Mode::Custom),
     }
 }

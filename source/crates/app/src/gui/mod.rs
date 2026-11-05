@@ -49,6 +49,7 @@ pub enum Page {
     DefaultCatalog,
     DeployAssets,
     ImportAssets,
+    ImportCustom,
     GetAssets,
     RetroAssets,
     AssetTools,
@@ -150,6 +151,7 @@ pub(crate) struct Wizards {
     pub(crate) default_catalog: Wizard,
     pub(crate) deploy: Wizard,
     pub(crate) import_assets: Wizard,
+    pub(crate) import_custom: Wizard,
 }
 
 impl Wizards {
@@ -169,11 +171,12 @@ impl Wizards {
             Page::DefaultCatalog => &mut self.default_catalog,
             Page::DeployAssets => &mut self.deploy,
             Page::ImportAssets => &mut self.import_assets,
+            Page::ImportCustom => &mut self.import_custom,
             _ => return None,
         })
     }
 
-    fn all(&self) -> [&Wizard; 14] {
+    fn all(&self) -> [&Wizard; 15] {
         [
             &self.install,
             &self.atom,
@@ -189,6 +192,7 @@ impl Wizards {
             &self.default_catalog,
             &self.deploy,
             &self.import_assets,
+            &self.import_custom,
         ]
     }
 }
@@ -489,6 +493,10 @@ impl App {
                 t("Import Assets").into(),
                 t("The Habbo furniture the hotel database lacks into items_base and the catalogue, with an overview first.").into(),
             ),
+            Page::ImportCustom => (
+                t("Import custom furniture").into(),
+                t("A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.").into(),
+            ),
             Page::Debug => (
                 "Debug".into(),
                 if session.is_none() {
@@ -598,6 +606,7 @@ impl App {
                             (t("Asset tools"), Icon::Swap, Page::AssetTools),
                                 (t("Deploy Assets"), Icon::ArrowUp, Page::DeployAssets),
                                 (t("Import Assets"), Icon::Database, Page::ImportAssets),
+                                (t("Import custom furniture"), Icon::Cube, Page::ImportCustom),
                                 ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
                             ],
                         ),
@@ -722,6 +731,7 @@ impl App {
             Page::DefaultCatalog => &self.wizards.default_catalog,
             Page::DeployAssets => &self.wizards.deploy,
             Page::ImportAssets => &self.wizards.import_assets,
+            Page::ImportCustom => &self.wizards.import_custom,
             _ => return None,
         };
         Some(wizard.status()).filter(|s| s != t("Ready."))

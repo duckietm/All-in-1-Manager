@@ -17,7 +17,8 @@
 //!
 //! Left alone: furni other than floor and wall (pets "a0 ...", effects, bots), and every multiheight furni
 //! (interaction_type 'multiheight', or a multiheight value): their heights are set by hand per state. Only one with
-//! more heights than its .hab has states gets its extra heights cut off (Fields::extra_heights).
+//! more heights than its .hab has states gets its extra heights cut off (Fields::extra_heights), and its width and
+//! length follow the .hab (its stack_height stays: the states carry the height).
 
 use std::collections::{HashMap, HashSet};
 
@@ -266,8 +267,14 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
         }
         'fields: {
             if multiheight {
-                // Its heights are set by hand per state: nothing else is touched.
+                // Its heights are set by hand per state: stack_height and the rest stay. Only the floor size, which
+                // the heights do not depend on, follows the .hab.
                 plan.multiheight += 1;
+                if let (true, 's', Some(b)) = (fields.size, row.kind, bundle) {
+                    let (width, length) = ((b.width.round() as i64).max(1), (b.length.round() as i64).max(1));
+                    change("width", row.width.to_string(), width.to_string(), width.to_string());
+                    change("length", row.length.to_string(), length.to_string(), length.to_string());
+                }
                 break 'fields;
             }
             plan.checked += 1;
@@ -343,8 +350,10 @@ pub fn semicolons(multiheight: &str) -> Option<String> {
 pub fn sql(plan: &FixPlan) -> String {
     let mut out = String::from("-- Fix items_base (All-in-1 Installer): values as FurnitureData.json and the .hab files give them.\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n");
     for (id, set) in &plan.updates {
-        // A row whose multiheight this fix sets or removes is meant; every other one must not be a multiheight furni.
-        let guard = if set.iter().any(|(column, _)| *column == "multiheight") { "" } else { " AND `interaction_type` <> 'multiheight' AND (`multiheight` IS NULL OR `multiheight` IN ('', '0'))" };
+        // A row whose multiheight this fix sets or removes is meant, and so is a floor size alone (a multiheight furni
+        // gets that too); every other one must not be a multiheight furni.
+        let meant = set.iter().any(|(column, _)| *column == "multiheight") || set.iter().all(|(column, _)| matches!(*column, "width" | "length"));
+        let guard = if meant { "" } else { " AND `interaction_type` <> 'multiheight' AND (`multiheight` IS NULL OR `multiheight` IN ('', '0'))" };
         let set: Vec<String> = set.iter().map(|(column, value)| format!("`{column}` = {value}")).collect();
         out.push_str(&format!("UPDATE `items_base` SET {} WHERE `id` = {id}{guard};\n", set.join(", ")));
     }
@@ -565,8 +574,11 @@ mod tests {
             of("block"),
             [("interaction_type", "multiheight".into()), ("multiheight", five.clone()), ("interaction_modes_count", "5".into()), ("stack_height", "0.00".into())]
         );
-        // A multiheight furni in items_base is never changed: other heights, another number, or no multiheight .hab.
-        assert!(of("block_hand").is_empty() && of("block_three").is_empty() && of("not_multi").is_empty());
+        // A multiheight furni in items_base keeps its heights: other heights, another number, or no multiheight .hab.
+        // Only its floor size follows the .hab.
+        let kept = |name: &str| of(name).iter().all(|(column, _)| matches!(*column, "width" | "length"));
+        assert!(kept("block_hand") && kept("block_three") && kept("not_multi"));
+        assert_eq!(of("not_multi"), [("width", "2".to_string())], "the .hab is 2 x 1");
         assert_eq!(plan.multiheight_count_differs, [("block_three".to_string(), "1.00;0.50;0.10".to_string(), five.clone())]);
         assert_eq!(plan.multiheight_not_by_hab, ["not_multi"]);
         assert_eq!(of("block_recolorable"), [("multiheight", five.clone())], "recolorable: the heights, its interaction and modes stay");
@@ -638,6 +650,8 @@ mod tests {
             interaction_type: "multiheight".into(),
             multiheight: multiheight.into(),
             modes,
+            width: 2,
+            length: 2,
             ..row(id, name, 's')
         };
         let rows = [with(1, "pirate_stage", "0.8;2.0;3.0;4.0;5.0", 4), with(2, "few", "0.8;2.0", 2)];
@@ -649,5 +663,11 @@ mod tests {
         assert!(plan.multiheight_not_by_hab == ["few"], "{:?}", plan.multiheight_not_by_hab);
         let off = super::plan(&rows, &furnidata, &bundles, Fields { extra_heights: false, ..Fields::default() });
         assert!(off.changes.is_empty());
+        // Set to 1 x 1 by hand: the .hab's 2 x 2 comes back; stack_height (0.00, the states carry the height) stays.
+        let small = [ItemRow { width: 1, length: 1, ..rows[0].clone() }];
+        let sized = super::plan(&small, &furnidata, &bundles, Fields { extra_heights: false, ..Fields::default() });
+        let columns: Vec<(&str, String)> = sized.changes.iter().map(|c| (c.column, c.to.clone())).collect();
+        assert_eq!(columns, [("width", "2".to_string()), ("length", "2".to_string())]);
+        assert!(sql(&sized).contains("UPDATE `items_base` SET `width` = 2, `length` = 2 WHERE `id` = 1;\n"), "{}", sql(&sized));
     }
 }

@@ -210,6 +210,7 @@ impl InstallStep for ItemFixStep {
         ui.checkbox(&mut fields.kind, t("type (floor s / wall i), from FurnitureData.json"));
         widgets::muted(ui, palette, t("Off (default) for type: furni players already placed keep their floor or wall position, so a furni that changes type can end up broken in their rooms."), 11.5);
         ui.checkbox(&mut fields.size, t("width, length and stack_height, from the .hab files"));
+        widgets::muted(ui, palette, t("A multiheight furni gets only its width and length: its stack_height stays, the emulator takes the height of each state."), 11.5);
         ui.checkbox(&mut fields.flags, t("allow_sit, allow_lay and allow_walk, from FurnitureData.json"));
         ui.checkbox(&mut fields.modes, t("interaction_modes_count, from the .hab files (interaction_type default only)"));
         ui.checkbox(&mut fields.multiheight, t("multiheight, as the .hab files say (logicType furniture_multiheight)"));

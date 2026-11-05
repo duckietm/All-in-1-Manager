@@ -111,6 +111,7 @@
   "A complete catalogue for a new hotel ({version}): the catalogue pages and items, the furniture (items_base) and the client's FurnitureData.json, which belong together.",
   "A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.",
   "A furni with offerid -1 in FurnitureData.json gets a free offer id above 60000 (every entry of its classname); one whose catalogue items already share an offer id nothing else uses keeps that one.",
+  "A multiheight furni gets only its width and length: its stack_height stays, the emulator takes the height of each state.",
   "A name of its own, not the hotel's: for a hotel on example.com, use git.example.com.",
   "A newer {image} is downloaded, but the container still runs the old one. Restart starts the new one.",
   "A newer {image} is downloaded, but the container still runs the old one. Update starts the new one; a docker restart keeps the old image (it restarts the same container).",

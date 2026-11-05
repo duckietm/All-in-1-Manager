@@ -314,6 +314,8 @@ struct Output {
     catalogue_items: usize,
     local_sql: Option<PathBuf>,
     furnidata: Option<(PathBuf, Option<String>)>,
+    /// The imported furni's .hab files and icons that are here but not on the server.
+    missing_files: Vec<furni_import::ClientFile>,
 }
 
 pub struct ImportAssetsStep {
@@ -896,6 +898,11 @@ impl InstallStep for ImportAssetsStep {
         let sql = furni_import::sql(&plan, &caption, parent, visible, with_uncatalogued, per_page);
         // A copy on this computer, to read back what ran.
         let (_, _, folder) = sources();
+        // Where the imported furni's .hab files and icons are on this computer.
+        let client_gamedata = match &prepared {
+            Some(p) => profile_gamedata(&folder, &p.profile),
+            None => habbo_assets::gamedata_folder(&folder),
+        };
         let stamp = aio_core::config_dir::timestamp();
         let local_dir = folder.join("Import_SQL");
         std::fs::create_dir_all(&local_dir)?;
@@ -921,7 +928,7 @@ impl InstallStep for ImportAssetsStep {
             ui.done(&tf("{count} sprite_ids", &[("count", &plan.moved.len().to_string())]));
         }
         let mut output =
-            Output { result: Some(result.clone()), caption: caption.clone(), furniture: plan.new.len(), catalogue_items: plan.new.len() + extra, local_sql: Some(local_sql), furnidata: None };
+            Output { result: Some(result.clone()), caption: caption.clone(), furniture: plan.new.len(), catalogue_items: plan.new.len() + extra, local_sql: Some(local_sql), furnidata: None, missing_files: Vec::new() };
 
         if let Some(prepared) = prepared {
             // The ids are in the database now: the merge keeps them, and the merged file is kept here.
@@ -940,6 +947,18 @@ impl InstallStep for ImportAssetsStep {
                 output.furnidata = Some((merged_file.clone(), None));
                 ui.done(t("kept here"));
             }
+        }
+        // Which of their files the server lacks: the finish page offers to upload them.
+        let files = furni_import::client_files(&plan.new, &client_gamedata);
+        match furni_import::missing_on_server(server, &files).await {
+            Ok(missing) => {
+                if !missing.is_empty() {
+                    let habs = missing.iter().filter(|f| f.folder == "furniture").count();
+                    log(&format!("  {habs} .hab files and {} icons are not on the server yet: the next page can upload them", missing.len() - habs));
+                }
+                output.missing_files = missing;
+            }
+            Err(e) => log(&format!("  ! {e}")),
         }
         *self.output.lock().unwrap() = output;
 
@@ -992,7 +1011,10 @@ pub fn wizard(shared: &Shared, mode: Mode) -> Wizard {
         &shared.dialogs,
         vec![step as Arc<dyn InstallStep>],
         false,
-        Arc::new(move |info| super::finished::import_assets(finish_step.output().into(), info.steps)),
+        {
+            let shared = shared.clone();
+            Arc::new(move |info| super::finished::import_assets(finish_step.output().into(), info.steps, shared.clone()))
+        },
         t("Furniture imported"),
         t("Completed"),
     )
@@ -1007,10 +1029,51 @@ pub struct Imported {
     pub local_sql: Option<PathBuf>,
     /// The merged FurnitureData.json kept here, and the server's old one (custom furniture).
     pub furnidata: Option<(PathBuf, Option<String>)>,
+    /// The imported furni's .hab files and icons that the server does not have.
+    pub missing_files: Vec<furni_import::ClientFile>,
 }
 
 impl From<Output> for Imported {
     fn from(o: Output) -> Self {
-        Self { result: o.result, caption: o.caption, furniture: o.furniture, catalogue_items: o.catalogue_items, local_sql: o.local_sql, furnidata: o.furnidata }
+        Self {
+            result: o.result,
+            caption: o.caption,
+            furniture: o.furniture,
+            catalogue_items: o.catalogue_items,
+            local_sql: o.local_sql,
+            furnidata: o.furnidata,
+            missing_files: o.missing_files,
+        }
     }
+}
+
+/// The upload of the missing files from the finish page.
+#[derive(Default)]
+pub struct FileUpload {
+    pub running: bool,
+    pub sent: u64,
+    pub result: Option<Result<String, String>>,
+}
+
+/// Uploads `files` to the server the window is logged in to, on the runtime; `state` shows how far it is.
+pub fn upload_missing(shared: &Shared, files: Vec<furni_import::ClientFile>, state: Arc<Mutex<FileUpload>>) {
+    let Some(server) = shared.session() else {
+        state.lock().unwrap().result = Some(Err(t("Not connected to the server: log in again and run the import once more.").into()));
+        return;
+    };
+    *state.lock().unwrap() = FileUpload { running: true, ..FileUpload::default() };
+    let ctx = shared.ctx.clone();
+    shared.spawn(async move {
+        let progress = |bytes: u64| {
+            state.lock().unwrap().sent = bytes;
+            ctx.request_repaint();
+        };
+        let result = furni_import::upload_client_files(server.as_ref(), &files, &progress).await;
+        let mut s = state.lock().unwrap();
+        s.running = false;
+        s.result = Some(match result {
+            Ok(count) => Ok(tf("{count} files uploaded. Players see the furniture after they reload the hotel.", &[("count", &count.to_string())])),
+            Err(e) => Err(e.to_string()),
+        });
+    });
 }

@@ -2426,5 +2426,12 @@
   "Name too long ({count})": "Ad çok uzun ({count})",
   "In the .hab": ".hab içinde",
   "Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel.": ".hab dosyaları, items_base.stack_height'ın tutamayacağı bir yükseklik veriyor (en fazla 99.99): 99.99 (ya da -99.99) alırlar. Bu mobileri otelde kontrol et.",
-  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "classname'leri items_base.item_name'in alabileceğinden uzun (70 karakter): dışarıda bırakılırlar, çünkü kısaltılmış bir ad artık FurnitureData.json ile eşleşmez."
+  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "classname'leri items_base.item_name'in alabileceğinden uzun (70 karakter): dışarıda bırakılırlar, çünkü kısaltılmış bir ad artık FurnitureData.json ile eşleşmez.",
+  "Not connected to the server: log in again and run the import once more.": "Sunucuya bağlı değil: yeniden giriş yap ve içe aktarmayı bir kez daha çalıştır.",
+  "{count} files uploaded. Players see the furniture after they reload the hotel.": "{count} dosya yüklendi. Oyuncular oteli yeniden yükledikten sonra mobileri görür.",
+  "The furniture's files on the server": "Mobilerin sunucudaki dosyaları",
+  "{habs} .hab files and {icons} icons of the imported furniture are not on the server yet ({size}); without them the client cannot show these furni.": "İçe aktarılan mobilerin {habs} .hab dosyası ve {icons} simgesi henüz sunucuda değil ({size}); bunlar olmadan istemci bu mobileri gösteremez.",
+  "Uploaded": "Yüklendi",
+  "The upload stopped": "Yükleme durdu",
+  "Upload the {count} missing files": "Eksik {count} dosyayı yükle"
 }

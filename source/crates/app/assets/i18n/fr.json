@@ -2426,5 +2426,12 @@
   "Name too long ({count})": "Nom trop long ({count})",
   "In the .hab": "Dans le .hab",
   "Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel.": "Leur fichier .hab donne une hauteur que items_base.stack_height ne peut pas contenir (au plus 99.99) : ils reçoivent 99.99 (ou -99.99). Vérifie ces mobis dans l'hôtel.",
-  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "Leur classname est plus long que ce que items_base.item_name contient (70 caractères) : ils sont laissés de côté, car un nom raccourci ne correspondrait plus à FurnitureData.json."
+  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "Leur classname est plus long que ce que items_base.item_name contient (70 caractères) : ils sont laissés de côté, car un nom raccourci ne correspondrait plus à FurnitureData.json.",
+  "Not connected to the server: log in again and run the import once more.": "Pas de connexion au serveur : reconnecte-toi et relance l'import.",
+  "{count} files uploaded. Players see the furniture after they reload the hotel.": "{count} fichiers envoyés. Les joueurs voient les mobis après avoir rechargé l'hôtel.",
+  "The furniture's files on the server": "Les fichiers des mobis sur le serveur",
+  "{habs} .hab files and {icons} icons of the imported furniture are not on the server yet ({size}); without them the client cannot show these furni.": "{habs} fichiers .hab et {icons} icônes des mobis importés ne sont pas encore sur le serveur ({size}) ; sans eux, le client ne peut pas afficher ces mobis.",
+  "Uploaded": "Envoyé",
+  "The upload stopped": "L'envoi s'est arrêté",
+  "Upload the {count} missing files": "Envoyer les {count} fichiers manquants"
 }

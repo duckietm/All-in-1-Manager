@@ -2426,5 +2426,12 @@
   "Name too long ({count})": "Nombre demasiado largo ({count})",
   "In the .hab": "En el .hab",
   "Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel.": "Su archivo .hab da una altura que items_base.stack_height no puede guardar (como mucho 99.99): reciben 99.99 (o -99.99). Revisa estos furnis en el hotel.",
-  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "Su classname es más largo de lo que cabe en items_base.item_name (70 caracteres): se omiten, porque un nombre recortado ya no coincidiría con FurnitureData.json."
+  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "Su classname es más largo de lo que cabe en items_base.item_name (70 caracteres): se omiten, porque un nombre recortado ya no coincidiría con FurnitureData.json.",
+  "Not connected to the server: log in again and run the import once more.": "Sin conexión con el servidor: inicia sesión de nuevo y vuelve a ejecutar la importación.",
+  "{count} files uploaded. Players see the furniture after they reload the hotel.": "{count} archivos subidos. Los jugadores ven los furnis al recargar el hotel.",
+  "The furniture's files on the server": "Los archivos de los furnis en el servidor",
+  "{habs} .hab files and {icons} icons of the imported furniture are not on the server yet ({size}); without them the client cannot show these furni.": "{habs} archivos .hab y {icons} iconos de los furnis importados aún no están en el servidor ({size}); sin ellos el cliente no puede mostrar estos furnis.",
+  "Uploaded": "Subido",
+  "The upload stopped": "La subida se detuvo",
+  "Upload the {count} missing files": "Subir los {count} archivos que faltan"
 }

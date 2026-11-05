@@ -608,6 +608,81 @@ pub async fn put_furniture_data(server: &dyn Server, remote_json: &str, log: Log
     Ok(values.string("OLD"))
 }
 
+/// A file the client needs for an imported furni: where it is here, and where it goes below gamedata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClientFile {
+    pub local: std::path::PathBuf,
+    /// "furniture" (the .hab bundle) or "icons" (<classname>_icon.png).
+    pub folder: &'static str,
+    pub name: String,
+    pub size: u64,
+}
+
+/// The .hab bundles and icons of `furni` that are in `gamedata` (a downloaded gamedata folder): one bundle per base
+/// name, one icon per colour ("rare_dragonlamp*4" -> rare_dragonlamp_4_icon.png).
+pub fn client_files(furni: &[NewFurni], gamedata: &Path) -> Vec<ClientFile> {
+    let mut seen = HashSet::new();
+    let mut files = Vec::new();
+    let mut add = |folder: &'static str, name: String| {
+        let dir = gamedata.join(folder);
+        let found = [name.clone(), name.to_lowercase()].into_iter().map(|n| (dir.join(&n), n)).find(|(path, _)| path.is_file());
+        if let Some((local, name)) = found {
+            if seen.insert((folder, name.to_lowercase())) {
+                let size = std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0);
+                files.push(ClientFile { local, folder, name, size });
+            }
+        }
+    };
+    for f in furni {
+        add("furniture", format!("{}.hab", bundle_name(&f.classname)));
+        add("icons", format!("{}_icon.png", f.classname.trim().replace('*', "_")));
+    }
+    files
+}
+
+const LIST_CLIENT_FILES: &str = r#"g={{Gamedata}}
+for folder in furniture icons; do
+  [ -d "$g/$folder" ] && find "$g/$folder" -maxdepth 1 -type f -printf "$folder/%f\n"
+done
+true"#;
+
+/// The `files` the server's gamedata does not have yet. Names count exactly: the web server is case-sensitive, so
+/// Leet_Chair.hab there does not serve the client's leet_chair.hab.
+pub async fn missing_on_server(server: &dyn Server, files: &[ClientFile]) -> Result<Vec<ClientFile>> {
+    let body = fill(LIST_CLIENT_FILES, &[("Gamedata", &crate::server::shell_quote(&crate::octane::gamedata()))]);
+    let output = script::root_output(server, &body, "Listing the server's furniture files failed").await?;
+    let there: HashSet<&str> = output.lines().map(str::trim).collect();
+    Ok(files.iter().filter(|f| !there.contains(format!("{}/{}", f.folder, f.name).as_str())).cloned().collect())
+}
+
+const UPLOAD_CLIENT_FILES: &str = r#"set -e
+install -d -m 2775 -o www-data -g www-data {{target}}
+tar -x -f - -C {{target}} --no-same-owner --no-same-permissions
+chown www-data:www-data {{target}}/* 2>/dev/null || true
+echo "OK""#;
+
+/// Uploads `files` into the server's gamedata (furniture/ and icons/), owned by www-data like the rest of it.
+/// `progress` gets the bytes sent so far, over all of them.
+pub async fn upload_client_files(server: &dyn Server, files: &[ClientFile], progress: crate::server::Progress<'_>) -> Result<usize> {
+    let sent = std::sync::atomic::AtomicU64::new(0);
+    for folder in ["furniture", "icons"] {
+        let part: Vec<&ClientFile> = files.iter().filter(|f| f.folder == folder).collect();
+        if part.is_empty() {
+            continue;
+        }
+        let target = crate::server::shell_quote(&format!("{}/{folder}", crate::octane::gamedata()));
+        let script = fill(UPLOAD_CLIENT_FILES, &[("target", &target)]);
+        let items: Vec<crate::asset_sync::tar_stream::TarItem> = part.iter().map(|f| crate::asset_sync::tar_stream::TarItem::file(&f.local, &f.name)).collect();
+        let before = sent.load(std::sync::atomic::Ordering::Relaxed);
+        let result = crate::asset_sync::tar_stream::upload(server, &script, &items, &|bytes| progress(before + bytes)).await?;
+        if !result.succeeded() || !result.output.contains("OK") {
+            return Err(crate::server::ServerError(format!("Unpacking the {folder} files on the server failed: {}", format!("{}{}", result.output, result.error).trim())).into());
+        }
+        sent.store(before + part.iter().map(|f| f.size).sum::<u64>(), std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(files.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,6 +828,36 @@ mod tests {
         assert!(text.contains("SELECT 'PAGES=3';"));
         assert!(!sql(&many, "import_x", 7, false, false, 500).contains("@top, 'default_3x3'"), "one page when they fit");
         assert!(sql(&plan, "x", 2, true, false, 500).contains("VALUES (2, 'default_3x3', 'x', 'x', 1, 1, 1, 99, '1', '1');"));
+    }
+
+    #[test]
+    fn the_files_of_the_imported_furni() {
+        let dir = std::env::temp_dir().join(format!("aio-client-files-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("furniture")).unwrap();
+        std::fs::create_dir_all(dir.join("icons")).unwrap();
+        for f in ["furniture/rare_dragonlamp.hab", "furniture/chair.hab", "icons/rare_dragonlamp_4_icon.png", "icons/chair_icon.png"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let furni = |name: &str| NewFurni {
+            classname: name.into(),
+            sprite_id: None,
+            offer_id: -1,
+            kind: 's',
+            width: 1.0,
+            length: 1.0,
+            height: 1.0,
+            allow_stack: false,
+            allow_sit: false,
+            allow_lay: false,
+            allow_walk: false,
+            interaction_type: "default",
+            modes: 1,
+        };
+        let files = client_files(&[furni("rare_dragonlamp*4"), furni("rare_dragonlamp*5"), furni("Chair"), furni("gone")], &dir);
+        let names: Vec<String> = files.iter().map(|f| format!("{}/{}", f.folder, f.name)).collect();
+        // One bundle per base name, an icon only where there is one, the lower-case file for "Chair".
+        assert_eq!(names, ["furniture/rare_dragonlamp.hab", "icons/rare_dragonlamp_4_icon.png", "furniture/chair.hab", "icons/chair_icon.png"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

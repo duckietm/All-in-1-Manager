@@ -79,6 +79,11 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 
 To look around first: `all-in-1-installer --dry-run` logs in to nothing and only shows the commands.
 
+**Does not open (a Windows VM)?** On Windows the window is drawn with DirectX 12 (wgpu), which works without a GPU
+too (VMware SVGA 3D, Hyper-V, Microsoft's software renderer). If that fails, the installer starts itself again with
+OpenGL; if neither works it says so in a message box, and the reason is in `configuration/start-error.log` next to the
+program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
+
 ## Contents
 
 - [Requirements](#requirements)

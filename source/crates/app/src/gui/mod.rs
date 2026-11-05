@@ -989,8 +989,46 @@ pub fn open_url(url: &str) {
     let _ = result;
 }
 
+/// How the window is drawn. OpenGL needs a driver with OpenGL 2 or newer, which a Windows VM without (or with
+/// VMware's / Hyper-V's basic) display driver often lacks; DirectX 12 through wgpu always works on Windows 10 / 11,
+/// on Microsoft's software renderer (WARP) when there is no GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renderer {
+    Glow,
+    Wgpu,
+}
+
+impl Renderer {
+    /// The first one tried: DirectX on Windows, OpenGL elsewhere (Linux desktops have it, and it starts faster).
+    pub fn preferred() -> Self {
+        if cfg!(windows) { Renderer::Wgpu } else { Renderer::Glow }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Renderer::Glow => Renderer::Wgpu,
+            Renderer::Wgpu => Renderer::Glow,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Renderer::Glow => "glow",
+            Renderer::Wgpu => "wgpu",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "glow" | "opengl" | "gl" => Some(Renderer::Glow),
+            "wgpu" | "directx" | "dx12" => Some(Renderer::Wgpu),
+            _ => None,
+        }
+    }
+}
+
 /// Starts the window.
-pub fn run(runtime: tokio::runtime::Handle, dry_run: bool) -> eframe::Result<()> {
+pub fn run(runtime: tokio::runtime::Handle, dry_run: bool, renderer: Renderer) -> eframe::Result<()> {
     let icon = image::load_from_memory(include_bytes!("../../resources/app.ico")).ok().map(|image| {
         let image = image.to_rgba8();
         let (width, height) = image.dimensions();
@@ -1004,6 +1042,10 @@ pub fn run(runtime: tokio::runtime::Handle, dry_run: bool) -> eframe::Result<()>
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions { viewport, centered: true, ..Default::default() };
+    let renderer = match renderer {
+        Renderer::Glow => eframe::Renderer::Glow,
+        Renderer::Wgpu => eframe::Renderer::Wgpu,
+    };
+    let options = eframe::NativeOptions { viewport, centered: true, renderer, ..Default::default() };
     eframe::run_native("All-in-1 Installer", options, Box::new(move |cc| Ok(Box::new(App::new(cc, runtime, dry_run)))))
 }

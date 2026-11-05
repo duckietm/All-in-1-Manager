@@ -360,7 +360,7 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
             Some(heights) => ("multiheight", Some(heights.column()), heights.len() as i64, 0.0),
             None => (interaction, None, bundle.modes, height),
         };
-        plan.new.push(NewFurni {
+        let mut furni = NewFurni {
             sprite_id: entry.get("id").and_then(Value::as_i64).filter(|id| fits_int(*id)),
             offer_id: entry.get("offerid").and_then(Value::as_i64).filter(|id| fits_int(*id)).unwrap_or(-1),
             kind,
@@ -375,7 +375,9 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
             modes,
             multiheight,
             classname,
-        });
+        };
+        apply_exception(&mut furni);
+        plan.new.push(furni);
     }
     plan.no_bundle.sort_by_key(|c| c.to_lowercase());
     plan
@@ -401,6 +403,41 @@ pub(crate) fn read_all(names: &[String], read: &(dyn Fn(&str) -> Option<Bundle> 
             .collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
     })
+}
+
+/// The values of assets/items_base_exceptions.json over what was worked out for a new furni.
+pub fn apply_exception(furni: &mut NewFurni) {
+    let Some(e) = crate::exceptions::find(&furni.classname) else { return };
+    if let Some(interaction) = e.interaction_type.as_deref() {
+        furni.interaction_type = interaction;
+    }
+    if let Some(modes) = e.interaction_modes_count {
+        furni.modes = modes;
+    }
+    if let Some(width) = e.width {
+        furni.width = width as f64;
+    }
+    if let Some(length) = e.length {
+        furni.length = length as f64;
+    }
+    if let Some(height) = e.stack_height {
+        furni.height = height;
+    }
+    if let Some(sit) = e.sit() {
+        furni.allow_sit = sit;
+    }
+    if let Some(lay) = e.lay() {
+        furni.allow_lay = lay;
+    }
+    if let Some(walk) = e.walk() {
+        furni.allow_walk = walk;
+    }
+    if let Some(stack) = e.stack() {
+        furni.allow_stack = stack;
+    }
+    if let Some(heights) = &e.multiheight {
+        furni.multiheight = Some(heights.clone()).filter(|h| multiheight_count(h) > 0);
+    }
 }
 
 /// A number as the converter writes it (C# double.ToString(InvariantCulture)): 1, 0.5, 1.73.
@@ -998,6 +1035,20 @@ mod tests {
         // One bundle per base name, an icon only where there is one, the lower-case file for "Chair".
         assert_eq!(names, ["furniture/rare_dragonlamp.hab", "icons/rare_dragonlamp_4_icon.png", "furniture/chair.hab", "icons/chair_icon.png"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_exception_wins() {
+        let furnidata = json!({"roomitemtypes": {"furnitype": [{"id": 1, "classname": "olympics_c16_pommel"}, {"id": 2, "classname": "olympics_c16_pommel*2"}]}});
+        let read = |_: &str| Some(Bundle { width: 1.0, length: 2.0, height: 1.0, modes: 1, multiheight: None });
+        let plan = plan_with(&furnidata, &DbState::default(), &read);
+        for f in &plan.new {
+            assert_eq!(f.interaction_type, "multiheight");
+            assert_eq!((f.modes, f.height, f.allow_sit, f.allow_stack, f.allow_walk), (5, 2.0, true, false, false));
+            assert_eq!(f.multiheight.as_deref(), Some("2.00;2.25;2.50;2.75;3.00"));
+            assert_eq!((f.width, f.length), (1.0, 2.0), "what the exception does not set comes from the .hab");
+        }
+        assert!(items_base_values(&plan.new[0], "@i").contains("2, '0', '1', '0', '0', '1', '1', '0', '1', '1', 's', 'multiheight', 5, '0', '2.00;2.25;2.50;2.75;3.00'"), "{}", items_base_values(&plan.new[0], "@i"));
     }
 
     #[test]

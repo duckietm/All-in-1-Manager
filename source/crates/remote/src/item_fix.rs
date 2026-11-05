@@ -23,7 +23,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value;
 
 use crate::furni_import::{bundle_name, multiheight_count, Bundle, MAX_STACK_HEIGHT};
-use crate::script::{self, fill};
+use crate::script::{self, fill, sql_literal};
 use crate::server::{Result, Server, ServerError};
 use crate::server_tools;
 
@@ -91,6 +91,8 @@ pub struct FixPlan {
     pub updates: Vec<(i64, Vec<(&'static str, String)>)>,
     /// Rows checked, and multiheight furni left alone.
     pub checked: usize,
+    /// Furni with an entry in assets/items_base_exceptions.json (set to exactly that).
+    pub exceptions: usize,
     pub multiheight: usize,
     /// item_names FurnitureData.json does not have (left as they are).
     pub not_in_furnidata: Vec<String>,
@@ -164,6 +166,45 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
                 set.push((column, sql));
             }
         };
+        // An exception (assets/items_base_exceptions.json): exactly its values, and its sprite_id; nothing worked out.
+        if let Some(e) = crate::exceptions::find(&row.name) {
+            let flag = |b: bool| if b { "1" } else { "0" };
+            if let Some(v) = &e.interaction_type {
+                change("interaction_type", row.interaction_type.clone(), v.clone(), sql_literal(v));
+            }
+            if let Some(v) = e.interaction_modes_count {
+                change("interaction_modes_count", row.modes.to_string(), v.to_string(), v.to_string());
+            }
+            if let Some(v) = e.width {
+                change("width", row.width.to_string(), v.to_string(), v.to_string());
+            }
+            if let Some(v) = e.length {
+                change("length", row.length.to_string(), v.to_string(), v.to_string());
+            }
+            if let Some(v) = e.stack_height {
+                change("stack_height", format!("{:.2}", row.stack_height), format!("{v:.2}"), format!("{v:.2}"));
+            }
+            for (column, now, want) in [("allow_sit", row.allow_sit, e.sit()), ("allow_lay", row.allow_lay, e.lay()), ("allow_walk", row.allow_walk, e.walk()), ("allow_stack", row.allow_stack, e.stack())] {
+                if let Some(want) = want {
+                    change(column, flag(now).into(), flag(want).into(), format!("'{}'", flag(want)));
+                }
+            }
+            if let Some(v) = &e.multiheight {
+                change("multiheight", row.multiheight.clone(), v.clone(), sql_literal(v));
+            }
+            if fields.sprite {
+                let entry = exact.get(row.name.trim()).or_else(|| lower.get(&row.name.trim().to_lowercase()));
+                if let Some(id) = entry.and_then(|(entry, _)| entry.get("id")).and_then(Value::as_i64).filter(|id| (1..=i64::from(i32::MAX)).contains(id)) {
+                    change("sprite_id", row.sprite_id.to_string(), id.to_string(), id.to_string());
+                }
+            }
+            plan.exceptions += 1;
+            plan.changes.extend(changes);
+            if !set.is_empty() {
+                plan.updates.push((row.id, set));
+            }
+            continue;
+        }
         // Multiheight as the .hab says it (logicType furniture_multiheight): only for the plain interactions, so a
         // gate or wired furni is never turned into another one.
         let mut multiheight = row.is_multiheight();
@@ -496,6 +537,30 @@ mod tests {
         // Off: the multiheight furni are left alone as before.
         let off = super::plan(&rows, &furnidata, &bundles, Fields { multiheight: false, ..Fields::default() });
         assert!(!off.changes.iter().any(|c| c.column == "multiheight"));
+    }
+
+    #[test]
+    fn an_exception_is_set_exactly() {
+        let furnidata = json!({"roomitemtypes": {"furnitype": [{"id": 7, "classname": "olympics_c16_pommel"}]}});
+        let multi = Some(Bundle { width: 1.0, length: 2.0, height: 1.0, modes: 3, multiheight: crate::furni_import::Heights::new(&[1.0, 0.5, 0.1]) });
+        let bundles: HashMap<String, Option<Bundle>> = [("olympics_c16_pommel".to_string(), multi)].into();
+        // As it is in many hotels: multiheight with other heights, stack 0, not sittable.
+        let pommel = ItemRow { interaction_type: "multiheight".into(), multiheight: "1.0;1.5".into(), modes: 2, allow_walk: true, ..row(3, "olympics_c16_pommel", 's') };
+        let plan = plan(&[pommel], &furnidata, &bundles, Fields::default());
+        let set: Vec<(&str, String)> = plan.changes.iter().map(|c| (c.column, c.to.clone())).collect();
+        assert_eq!(
+            set,
+            [
+                ("interaction_modes_count", "5".to_string()),
+                ("stack_height", "2.00".into()),
+                ("allow_sit", "1".into()),
+                ("allow_walk", "0".into()),
+                ("multiheight", "2.00;2.25;2.50;2.75;3.00".into()),
+                ("sprite_id", "7".into()),
+            ]
+        );
+        assert_eq!((plan.exceptions, plan.multiheight), (1, 0));
+        assert!(sql(&plan).contains("`multiheight` = '2.00;2.25;2.50;2.75;3.00', `sprite_id` = 7 WHERE `id` = 3;"), "{}", sql(&plan));
     }
 
     #[test]

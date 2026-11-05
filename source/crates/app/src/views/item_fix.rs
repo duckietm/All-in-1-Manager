@@ -186,6 +186,7 @@ impl InstallStep for ItemFixStep {
                 t("sprite_id from the server's FurnitureData.json (it can be a custom one); sit / lay / walk, and on request the type, from it too.").into(),
                 t("Size and stack height from the .hab files you downloaded (Habbo assets, then the Nitro retro profiles); a wall furni is 1 x 1 x 0.00. Furni without a .hab here keep their size.").into(),
                 t("Interaction modes only for interaction_type default: other interactions count their own states.").into(),
+                t("Exceptions: a few furni whose values no file can give (a pommel horse you sit on at height 2) are set exactly as the installer's list of exceptions has them, also when they are multiheight.").into(),
                 tf("A backup of the database comes first ({folder}); the update runs as one transaction.", &[("folder", &server_tools::backup_directory())]),
             ],
             footnote: Some(t("Choose below what to fix; the list shows every value that changes.").into()),
@@ -222,8 +223,9 @@ impl InstallStep for ItemFixStep {
             ui,
             palette,
             &tf(
-                "{checked} furni checked, {multiheight} multiheight furni left alone: {rows} furni get {changes} new values.",
+                "{checked} furni checked, {multiheight} multiheight furni left alone, {exceptions} with an exception: {rows} furni get {changes} new values.",
                 &[
+                    ("exceptions", &plan.exceptions.to_string()),
                     ("checked", &plan.checked.to_string()),
                     ("multiheight", &plan.multiheight.to_string()),
                     ("rows", &plan.rows().to_string()),

@@ -2489,15 +2489,12 @@
   "width, length and stack_height, from the .hab files": "width, length ja stack_height, .hab-tiedostoista",
   "allow_sit, allow_lay and allow_walk, from FurnitureData.json": "allow_sit, allow_lay ja allow_walk, FurnitureData.jsonista",
   "interaction_modes_count, from the .hab files (interaction_type default only)": "interaction_modes_count, .hab-tiedostoista (vain interaction_type default)",
-  "allow_stack: a height other than 1.0 and nothing to sit or lie on": "allow_stack: muu korkeus kuin 1.0 eikä mitään, millä istua tai maata",
-  "Off (default) for allow_stack: hand-made catalogues often make furni stackable on purpose (a table of height 1.00).": "Pois (oletus) allow_stack-kentälle: käsin tehdyt katalogit tekevät kalusteista usein tarkoituksella pinottavia (pöytä, jonka korkeus on 1.00).",
   "{checked} furni checked, {multiheight} multiheight furni left alone: {rows} furni get {changes} new values.": "{checked} kalustetta tarkistettu, {multiheight} multiheight-kalustetta jätetty ennalleen: {rows} kalustetta saa {changes} uutta arvoa.",
   "Changes ({count})": "Muutokset ({count})",
   "Not in FurnitureData.json ({count})": "Ei FurnitureData.jsonissa ({count})",
   "Column": "Sarake",
   "New": "Uusi",
   "In items_base, but the server's FurnitureData.json has no classname for them: left as they are (the client cannot show them either).": "Taulussa items_base, mutta palvelimen FurnitureData.jsonissa ei ole niille classnamea: jätetään ennalleen (client ei myöskään voi näyttää niitä).",
-  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size, modes and stackable stay as they are; sprite_id and sit / lay / walk are still fixed.": "Niiden .hab-tiedosto ei ole latauksissasi (Habbon assetit, Nitro-retro): koko, tilat ja pinottavuus pysyvät ennallaan; sprite_id ja istua / maata / kävellä korjataan silti.",
   "Nothing changes with what is chosen.": "Valinnoilla mikään ei muutu.",
   "items_base is in line": "items_base täsmää",
   "{database}: {checked} furni checked, nothing to change with what is chosen.": "{database}: {checked} kalustetta tarkistettu, valinnoilla ei muutettavaa.",
@@ -2512,5 +2509,7 @@
   "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "Palvelimen FurnitureData.json on muuttunut tarkistuksen jälkeen: paina Takaisin ja avaa tämä sivu uudelleen, jotta korjaus lähtee uudesta.",
   "{database}: {checked} furni checked, nothing to change.": "{database}: {checked} kalustetta tarkistettu, ei mitään muutettavaa.",
   "Nothing changes with what is chosen": "Valinnoilla mikään ei muutu",
-  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} kalustetta tarkistettu; jokin muu valinta alla muuttaa jotain."
+  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} kalustetta tarkistettu; jokin muu valinta alla muuttaa jotain.",
+  "allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays.": "allow_stack ei muutu koskaan: mikään tiedosto ei kerro, voiko kalusteen päälle pinota (.hab-tiedostossa on vain sen korkeus), joten asettamasi arvo pysyy.",
+  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size and modes stay as they are; sprite_id and sit / lay / walk are still fixed.": "Niiden .hab-tiedosto ei ole latauksissasi (Habbon assetit, Nitro-retro): koko ja tilat pysyvät ennallaan; sprite_id ja istua / maata / kävellä korjataan silti."
 }

@@ -1,4 +1,4 @@
-//! Fix items_base: sprite_id, size, sit / lay / walk, interaction modes and stackable of the furni already in
+//! Fix items_base: sprite_id, size, sit / lay / walk and interaction modes of the furni already in
 //! items_base, as Generate SQL works them out (see aio_remote::item_fix). Multiheight furni are left alone. The page
 //! shows every change first.
 
@@ -207,8 +207,7 @@ impl InstallStep for ItemFixStep {
         ui.checkbox(&mut fields.size, t("width, length and stack_height, from the .hab files"));
         ui.checkbox(&mut fields.flags, t("allow_sit, allow_lay and allow_walk, from FurnitureData.json"));
         ui.checkbox(&mut fields.modes, t("interaction_modes_count, from the .hab files (interaction_type default only)"));
-        ui.checkbox(&mut fields.stack, t("allow_stack: a height other than 1.0 and nothing to sit or lie on"));
-        widgets::muted(ui, palette, t("Off (default) for allow_stack: hand-made catalogues often make furni stackable on purpose (a table of height 1.00)."), 11.5);
+        widgets::muted(ui, palette, t("allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays."), 11.5);
         let Some(plan) = form.plan() else { return };
         let rows = form.rows();
         ui.add_space(8.0);
@@ -245,7 +244,7 @@ impl InstallStep for ItemFixStep {
                 table(ui, palette, "item_not_in_fd", &[400.0], &["item_name"], &rows, 0);
             }
             List::NoBundle => {
-                widgets::muted(ui, palette, t("Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size, modes and stackable stay as they are; sprite_id and sit / lay / walk are still fixed."), 12.0);
+                widgets::muted(ui, palette, t("Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size and modes stay as they are; sprite_id and sit / lay / walk are still fixed."), 12.0);
                 table(ui, palette, "item_no_bundle", &[400.0], &["item_name"], &rows, 0);
             }
         }
@@ -282,7 +281,7 @@ impl InstallStep for ItemFixStep {
         let (count, changes, checked) = (plan.rows(), plan.changes.len(), plan.checked);
         // "Done" only when no choice on the page could change anything: the button is set from this once, and
         // ticking another box must not leave it at Skip.
-        let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true, stack: true };
+        let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true };
         let nothing_at_all = item_fix::plan(&read.rows, &read.furnidata, &read.bundles, all).updates.is_empty();
         {
             let mut form = self.form.lock().unwrap();

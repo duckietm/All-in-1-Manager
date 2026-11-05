@@ -2489,15 +2489,12 @@
   "width, length and stack_height, from the .hab files": "width, length et stack_height, depuis les fichiers .hab",
   "allow_sit, allow_lay and allow_walk, from FurnitureData.json": "allow_sit, allow_lay et allow_walk, depuis FurnitureData.json",
   "interaction_modes_count, from the .hab files (interaction_type default only)": "interaction_modes_count, depuis les fichiers .hab (interaction_type default seulement)",
-  "allow_stack: a height other than 1.0 and nothing to sit or lie on": "allow_stack : une hauteur autre que 1.0 et rien pour s'asseoir ou s'allonger",
-  "Off (default) for allow_stack: hand-made catalogues often make furni stackable on purpose (a table of height 1.00).": "Désactivé (par défaut) pour allow_stack : les catalogues faits main rendent souvent les mobis empilables exprès (une table de hauteur 1.00).",
   "{checked} furni checked, {multiheight} multiheight furni left alone: {rows} furni get {changes} new values.": "{checked} mobis vérifiés, {multiheight} mobis multiheight non touchés : {rows} mobis reçoivent {changes} nouvelles valeurs.",
   "Changes ({count})": "Modifications ({count})",
   "Not in FurnitureData.json ({count})": "Pas dans FurnitureData.json ({count})",
   "Column": "Colonne",
   "New": "Nouveau",
   "In items_base, but the server's FurnitureData.json has no classname for them: left as they are (the client cannot show them either).": "Dans items_base, mais le FurnitureData.json du serveur n'a pas de classname pour eux : laissés tels quels (le client ne peut pas les afficher non plus).",
-  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size, modes and stackable stay as they are; sprite_id and sit / lay / walk are still fixed.": "Leur fichier .hab n'est pas dans tes téléchargements (Assets Habbo, Rétro Nitro) : leur taille, leurs modes et l'empilement restent tels quels ; sprite_id et s'asseoir / s'allonger / marcher sont quand même corrigés.",
   "Nothing changes with what is chosen.": "Rien ne change avec ce qui est choisi.",
   "items_base is in line": "items_base est en accord",
   "{database}: {checked} furni checked, nothing to change with what is chosen.": "{database} : {checked} mobis vérifiés, rien à changer avec ce qui est choisi.",
@@ -2512,5 +2509,7 @@
   "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "FurnitureData.json sur le serveur a changé depuis la vérification : clique sur Retour et rouvre cette page, pour que la correction parte du nouveau.",
   "{database}: {checked} furni checked, nothing to change.": "{database} : {checked} mobis vérifiés, rien à changer.",
   "Nothing changes with what is chosen": "Rien ne change avec ce qui est choisi",
-  "{database}: {checked} furni checked; another choice below does change something.": "{database} : {checked} mobis vérifiés ; un autre choix ci-dessous change quelque chose."
+  "{database}: {checked} furni checked; another choice below does change something.": "{database} : {checked} mobis vérifiés ; un autre choix ci-dessous change quelque chose.",
+  "allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays.": "allow_stack n'est jamais modifié : aucun fichier ne dit si l'on peut empiler sur un mobi (le .hab n'a que sa hauteur), donc la valeur que tu as mise reste.",
+  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size and modes stay as they are; sprite_id and sit / lay / walk are still fixed.": "Leur fichier .hab n'est pas dans tes téléchargements (Assets Habbo, Rétro Nitro) : leur taille et leurs modes restent tels quels ; sprite_id et s'asseoir / s'allonger / marcher sont quand même corrigés."
 }

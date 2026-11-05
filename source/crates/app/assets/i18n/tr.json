@@ -2489,15 +2489,12 @@
   "width, length and stack_height, from the .hab files": "width, length ve stack_height, .hab dosyalarından",
   "allow_sit, allow_lay and allow_walk, from FurnitureData.json": "allow_sit, allow_lay ve allow_walk, FurnitureData.json'dan",
   "interaction_modes_count, from the .hab files (interaction_type default only)": "interaction_modes_count, .hab dosyalarından (yalnızca interaction_type default)",
-  "allow_stack: a height other than 1.0 and nothing to sit or lie on": "allow_stack: 1.0'dan farklı bir yükseklik ve üzerine oturulacak ya da uzanılacak bir şey olmaması",
-  "Off (default) for allow_stack: hand-made catalogues often make furni stackable on purpose (a table of height 1.00).": "allow_stack için kapalı (varsayılan): elle yapılmış kataloglar mobileri çoğu zaman bilerek istiflenebilir yapar (yüksekliği 1.00 olan bir masa).",
   "{checked} furni checked, {multiheight} multiheight furni left alone: {rows} furni get {changes} new values.": "{checked} mobi denetlendi, {multiheight} multiheight mobiye dokunulmadı: {rows} mobi {changes} yeni değer alır.",
   "Changes ({count})": "Değişiklikler ({count})",
   "Not in FurnitureData.json ({count})": "FurnitureData.json'da yok ({count})",
   "Column": "Sütun",
   "New": "Yeni",
   "In items_base, but the server's FurnitureData.json has no classname for them: left as they are (the client cannot show them either).": "items_base'de var, ama sunucunun FurnitureData.json dosyasında onlar için classname yok: olduğu gibi bırakılır (istemci de onları gösteremez).",
-  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size, modes and stackable stay as they are; sprite_id and sit / lay / walk are still fixed.": "Onların .hab dosyası indirdiklerin arasında yok (Habbo asset'leri, Nitro retro): boyutları, modları ve istiflenebilirlikleri olduğu gibi kalır; sprite_id ve oturma / uzanma / yürüme yine de düzeltilir.",
   "Nothing changes with what is chosen.": "Seçilenlerle hiçbir şey değişmez.",
   "items_base is in line": "items_base uyumlu",
   "{database}: {checked} furni checked, nothing to change with what is chosen.": "{database}: {checked} mobi denetlendi, seçilenlerle değiştirilecek bir şey yok.",
@@ -2512,5 +2509,7 @@
   "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "Sunucudaki FurnitureData.json kontrolden bu yana değişti: düzeltmenin yenisinden başlaması için Geri'ye bas ve bu sayfayı yeniden aç.",
   "{database}: {checked} furni checked, nothing to change.": "{database}: {checked} mobi kontrol edildi, değişecek bir şey yok.",
   "Nothing changes with what is chosen": "Seçilenlerle hiçbir şey değişmiyor",
-  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} mobi kontrol edildi; aşağıdaki başka bir seçim bir şeyi değiştirir."
+  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} mobi kontrol edildi; aşağıdaki başka bir seçim bir şeyi değiştirir.",
+  "allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays.": "allow_stack asla değiştirilmez: hiçbir dosya bir mobinin üstüne istiflenip istiflenemeyeceğini söylemez (.hab yalnızca yüksekliğini bilir), bu yüzden senin ayarladığın değer kalır.",
+  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size and modes stay as they are; sprite_id and sit / lay / walk are still fixed.": "Onların .hab dosyası indirdiklerin arasında yok (Habbo asset'leri, Nitro retro): boyutları ve modları olduğu gibi kalır; sprite_id ve oturma / uzanma / yürüme yine de düzeltilir."
 }

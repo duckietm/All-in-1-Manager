@@ -2489,15 +2489,12 @@
   "width, length and stack_height, from the .hab files": "width, length y stack_height, de los archivos .hab",
   "allow_sit, allow_lay and allow_walk, from FurnitureData.json": "allow_sit, allow_lay y allow_walk, de FurnitureData.json",
   "interaction_modes_count, from the .hab files (interaction_type default only)": "interaction_modes_count, de los archivos .hab (solo interaction_type default)",
-  "allow_stack: a height other than 1.0 and nothing to sit or lie on": "allow_stack: una altura distinta de 1.0 y nada para sentarse o tumbarse",
-  "Off (default) for allow_stack: hand-made catalogues often make furni stackable on purpose (a table of height 1.00).": "Desactivado (predeterminado) para allow_stack: los catálogos hechos a mano suelen hacer apilables los furnis a propósito (una mesa de altura 1.00).",
   "{checked} furni checked, {multiheight} multiheight furni left alone: {rows} furni get {changes} new values.": "{checked} furnis comprobados, {multiheight} furnis multiheight sin tocar: {rows} furnis reciben {changes} valores nuevos.",
   "Changes ({count})": "Cambios ({count})",
   "Not in FurnitureData.json ({count})": "No están en FurnitureData.json ({count})",
   "Column": "Columna",
   "New": "Nuevo",
   "In items_base, but the server's FurnitureData.json has no classname for them: left as they are (the client cannot show them either).": "En items_base, pero el FurnitureData.json del servidor no tiene classname para ellos: se quedan como están (el cliente tampoco puede mostrarlos).",
-  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size, modes and stackable stay as they are; sprite_id and sit / lay / walk are still fixed.": "Su archivo .hab no está en tus descargas (Assets de Habbo, Retro Nitro): su tamaño, sus modos y si son apilables se quedan como están; sprite_id y sentarse / tumbarse / caminar sí se corrigen.",
   "Nothing changes with what is chosen.": "Con lo elegido no cambia nada.",
   "items_base is in line": "items_base coincide",
   "{database}: {checked} furni checked, nothing to change with what is chosen.": "{database}: {checked} furnis comprobados, nada que cambiar con lo elegido.",
@@ -2512,5 +2509,7 @@
   "FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one.": "FurnitureData.json del servidor cambió desde la comprobación: pulsa Atrás y abre esta página de nuevo, para que la corrección parta del nuevo.",
   "{database}: {checked} furni checked, nothing to change.": "{database}: {checked} furnis comprobados, nada que cambiar.",
   "Nothing changes with what is chosen": "Con lo elegido no cambia nada",
-  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} furnis comprobados; otra opción de abajo sí cambia algo."
+  "{database}: {checked} furni checked; another choice below does change something.": "{database}: {checked} furnis comprobados; otra opción de abajo sí cambia algo.",
+  "allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays.": "allow_stack nunca se cambia: ningún archivo dice si se puede apilar sobre un furni (el .hab solo tiene su altura), así que se queda el valor que pusiste.",
+  "Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size and modes stay as they are; sprite_id and sit / lay / walk are still fixed.": "Su archivo .hab no está en tus descargas (Assets de Habbo, Retro Nitro): su tamaño y sus modos se quedan como están; sprite_id y sentarse / tumbarse / caminar sí se corrigen."
 }

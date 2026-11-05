@@ -11,7 +11,9 @@
 //! - allow_sit / allow_lay / allow_walk: cansiton / canlayon / canstandon;
 //! - interaction_modes_count: from the .hab's animations, only for interaction_type 'default' (other interactions
 //!   count their own states);
-//! - allow_stack: a height other than 1.0 and nothing to sit or lie on.
+//!
+//! allow_stack is never touched: no file has it (the .hab only knows the height, FurnitureData.json sit / lay /
+//! walk), and Generate SQL's guess (a height other than 1.0) undoes hand-made values like a stackable table.
 //!
 //! Left alone: furni other than floor and wall (pets "a0 ...", effects, bots), and every multiheight furni
 //! (interaction_type 'multiheight', or a multiheight value): their heights are set by hand per state.
@@ -63,14 +65,12 @@ pub struct Fields {
     pub size: bool,
     pub flags: bool,
     pub modes: bool,
-    pub stack: bool,
 }
 
 impl Default for Fields {
-    /// Everything but type (placed furni keep their position) and allow_stack (hand-made catalogues often set it
-    /// otherwise on purpose).
+    /// Everything but type: placed furni keep their floor or wall position.
     fn default() -> Self {
-        Self { sprite: true, kind: false, size: true, flags: true, modes: true, stack: false }
+        Self { sprite: true, kind: false, size: true, flags: true, modes: true }
     }
 }
 
@@ -95,7 +95,7 @@ pub struct FixPlan {
     pub multiheight: usize,
     /// item_names FurnitureData.json does not have (left as they are).
     pub not_in_furnidata: Vec<String>,
-    /// item_names whose .hab is not here: their size, modes and stack are left as they are.
+    /// item_names whose .hab is not here: their size and modes are left as they are.
     pub no_bundle: Vec<String>,
 }
 
@@ -156,7 +156,7 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
         };
         let kind = *kind;
         let bundle = bundles.get(&bundle_name(&row.name).to_lowercase()).copied().flatten();
-        let needs_bundle = fields.modes && row.interaction_type.trim().eq_ignore_ascii_case("default") || (fields.size || fields.stack) && kind == 's';
+        let needs_bundle = fields.modes && row.interaction_type.trim().eq_ignore_ascii_case("default") || fields.size && kind == 's';
         if bundle.is_none() && needs_bundle {
             plan.no_bundle.push(row.name.clone());
         }
@@ -201,13 +201,6 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
         if fields.modes && row.interaction_type.trim().eq_ignore_ascii_case("default") {
             if let Some(b) = bundle {
                 change("interaction_modes_count", row.modes.to_string(), b.modes.to_string(), b.modes.to_string());
-            }
-        }
-        if fields.stack {
-            if let Some(b) = bundle {
-                // As Generate SQL: from the bundle's height, with sit / lay as FurnitureData.json has them.
-                let stack = b.height != 1.0 && !sit && !lay;
-                change("allow_stack", yes(row.allow_stack).into(), yes(stack).into(), format!("'{}'", yes(stack)));
             }
         }
         if !set.is_empty() {
@@ -396,9 +389,7 @@ mod tests {
         assert_eq!((plan.checked, plan.multiheight), (7, 2));
         assert_eq!(plan.not_in_furnidata, ["only_in_db"]);
         assert_eq!(plan.no_bundle, ["no_hab_here"]);
-        // The hand-made stackable table stays, unless allow_stack is chosen.
-        let with_stack = super::plan(&rows, &furnidata, &bundles, Fields { stack: true, ..Fields::default() });
-        assert!(with_stack.changes.iter().any(|c| c.name == "table_plasto_4leg*1" && c.column == "allow_stack" && c.to == "0"));
+        // allow_stack is never touched: the hand-made stackable table stays.
         assert!(!plan.changes.iter().any(|c| c.column == "allow_stack"));
         let with_type = super::plan(&rows, &furnidata, &bundles, Fields { kind: true, ..Fields::default() });
         assert!(with_type.changes.iter().any(|c| c.name == "poster" && c.column == "type" && c.from == "s" && c.to == "i"));
@@ -406,7 +397,7 @@ mod tests {
         assert!(text.contains("UPDATE `items_base` SET `sprite_id` = 30, `allow_sit` = '1', `stack_height` = 1.00 WHERE `id` = 2 AND `interaction_type` <> 'multiheight'"), "{text}");
         assert!(text.trim_end().ends_with("COMMIT;"));
         // Nothing chosen: nothing changes.
-        let none = super::plan(&rows, &furnidata, &bundles, Fields { sprite: false, kind: false, size: false, flags: false, modes: false, stack: false });
+        let none = super::plan(&rows, &furnidata, &bundles, Fields { sprite: false, kind: false, size: false, flags: false, modes: false });
         assert!(none.changes.is_empty());
     }
 

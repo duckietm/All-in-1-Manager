@@ -87,6 +87,14 @@ pub fn asset_entries() -> Vec<Entry> {
             Page::ImportCustom,
         ),
         entry(
+            t("Fix offer IDs"),
+            t("catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.").into(),
+            Icon::Shopping,
+            "#0D9488",
+            Scene::Lido,
+            Page::OfferFix,
+        ),
+        entry(
             "Asset Explorer",
             crate::i18n::tf("Two panes: this computer and {gamedata}. Upload, download, rename.", &[("gamedata", &gamedata)]),
             Icon::FolderSync,

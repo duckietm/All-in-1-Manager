@@ -13,6 +13,7 @@ pub mod custom_cms;
 pub mod dashboard;
 pub mod default_catalog;
 pub mod import_assets;
+pub mod offer_fix;
 pub mod debug;
 pub mod deploy;
 pub mod dev_tools;
@@ -86,5 +87,6 @@ pub(crate) fn wizards(shared: &Shared) -> crate::gui::Wizards {
         deploy: deploy::wizard(shared),
         import_assets: import_assets::wizard(shared, import_assets::Mode::Habbo),
         import_custom: import_assets::wizard(shared, import_assets::Mode::Custom),
+        offer_fix: offer_fix::wizard(shared),
     }
 }

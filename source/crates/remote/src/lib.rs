@@ -35,6 +35,7 @@ pub mod local_ports;
 pub mod mariadb;
 pub mod nginx;
 pub mod octane;
+pub mod offer_fix;
 pub mod php;
 pub mod plus_import;
 pub mod root_authorized_keys;

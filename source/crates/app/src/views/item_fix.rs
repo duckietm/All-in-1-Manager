@@ -37,6 +37,8 @@ enum List {
     Changes,
     NotInFurnidata,
     NoBundle,
+    MultiheightNotByHab,
+    MultiheightCount,
 }
 
 /// What the check read, kept to work out the plan again when the choices change.
@@ -91,6 +93,8 @@ impl Form {
             List::Changes => plan.changes.iter().filter(|c| matches(&c.name)).map(|c| vec![c.id.to_string(), c.name.clone(), c.column.to_string(), c.from.clone(), c.to.clone()]).collect(),
             List::NotInFurnidata => plan.not_in_furnidata.iter().filter(|n| matches(n)).map(|n| vec![n.clone()]).collect(),
             List::NoBundle => plan.no_bundle.iter().filter(|n| matches(n)).map(|n| vec![n.clone()]).collect(),
+            List::MultiheightNotByHab => plan.multiheight_not_by_hab.iter().filter(|n| matches(n)).map(|n| vec![n.clone()]).collect(),
+            List::MultiheightCount => plan.multiheight_count_differs.iter().filter(|m| matches(&m.0)).map(|(name, db, hab)| vec![name.clone(), db.clone(), hab.clone()]).collect(),
         };
         let rows = Arc::new(rows);
         self.rows = Some((key, rows.clone()));
@@ -178,7 +182,7 @@ impl InstallStep for ItemFixStep {
                 &[("file", &aio_remote::offer_fix::furniture_data_path())],
             ),
             bullets: vec![
-                t("Only floor and wall furni; pets, effects and bots are left alone, and so is every multiheight furni (interaction_type multiheight, or a multiheight value).").into(),
+                t("Only floor and wall furni; pets, effects and bots are left alone, and so is every multiheight furni: its heights are set by hand per state. A furni whose .hab is multiheight can become one.").into(),
                 t("sprite_id from the server's FurnitureData.json (it can be a custom one); sit / lay / walk, and on request the type, from it too.").into(),
                 t("Size and stack height from the .hab files you downloaded (Habbo assets, then the Nitro retro profiles); a wall furni is 1 x 1 x 0.00. Furni without a .hab here keep their size.").into(),
                 t("Interaction modes only for interaction_type default: other interactions count their own states.").into(),
@@ -207,6 +211,8 @@ impl InstallStep for ItemFixStep {
         ui.checkbox(&mut fields.size, t("width, length and stack_height, from the .hab files"));
         ui.checkbox(&mut fields.flags, t("allow_sit, allow_lay and allow_walk, from FurnitureData.json"));
         ui.checkbox(&mut fields.modes, t("interaction_modes_count, from the .hab files (interaction_type default only)"));
+        ui.checkbox(&mut fields.multiheight, t("multiheight, as the .hab files say (logicType furniture_multiheight)"));
+        widgets::muted(ui, palette, t("Set where the .hab is a multiheight furni and items_base is not: interaction_type multiheight, a height per state from its images (rounded to a quarter, at least 0.10) and stack_height 0.00; recolorable keeps its interaction. A furni that is multiheight in items_base is never changed: many really are while their .hab says otherwise (stairs, stages); they are listed to check."), 11.5);
         widgets::muted(ui, palette, t("allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays."), 11.5);
         let Some(plan) = form.plan() else { return };
         let rows = form.rows();
@@ -231,7 +237,11 @@ impl InstallStep for ItemFixStep {
                 (List::Changes, tf("Changes ({count})", &[("count", &plan.changes.len().to_string())])),
                 (List::NotInFurnidata, tf("Not in FurnitureData.json ({count})", &[("count", &plan.not_in_furnidata.len().to_string())])),
                 (List::NoBundle, tf("No .hab file ({count})", &[("count", &plan.no_bundle.len().to_string())])),
-            ] {
+            ]
+            .into_iter()
+            .chain((!plan.multiheight_not_by_hab.is_empty()).then(|| (List::MultiheightNotByHab, tf("Multiheight, not by the .hab ({count})", &[("count", &plan.multiheight_not_by_hab.len().to_string())]))))
+            .chain((!plan.multiheight_count_differs.is_empty()).then(|| (List::MultiheightCount, tf("Number of heights differs ({count})", &[("count", &plan.multiheight_count_differs.len().to_string())]))))
+            {
                 ui.selectable_value(&mut form.list, list, RichText::new(label).size(12.5));
             }
             ui.add_space(12.0);
@@ -242,6 +252,14 @@ impl InstallStep for ItemFixStep {
             List::NotInFurnidata => {
                 widgets::muted(ui, palette, t("In items_base, but the server's FurnitureData.json has no classname for them: left as they are (the client cannot show them either)."), 12.0);
                 table(ui, palette, "item_not_in_fd", &[400.0], &["item_name"], &rows, 0);
+            }
+            List::MultiheightNotByHab => {
+                widgets::muted(ui, palette, t("Multiheight in items_base, but their .hab is not a furniture_multiheight furni (stairs and stages are often furniture_multistate): left as they are. Only check these if one does not behave in the hotel."), 12.0);
+                table(ui, palette, "item_mh_not_by_hab", &[400.0], &["item_name"], &rows, 0);
+            }
+            List::MultiheightCount => {
+                widgets::muted(ui, palette, t("Multiheight in both, but items_base has another number of heights than the .hab has states: your heights stay. The .hab's are shown to compare."), 12.0);
+                table(ui, palette, "item_mh_count", &[260.0, 220.0, 220.0], &["item_name", "items_base.multiheight", ".hab"], &rows, 0);
             }
             List::NoBundle => {
                 widgets::muted(ui, palette, t("Their .hab file is not in your downloads (Habbo assets, Nitro retro): their size and modes stay as they are; sprite_id and sit / lay / walk are still fixed."), 12.0);
@@ -281,7 +299,7 @@ impl InstallStep for ItemFixStep {
         let (count, changes, checked) = (plan.rows(), plan.changes.len(), plan.checked);
         // "Done" only when no choice on the page could change anything: the button is set from this once, and
         // ticking another box must not leave it at Skip.
-        let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true };
+        let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true, multiheight: true };
         let nothing_at_all = item_fix::plan(&read.rows, &read.furnidata, &read.bundles, all).updates.is_empty();
         {
             let mut form = self.form.lock().unwrap();

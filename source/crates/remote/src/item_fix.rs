@@ -22,7 +22,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
-use crate::furni_import::{bundle_name, Bundle, MAX_STACK_HEIGHT};
+use crate::furni_import::{bundle_name, multiheight_count, Bundle, MAX_STACK_HEIGHT};
 use crate::script::{self, fill};
 use crate::server::{Result, Server, ServerError};
 use crate::server_tools;
@@ -47,10 +47,6 @@ pub struct ItemRow {
 }
 
 impl ItemRow {
-    /// A furni this fix may change: floor or wall, no pet, no multiheight.
-    pub fn checked(&self) -> bool {
-        matches!(self.kind, 's' | 'i') && !self.name.starts_with("a0") && !self.is_multiheight()
-    }
 
     pub fn is_multiheight(&self) -> bool {
         self.interaction_type.trim().eq_ignore_ascii_case("multiheight") || !matches!(self.multiheight.trim(), "" | "0")
@@ -65,12 +61,15 @@ pub struct Fields {
     pub size: bool,
     pub flags: bool,
     pub modes: bool,
+    /// Multiheight where the .hab says it is one (logicType furniture_multiheight) and items_base does not; a
+    /// multiheight furni in items_base is never changed (many are by their .hab furniture_multistate or _basic).
+    pub multiheight: bool,
 }
 
 impl Default for Fields {
     /// Everything but type: placed furni keep their floor or wall position.
     fn default() -> Self {
-        Self { sprite: true, kind: false, size: true, flags: true, modes: true }
+        Self { sprite: true, kind: false, size: true, flags: true, modes: true, multiheight: true }
     }
 }
 
@@ -95,6 +94,11 @@ pub struct FixPlan {
     pub multiheight: usize,
     /// item_names FurnitureData.json does not have (left as they are).
     pub not_in_furnidata: Vec<String>,
+    /// Multiheight in items_base, but their .hab is not furniture_multiheight (stairs and stages often are
+    /// furniture_multistate): left as they are, listed to check.
+    pub multiheight_not_by_hab: Vec<String>,
+    /// (item_name, items_base.multiheight, the .hab's heights) where the number of heights differs: left as they are.
+    pub multiheight_count_differs: Vec<(String, String, String)>,
     /// item_names whose .hab is not here: their size and modes are left as they are.
     pub no_bundle: Vec<String>,
 }
@@ -133,7 +137,13 @@ pub fn index(furnidata: &Value) -> (HashMap<String, (Value, char)>, HashMap<Stri
 
 /// The bundle names the rows need (for reading them once).
 pub fn bundle_names(rows: &[ItemRow]) -> Vec<String> {
-    let names: HashSet<String> = rows.iter().filter(|r| r.checked()).map(|r| bundle_name(&r.name).to_string()).filter(|n| !n.is_empty()).collect();
+    // Multiheight furni too: their .hab is compared with their multiheight.
+    let names: HashSet<String> = rows
+        .iter()
+        .filter(|r| matches!(r.kind, 's' | 'i') && !r.name.starts_with("a0"))
+        .map(|r| bundle_name(&r.name).to_string())
+        .filter(|n| !n.is_empty())
+        .collect();
     names.into_iter().collect()
 }
 
@@ -145,64 +155,100 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
         if !matches!(row.kind, 's' | 'i') || row.name.starts_with("a0") {
             continue;
         }
-        if row.is_multiheight() {
-            plan.multiheight += 1;
-            continue;
-        }
-        plan.checked += 1;
-        let Some((entry, kind)) = exact.get(row.name.trim()).or_else(|| lower.get(&row.name.trim().to_lowercase())) else {
-            plan.not_in_furnidata.push(row.name.clone());
-            continue;
-        };
-        let kind = *kind;
         let bundle = bundles.get(&bundle_name(&row.name).to_lowercase()).copied().flatten();
-        let needs_bundle = fields.modes && row.interaction_type.trim().eq_ignore_ascii_case("default") || fields.size && kind == 's';
-        if bundle.is_none() && needs_bundle {
-            plan.no_bundle.push(row.name.clone());
-        }
         let mut set: Vec<(&'static str, String)> = Vec::new();
+        let mut changes: Vec<Change> = Vec::new();
         let mut change = |column: &'static str, from: String, to: String, sql: String| {
             if from != to {
-                plan.changes.push(Change { id: row.id, name: row.name.clone(), column, from, to });
+                changes.push(Change { id: row.id, name: row.name.clone(), column, from, to });
                 set.push((column, sql));
             }
         };
-        if fields.sprite {
-            if let Some(id) = entry.get("id").and_then(Value::as_i64).filter(|id| (1..=i64::from(i32::MAX)).contains(id)) {
-                change("sprite_id", row.sprite_id.to_string(), id.to_string(), id.to_string());
+        // Multiheight as the .hab says it (logicType furniture_multiheight): only for the plain interactions, so a
+        // gate or wired furni is never turned into another one.
+        let mut multiheight = row.is_multiheight();
+        let interaction = row.interaction_type.trim().to_lowercase();
+        let recolorable = interaction == "recolorable" || row.name.to_lowercase().ends_with("_recolorable");
+        if let (true, Some(bundle), true) = (fields.multiheight, bundle, matches!(interaction.as_str(), "default" | "multiheight" | "recolorable")) {
+            match (bundle.multiheight, multiheight) {
+                // Multiheight by its .hab, not in items_base: the interaction and a height per state.
+                (Some(heights), false) => {
+                    let to = if recolorable { "recolorable" } else { "multiheight" };
+                    change("interaction_type", row.interaction_type.clone(), to.into(), format!("'{to}'"));
+                    change("multiheight", row.multiheight.clone(), heights.column(), format!("'{}'", heights.column()));
+                    change("interaction_modes_count", row.modes.to_string(), heights.len().to_string(), heights.len().to_string());
+                    if !recolorable {
+                        // The emulator takes the state's height; stack_height stays out of it.
+                        change("stack_height", format!("{:.2}", row.stack_height), "0.00".into(), "0.00".into());
+                    }
+                    multiheight = true;
+                }
+                // Multiheight in both: the heights set by hand stay; a different number is only listed.
+                (Some(heights), true) => {
+                    if multiheight_count(&row.multiheight) != heights.len() {
+                        plan.multiheight_count_differs.push((row.name.clone(), row.multiheight.clone(), heights.column()));
+                    }
+                }
+                // Multiheight in items_base, not by its .hab: many really are (stairs, stages): only listed.
+                (None, true) => plan.multiheight_not_by_hab.push(row.name.clone()),
+                (None, false) => {}
             }
         }
-        if fields.kind {
-            change("type", row.kind.to_string(), kind.to_string(), format!("'{kind}'"));
-        }
-        let (sit, lay, walk) = (flag(entry, "cansiton"), flag(entry, "canlayon"), flag(entry, "canstandon"));
-        if fields.flags {
-            change("allow_sit", yes(row.allow_sit).into(), yes(sit).into(), format!("'{}'", yes(sit)));
-            change("allow_lay", yes(row.allow_lay).into(), yes(lay).into(), format!("'{}'", yes(lay)));
-            change("allow_walk", yes(row.allow_walk).into(), yes(walk).into(), format!("'{}'", yes(walk)));
-        }
-        if fields.size {
-            // Whole tiles, at least 1, and a height with two decimals that stack_height (double(4,2)) holds.
-            let size = match (kind, bundle) {
-                ('i', _) => Some((1, 1, 0.0)),
-                (_, Some(b)) => Some((
-                    (b.width.round() as i64).max(1),
-                    (b.length.round() as i64).max(1),
-                    ((b.height * 100.0).round() / 100.0).clamp(-MAX_STACK_HEIGHT, MAX_STACK_HEIGHT),
-                )),
-                _ => None,
+        'fields: {
+            if multiheight {
+                // Its heights are set by hand per state: nothing else is touched.
+                plan.multiheight += 1;
+                break 'fields;
+            }
+            plan.checked += 1;
+            let Some((entry, kind)) = exact.get(row.name.trim()).or_else(|| lower.get(&row.name.trim().to_lowercase())) else {
+                plan.not_in_furnidata.push(row.name.clone());
+                break 'fields;
             };
-            if let Some((width, length, height)) = size {
-                change("width", row.width.to_string(), width.to_string(), width.to_string());
-                change("length", row.length.to_string(), length.to_string(), length.to_string());
-                change("stack_height", format!("{:.2}", row.stack_height), format!("{height:.2}"), format!("{height:.2}"));
+            let kind = *kind;
+            let default_modes = interaction == "default";
+            let needs_bundle = fields.modes && default_modes || fields.size && kind == 's';
+            if bundle.is_none() && needs_bundle {
+                plan.no_bundle.push(row.name.clone());
+            }
+            if fields.sprite {
+                if let Some(id) = entry.get("id").and_then(Value::as_i64).filter(|id| (1..=i64::from(i32::MAX)).contains(id)) {
+                    change("sprite_id", row.sprite_id.to_string(), id.to_string(), id.to_string());
+                }
+            }
+            if fields.kind {
+                change("type", row.kind.to_string(), kind.to_string(), format!("'{kind}'"));
+            }
+            let (sit, lay, walk) = (flag(entry, "cansiton"), flag(entry, "canlayon"), flag(entry, "canstandon"));
+            if fields.flags {
+                change("allow_sit", yes(row.allow_sit).into(), yes(sit).into(), format!("'{}'", yes(sit)));
+                change("allow_lay", yes(row.allow_lay).into(), yes(lay).into(), format!("'{}'", yes(lay)));
+                change("allow_walk", yes(row.allow_walk).into(), yes(walk).into(), format!("'{}'", yes(walk)));
+            }
+            if fields.size {
+                // Whole tiles, at least 1, and a height with two decimals that stack_height (double(4,2)) holds.
+                let size = match (kind, bundle) {
+                    ('i', _) => Some((1, 1, 0.0)),
+                    (_, Some(b)) => Some((
+                        (b.width.round() as i64).max(1),
+                        (b.length.round() as i64).max(1),
+                        ((b.height * 100.0).round() / 100.0).clamp(-MAX_STACK_HEIGHT, MAX_STACK_HEIGHT),
+                    )),
+                    _ => None,
+                };
+                if let Some((width, length, height)) = size {
+                    change("width", row.width.to_string(), width.to_string(), width.to_string());
+                    change("length", row.length.to_string(), length.to_string(), length.to_string());
+                    change("stack_height", format!("{:.2}", row.stack_height), format!("{height:.2}"), format!("{height:.2}"));
+                }
+            }
+            if fields.modes && default_modes {
+                if let Some(b) = bundle {
+                    change("interaction_modes_count", row.modes.to_string(), b.modes.to_string(), b.modes.to_string());
+                }
             }
         }
-        if fields.modes && row.interaction_type.trim().eq_ignore_ascii_case("default") {
-            if let Some(b) = bundle {
-                change("interaction_modes_count", row.modes.to_string(), b.modes.to_string(), b.modes.to_string());
-            }
-        }
+        plan.changes.extend(changes);
         if !set.is_empty() {
             plan.updates.push((row.id, set));
         }
@@ -216,11 +262,10 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
 pub fn sql(plan: &FixPlan) -> String {
     let mut out = String::from("-- Fix items_base (All-in-1 Installer): values as FurnitureData.json and the .hab files give them.\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n");
     for (id, set) in &plan.updates {
+        // A row whose multiheight this fix sets or removes is meant; every other one must not be a multiheight furni.
+        let guard = if set.iter().any(|(column, _)| *column == "multiheight") { "" } else { " AND `interaction_type` <> 'multiheight' AND (`multiheight` IS NULL OR `multiheight` IN ('', '0'))" };
         let set: Vec<String> = set.iter().map(|(column, value)| format!("`{column}` = {value}")).collect();
-        out.push_str(&format!(
-            "UPDATE `items_base` SET {} WHERE `id` = {id} AND `interaction_type` <> 'multiheight' AND (`multiheight` IS NULL OR `multiheight` IN ('', '0'));\n",
-            set.join(", ")
-        ));
+        out.push_str(&format!("UPDATE `items_base` SET {} WHERE `id` = {id}{guard};\n", set.join(", ")));
     }
     out.push_str("COMMIT;\n");
     out
@@ -358,11 +403,11 @@ mod tests {
         let no_hab = row(10, "no_hab_here", 's');
         let rows = [bed, chair, table, gate, multi, multi2, poster, pet, unknown, no_hab];
         let bundles: HashMap<String, Option<Bundle>> = [
-            ("bed_polyfon", Some(Bundle { width: 2.0, length: 3.0, height: 1.73125, modes: 1 })),
-            ("chair_norja", Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 1 })),
-            ("table_plasto_4leg", Some(Bundle { width: 2.0, length: 2.0, height: 1.0, modes: 1 })),
-            ("gate_thing", Some(Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 3 })),
-            ("poster", Some(Bundle { width: 1.0, length: 1.0, height: 0.5, modes: 1 })),
+            ("bed_polyfon", Some(Bundle { width: 2.0, length: 3.0, height: 1.73125, modes: 1, multiheight: None })),
+            ("chair_norja", Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 1, multiheight: None })),
+            ("table_plasto_4leg", Some(Bundle { width: 2.0, length: 2.0, height: 1.0, modes: 1, multiheight: None })),
+            ("gate_thing", Some(Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 3, multiheight: None })),
+            ("poster", Some(Bundle { width: 1.0, length: 1.0, height: 0.5, modes: 1, multiheight: None })),
             ("no_hab_here", None),
         ]
         .into_iter()
@@ -397,8 +442,60 @@ mod tests {
         assert!(text.contains("UPDATE `items_base` SET `sprite_id` = 30, `allow_sit` = '1', `stack_height` = 1.00 WHERE `id` = 2 AND `interaction_type` <> 'multiheight'"), "{text}");
         assert!(text.trim_end().ends_with("COMMIT;"));
         // Nothing chosen: nothing changes.
-        let none = super::plan(&rows, &furnidata, &bundles, Fields { sprite: false, kind: false, size: false, flags: false, modes: false });
+        let none = super::plan(&rows, &furnidata, &bundles, Fields { sprite: false, kind: false, size: false, flags: false, modes: false, multiheight: false });
         assert!(none.changes.is_empty());
+    }
+
+    #[test]
+    fn multiheight_as_the_hab_says() {
+        let furnidata = json!({"roomitemtypes": {"furnitype": [
+            {"id": 1, "classname": "block"}, {"id": 2, "classname": "block_hand"}, {"id": 3, "classname": "block_three"},
+            {"id": 4, "classname": "not_multi"}, {"id": 5, "classname": "block_recolorable"}, {"id": 6, "classname": "gate_multi"}
+        ]}});
+        let heights = crate::furni_import::Heights::new(&[1.0, 0.75, 0.5, 0.25, 0.1]);
+        let multi = Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 5, multiheight: heights });
+        let plain = Some(Bundle { width: 2.0, length: 1.0, height: 0.5, modes: 1, multiheight: None });
+        let bundles: HashMap<String, Option<Bundle>> = [
+            ("block", multi), ("block_hand", multi), ("block_three", multi), ("not_multi", plain), ("block_recolorable", multi), ("gate_multi", multi),
+        ]
+        .into_iter()
+        .map(|(n, b)| (n.to_string(), b))
+        .collect();
+        let with = |id: i64, name: &str, interaction: &str, multiheight: &str, modes: i64, stack: f64| ItemRow {
+            sprite_id: id,
+            interaction_type: interaction.into(),
+            multiheight: multiheight.into(),
+            modes,
+            stack_height: stack,
+            ..row(id, name, 's')
+        };
+        let rows = [
+            with(1, "block", "default", "0", 1, 1.0),                              // .hab: multiheight, items_base: not
+            with(2, "block_hand", "multiheight", "1.00;0.80;0.60;0.40;0.20", 5, 0.0), // hand-set, five values: stays
+            with(3, "block_three", "multiheight", "1.00;0.50;0.10", 3, 0.0),        // three values for five states
+            with(4, "not_multi", "multiheight", "1.00;0.50", 2, 0.0),               // .hab: no multiheight furni
+            with(5, "block_recolorable", "recolorable", "0", 5, 1.0),               // recolorable keeps its interaction
+            with(6, "gate_multi", "gate", "0", 2, 1.0),                             // another interaction: untouched
+        ];
+        let plan = plan(&rows, &furnidata, &bundles, Fields::default());
+        let of = |name: &str| -> Vec<(&str, String)> { plan.changes.iter().filter(|c| c.name == name).map(|c| (c.column, c.to.clone())).collect() };
+        let five = "1.00;0.75;0.50;0.25;0.10".to_string();
+        assert_eq!(
+            of("block"),
+            [("interaction_type", "multiheight".into()), ("multiheight", five.clone()), ("interaction_modes_count", "5".into()), ("stack_height", "0.00".into())]
+        );
+        // A multiheight furni in items_base is never changed: other heights, another number, or no multiheight .hab.
+        assert!(of("block_hand").is_empty() && of("block_three").is_empty() && of("not_multi").is_empty());
+        assert_eq!(plan.multiheight_count_differs, [("block_three".to_string(), "1.00;0.50;0.10".to_string(), five.clone())]);
+        assert_eq!(plan.multiheight_not_by_hab, ["not_multi"]);
+        assert_eq!(of("block_recolorable"), [("multiheight", five.clone())], "recolorable: the heights, its interaction and modes stay");
+        assert!(of("gate_multi").is_empty());
+        assert_eq!(plan.multiheight, 5, "block, block_hand, block_three, not_multi, block_recolorable");
+        let text = sql(&plan);
+        assert!(text.contains("SET `interaction_type` = 'multiheight', `multiheight` = '1.00;0.75;0.50;0.25;0.10', `interaction_modes_count` = 5, `stack_height` = 0.00 WHERE `id` = 1;"), "{text}");
+        // Off: the multiheight furni are left alone as before.
+        let off = super::plan(&rows, &furnidata, &bundles, Fields { multiheight: false, ..Fields::default() });
+        assert!(!off.changes.iter().any(|c| c.column == "multiheight"));
     }
 
     #[test]

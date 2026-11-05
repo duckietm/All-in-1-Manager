@@ -136,6 +136,7 @@ enum List {
     Moved,
     Offers,
     Capped,
+    Multiheight,
     TooLong,
     Pages,
 }
@@ -269,6 +270,12 @@ impl Form {
             (Some(_), List::Already, Some(p)) => names(&p.report().already),
             (Some(_), List::Renumbered, Some(p)) => p.report().renumbered.iter().filter(|r| matches(&r.0)).map(|(name, old, new)| vec![name.clone(), old.to_string(), new.to_string()]).collect(),
             (Some(plan), List::TooLong, _) => names(&plan.too_long),
+            (Some(plan), List::Multiheight, _) => plan
+                .new
+                .iter()
+                .filter(|f| matches(&f.classname))
+                .filter_map(|f| f.multiheight.as_ref().map(|h| vec![f.classname.clone(), f.interaction_type.to_string(), h.clone()]))
+                .collect(),
             (Some(plan), List::Capped, _) => plan.capped.iter().filter(|c| matches(&c.0)).map(|(name, height)| vec![name.clone(), height.to_string(), height.clamp(-furni_import::MAX_STACK_HEIGHT, furni_import::MAX_STACK_HEIGHT).to_string()]).collect(),
             (Some(plan), List::Offers, _) => plan.offers.iter().filter(|o| matches(&o.1)).map(|(id, name, from, to)| vec![id.to_string(), name.clone(), from.to_string(), to.to_string()]).collect(),
             (Some(plan), List::Moved, _) => plan.moved.iter().filter(|m| matches(&m.name)).map(|m| vec![m.name.clone(), m.from.to_string(), m.to.to_string()]).collect(),
@@ -656,6 +663,10 @@ impl InstallStep for ImportAssetsStep {
             if !plan.capped.is_empty() {
                 lists.push((List::Capped, tf("Height too big ({count})", &[("count", &plan.capped.len().to_string())])));
             }
+            let multiheight = plan.new.iter().filter(|f| f.multiheight.is_some()).count();
+            if multiheight > 0 {
+                lists.push((List::Multiheight, tf("Multiheight ({count})", &[("count", &multiheight.to_string())])));
+            }
             if !plan.too_long.is_empty() {
                 lists.push((List::TooLong, tf("Name too long ({count})", &[("count", &plan.too_long.len().to_string())])));
             }
@@ -707,6 +718,10 @@ impl InstallStep for ImportAssetsStep {
             (List::Capped, _) => {
                 widgets::muted(ui, palette, t("Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel."), 12.0);
                 table(ui, palette, "import_capped", &[260.0, 120.0, 120.0], &["item_name", t("In the .hab"), "stack_height"], &rows);
+            }
+            (List::Multiheight, _) => {
+                widgets::muted(ui, palette, t("Their .hab is a multiheight furni (logicType furniture_multiheight): they get interaction_type multiheight and a height per state, worked out from how far each state's image moves (rounded to a quarter, at least 0.10). That is right for blocks, but only a rough guess for stages and stairs: check these heights, and correct them in items_base.multiheight where needed."), 12.0);
+                table(ui, palette, "import_multiheight", &[260.0, 120.0, 300.0], &["item_name", "interaction", "multiheight"], &rows);
             }
             (List::TooLong, _) => {
                 widgets::muted(ui, palette, t("Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json."), 12.0);

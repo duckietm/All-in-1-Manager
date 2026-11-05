@@ -26,12 +26,117 @@ use crate::server::{Log, Result, Server};
 use crate::server_tools;
 
 /// The size and interaction modes a furni bundle gives.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Bundle {
     pub width: f64,
     pub length: f64,
     pub height: f64,
     pub modes: i64,
+    /// A multiheight furni (logicType furniture_multiheight): the height of each state.
+    pub multiheight: Option<Heights>,
+}
+
+/// The height of each state of a multiheight furni (at most [`Heights::MAX`] states).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Heights {
+    len: usize,
+    values: [f64; Heights::MAX],
+}
+
+impl Heights {
+    pub const MAX: usize = 16;
+
+    pub fn new(values: &[f64]) -> Option<Self> {
+        if values.is_empty() || values.len() > Self::MAX {
+            return None;
+        }
+        let mut heights = Self { len: values.len(), values: [0.0; Self::MAX] };
+        heights.values[..values.len()].copy_from_slice(values);
+        Some(heights)
+    }
+
+    pub fn as_slice(&self) -> &[f64] {
+        &self.values[..self.len]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// As items_base.multiheight holds them: "1.00;0.75;0.50;0.25;0.10".
+    pub fn column(&self) -> String {
+        self.as_slice().iter().map(|h| format!("{h:.2}")).collect::<Vec<_>>().join(";")
+    }
+}
+
+/// How many values an items_base.multiheight holds ("0" and "" hold none). Hotels write them with ';' and
+/// sometimes with ',' ("0.8,2.0,3.0").
+pub fn multiheight_count(column: &str) -> usize {
+    let column = column.trim();
+    if matches!(column, "" | "0") {
+        return 0;
+    }
+    column.split([';', ',']).filter(|v| !v.trim().is_empty()).count()
+}
+
+/// The lowest height a multiheight state gets: a state of height 0 would act as the floor.
+pub const MIN_STATE_HEIGHT: f64 = 0.10;
+
+/// The heights of a multiheight furni (logicType furniture_multiheight), one per state (animation), from how far
+/// each state's image moves up or down: in the 64 px images 32 px is one tile of height (16 px in the 32 px ones).
+/// The highest state is the bundle's height (logic.model.dimensions.z); every height is rounded to a quarter, and at
+/// least 0.10. None for other furni, or when the images do not tell.
+pub fn multiheight_heights(json: &Value) -> Option<Heights> {
+    if json.get("logicType").and_then(Value::as_str) != Some("furniture_multiheight") {
+        return None;
+    }
+    let name = json.get("name").and_then(Value::as_str)?;
+    let visualizations = json.get("visualizations")?.as_array()?;
+    let visualization = [64, 32].iter().find_map(|size| visualizations.iter().find(|v| v.get("size").and_then(Value::as_i64) == Some(*size)))?;
+    let size = visualization["size"].as_i64()?;
+    let per_tile = size as f64 / 2.0;
+    let layers = visualization.get("layerCount").and_then(Value::as_i64).unwrap_or(1).clamp(1, 26) as usize;
+    let direction = visualization
+        .get("directions")
+        .and_then(Value::as_object)
+        .and_then(|d| d.keys().filter_map(|k| k.parse::<i64>().ok()).min())
+        .unwrap_or(0);
+    let animations = visualization.get("animations")?.as_object()?;
+    let mut states: Vec<i64> = animations.keys().filter_map(|k| k.parse().ok()).filter(|id| (0..50).contains(id)).collect();
+    states.sort_unstable();
+    if states.len() < 2 {
+        return None;
+    }
+    let assets = json.get("assets")?.as_object()?;
+    // Per state, the highest point of its image: the largest y offset over its layers (each with its own frame).
+    let mut tops = Vec::new();
+    for state in &states {
+        let animation = &animations[&state.to_string()];
+        let mut top: Option<i64> = None;
+        for layer in 0..layers {
+            let frame = animation["layers"][layer.to_string()]["frameSequences"]["0"]["frames"]["0"]["id"].as_i64().unwrap_or(0);
+            let letter = (b'a' + layer as u8) as char;
+            if let Some(y) = assets.get(&format!("{name}_{size}_{letter}_{direction}_{frame}")).and_then(|a| a.get("y")).and_then(Value::as_i64) {
+                top = Some(top.map_or(y, |t| t.max(y)));
+            }
+        }
+        tops.push(top?);
+    }
+    let highest = *tops.iter().max()?;
+    let (_, _, z) = dimensions(json).unwrap_or((1.0, 1.0, 1.0));
+    let heights: Vec<f64> = tops
+        .iter()
+        .map(|top| {
+            let height = z - (highest - top) as f64 / per_tile;
+            let quarter = (height * 4.0).round() / 4.0;
+            if quarter < MIN_STATE_HEIGHT { MIN_STATE_HEIGHT } else { quarter }
+        })
+        .collect();
+    Heights::new(&heights)
 }
 
 /// logic.model.dimensions x / y / z of a bundle json (a missing axis is 1, 1 and 0); None without dimensions.
@@ -58,7 +163,7 @@ pub fn interaction_modes_count(json: &Value) -> i64 {
 /// What the json of a bundle gives. (ProcessNitroFile)
 pub fn bundle_from_json(json: &Value) -> Bundle {
     let (width, length, height) = dimensions(json).unwrap_or((1.0, 1.0, 0.0));
-    Bundle { width, length, height, modes: interaction_modes_count(json) }
+    Bundle { width, length, height, modes: interaction_modes_count(json), multiheight: multiheight_heights(json) }
 }
 
 /// Reads the first .json of a .hab file (as HabFurniScan does); None when it is missing or unreadable.
@@ -98,6 +203,8 @@ pub struct NewFurni {
     pub allow_walk: bool,
     pub interaction_type: &'static str,
     pub modes: i64,
+    /// A multiheight furni's heights (items_base.multiheight), from its .hab; None: '0'.
+    pub multiheight: Option<String>,
 }
 
 /// An items_base row that no catalogue item sells.
@@ -245,6 +352,14 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
             plan.capped.push((classname.clone(), height));
             height = height.clamp(-MAX_STACK_HEIGHT, MAX_STACK_HEIGHT);
         }
+        // A multiheight furni (its .hab says so): interaction multiheight with a height per state, and stack_height
+        // 0.00 (the emulator takes the state's height). A recolorable one keeps 'recolorable' and gets the heights.
+        let interaction = interaction_type(&classname);
+        let (interaction, multiheight, modes, height) = match bundle.multiheight {
+            Some(heights) if interaction == "recolorable" => (interaction, Some(heights.column()), heights.len() as i64, height),
+            Some(heights) => ("multiheight", Some(heights.column()), heights.len() as i64, 0.0),
+            None => (interaction, None, bundle.modes, height),
+        };
         plan.new.push(NewFurni {
             sprite_id: entry.get("id").and_then(Value::as_i64).filter(|id| fits_int(*id)),
             offer_id: entry.get("offerid").and_then(Value::as_i64).filter(|id| fits_int(*id)).unwrap_or(-1),
@@ -256,8 +371,9 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
             allow_sit,
             allow_lay,
             allow_walk,
-            interaction_type: interaction_type(&classname),
-            modes: bundle.modes,
+            interaction_type: interaction,
+            modes,
+            multiheight,
             classname,
         });
     }
@@ -307,7 +423,7 @@ pub fn items_base_values(furni: &NewFurni, id: &str) -> String {
     let public = sql_literal(&public);
     let sprite = furni.sprite_id.map_or_else(|| id.to_string(), |s| s.to_string());
     format!(
-        "({id}, {sprite}, {name}, {public}, {}, {}, {}, {}, {}, {}, {}, '1', '1', '0', '1', '1', '{}', '{}', {}, '0', '0', '0', 0, 0, '0')",
+        "({id}, {sprite}, {name}, {public}, {}, {}, {}, {}, {}, {}, {}, '1', '1', '0', '1', '1', '{}', '{}', {}, '0', {}, '0', 0, 0, '0')",
         number(furni.width),
         number(furni.length),
         number(furni.height),
@@ -317,7 +433,8 @@ pub fn items_base_values(furni: &NewFurni, id: &str) -> String {
         yes(furni.allow_walk),
         furni.kind,
         furni.interaction_type,
-        furni.modes
+        furni.modes,
+        sql_literal(furni.multiheight.as_deref().unwrap_or("0"))
     )
 }
 
@@ -709,7 +826,7 @@ mod tests {
     use serde_json::json;
 
     fn bundle(width: f64, length: f64, height: f64, modes: i64) -> Option<Bundle> {
-        Some(Bundle { width, length, height, modes })
+        Some(Bundle { width, length, height, modes, multiheight: None })
     }
 
     #[test]
@@ -718,14 +835,15 @@ mod tests {
             "logic": {"model": {"dimensions": {"x": 2, "y": 3, "z": 0.7}}},
             "visualizations": [{"size": 32}, {"animations": {"0": {}, "1": {}, "3": {}, "99": {}}}]
         });
-        assert_eq!(bundle_from_json(&json), Bundle { width: 2.0, length: 3.0, height: 0.7, modes: 4 });
+        assert_eq!(bundle_from_json(&json), Bundle { width: 2.0, length: 3.0, height: 0.7, modes: 4, multiheight: None });
         // Without an animation 0: their number; without any: 1; without dimensions: 1 x 1 x 0.
         assert_eq!(interaction_modes_count(&json!({"visualizations": [{"animations": {"1": {}, "2": {}}}]})), 2);
-        assert_eq!(bundle_from_json(&json!({})), Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 1 });
+        assert_eq!(bundle_from_json(&json!({})), Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 1, multiheight: None });
         assert_eq!(dimensions(&json!({"logic": {"model": {"dimensions": {"x": 2}}}})), Some((2.0, 1.0, 0.0)));
         assert_eq!(interaction_type("bc_block_recolorable"), "recolorable");
         assert_eq!(interaction_type("chair_norja"), "default");
         assert_eq!(bundle_name("rare_dragonlamp*5"), "rare_dragonlamp");
+        assert_eq!((multiheight_count("1.00;0.75;0.50"), multiheight_count("0.8,2.0,3.0,4.0,5.0"), multiheight_count("0"), multiheight_count("")), (3, 5, 0, 0));
     }
 
     #[test]
@@ -803,6 +921,7 @@ mod tests {
             allow_walk: false,
             interaction_type: "default",
             modes: 2,
+            multiheight: None,
         };
         assert_eq!(
             items_base_values(&furni, "@item + 1"),
@@ -872,6 +991,7 @@ mod tests {
             allow_walk: false,
             interaction_type: "default",
             modes: 1,
+            multiheight: None,
         };
         let files = client_files(&[furni("rare_dragonlamp*4"), furni("rare_dragonlamp*5"), furni("Chair"), furni("gone")], &dir);
         let names: Vec<String> = files.iter().map(|f| format!("{}/{}", f.folder, f.name)).collect();

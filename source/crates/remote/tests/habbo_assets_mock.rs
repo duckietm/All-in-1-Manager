@@ -412,3 +412,24 @@ async fn a_retro_cdn_that_wants_a_referer_and_headers() {
     assert!(curl.retro_furniture(&urls).await.unwrap_err().to_string().contains("Cloudflare"));
     assert!(lines.lock().unwrap().iter().any(|l| l.contains("downloading with curl")));
 }
+
+#[tokio::test]
+async fn productdata_xml_and_an_empty_one() {
+    let mut f: HashMap<String, Vec<u8>> = HashMap::new();
+    f.insert(
+        "/productdata_xml".into(),
+        br#"<?xml version="1.0" encoding="UTF-8"?><productdata><product code=" starter_med"><name>Medium Starter Pack</name><description></description></product><product code="04Xduck"><name>Christmas Duck</name><description>A little Holiday quack</description></product></productdata>"#.to_vec(),
+    );
+    f.insert("/productdata_empty".into(), b"<?xml version=\"1.0\"?><productdata></productdata>".to_vec());
+    let base = serve(f).await;
+    let log = |_: &str| {};
+    for (path, summary, count) in [("/productdata_xml", "ProductData.json with 2 products", 2), ("/productdata_empty", "ProductData.json saved empty (Habbo sent no products)", 0)] {
+        let urls = Urls { productdata: format!("{base}{path}"), ..Urls::habbo(aio_remote::furniture_language::LANGUAGES[0]) };
+        let root = tempfile::tempdir().unwrap();
+        let downloader = Downloader::new(root.path(), urls, Options::default(), &log, CancellationToken::new()).unwrap();
+        assert_eq!(downloader.run(Asset::ProductData).await.unwrap(), summary);
+        // Saved either way: the client asks for the file.
+        let json: serde_json::Value = serde_json::from_slice(&std::fs::read(root.path().join("gamedata/config/ProductData.json")).unwrap()).unwrap();
+        assert_eq!(json["productdata"]["product"].as_array().unwrap().len(), count);
+    }
+}

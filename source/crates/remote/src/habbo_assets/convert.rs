@@ -378,8 +378,24 @@ fn unescape(text: &str) -> String {
     out
 }
 
-/// productdata (["code","name","description"] triples) as ProductData.json.
+/// productdata as ProductData.json: Habbo's XML (<product code="..."><name/><description/></product>, served since
+/// 2026) or the older ["code","name","description"] triples.
 pub fn productdata(text: &str) -> Value {
+    let xml = text.trim_start_matches('\u{feff}').trim_start();
+    if xml.starts_with('<') {
+        let products: Vec<Value> = roxmltree::Document::parse(xml)
+            .map(|doc| {
+                children(doc.root_element(), "product")
+                    .filter_map(|p| {
+                        let code = p.attribute("code")?.trim();
+                        let field = |tag: &str| child(p, tag).map(self::text).unwrap_or_default();
+                        (!code.is_empty()).then(|| json!({ "code": code, "name": field("name"), "description": field("description") }))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        return json!({ "productdata": { "product": products } });
+    }
     let triple = regex::Regex::new(r#"\[\s*"(.*?)"\s*,\s*"(.*?)"\s*,\s*"(.*?)"\s*\]"#).expect("productdata pattern");
     let products: Vec<Value> = triple
         .captures_iter(text)
@@ -554,6 +570,20 @@ mod tests {
         let json = productdata(r#"[["rare_dragon"," Dragon &amp; Lamp","Café &#39;hot&#39;\n"],["x","y","z"]]"#);
         assert_eq!(json["productdata"]["product"][0], json!({"code":"rare_dragon","name":"Dragon & Lamp","description":"Café 'hot'\n"}));
         assert_eq!(json["productdata"]["product"].as_array().unwrap().len(), 2);
+        // Habbo's XML (since 2026): entities decoded, the code trimmed, empty names kept.
+        let json = productdata(
+            r#"<?xml version="1.0" encoding="UTF-8"?><productdata><product code=" starter_med"><name>Medium Starter Pack</name><description></description></product><product code="04Xduck"><name>Christmas &amp; Duck</name><description><![CDATA[A little <b>quack</b>]]></description></product><product code="wf_promo1"><name></name><description/></product></productdata>"#,
+        );
+        assert_eq!(
+            json["productdata"]["product"],
+            json!([
+                {"code": "starter_med", "name": "Medium Starter Pack", "description": ""},
+                {"code": "04Xduck", "name": "Christmas & Duck", "description": "A little <b>quack</b>"},
+                {"code": "wf_promo1", "name": "", "description": ""}
+            ])
+        );
+        // Neither format: no products.
+        assert_eq!(productdata("<html>nope")["productdata"]["product"], json!([]));
     }
 
     #[test]

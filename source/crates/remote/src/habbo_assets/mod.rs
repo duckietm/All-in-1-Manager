@@ -638,10 +638,12 @@ impl<'a> Downloader<'a> {
         let text = self.text(&self.urls.productdata).await?;
         let json = convert::productdata(&text);
         let count = json["productdata"]["product"].as_array().map_or(0, Vec::len);
-        if count == 0 {
-            return Err(error(format!("{} has no products in it.", self.urls.productdata)));
-        }
+        // Without products an empty ProductData.json all the same: the client asks for the file.
         self.save_json("config/ProductData.json", &json)?;
+        if count == 0 {
+            (self.log)(&format!("  ! {} has no products in it: ProductData.json is saved empty", self.urls.productdata));
+            return Ok("ProductData.json saved empty (Habbo sent no products)".into());
+        }
         Ok(format!("ProductData.json with {count} products"))
     }
 

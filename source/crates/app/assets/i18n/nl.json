@@ -2421,5 +2421,10 @@
   "Furni per page": "Meubi per pagina",
   "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Meer meubi dan dit: de pagina hierboven wordt een map met pagina's van hoogstens zoveel eronder (zie Pagina's). 500 (standaard) houdt de catalogus snel.",
   "On {pages} catalogue pages under {caption} (id {id}), {state}.": "Op {pages} cataloguspagina's onder {caption} (id {id}), {state}.",
-  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} catalogusitems op {pages} pagina's onder {caption} (id {id}). Spelers zien ze nadat ze het hotel opnieuw laden."
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} catalogusitems op {pages} pagina's onder {caption} (id {id}). Spelers zien ze nadat ze het hotel opnieuw laden.",
+  "Height too big ({count})": "Hoogte te groot ({count})",
+  "Name too long ({count})": "Naam te lang ({count})",
+  "In the .hab": "In de .hab",
+  "Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel.": "Hun .hab-bestand geeft een hoogte die items_base.stack_height niet kan bevatten (hoogstens 99.99): ze krijgen 99.99 (of -99.99). Controleer deze meubi in het hotel.",
+  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "Hun classname is langer dan items_base.item_name kan bevatten (70 tekens): ze worden overgeslagen, omdat een ingekorte naam niet meer bij FurnitureData.json past."
 }

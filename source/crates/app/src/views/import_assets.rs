@@ -126,6 +126,8 @@ enum List {
     Already,
     Renumbered,
     Moved,
+    Capped,
+    TooLong,
     Pages,
 }
 
@@ -257,6 +259,8 @@ impl Form {
             (Some(_), List::Duplicates, Some(p)) => names(&p.report().duplicates),
             (Some(_), List::Already, Some(p)) => names(&p.report().already),
             (Some(_), List::Renumbered, Some(p)) => p.report().renumbered.iter().filter(|r| matches(&r.0)).map(|(name, old, new)| vec![name.clone(), old.to_string(), new.to_string()]).collect(),
+            (Some(plan), List::TooLong, _) => names(&plan.too_long),
+            (Some(plan), List::Capped, _) => plan.capped.iter().filter(|c| matches(&c.0)).map(|(name, height)| vec![name.clone(), height.to_string(), height.clamp(-furni_import::MAX_STACK_HEIGHT, furni_import::MAX_STACK_HEIGHT).to_string()]).collect(),
             (Some(plan), List::Moved, _) => plan.moved.iter().filter(|m| matches(&m.name)).map(|m| vec![m.name.clone(), m.from.to_string(), m.to.to_string()]).collect(),
             (Some(_), List::Pages, _) => pages.iter().filter(|(c, _)| matches(c)).map(|(caption, count)| vec![caption.clone(), count.to_string()]).collect(),
             _ => Vec::new(),
@@ -634,6 +638,12 @@ impl InstallStep for ImportAssetsStep {
                     }
                 }
             }
+            if !plan.capped.is_empty() {
+                lists.push((List::Capped, tf("Height too big ({count})", &[("count", &plan.capped.len().to_string())])));
+            }
+            if !plan.too_long.is_empty() {
+                lists.push((List::TooLong, tf("Name too long ({count})", &[("count", &plan.too_long.len().to_string())])));
+            }
             let pages = page_count;
             lists.push((List::Pages, tf("Pages ({count})", &[("count", &pages.to_string())])));
             for (list, label) in lists {
@@ -674,6 +684,14 @@ impl InstallStep for ImportAssetsStep {
             (List::Moved, Some(_)) => {
                 widgets::muted(ui, palette, t("Already in items_base, but FurnitureData.json now has them under another id (Habbo took theirs): their sprite_id is updated, so the client keeps showing them."), 12.0);
                 table(ui, palette, "import_moved", &[260.0, 100.0, 100.0], &["item_name", t("Now"), t("New id")], &rows);
+            }
+            (List::Capped, _) => {
+                widgets::muted(ui, palette, t("Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel."), 12.0);
+                table(ui, palette, "import_capped", &[260.0, 120.0, 120.0], &["item_name", t("In the .hab"), "stack_height"], &rows);
+            }
+            (List::TooLong, _) => {
+                widgets::muted(ui, palette, t("Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json."), 12.0);
+                table(ui, palette, "import_too_long", &[500.0], &["classname"], &rows);
             }
             (List::Pages, _) => match per_page(&form.per_page) {
                 Ok(n) => {

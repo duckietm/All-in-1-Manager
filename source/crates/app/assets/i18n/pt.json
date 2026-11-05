@@ -2421,5 +2421,10 @@
   "Furni per page": "Mobis por página",
   "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Mais mobis do que isso: a página acima vira uma pasta com páginas de no máximo essa quantidade dentro (veja Páginas). 500 (padrão) mantém o catálogo rápido.",
   "On {pages} catalogue pages under {caption} (id {id}), {state}.": "Em {pages} páginas do catálogo dentro de {caption} (id {id}), {state}.",
-  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} itens de catálogo em {pages} páginas dentro de {caption} (id {id}). Os jogadores os veem depois de recarregar o hotel."
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} itens de catálogo em {pages} páginas dentro de {caption} (id {id}). Os jogadores os veem depois de recarregar o hotel.",
+  "Height too big ({count})": "Altura grande demais ({count})",
+  "Name too long ({count})": "Nome longo demais ({count})",
+  "In the .hab": "No .hab",
+  "Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel.": "O arquivo .hab deles dá uma altura que items_base.stack_height não comporta (no máximo 99.99): eles recebem 99.99 (ou -99.99). Confira esses mobis no hotel.",
+  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "O classname deles é maior do que items_base.item_name comporta (70 caracteres): eles ficam de fora, porque um nome encurtado não corresponderia mais ao FurnitureData.json."
 }

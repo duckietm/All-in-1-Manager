@@ -86,7 +86,8 @@ fn id_of(entry: &Value) -> Option<i64> {
         Some(Value::String(s)) => s.trim().parse().ok(),
         _ => None,
     }
-    .filter(|id| *id > 0)
+    // An id the client and items_base.sprite_id (int(11)) cannot hold counts as taken: it gets a free one.
+    .filter(|id| *id > 0 && *id <= i64::from(i32::MAX))
 }
 
 fn empty() -> Value {

@@ -2421,5 +2421,10 @@
   "Furni per page": "Kalusteita sivulla",
   "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Enemmän kalusteita: yllä oleva sivu muuttuu kansioksi, jonka alla on enintään näin monen kalusteen sivuja (katso Sivut). 500 (oletus) pitää katalogin nopeana.",
   "On {pages} catalogue pages under {caption} (id {id}), {state}.": "{pages} katalogisivulla sivun {caption} (id {id}) alla, {state}.",
-  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} katalogituotetta {pages} sivulla sivun {caption} (id {id}) alla. Pelaajat näkevät ne, kun he lataavat hotellin uudelleen."
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} katalogituotetta {pages} sivulla sivun {caption} (id {id}) alla. Pelaajat näkevät ne, kun he lataavat hotellin uudelleen.",
+  "Height too big ({count})": "Korkeus liian suuri ({count})",
+  "Name too long ({count})": "Nimi liian pitkä ({count})",
+  "In the .hab": ".hab-tiedostossa",
+  "Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel.": "Niiden .hab-tiedosto antaa korkeuden, jota items_base.stack_height ei voi tallentaa (enintään 99.99): ne saavat arvon 99.99 (tai -99.99). Tarkista nämä kalusteet hotellissa.",
+  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "Niiden classname on pidempi kuin items_base.item_name sallii (70 merkkiä): ne jätetään pois, koska lyhennetty nimi ei enää vastaisi FurnitureData.json-tiedostoa."
 }

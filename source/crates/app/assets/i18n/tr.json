@@ -2421,5 +2421,10 @@
   "Furni per page": "Sayfa başına mobi",
   "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Bundan fazla mobi: yukarıdaki sayfa, altında en fazla bu kadar mobi olan sayfaları tutan bir klasör olur (bkz. Sayfalar). 500 (varsayılan) kataloğu hızlı tutar.",
   "On {pages} catalogue pages under {caption} (id {id}), {state}.": "{caption} (id {id}) altında {pages} katalog sayfasında, {state}.",
-  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{caption} (id {id}) altında {pages} sayfada {items} katalog öğesi. Oyuncular oteli yeniden yükledikten sonra görür."
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{caption} (id {id}) altında {pages} sayfada {items} katalog öğesi. Oyuncular oteli yeniden yükledikten sonra görür.",
+  "Height too big ({count})": "Yükseklik çok büyük ({count})",
+  "Name too long ({count})": "Ad çok uzun ({count})",
+  "In the .hab": ".hab içinde",
+  "Their .hab file gives a height that items_base.stack_height cannot hold (at most 99.99): they get 99.99 (or -99.99). Check these furni in the hotel.": ".hab dosyaları, items_base.stack_height'ın tutamayacağı bir yükseklik veriyor (en fazla 99.99): 99.99 (ya da -99.99) alırlar. Bu mobileri otelde kontrol et.",
+  "Their classname is longer than items_base.item_name holds (70 characters): they are left out, because a shortened name would no longer match FurnitureData.json.": "classname'leri items_base.item_name'in alabileceğinden uzun (70 karakter): dışarıda bırakılırlar, çünkü kısaltılmış bir ad artık FurnitureData.json ile eşleşmez."
 }

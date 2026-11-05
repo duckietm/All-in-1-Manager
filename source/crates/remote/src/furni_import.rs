@@ -134,7 +134,25 @@ pub struct Plan {
     pub uncatalogued: Vec<Uncatalogued>,
     /// Furni in items_base whose sprite_id has to follow FurnitureData.json (a custom furni got another id).
     pub moved: Vec<Moved>,
+    /// Furni whose bundle height does not fit items_base.stack_height (double(4,2)): (classname, its height); they
+    /// get the nearest height that fits.
+    pub capped: Vec<(String, f64)>,
+    /// Classnames longer than items_base.item_name holds (varchar(70)): left out, cut they would not match
+    /// FurnitureData.json.
+    pub too_long: Vec<String>,
 }
+
+/// items_base.item_name is a varchar(70), public_name a varchar(56).
+pub const MAX_ITEM_NAME: usize = 70;
+pub const MAX_PUBLIC_NAME: usize = 56;
+
+/// An id that fits the int(11) columns (sprite_id, offer_id).
+fn fits_int(id: i64) -> bool {
+    (i64::from(i32::MIN)..=i64::from(i32::MAX)).contains(&id)
+}
+
+/// The highest stack_height items_base can hold: it is a double(4,2).
+pub const MAX_STACK_HEIGHT: f64 = 99.99;
 
 /// An items_base furni whose sprite_id changes: its FurnitureData.json id moved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -204,6 +222,10 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
     let mut plan = Plan { uncatalogued, ..Plan::default() };
     for (entry, kind) in wanted {
         let classname = entry["classname"].as_str().unwrap_or("").trim().to_string();
+        if classname.chars().count() > MAX_ITEM_NAME {
+            plan.too_long.push(classname);
+            continue;
+        }
         let Some(bundle) = bundles.get(&bundle_name(&classname).to_lowercase()).copied().flatten() else {
             plan.no_bundle.push(classname);
             continue;
@@ -211,10 +233,15 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
         let (allow_sit, allow_lay, allow_walk) = (flag(entry, "cansiton"), flag(entry, "canlayon"), flag(entry, "canstandon"));
         // Stackable: a height other than 1.0 and nothing to sit or lie on (worked out before a wall item's reset).
         let allow_stack = bundle.height != 1.0 && !allow_sit && !allow_lay;
-        let (width, length, height) = if kind == 'i' { (1.0, 1.0, 0.0) } else { (bundle.width, bundle.length, bundle.height) };
+        let (width, length, mut height) = if kind == 'i' { (1.0, 1.0, 0.0) } else { (bundle.width, bundle.length, bundle.height) };
+        // A retro's bundle can have a height items_base cannot hold (MariaDB refuses the whole import then).
+        if !(-MAX_STACK_HEIGHT..=MAX_STACK_HEIGHT).contains(&height) {
+            plan.capped.push((classname.clone(), height));
+            height = height.clamp(-MAX_STACK_HEIGHT, MAX_STACK_HEIGHT);
+        }
         plan.new.push(NewFurni {
-            sprite_id: entry.get("id").and_then(Value::as_i64),
-            offer_id: entry.get("offerid").and_then(Value::as_i64).unwrap_or(-1),
+            sprite_id: entry.get("id").and_then(Value::as_i64).filter(|id| fits_int(*id)),
+            offer_id: entry.get("offerid").and_then(Value::as_i64).filter(|id| fits_int(*id)).unwrap_or(-1),
             kind,
             width,
             length,
@@ -269,9 +296,12 @@ const CATALOG_ITEMS_COLUMNS: &str = "(`id`, `item_ids`, `page_id`, `offer_id`, `
 /// The items_base row of a new furni, with `id` the SQL expression of its new id. (ProcessNitroFile's INSERT)
 pub fn items_base_values(furni: &NewFurni, id: &str) -> String {
     let name = sql_literal(&furni.classname);
+    // public_name holds less than item_name: only what is shown is cut.
+    let public: String = furni.classname.chars().take(MAX_PUBLIC_NAME).collect();
+    let public = sql_literal(&public);
     let sprite = furni.sprite_id.map_or_else(|| id.to_string(), |s| s.to_string());
     format!(
-        "({id}, {sprite}, {name}, {name}, {}, {}, {}, {}, {}, {}, {}, '1', '1', '0', '1', '1', '{}', '{}', {}, '0', '0', '0', 0, 0, '0')",
+        "({id}, {sprite}, {name}, {public}, {}, {}, {}, {}, {}, {}, {}, '1', '1', '0', '1', '1', '{}', '{}', {}, '0', '0', '0', 0, 0, '0')",
         number(furni.width),
         number(furni.length),
         number(furni.height),
@@ -633,6 +663,20 @@ mod tests {
         let names: Vec<&str> = plan.new.iter().map(|f| f.classname.as_str()).collect();
         assert_eq!(names, ["table_norja_med", "rare_dragonlamp*4", "rare_dragonlamp*0", "bed_trad", "poster"]);
         assert_eq!(plan.no_bundle, ["missing_bundle"]);
+        assert!(plan.capped.is_empty());
+        // A height items_base cannot hold gets the nearest one that fits.
+        let tall = json!({"roomitemtypes": {"furnitype": [{"id": 1, "classname": "tower"}, {"id": 2, "classname": "pit"}]}});
+        let tall_read = |name: &str| bundle(1.0, 1.0, if name == "tower" { 150.0 } else { -120.5 }, 1);
+        let tall = plan_with(&tall, &DbState::default(), &tall_read);
+        assert_eq!(tall.new.iter().map(|f| f.height).collect::<Vec<_>>(), [99.99, -99.99]);
+        assert_eq!(tall.capped, [("tower".to_string(), 150.0), ("pit".to_string(), -120.5)]);
+        // Too long for item_name: left out; ids that do not fit int(11): none / -1; public_name cut at 56.
+        let long_name = "x".repeat(71);
+        let odd = json!({"roomitemtypes": {"furnitype": [{"id": 1, "classname": long_name}, {"id": 3_000_000_000_i64, "offerid": 4_000_000_000_i64, "classname": "y".repeat(60)}]}});
+        let odd = plan_with(&odd, &DbState::default(), &|_| bundle(1.0, 1.0, 1.0, 1));
+        assert_eq!(odd.too_long, [long_name]);
+        assert_eq!((odd.new.len(), odd.new[0].sprite_id, odd.new[0].offer_id), (1, None, -1));
+        assert!(items_base_values(&odd.new[0], "@i").contains(&format!(", '{}', '{}', ", "y".repeat(60), "y".repeat(56))));
         assert_eq!((plan.floor(), plan.wall(), plan.variants()), (4, 1, 2));
         assert_eq!(plan.uncatalogued[0].offer_id, 5, "the offer id of its furnidata entry");
 

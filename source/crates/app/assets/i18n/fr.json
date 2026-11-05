@@ -2366,5 +2366,9 @@
   "at the top of the catalogue": "tout en haut du catalogue",
   "under \"{caption}\"": "sous « {caption} »",
   "caption and caption_save of the new page, and the page it goes under: -1 (default) puts it at the top of the catalogue, or fill in the id of one of your pages (catalog_pages.id).": "caption et caption_save de la nouvelle page, et la page sous laquelle elle va : -1 (par défaut) la met tout en haut du catalogue, ou indique l'id d'une de tes pages (catalog_pages.id).",
-  "Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.": "Tout va sur une nouvelle page du catalogue (parent_id -1, ou sous une page de ton choix) ; déplace ensuite la page, ou ses mobis, où tu veux."
+  "Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.": "Tout va sur une nouvelle page du catalogue (parent_id -1, ou sous une page de ton choix) ; déplace ensuite la page, ou ses mobis, où tu veux.",
+  "For example Habbo": "Par exemple Habbo",
+  "Where the catalogue names the hotel: \"De {name} Badgewinkel\", \"Huisdieren zijn inwoners van {name}\" and the like, in every language.": "Là où le catalogue nomme l'hôtel : « De {name} Badgewinkel », « Huisdieren zijn inwoners van {name} » et autres, dans toutes les langues.",
+  "The hotel's name is longer than 32 characters.": "Le nom de l'hôtel dépasse 32 caractères.",
+  "The hotel's name cannot have ' \" \\ ; : % < > or `.": "Le nom de l'hôtel ne peut pas contenir ' \" \\ ; : % < > ni `."
 }

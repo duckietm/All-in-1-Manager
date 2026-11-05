@@ -39,6 +39,9 @@ pub struct InstallerSettings {
     /// The name of the profile last worked with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retro_selected: Option<String>,
+    /// The hotel's name, filled in for %hotel_name% in the default catalogue's texts. New in the Rust port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hotel_name: Option<String>,
     /// Where Get Assets downloads to (its gamedata/ mirrors the server's); None means [`default_assets_folder`].
     /// New in the Rust port.
     #[serde(skip_serializing_if = "Option::is_none")]

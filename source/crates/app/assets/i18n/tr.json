@@ -2366,5 +2366,9 @@
   "at the top of the catalogue": "kataloğun en üstünde",
   "under \"{caption}\"": "\"{caption}\" altında",
   "caption and caption_save of the new page, and the page it goes under: -1 (default) puts it at the top of the catalogue, or fill in the id of one of your pages (catalog_pages.id).": "Yeni sayfanın caption ve caption_save değerleri ve altına gireceği sayfa: -1 (varsayılan) onu kataloğun en üstüne koyar ya da sayfalarından birinin id'sini gir (catalog_pages.id).",
-  "Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.": "Hepsi yeni bir katalog sayfasına gider (parent_id -1 ya da seçtiğin bir sayfanın altında); sonra sayfayı veya mobilerini istediğin yere taşı."
+  "Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.": "Hepsi yeni bir katalog sayfasına gider (parent_id -1 ya da seçtiğin bir sayfanın altında); sonra sayfayı veya mobilerini istediğin yere taşı.",
+  "For example Habbo": "Örneğin Habbo",
+  "Where the catalogue names the hotel: \"De {name} Badgewinkel\", \"Huisdieren zijn inwoners van {name}\" and the like, in every language.": "Kataloğun otelin adını andığı yerler: \"De {name} Badgewinkel\", \"Huisdieren zijn inwoners van {name}\" ve benzerleri, her dilde.",
+  "The hotel's name is longer than 32 characters.": "Otelin adı 32 karakterden uzun.",
+  "The hotel's name cannot have ' \" \\ ; : % < > or `.": "Otelin adında ' \" \\ ; : % < > ya da ` olamaz."
 }

@@ -2412,5 +2412,14 @@
   "items_base follows the merged FurnitureData.json again; there was no new furniture to import.": "items_base yeniden birleştirilmiş FurnitureData.json'ı takip ediyor; içe aktarılacak yeni mobi yoktu.",
   "The merged FurnitureData.json, on this computer:": "Birleştirilmiş FurnitureData.json, bu bilgisayarda:",
   "The FurnitureData.json that was on the server:": "Sunucuda olan FurnitureData.json:",
-  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "Bir Nitro retro profilinin özel mobileri; Habbo'nun FurnitureData.json dosyasına, items_base'e ve kataloğa birleştirilmiş hâlde."
+  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "Bir Nitro retro profilinin özel mobileri; Habbo'nun FurnitureData.json dosyasına, items_base'e ve kataloğa birleştirilmiş hâlde.",
+  "Furni per page: a number from 1 to 5000.": "Sayfa başına mobi: 1 ile 5000 arasında bir sayı.",
+  "Pages ({count})": "Sayfalar ({count})",
+  "More than {count} furni: they go on these pages, under the page {caption}. Furni whose names start alike (adobe_kaars2, adobe_kekook) stay on one page; a name that has more gets pages of its own (name-1, name-2).": "{count} mobiden fazla: bu sayfalara, {caption} sayfasının altına girerler. Adı aynı başlayan mobiler (adobe_kaars2, adobe_kekook) tek sayfada kalır; daha fazlası olan bir adın kendi sayfaları olur (name-1, name-2).",
+  "Up to {count} furni go on one page.": "En fazla {count} mobi tek sayfaya girer.",
+  "Furni": "Mobi",
+  "Furni per page": "Sayfa başına mobi",
+  "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Bundan fazla mobi: yukarıdaki sayfa, altında en fazla bu kadar mobi olan sayfaları tutan bir klasör olur (bkz. Sayfalar). 500 (varsayılan) kataloğu hızlı tutar.",
+  "On {pages} catalogue pages under {caption} (id {id}), {state}.": "{caption} (id {id}) altında {pages} katalog sayfasında, {state}.",
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{caption} (id {id}) altında {pages} sayfada {items} katalog öğesi. Oyuncular oteli yeniden yükledikten sonra görür."
 }

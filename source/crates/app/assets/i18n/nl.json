@@ -2412,5 +2412,14 @@
   "items_base follows the merged FurnitureData.json again; there was no new furniture to import.": "items_base volgt de samengevoegde FurnitureData.json weer; er was geen nieuwe meubi om te importeren.",
   "The merged FurnitureData.json, on this computer:": "De samengevoegde FurnitureData.json, op deze computer:",
   "The FurnitureData.json that was on the server:": "De FurnitureData.json die op de server stond:",
-  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "De eigen meubi van een Nitro-retro-profiel, samengevoegd in de FurnitureData.json van Habbo, en in items_base en de catalogus."
+  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "De eigen meubi van een Nitro-retro-profiel, samengevoegd in de FurnitureData.json van Habbo, en in items_base en de catalogus.",
+  "Furni per page: a number from 1 to 5000.": "Meubi per pagina: een getal van 1 tot 5000.",
+  "Pages ({count})": "Pagina's ({count})",
+  "More than {count} furni: they go on these pages, under the page {caption}. Furni whose names start alike (adobe_kaars2, adobe_kekook) stay on one page; a name that has more gets pages of its own (name-1, name-2).": "Meer dan {count} meubi: ze komen op deze pagina's, onder de pagina {caption}. Meubi waarvan de naam hetzelfde begint (adobe_kaars2, adobe_kekook) blijven op één pagina; een naam met meer krijgt eigen pagina's (name-1, name-2).",
+  "Up to {count} furni go on one page.": "Tot {count} meubi komen op één pagina.",
+  "Furni": "Meubi",
+  "Furni per page": "Meubi per pagina",
+  "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Meer meubi dan dit: de pagina hierboven wordt een map met pagina's van hoogstens zoveel eronder (zie Pagina's). 500 (standaard) houdt de catalogus snel.",
+  "On {pages} catalogue pages under {caption} (id {id}), {state}.": "Op {pages} cataloguspagina's onder {caption} (id {id}), {state}.",
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} catalogusitems op {pages} pagina's onder {caption} (id {id}). Spelers zien ze nadat ze het hotel opnieuw laden."
 }

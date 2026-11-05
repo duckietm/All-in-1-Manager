@@ -126,6 +126,7 @@ enum List {
     Already,
     Renumbered,
     Moved,
+    Pages,
 }
 
 struct Form {
@@ -138,6 +139,8 @@ struct Form {
     pages: BTreeMap<i64, String>,
     /// The new page is shown in the catalogue straight away (off: hidden until it is moved).
     visible: bool,
+    /// At most this many furni per catalogue page, as typed (more: pages under a folder).
+    per_page: String,
     /// Also a catalogue item for the items_base furni no catalogue item sells.
     with_uncatalogued: bool,
     restart: bool,
@@ -171,6 +174,7 @@ impl Form {
             parent: "-1".into(),
             pages: Default::default(),
             visible: false,
+            per_page: "500".into(),
             with_uncatalogued: false,
             restart: true,
             list: List::New,
@@ -255,6 +259,26 @@ fn parent_id(typed: &str, pages: &BTreeMap<i64, String>) -> Result<i64, String> 
     } else {
         Err(tf("No catalogue page has id {id}: use -1 or the id of a page you have.", &[("id", &id.to_string())]))
     }
+}
+
+/// The furni per catalogue page typed in: 1 to 5000.
+fn per_page(typed: &str) -> Result<usize, String> {
+    match typed.trim().parse::<usize>() {
+        Ok(n) if (1..=5000).contains(&n) => Ok(n),
+        _ => Err(t("Furni per page: a number from 1 to 5000.").into()),
+    }
+}
+
+/// The catalogue pages an import makes: (caption, furni) per page; one page when everything fits.
+fn page_list(plan: &Plan, caption: &str, with_uncatalogued: bool, per_page: usize) -> Vec<(String, usize)> {
+    let mut names: Vec<&str> = plan.new.iter().map(|f| f.classname.as_str()).collect();
+    if with_uncatalogued {
+        names.extend(plan.uncatalogued.iter().map(|u| u.name.as_str()));
+    }
+    if names.len() <= per_page {
+        return if names.is_empty() { Vec::new() } else { vec![(caption.to_string(), names.len())] };
+    }
+    furni_import::pages(&names, per_page).into_iter().map(|(caption, items)| (caption, items.len())).collect()
 }
 
 /// "2 × 2 × 0.8".
@@ -494,6 +518,8 @@ impl InstallStep for ImportAssetsStep {
                     }
                 }
             }
+            let pages = per_page(&form.per_page).map(|n| page_list(plan, form.caption.trim(), form.with_uncatalogued, n).len()).unwrap_or(0);
+            lists.push((List::Pages, tf("Pages ({count})", &[("count", &pages.to_string())])));
             for (list, label) in lists {
                 ui.selectable_value(&mut form.list, list, RichText::new(label).size(12.5));
             }
@@ -561,6 +587,21 @@ impl InstallStep for ImportAssetsStep {
                 let rows: Vec<Vec<String>> = plan.moved.iter().filter(|m| matches(&m.name)).map(|m| vec![m.name.clone(), m.from.to_string(), m.to.to_string()]).collect();
                 table(ui, palette, "import_moved", &[260.0, 100.0, 100.0], &["item_name", t("Now"), t("New id")], &rows);
             }
+            (List::Pages, _) => match per_page(&form.per_page) {
+                Ok(n) => {
+                    let list = page_list(plan, form.caption.trim(), form.with_uncatalogued, n);
+                    if list.len() > 1 {
+                        widgets::muted(ui, palette, &tf("More than {count} furni: they go on these pages, under the page {caption}. Furni whose names start alike (adobe_kaars2, adobe_kekook) stay on one page; a name that has more gets pages of its own (name-1, name-2).", &[("count", &n.to_string()), ("caption", form.caption.trim())]), 12.0);
+                    } else {
+                        widgets::muted(ui, palette, &tf("Up to {count} furni go on one page.", &[("count", &n.to_string())]), 12.0);
+                    }
+                    let rows: Vec<Vec<String>> = list.iter().filter(|(c, _)| matches(c)).map(|(caption, count)| vec![caption.clone(), count.to_string()]).collect();
+                    table(ui, palette, "import_pages", &[300.0, 100.0], &["caption", t("Furni")], &rows);
+                }
+                Err(e) => {
+                    ui.label(RichText::new(e).size(12.0).color(palette.warning_text));
+                }
+            },
             _ => {}
         }
 
@@ -578,6 +619,14 @@ impl InstallStep for ImportAssetsStep {
             };
         });
         widgets::muted(ui, palette, t("caption and caption_save of the new page, and the page it goes under: -1 (default) puts it at the top of the catalogue, or fill in the id of one of your pages (catalog_pages.id)."), 11.5);
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(t("Furni per page")).size(13.0).strong());
+            ui.add(egui::TextEdit::singleline(&mut form.per_page).desired_width(70.0));
+            if let Err(e) = per_page(&form.per_page) {
+                ui.label(RichText::new(e).size(12.0).color(palette.warning_text));
+            }
+        });
+        widgets::muted(ui, palette, t("More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick."), 11.5);
         ui.checkbox(&mut form.visible, t("Show the page in the catalogue straight away"));
         widgets::muted(ui, palette, t("Off (default): the page is hidden, so players do not see the new furniture (rares too, at 5 credits) before you have checked the prices and moved it."), 11.5);
         if self.mode == Mode::Habbo {
@@ -611,6 +660,9 @@ impl InstallStep for ImportAssetsStep {
             return Some(t("Give the catalogue page a name.").into());
         }
         if let Err(e) = parent_id(&form.parent, &form.pages) {
+            return Some(e);
+        }
+        if let Err(e) = per_page(&form.per_page) {
             return Some(e);
         }
         (plan.work(form.with_uncatalogued) == 0).then(|| t("There is nothing to import.").into())
@@ -684,7 +736,7 @@ impl InstallStep for ImportAssetsStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let (mut plan, caption, parent, visible, with_uncatalogued, restart, prepared, put_furnidata) = {
+        let (mut plan, caption, parent, visible, with_uncatalogued, restart, prepared, put_furnidata, typed_per_page) = {
             let form = self.form.lock().unwrap();
             let Some(plan) = form.plan.clone() else { fail!("Nothing to import.") };
             (
@@ -696,7 +748,12 @@ impl InstallStep for ImportAssetsStep {
                 form.restart,
                 form.prepared.clone(),
                 form.put_furnidata,
+                form.per_page.clone(),
             )
+        };
+        let per_page = match per_page(&typed_per_page) {
+            Ok(n) => n,
+            Err(e) => fail!("{e}"),
         };
         if self.mode == Mode::Custom && prepared.is_none() {
             fail!("{}", t("Choose the profile whose custom furniture you want to import."));
@@ -731,7 +788,7 @@ impl InstallStep for ImportAssetsStep {
             Ok(id) => id,
             Err(e) => fail!("{e}"),
         };
-        let sql = furni_import::sql(&plan, &caption, parent, visible, with_uncatalogued);
+        let sql = furni_import::sql(&plan, &caption, parent, visible, with_uncatalogued, per_page);
         // A copy on this computer, to read back what ran.
         let (_, _, folder) = sources();
         let stamp = aio_core::config_dir::timestamp();
@@ -751,6 +808,9 @@ impl InstallStep for ImportAssetsStep {
         let result = furni_import::import(server, &remote_sql, &log).await?;
         if result.page_id > 0 {
             log(&format!("  The catalogue page {caption} has id {}", result.page_id));
+            if result.pages > 1 {
+                log(&format!("  The catalogue items are on {} pages under it", result.pages));
+            }
             ui.done(&tf("page {id}", &[("id", &result.page_id.to_string())]));
         } else {
             ui.done(&tf("{count} sprite_ids", &[("count", &plan.moved.len().to_string())]));
@@ -787,6 +847,20 @@ impl InstallStep for ImportAssetsStep {
             return Ok(ui.succeeded(
                 &tf("{count} sprite_ids updated", &[("count", &plan.moved.len().to_string())]),
                 t("items_base follows the merged FurnitureData.json again; there was no new furniture to import."),
+            ));
+        }
+        if result.pages > 1 {
+            return Ok(ui.succeeded(
+                &tf("{count} furniture imported", &[("count", &plan.new.len().to_string())]),
+                &tf(
+                    "On {pages} catalogue pages under {caption} (id {id}), {state}.",
+                    &[
+                        ("pages", &result.pages.to_string()),
+                        ("caption", &caption),
+                        ("id", &result.page_id.to_string()),
+                        ("state", if visible { t("visible") } else { t("hidden until you move it") }),
+                    ],
+                ),
             ));
         }
         Ok(ui.succeeded(

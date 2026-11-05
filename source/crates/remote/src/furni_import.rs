@@ -301,13 +301,69 @@ pub fn page_caption(date: chrono::NaiveDate) -> String {
     format!("import_{}", date.format("%Y%m%d"))
 }
 
-/// The import as one transaction: the page, then the new items_base rows with their catalogue items, and (with
-/// `with_uncatalogued`) a catalogue item for every items_base row that has none. The new ids follow the highest ones
-/// in the tables, so nothing the hotel has is overwritten.
-/// `parent_id` is the page the new page goes under (-1: at the top of the catalogue).
-pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncatalogued: bool) -> String {
+/// The name group of a classname: the part before the first '_' or '*', in lower case ("adobe_kaars2" -> "adobe",
+/// "rare_dragonlamp*4" -> "rare", "duck" -> "duck"). Furni of one group stay on one catalogue page where they fit.
+pub fn name_group(classname: &str) -> String {
+    let name = classname.trim().to_lowercase();
+    let group = name.split(['_', '*']).next().unwrap_or("").to_string();
+    if group.is_empty() { name } else { group }
+}
+
+/// The furni (by name) on catalogue pages of at most `per_page`, as (caption, indexes into `names`): sorted by name,
+/// a name group never split over pages when it fits on one. A group bigger than a page gets pages of its own,
+/// "<group>-1", "<group>-2" ...; small groups share a page, named after its first and last group ("bath - bed").
+pub fn pages(names: &[&str], per_page: usize) -> Vec<(String, Vec<usize>)> {
+    let per_page = per_page.max(1);
+    let mut order: Vec<usize> = (0..names.len()).collect();
+    order.sort_by_key(|&i| (name_group(names[i]), names[i].to_lowercase()));
+    let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+    for i in order {
+        let group = name_group(names[i]);
+        match groups.last_mut() {
+            Some((name, items)) if *name == group => items.push(i),
+            _ => groups.push((group, vec![i])),
+        }
+    }
+    let mut pages: Vec<(String, Vec<usize>)> = Vec::new();
+    // The page being filled: its first and last group, and its furni.
+    let mut current: Option<(String, String, Vec<usize>)> = None;
+    let flush = |current: &mut Option<(String, String, Vec<usize>)>, pages: &mut Vec<(String, Vec<usize>)>| {
+        if let Some((first, last, items)) = current.take() {
+            let caption = if first == last { first } else { format!("{first} - {last}") };
+            pages.push((caption, items));
+        }
+    };
+    for (group, items) in groups {
+        if items.len() > per_page {
+            flush(&mut current, &mut pages);
+            for (n, chunk) in items.chunks(per_page).enumerate() {
+                pages.push((format!("{group}-{}", n + 1), chunk.to_vec()));
+            }
+            continue;
+        }
+        if current.as_ref().is_some_and(|(_, _, have)| have.len() + items.len() > per_page) {
+            flush(&mut current, &mut pages);
+        }
+        match &mut current {
+            Some((_, last, have)) => {
+                *last = group;
+                have.extend(items);
+            }
+            None => current = Some((group.clone(), group, items)),
+        }
+    }
+    flush(&mut current, &mut pages);
+    pages
+}
+
+/// The import as one transaction: the new items_base rows, then their catalogue items (and, with
+/// `with_uncatalogued`, one for every items_base row that has none). Up to `per_page` they go on one new page
+/// `caption` under `parent_id` (-1: the top of the catalogue); more go on pages of at most `per_page` ([`pages`])
+/// under a new page `caption`. The new ids follow the highest ones in the tables, so nothing the hotel has is
+/// overwritten.
+pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncatalogued: bool, per_page: usize) -> String {
     let mut out = String::new();
-    out.push_str("-- Import Assets (All-in-1 Installer): Habbo furniture the database did not have.\n");
+    out.push_str("-- Import Assets (All-in-1 Installer): furniture the database did not have.\n");
     out.push_str(&format!(
         "-- {} new furniture ({} floor, {} wall), {} catalogue items for furniture without one.\n",
         plan.new.len(),
@@ -326,17 +382,15 @@ pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncat
             moved.from
         ));
     }
-    let items = plan.new.len() + if with_uncatalogued { plan.uncatalogued.len() } else { 0 };
-    if items == 0 {
+    // Every catalogue item: (name, the SQL of its items_base id, offer id).
+    let mut items: Vec<(&str, String, i64)> = plan.new.iter().enumerate().map(|(i, f)| (f.classname.as_str(), new_id("@item", i + 1), f.offer_id)).collect();
+    if with_uncatalogued {
+        items.extend(plan.uncatalogued.iter().map(|u| (u.name.as_str(), u.id.to_string(), u.offer_id)));
+    }
+    if items.is_empty() {
         out.push_str("COMMIT;\n");
         return out;
     }
-    out.push_str(&format!(
-        "INSERT INTO `catalog_pages` (`parent_id`, `page_layout`, `caption_save`, `caption`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`) VALUES ({parent_id}, 'default_3x3', {c}, {c}, 1, 1, 1, 99, {}, '1');\n",
-        yes(visible),
-        c = sql_literal(caption)
-    ));
-    out.push_str("SET @page = LAST_INSERT_ID();\n");
     out.push_str("SELECT COALESCE(MAX(`id`), 0) INTO @item FROM `items_base`;\n");
     out.push_str("SELECT COALESCE(MAX(`id`), 0) INTO @offer FROM `catalog_items`;\n");
     // In batches, so one statement stays small.
@@ -344,25 +398,39 @@ pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncat
         let start = batch * 500;
         let rows: Vec<String> = furni.iter().enumerate().map(|(i, f)| items_base_values(f, &new_id("@item", start + i + 1))).collect();
         out.push_str(&format!("INSERT INTO `items_base` {ITEMS_BASE_COLUMNS} VALUES\n{};\n", rows.join(",\n")));
-        let rows: Vec<String> = furni
-            .iter()
-            .enumerate()
-            .map(|(i, f)| catalog_item_values(&new_id("@offer", start + i + 1), &new_id("@item", start + i + 1), f.offer_id, &f.classname))
-            .collect();
-        out.push_str(&format!("INSERT INTO `catalog_items` {CATALOG_ITEMS_COLUMNS} VALUES\n{};\n", rows.join(",\n")));
     }
-    if with_uncatalogued {
-        let offset = plan.new.len();
-        for (batch, rows) in plan.uncatalogued.chunks(500).enumerate() {
-            let values: Vec<String> = rows
+    let page = |out: &mut String, parent: &str, caption: &str, order: usize, visible: bool| {
+        out.push_str(&format!(
+            "INSERT INTO `catalog_pages` (`parent_id`, `page_layout`, `caption_save`, `caption`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`) VALUES ({parent}, 'default_3x3', {c}, {c}, 1, 1, 1, {order}, {}, '1');\n",
+            yes(visible),
+            c = sql_literal(caption)
+        ));
+        out.push_str("SET @page = LAST_INSERT_ID();\n");
+    };
+    let names: Vec<&str> = items.iter().map(|i| i.0).collect();
+    let groups = if items.len() <= per_page.max(1) { vec![(caption.to_string(), (0..items.len()).collect())] } else { pages(&names, per_page) };
+    let mut offer = 0;
+    // The page `caption`: the catalogue items' page, or with more pages the folder above them (visible, so the
+    // folder alone decides whether players see them).
+    page(&mut out, &parent_id.to_string(), caption, 99, visible);
+    out.push_str("SET @top = @page;\n");
+    for (n, (title, indexes)) in groups.iter().enumerate() {
+        if groups.len() > 1 {
+            page(&mut out, "@top", title, n + 1, true);
+        }
+        for chunk in indexes.chunks(500) {
+            let rows: Vec<String> = chunk
                 .iter()
-                .enumerate()
-                .map(|(i, row)| catalog_item_values(&new_id("@offer", offset + batch * 500 + i + 1), &row.id.to_string(), row.offer_id, &row.name))
+                .map(|&i| {
+                    offer += 1;
+                    let (name, item, offer_id) = &items[i];
+                    catalog_item_values(&new_id("@offer", offer), item, *offer_id, name)
+                })
                 .collect();
-            out.push_str(&format!("INSERT INTO `catalog_items` {CATALOG_ITEMS_COLUMNS} VALUES\n{};\n", values.join(",\n")));
+            out.push_str(&format!("INSERT INTO `catalog_items` {CATALOG_ITEMS_COLUMNS} VALUES\n{};\n", rows.join(",\n")));
         }
     }
-    out.push_str("SELECT CONCAT('PAGE=', @page);\nCOMMIT;\n");
+    out.push_str(&format!("SELECT CONCAT('PAGE=', @top);\nSELECT 'PAGES={}';\nCOMMIT;\n", groups.len()));
     out
 }
 
@@ -452,7 +520,10 @@ fn offer_ids(furnidata: &Value) -> BTreeMap<String, i64> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImportResult {
     pub safety_backup: String,
+    /// The new page (with more pages: the folder above them), 0 without one.
     pub page_id: i64,
+    /// The pages the catalogue items went on.
+    pub pages: i64,
 }
 
 const IMPORT: &str = r#"{{DatabaseName}}
@@ -467,14 +538,14 @@ if ! mariadb -N "$db" < "$sql" > "$out" 2>&1; then
   { grep -E '^ERROR' "$out" || tail -n 3 "$out"; } | head -n 5 | cut -c1-300 | sed 's/^/  /'
   fail "The import failed (see above): nothing was changed, it ran as one transaction."
 fi
-grep -E '^PAGE=' "$out" || true"#;
+grep -E '^PAGES?=' "$out" || true"#;
 
 /// Runs the uploaded SQL of [`sql`] on the hotel database, after a safety backup of it.
 pub async fn import(server: &dyn Server, remote_sql: &str, log: Log<'_>) -> Result<ImportResult> {
     let backup = server_tools::backup_database(server, log).await?;
     let body = fill(IMPORT, &[("DatabaseName", &server_tools::database_name()), ("SqlFile", &crate::server::shell_quote(remote_sql))]);
-    let values = script::run_capturing(server, &script::with_prelude(&body), log, "Importing the furniture failed", &["PAGE"], None).await?;
-    Ok(ImportResult { safety_backup: backup.remote_path, page_id: values.long("PAGE") })
+    let values = script::run_capturing(server, &script::with_prelude(&body), log, "Importing the furniture failed", &["PAGE", "PAGES"], None).await?;
+    Ok(ImportResult { safety_backup: backup.remote_path, page_id: values.long("PAGE"), pages: values.long("PAGES") })
 }
 
 const PUT_FURNITURE_DATA: &str = r#"set -o pipefail
@@ -603,18 +674,40 @@ mod tests {
         );
         assert_eq!(page_caption(chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap()), "import_20261105");
         let plan = Plan { new: vec![furni], uncatalogued: vec![Uncatalogued { id: 77, name: "lamp".into(), sprite_id: 9, offer_id: 3 }], ..Plan::default() };
-        let text = sql(&plan, "import_20261105", -1, false, true);
+        let text = sql(&plan, "import_20261105", -1, false, true, 500);
         assert!(text.contains("START TRANSACTION;") && text.trim_end().ends_with("COMMIT;"));
         assert!(text.contains("VALUES (-1, 'default_3x3', 'import_20261105', 'import_20261105', 1, 1, 1, 99, '0', '1');"));
         assert!(text.contains("(CAST(@offer + 2 AS UNSIGNED), CAST(77 AS CHAR), @page, 3, 0, 99, 'lamp',"), "{text}");
         assert!(text.contains("(CAST(@item + 1 AS UNSIGNED), 18, 'chair_o"), "{text}");
-        assert!(!sql(&plan, "x", -1, true, false).contains("'lamp'"));
+        assert!(!sql(&plan, "x", -1, true, false, 500).contains("'lamp'"));
         let moved = Plan { moved: vec![Moved { name: "leet_table".into(), kind: 's', from: 600, to: 123456 }], ..Plan::default() };
         assert_eq!(moved.work(false), 1);
-        let text = sql(&moved, "x", -1, false, false);
+        let text = sql(&moved, "x", -1, false, false, 500);
         assert!(text.contains("UPDATE `items_base` SET `sprite_id` = 123456 WHERE `item_name` = 'leet_table' AND `type` = 's' AND `sprite_id` = 600;"), "{text}");
         assert!(!text.contains("catalog_pages") && text.trim_end().ends_with("COMMIT;"), "no page without catalogue items");
-        assert!(sql(&plan, "x", 2, true, false).contains("VALUES (2, 'default_3x3', 'x', 'x', 1, 1, 1, 99, '1', '1');"));
+        // Name groups stay together; a group bigger than a page gets pages of its own.
+        assert_eq!(name_group("adobe_kaars2"), "adobe");
+        assert_eq!(name_group("rare_dragonlamp*4"), "rare");
+        assert_eq!(name_group("Duck"), "duck");
+        let names = ["adobe_kaars2", "bath_a", "adobe_kekook", "rare_x*1", "rare_x*2", "rare_y", "bed_a", "bed_b", "chair"];
+        let got: Vec<(String, Vec<&str>)> = pages(&names, 3).into_iter().map(|(c, i)| (c, i.into_iter().map(|i| names[i]).collect())).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("adobe - bath".to_string(), vec!["adobe_kaars2", "adobe_kekook", "bath_a"]),
+                ("bed - chair".to_string(), vec!["bed_a", "bed_b", "chair"]),
+                ("rare".to_string(), vec!["rare_x*1", "rare_x*2", "rare_y"]),
+            ]
+        );
+        let got: Vec<String> = pages(&names, 2).into_iter().map(|(c, _)| c).collect();
+        assert_eq!(got, ["adobe", "bath", "bed", "chair", "rare-1", "rare-2"]);
+        let many = Plan { new: (0..5).map(|i| NewFurni { classname: format!("grp_{i}"), ..plan.new[0].clone() }).collect(), ..Plan::default() };
+        let text = sql(&many, "import_x", 7, false, false, 2);
+        assert!(text.contains("VALUES (7, 'default_3x3', 'import_x', 'import_x', 1, 1, 1, 99, '0', '1');"), "the folder, hidden");
+        assert!(text.contains("VALUES (@top, 'default_3x3', 'grp-1', 'grp-1', 1, 1, 1, 1, '1', '1');") && text.contains("'grp-3'"), "{text}");
+        assert!(text.contains("SELECT 'PAGES=3';"));
+        assert!(!sql(&many, "import_x", 7, false, false, 500).contains("@top, 'default_3x3'"), "one page when they fit");
+        assert!(sql(&plan, "x", 2, true, false, 500).contains("VALUES (2, 'default_3x3', 'x', 'x', 1, 1, 1, 99, '1', '1');"));
     }
 
     #[test]

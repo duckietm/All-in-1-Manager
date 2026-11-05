@@ -2412,5 +2412,14 @@
   "items_base follows the merged FurnitureData.json again; there was no new furniture to import.": "items_base folgt wieder der zusammengeführten FurnitureData.json; es gab keine neuen Möbel zu importieren.",
   "The merged FurnitureData.json, on this computer:": "Die zusammengeführte FurnitureData.json, auf diesem Computer:",
   "The FurnitureData.json that was on the server:": "Die FurnitureData.json, die auf dem Server war:",
-  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "Die eigenen Möbel eines Nitro-Retro-Profils, zusammengeführt in Habbos FurnitureData.json sowie in items_base und den Katalog."
+  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "Die eigenen Möbel eines Nitro-Retro-Profils, zusammengeführt in Habbos FurnitureData.json sowie in items_base und den Katalog.",
+  "Furni per page: a number from 1 to 5000.": "Möbel pro Seite: eine Zahl von 1 bis 5000.",
+  "Pages ({count})": "Seiten ({count})",
+  "More than {count} furni: they go on these pages, under the page {caption}. Furni whose names start alike (adobe_kaars2, adobe_kekook) stay on one page; a name that has more gets pages of its own (name-1, name-2).": "Mehr als {count} Möbel: Sie kommen auf diese Seiten, unter der Seite {caption}. Möbel, deren Namen gleich beginnen (adobe_kaars2, adobe_kekook), bleiben auf einer Seite; ein Name mit mehr bekommt eigene Seiten (name-1, name-2).",
+  "Up to {count} furni go on one page.": "Bis zu {count} Möbel kommen auf eine Seite.",
+  "Furni": "Möbel",
+  "Furni per page": "Möbel pro Seite",
+  "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Mehr Möbel als das: Die Seite oben wird ein Ordner mit Seiten von höchstens so vielen darunter (siehe Seiten). 500 (Standard) hält den Katalog schnell.",
+  "On {pages} catalogue pages under {caption} (id {id}), {state}.": "Auf {pages} Katalogseiten unter {caption} (id {id}), {state}.",
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} Katalog-Items auf {pages} Seiten unter {caption} (id {id}). Spieler sehen sie, nachdem sie das Hotel neu laden."
 }

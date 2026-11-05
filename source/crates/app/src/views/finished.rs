@@ -970,6 +970,10 @@ pub fn import_assets(imported: super::import_assets::Imported, steps: Steps) -> 
         };
         let message = match (&imported.result, ok) {
             (Some(r), true) if r.page_id <= 0 => t("items_base follows the merged FurnitureData.json again; there was no new furniture to import.").into(),
+            (Some(r), true) if r.pages > 1 => tf(
+                "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.",
+                &[("items", &imported.catalogue_items.to_string()), ("pages", &r.pages.to_string()), ("caption", &imported.caption), ("id", &r.page_id.to_string())],
+            ),
             (Some(r), true) => tf(
                 "{items} catalogue items on the page {caption} (id {id}). Players see it after they reload the hotel.",
                 &[("items", &imported.catalogue_items.to_string()), ("caption", &imported.caption), ("id", &r.page_id.to_string())],
@@ -986,7 +990,15 @@ pub fn import_assets(imported: super::import_assets::Imported, steps: Steps) -> 
                 widgets::text(ui, t("Under another page (the id of that page as parent_id), and visible:"), 13.0);
                 copy_box(ui, palette, &format!("UPDATE `catalog_pages` SET `parent_id` = <parent id>, `visible` = '1' WHERE `id` = {page};"));
                 widgets::text(ui, t("Or move its furniture to a page you have, and the empty page away:"), 13.0);
-                copy_box(ui, palette, &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` = {page};\nDELETE FROM `catalog_pages` WHERE `id` = {page};"));
+                if r.pages > 1 {
+                    copy_box(
+                        ui,
+                        palette,
+                        &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` IN (SELECT `id` FROM `catalog_pages` WHERE `parent_id` = {page});\nDELETE FROM `catalog_pages` WHERE `parent_id` = {page} OR `id` = {page};"),
+                    );
+                } else {
+                    copy_box(ui, palette, &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` = {page};\nDELETE FROM `catalog_pages` WHERE `id` = {page};"));
+                }
                 widgets::text(ui, t("Run it in the SQL Editor, then restart the emulator (Tools) or reload the catalogue in the hotel."), 13.0);
             });
         }

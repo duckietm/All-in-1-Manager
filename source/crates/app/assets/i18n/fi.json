@@ -2412,5 +2412,14 @@
   "items_base follows the merged FurnitureData.json again; there was no new furniture to import.": "items_base seuraa taas yhdistettyä FurnitureData.json-tiedostoa; uusia tuotavia kalusteita ei ollut.",
   "The merged FurnitureData.json, on this computer:": "Yhdistetty FurnitureData.json tällä tietokoneella:",
   "The FurnitureData.json that was on the server:": "Palvelimella ollut FurnitureData.json:",
-  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "Nitro-retro-profiilin omat kalusteet yhdistettyinä Habbon FurnitureData.json-tiedostoon sekä tauluun items_base ja katalogiin."
+  "A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.": "Nitro-retro-profiilin omat kalusteet yhdistettyinä Habbon FurnitureData.json-tiedostoon sekä tauluun items_base ja katalogiin.",
+  "Furni per page: a number from 1 to 5000.": "Kalusteita sivulla: luku 1–5000.",
+  "Pages ({count})": "Sivut ({count})",
+  "More than {count} furni: they go on these pages, under the page {caption}. Furni whose names start alike (adobe_kaars2, adobe_kekook) stay on one page; a name that has more gets pages of its own (name-1, name-2).": "Yli {count} kalustetta: ne tulevat näille sivuille sivun {caption} alle. Kalusteet, joiden nimet alkavat samoin (adobe_kaars2, adobe_kekook), pysyvät samalla sivulla; nimi, jolla on enemmän, saa omat sivunsa (name-1, name-2).",
+  "Up to {count} furni go on one page.": "Enintään {count} kalustetta tulee yhdelle sivulle.",
+  "Furni": "Kalusteet",
+  "Furni per page": "Kalusteita sivulla",
+  "More furni than this: the page above becomes a folder with pages of at most this many under it (see Pages). 500 (default) keeps the catalogue quick.": "Enemmän kalusteita: yllä oleva sivu muuttuu kansioksi, jonka alla on enintään näin monen kalusteen sivuja (katso Sivut). 500 (oletus) pitää katalogin nopeana.",
+  "On {pages} catalogue pages under {caption} (id {id}), {state}.": "{pages} katalogisivulla sivun {caption} (id {id}) alla, {state}.",
+  "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.": "{items} katalogituotetta {pages} sivulla sivun {caption} (id {id}) alla. Pelaajat näkevät ne, kun he lataavat hotellin uudelleen."
 }

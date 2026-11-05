@@ -275,7 +275,7 @@ pub fn plan(furnidata: &Value, furniture_dir: &Path, db: &DbState) -> Plan {
 }
 
 /// Reads the bundles on a few threads (a new hotel can lack thousands). Keyed by the name in lower case.
-fn read_all(names: &[String], read: &(dyn Fn(&str) -> Option<Bundle> + Sync)) -> HashMap<String, Option<Bundle>> {
+pub(crate) fn read_all(names: &[String], read: &(dyn Fn(&str) -> Option<Bundle> + Sync)) -> HashMap<String, Option<Bundle>> {
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
     let chunk = names.len().div_ceil(threads).max(1);
     std::thread::scope(|scope| {

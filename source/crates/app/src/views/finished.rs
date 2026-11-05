@@ -1095,3 +1095,28 @@ pub fn offer_fix(updated: usize, generated: usize, safety_backup: Option<String>
         });
     })
 }
+
+/// Fix items_base's finish page: what changed, and the way back.
+pub fn item_fix(rows: usize, changes: usize, safety_backup: Option<String>, steps: Steps) -> Box<dyn FinishPage> {
+    Page::boxed(move |ui, palette| {
+        let ok = clean(&steps);
+        if ok {
+            widgets::result_banner(
+                ui,
+                palette,
+                ResultKind::Success,
+                t("items_base is in line"),
+                &tf("{rows} furni got {changes} new values. Players see it after they reload the hotel.", &[("rows", &rows.to_string()), ("changes", &changes.to_string())]),
+            );
+        } else {
+            widgets::result_banner(ui, palette, ResultKind::Warning, t("items_base was not fixed"), t(RUN_AGAIN));
+        }
+        step_list(ui, palette, &steps);
+        if let Some(backup) = &safety_backup {
+            section(ui, t("As it was before"), |ui| {
+                widgets::text(ui, t("The database before the update (Tools → Import full database puts it back):"), 13.0);
+                code(ui, palette, backup);
+            });
+        }
+    })
+}

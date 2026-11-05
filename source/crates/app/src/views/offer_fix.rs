@@ -119,7 +119,7 @@ fn table(ui: &mut egui::Ui, palette: &Palette, id: &str, widths: &[f32], header:
 }
 
 /// The server's FurnitureData.json, downloaded into a temporary file and read.
-async fn download_furnidata(server: &dyn Server) -> anyhow::Result<serde_json::Value> {
+pub(crate) async fn download_furnidata(server: &dyn Server) -> anyhow::Result<serde_json::Value> {
     let local = std::env::temp_dir().join(format!("all-in-1-furnidata-{}-{}.json", std::process::id(), aio_core::config_dir::timestamp()));
     let downloaded = server.download(&offer_fix::furniture_data_path(), &local, &|_| {}).await;
     let bytes = std::fs::read(&local);

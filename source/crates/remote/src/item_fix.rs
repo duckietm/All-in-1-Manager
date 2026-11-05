@@ -205,6 +205,13 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
             }
             continue;
         }
+        // Heights written with ',' ("0.8,2.0,3.0"): the emulator splits on ';' only and then has none, so a click
+        // does nothing. The same values, with ';'.
+        if fields.multiheight {
+            if let Some(fixed) = semicolons(&row.multiheight) {
+                change("multiheight", row.multiheight.clone(), fixed.clone(), sql_literal(&fixed));
+            }
+        }
         // Multiheight as the .hab says it (logicType furniture_multiheight): only for the plain interactions, so a
         // gate or wired furni is never turned into another one.
         let mut multiheight = row.is_multiheight();
@@ -297,6 +304,17 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
     plan.not_in_furnidata.sort_by_key(|n| n.to_lowercase());
     plan.no_bundle.sort_by_key(|n| n.to_lowercase());
     plan
+}
+
+/// A multiheight written with ',' and no ';' ("0.8,2.0,3.0") as the emulator reads it: "0.8;2.0;3.0". None when
+/// it needs no change.
+pub fn semicolons(multiheight: &str) -> Option<String> {
+    let value = multiheight.trim();
+    if !value.contains(',') || value.contains(';') {
+        return None;
+    }
+    let parts: Vec<&str> = value.split(',').map(str::trim).filter(|p| !p.is_empty()).collect();
+    (parts.len() > 1).then(|| parts.join(";"))
 }
 
 /// The updates as one transaction; a multiheight furni is never touched, also when it became one meanwhile.
@@ -561,6 +579,22 @@ mod tests {
         );
         assert_eq!((plan.exceptions, plan.multiheight), (1, 0));
         assert!(sql(&plan).contains("`multiheight` = '2.00;2.25;2.50;2.75;3.00', `sprite_id` = 7 WHERE `id` = 3;"), "{}", sql(&plan));
+    }
+
+    #[test]
+    fn heights_with_commas_get_semicolons() {
+        assert_eq!(semicolons("0.8,2.0,3.0,4.0,5.0").as_deref(), Some("0.8;2.0;3.0;4.0;5.0"));
+        assert_eq!(semicolons(" 0, 0.5,1 ").as_deref(), Some("0;0.5;1"));
+        assert_eq!(semicolons("1.00;0.75"), None);
+        assert_eq!(semicolons("0"), None);
+        let furnidata = json!({"roomitemtypes": {"furnitype": [{"id": 4906, "classname": "pirate_stage"}]}});
+        let stage = ItemRow { interaction_type: "multiheight".into(), multiheight: "0.8,2.0,3.0,4.0,5.0".into(), modes: 5, sprite_id: 4906, ..row(490612, "pirate_stage", 's') };
+        let plan = plan(std::slice::from_ref(&stage), &furnidata, &HashMap::new(), Fields::default());
+        let set: Vec<(&str, &str)> = plan.changes.iter().map(|c| (c.column, c.to.as_str())).collect();
+        assert_eq!(set, [("multiheight", "0.8;2.0;3.0;4.0;5.0")], "only the separator; the values and the rest stay");
+        assert!(sql(&plan).contains("SET `multiheight` = '0.8;2.0;3.0;4.0;5.0' WHERE `id` = 490612;"));
+        let off = super::plan(&[stage], &furnidata, &HashMap::new(), Fields { multiheight: false, ..Fields::default() });
+        assert!(off.changes.is_empty());
     }
 
     #[test]

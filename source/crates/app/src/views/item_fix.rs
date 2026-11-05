@@ -182,7 +182,7 @@ impl InstallStep for ItemFixStep {
                 &[("file", &aio_remote::offer_fix::furniture_data_path())],
             ),
             bullets: vec![
-                t("Only floor and wall furni; pets, effects and bots are left alone, and so is every multiheight furni: its heights are set by hand per state. A furni whose .hab is multiheight can become one.").into(),
+                t("Only floor and wall furni; pets, effects and bots are left alone, and every multiheight furni keeps its heights, set by hand per state, unless it has more heights than its .hab has states. A furni whose .hab is multiheight can become one.").into(),
                 t("sprite_id from the server's FurnitureData.json (it can be a custom one); sit / lay / walk, and on request the type, from it too.").into(),
                 t("Size and stack height from the .hab files you downloaded (Habbo assets, then the Nitro retro profiles); a wall furni is 1 x 1 x 0.00. Furni without a .hab here keep their size.").into(),
                 t("Interaction modes only for interaction_type default: other interactions count their own states.").into(),
@@ -213,7 +213,9 @@ impl InstallStep for ItemFixStep {
         ui.checkbox(&mut fields.flags, t("allow_sit, allow_lay and allow_walk, from FurnitureData.json"));
         ui.checkbox(&mut fields.modes, t("interaction_modes_count, from the .hab files (interaction_type default only)"));
         ui.checkbox(&mut fields.multiheight, t("multiheight, as the .hab files say (logicType furniture_multiheight)"));
-        widgets::muted(ui, palette, t("Set where the .hab is a multiheight furni and items_base is not: interaction_type multiheight, a height per state from its images (rounded to a quarter, at least 0.10) and stack_height 0.00; recolorable keeps its interaction. A furni that is multiheight in items_base is never changed: many really are while their .hab says otherwise (stairs, stages); they are listed to check."), 11.5);
+        widgets::muted(ui, palette, t("Set where the .hab is a multiheight furni and items_base is not: interaction_type multiheight, a height per state from its images (rounded to a quarter, at least 0.10) and stack_height 0.00; recolorable keeps its interaction. A furni that is multiheight in items_base keeps its heights (only too many are cut off, below): many really are while their .hab says otherwise (stairs, stages); they are listed to check."), 11.5);
+        ui.checkbox(&mut fields.extra_heights, t("multiheight with more heights than its .hab has states: keep the first ones"));
+        widgets::muted(ui, palette, t("The emulator goes through every height, so a height without a state shows no graphic (5 heights for 4 states: the 5th click shows nothing). The first heights stay, one per state, and interaction_modes_count follows. Fewer heights than states are only listed: the missing heights are not in the .hab."), 11.5);
         widgets::muted(ui, palette, t("allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays."), 11.5);
         let Some(plan) = form.plan() else { return };
         let rows = form.rows();
@@ -260,7 +262,7 @@ impl InstallStep for ItemFixStep {
                 table(ui, palette, "item_mh_not_by_hab", &[400.0], &["item_name"], &rows, 0);
             }
             List::MultiheightCount => {
-                widgets::muted(ui, palette, t("Multiheight in both, but items_base has another number of heights than the .hab has states: your heights stay. The .hab's are shown to compare."), 12.0);
+                widgets::muted(ui, palette, t("Multiheight in both, but items_base has another number of heights than the .hab has states: your heights stay (too many are cut off with the choice above). The .hab's are shown to compare."), 12.0);
                 table(ui, palette, "item_mh_count", &[260.0, 220.0, 220.0], &["item_name", "items_base.multiheight", ".hab"], &rows, 0);
             }
             List::NoBundle => {
@@ -301,7 +303,7 @@ impl InstallStep for ItemFixStep {
         let (count, changes, checked) = (plan.rows(), plan.changes.len(), plan.checked);
         // "Done" only when no choice on the page could change anything: the button is set from this once, and
         // ticking another box must not leave it at Skip.
-        let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true, multiheight: true };
+        let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true, multiheight: true, extra_heights: true };
         let nothing_at_all = item_fix::plan(&read.rows, &read.furnidata, &read.bundles, all).updates.is_empty();
         {
             let mut form = self.form.lock().unwrap();

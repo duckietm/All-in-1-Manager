@@ -60,6 +60,7 @@ enum Tool {
     ImportDatabase,
     ImportPlus,
     FurnitureLanguage,
+    CheckMultiheight,
     RecoverSqlPassword,
     CheckUpdates,
     UpdateSystem,
@@ -93,6 +94,7 @@ impl Tool {
             Tool::ImportDatabase => (n("Import full database"), n("Replace the hotel database with a backup"), Icon::Folder),
             Tool::ImportPlus => (n("Import Plus database"), n("PlusEMU furniture and catalog into Polaris"), Icon::Swap),
             Tool::FurnitureLanguage => (n("Furniture language"), n("The furniture names in another hotel's language; the database follows"), Icon::Globe),
+            Tool::CheckMultiheight => (n("Check multiheight"), n("Every multiheight against the states of the furni's .hab; too many heights fixed"), Icon::Wrench),
             Tool::RecoverSqlPassword => (n("Recover SQL password"), n("New MariaDB root password, saved in configuration"), Icon::Key),
             Tool::CheckUpdates => (n("Check for updates"), n("git fetch: what is new for the emulator, Octane and AtomCMS"), Icon::Download),
             Tool::UpdateSystem => (n("Update system"), n("apt update, upgrade and dist-upgrade"), Icon::Cog),
@@ -133,7 +135,7 @@ const SECTIONS: [(&str, &[Tool]); 8] = [
     (n("Firewall"), &[Tool::EnableFirewall, Tool::DisableFirewall]),
     (n("Fail2Ban"), &[Tool::Fail2Ban]),
     (n("CrowdSec"), &[Tool::CrowdSec]),
-    (n("Database"), &[Tool::BackupDatabase, Tool::ImportDatabase, Tool::ImportPlus, Tool::FurnitureLanguage, Tool::RecoverSqlPassword]),
+    (n("Database"), &[Tool::BackupDatabase, Tool::ImportDatabase, Tool::ImportPlus, Tool::FurnitureLanguage, Tool::CheckMultiheight, Tool::RecoverSqlPassword]),
     (
         n("Updates"),
         &[

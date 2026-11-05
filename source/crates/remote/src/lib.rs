@@ -35,6 +35,7 @@ pub mod harden;
 pub mod hotel_site;
 pub mod local_ports;
 pub mod mariadb;
+pub mod multiheight;
 pub mod nginx;
 pub mod octane;
 pub mod offer_fix;

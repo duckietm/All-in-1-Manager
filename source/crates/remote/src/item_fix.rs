@@ -16,7 +16,8 @@
 //! walk), and Generate SQL's guess (a height other than 1.0) undoes hand-made values like a stackable table.
 //!
 //! Left alone: furni other than floor and wall (pets "a0 ...", effects, bots), and every multiheight furni
-//! (interaction_type 'multiheight', or a multiheight value): their heights are set by hand per state.
+//! (interaction_type 'multiheight', or a multiheight value): their heights are set by hand per state. Only one with
+//! more heights than its .hab has states gets its extra heights cut off (Fields::extra_heights).
 
 use std::collections::{HashMap, HashSet};
 
@@ -64,12 +65,15 @@ pub struct Fields {
     /// Multiheight where the .hab says it is one (logicType furniture_multiheight) and items_base does not; a
     /// multiheight furni in items_base is never changed (many are by their .hab furniture_multistate or _basic).
     pub multiheight: bool,
+    /// A multiheight furni with more heights than its .hab has states (the last heights show no graphic): the first
+    /// heights kept, one per state, and interaction_modes_count set to match. Fewer heights are only listed.
+    pub extra_heights: bool,
 }
 
 impl Default for Fields {
     /// Everything but type: placed furni keep their floor or wall position.
     fn default() -> Self {
-        Self { sprite: true, kind: false, size: true, flags: true, modes: true, multiheight: true }
+        Self { sprite: true, kind: false, size: true, flags: true, modes: true, multiheight: true, extra_heights: true }
     }
 }
 
@@ -101,6 +105,8 @@ pub struct FixPlan {
     pub multiheight_not_by_hab: Vec<String>,
     /// (item_name, items_base.multiheight, the .hab's heights) where the number of heights differs: left as they are.
     pub multiheight_count_differs: Vec<(String, String, String)>,
+    /// Multiheight furni whose extra heights are cut off (Fields::extra_heights).
+    pub extra_heights: usize,
     /// item_names whose .hab is not here: their size and modes are left as they are.
     pub no_bundle: Vec<String>,
 }
@@ -205,9 +211,25 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
             }
             continue;
         }
+        let interaction = row.interaction_type.trim().to_lowercase();
+        let plain_interaction = matches!(interaction.as_str(), "default" | "multiheight" | "recolorable");
+        // More heights than the .hab has states (counted like interaction_modes_count): the emulator cycles through
+        // every height, so the extra ones show no graphic. The first heights stay, one per state.
+        let mut trimmed = false;
+        if let (true, true, true, Some(bundle)) = (fields.extra_heights, row.is_multiheight(), plain_interaction, bundle) {
+            let values: Vec<&str> = row.multiheight.split([';', ',']).map(str::trim).filter(|v| !v.is_empty()).collect();
+            let states = bundle.modes.max(0) as usize;
+            if states >= 2 && values.len() > states {
+                let kept = values[..states].join(";");
+                change("multiheight", row.multiheight.clone(), kept.clone(), sql_literal(&kept));
+                change("interaction_modes_count", row.modes.to_string(), states.to_string(), states.to_string());
+                plan.extra_heights += 1;
+                trimmed = true;
+            }
+        }
         // Heights written with ',' ("0.8,2.0,3.0"): the emulator splits on ';' only and then has none, so a click
         // does nothing. The same values, with ';'.
-        if fields.multiheight {
+        if fields.multiheight && !trimmed {
             if let Some(fixed) = semicolons(&row.multiheight) {
                 change("multiheight", row.multiheight.clone(), fixed.clone(), sql_literal(&fixed));
             }
@@ -215,9 +237,8 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
         // Multiheight as the .hab says it (logicType furniture_multiheight): only for the plain interactions, so a
         // gate or wired furni is never turned into another one.
         let mut multiheight = row.is_multiheight();
-        let interaction = row.interaction_type.trim().to_lowercase();
         let recolorable = interaction == "recolorable" || row.name.to_lowercase().ends_with("_recolorable");
-        if let (true, Some(bundle), true) = (fields.multiheight, bundle, matches!(interaction.as_str(), "default" | "multiheight" | "recolorable")) {
+        if let (true, Some(bundle), true) = (fields.multiheight, bundle, plain_interaction) {
             match (bundle.multiheight, multiheight) {
                 // Multiheight by its .hab, not in items_base: the interaction and a height per state.
                 (Some(heights), false) => {
@@ -233,12 +254,13 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
                 }
                 // Multiheight in both: the heights set by hand stay; a different number is only listed.
                 (Some(heights), true) => {
-                    if multiheight_count(&row.multiheight) != heights.len() {
+                    if !trimmed && multiheight_count(&row.multiheight) != heights.len() {
                         plan.multiheight_count_differs.push((row.name.clone(), row.multiheight.clone(), heights.column()));
                     }
                 }
                 // Multiheight in items_base, not by its .hab: many really are (stairs, stages): only listed.
-                (None, true) => plan.multiheight_not_by_hab.push(row.name.clone()),
+                (None, true) if !trimmed => plan.multiheight_not_by_hab.push(row.name.clone()),
+                (None, true) => {}
                 (None, false) => {}
             }
         }
@@ -501,7 +523,7 @@ mod tests {
         assert!(text.contains("UPDATE `items_base` SET `sprite_id` = 30, `allow_sit` = '1', `stack_height` = 1.00 WHERE `id` = 2 AND `interaction_type` <> 'multiheight'"), "{text}");
         assert!(text.trim_end().ends_with("COMMIT;"));
         // Nothing chosen: nothing changes.
-        let none = super::plan(&rows, &furnidata, &bundles, Fields { sprite: false, kind: false, size: false, flags: false, modes: false, multiheight: false });
+        let none = super::plan(&rows, &furnidata, &bundles, Fields { sprite: false, kind: false, size: false, flags: false, modes: false, multiheight: false, extra_heights: false });
         assert!(none.changes.is_empty());
     }
 
@@ -604,5 +626,28 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].sprite_id, rows[0].stack_height, rows[0].interaction_type.as_str()), (13, 1.0, "vendingmachine"));
         assert_eq!((rows[1].kind, rows[1].name.as_str(), rows[1].multiheight.as_str()), ('i', "poster with\ttab", ""));
+    }
+
+    #[test]
+    fn extra_heights_are_cut_off() {
+        // The pirate_stage of the bug report: 4 states in its .hab, 5 heights in items_base.
+        let furnidata = json!({"roomitemtypes": {"furnitype": [{"id": 1, "classname": "pirate_stage"}, {"id": 2, "classname": "few"}]}});
+        let stage = Some(Bundle { width: 2.0, length: 2.0, height: 0.8, modes: 4, multiheight: None });
+        let bundles: HashMap<String, Option<Bundle>> = [("pirate_stage".to_string(), stage), ("few".to_string(), stage)].into_iter().collect();
+        let with = |id: i64, name: &str, multiheight: &str, modes: i64| ItemRow {
+            interaction_type: "multiheight".into(),
+            multiheight: multiheight.into(),
+            modes,
+            ..row(id, name, 's')
+        };
+        let rows = [with(1, "pirate_stage", "0.8;2.0;3.0;4.0;5.0", 4), with(2, "few", "0.8;2.0", 2)];
+        let plan = plan(&rows, &furnidata, &bundles, Fields::default());
+        let of = |name: &str| -> Vec<(&str, String)> { plan.changes.iter().filter(|c| c.name == name).map(|c| (c.column, c.to.clone())).collect() };
+        assert_eq!(of("pirate_stage"), [("multiheight", "0.8;2.0;3.0;4.0".to_string())], "interaction_modes_count was already 4");
+        assert!(of("few").is_empty(), "too few heights: only listed");
+        assert_eq!(plan.extra_heights, 1);
+        assert!(plan.multiheight_not_by_hab == ["few"], "{:?}", plan.multiheight_not_by_hab);
+        let off = super::plan(&rows, &furnidata, &bundles, Fields { extra_heights: false, ..Fields::default() });
+        assert!(off.changes.is_empty());
     }
 }

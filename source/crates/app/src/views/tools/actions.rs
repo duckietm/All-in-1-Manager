@@ -133,6 +133,7 @@ pub async fn perform(tool: Tool, job: &Job) -> Result<()> {
         Tool::ImportDatabase => import_database(job).await,
         Tool::ImportPlus => import_plus(job).await,
         Tool::FurnitureLanguage => furniture_language_tool(job).await,
+        Tool::CheckMultiheight => check_multiheight(job).await,
         Tool::RecoverSqlPassword => recover_sql_password(job).await,
         Tool::CheckUpdates => check_updates(job).await,
         Tool::UpdateSystem => update_system(job).await,
@@ -707,6 +708,70 @@ async fn furniture_language_tool(job: &Job) -> Result<()> {
             )
         ),
     );
+    Ok(())
+}
+
+/// Compares every multiheight in items_base with the states of the furni's .hab; fixes too many heights after a yes.
+async fn check_multiheight(job: &Job) -> Result<()> {
+    use aio_remote::multiheight::{self, Verdict};
+    let server = job.server();
+    let run = job.start_run(&[n("Read items_base and the .hab files"), n("Fix the heights"), n("Restart emulator")]);
+    let log = run.logger();
+    let rows = multiheight::check(server).await?;
+    let count = |v: Verdict| rows.iter().filter(|r| r.verdict() == v).count();
+    let (too_many, wrong_count, too_few, no_hab) = (count(Verdict::TooMany), count(Verdict::WrongCount), count(Verdict::TooFew), count(Verdict::NoHab));
+    for row in &rows {
+        let states = row.states.map(|s| s.to_string()).unwrap_or_default();
+        let heights = row.heights().len();
+        match row.verdict() {
+            Verdict::Ok => {}
+            Verdict::TooMany => log(&tf("! {name}: {heights} heights ({multiheight}) but {states} states", &[("name", &row.item_name), ("heights", &heights.to_string()), ("multiheight", &row.multiheight), ("states", &states)])),
+            Verdict::WrongCount => log(&tf("! {name}: interaction_modes_count {count}, the .hab has {states} states", &[("name", &row.item_name), ("count", &row.interaction_modes_count.to_string()), ("states", &states)])),
+            Verdict::TooFew => log(&tf("! {name}: only {heights} heights ({multiheight}) for {states} states: add the missing heights by hand", &[("name", &row.item_name), ("heights", &heights.to_string()), ("multiheight", &row.multiheight), ("states", &states)])),
+            Verdict::NoHab => log(&tf("! {name}: no readable .hab in gamedata/furniture", &[("name", &row.item_name)])),
+        }
+    }
+    run.done(&tf("{count} furni with a multiheight", &[("count", &rows.len().to_string())]));
+    let summary = tf(
+        "{total} furni with a multiheight: {ok} correct, {many} with too many heights, {wrong} with a wrong interaction_modes_count, {few} with too few heights, {missing} without a .hab.",
+        &[
+            ("total", &rows.len().to_string()),
+            ("ok", &count(Verdict::Ok).to_string()),
+            ("many", &too_many.to_string()),
+            ("wrong", &wrong_count.to_string()),
+            ("few", &too_few.to_string()),
+            ("missing", &no_hab.to_string()),
+        ],
+    );
+    let fixable = too_many + wrong_count;
+    if fixable == 0 {
+        run.done(t("nothing to fix"));
+        run.done(t("not needed"));
+        let kind = if too_few + no_hab == 0 { ResultKind::Success } else { ResultKind::Warning };
+        run.result(kind, t("Multiheight checked"), &summary);
+        return Ok(());
+    }
+    let go = job
+        .confirm(
+            t("Fix the multiheights?"),
+            &format!(
+                "{summary} {}",
+                tf("{count} furni get one height per state of their .hab (the first heights stay) and the matching interaction_modes_count. The emulator restarts afterwards. Too few heights are only listed.", &[("count", &fixable.to_string())])
+            ),
+            t("Fix"),
+        )
+        .await;
+    if !go {
+        run.done(t("skipped"));
+        run.done(t("not needed"));
+        run.result(ResultKind::Warning, t("Multiheight checked"), &summary);
+        return Ok(());
+    }
+    let fixed = multiheight::fix(server, &rows, &log).await?;
+    run.done(&tf("{count} furni", &[("count", &fixed.to_string())]));
+    server_tools::restart_emulator(server, &log).await?;
+    run.done(t("restarted"));
+    run.result(ResultKind::Success, t("Multiheights fixed"), &format!("{summary} {}", tf("{count} furni were fixed.", &[("count", &fixed.to_string())])));
     Ok(())
 }
 

@@ -77,6 +77,17 @@ const RETRO_FIELDS: [(&str, &str); 6] = [
     ("FigureMap.json", "avatar.figuremap.url"),
 ];
 
+/// What the Referer, Custom headers and Connection fields of a retro profile do (shown below each).
+const REFERER_HELP: &str = n(
+    "Tells the server which website the request comes from. Some hotels only hand out their files to their own website: fill in the hotel's address then. Empty (default): no Referer is sent.",
+);
+const HEADERS_HELP: &str = n(
+    "Extra headers sent with every request, one \"Name: value\" per line. A User-Agent here replaces the built-in one (a recent Edge on Windows); Origin says which website asks. Empty (default): the built-in headers are used.",
+);
+const CONNECTION_HELP: &str = n(
+    "Off (default): the built-in downloader. On: every file is downloaded with curl on this computer; Cloudflare's bot check often lets curl through where the built-in downloader is blocked. At once: how many files are downloaded at the same time; fewer is slower but less likely to be blocked.",
+);
+
 fn retro_field(urls: &mut RetroUrls, index: usize) -> &mut String {
     match index {
         0 => &mut urls.furnidata,
@@ -439,8 +450,12 @@ impl GetAssetsView {
                         ui.label(RichText::new("Referer").size(13.0).strong());
                         ui.label(RichText::new(t("sent with every request (optional)")).size(11.0).color(palette.subtle));
                     });
-                    let width = (ui.available_width() - 4.0).max(240.0);
-                    ui.add(egui::TextEdit::singleline(&mut self.edit.urls.referer).hint_text("https://leet.city/").desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                    // The examples are hints only: an empty field means the default.
+                    ui.vertical(|ui| {
+                        let width = (ui.available_width() - 4.0).max(240.0);
+                        ui.add(egui::TextEdit::singleline(&mut self.edit.urls.referer).hint_text("https://example.com/").desired_width(width).margin(egui::vec2(8.0, 6.0)));
+                        ui.label(RichText::new(t(REFERER_HELP)).size(11.5).color(palette.muted));
+                    });
                     ui.end_row();
                     ui.vertical(|ui| {
                         ui.set_min_width(230.0);
@@ -452,7 +467,7 @@ impl GetAssetsView {
                         let width = (ui.available_width() - 4.0).max(240.0);
                         ui.add(
                             egui::TextEdit::multiline(&mut self.edit.urls.headers)
-                                .hint_text("User-Agent: Mozilla/5.0 ...\nOrigin: https://leet.city")
+                                .hint_text(format!("User-Agent:{}\nOrigin:https://example.com/", furniture_language::USER_AGENT))
                                 .desired_rows(2)
                                 .desired_width(width)
                                 .margin(egui::vec2(8.0, 6.0)),
@@ -460,6 +475,7 @@ impl GetAssetsView {
                         if let Err(e) = self.edit.urls.request_headers() {
                             ui.label(RichText::new(e).size(11.5).color(palette.warning_text));
                         }
+                        ui.label(RichText::new(t(HEADERS_HELP)).size(11.5).color(palette.muted));
                     });
                     ui.end_row();
                     ui.vertical(|ui| {
@@ -477,6 +493,7 @@ impl GetAssetsView {
                                 ui.radio_value(&mut self.edit.urls.parallel, value, label);
                             }
                         });
+                        ui.label(RichText::new(t(CONNECTION_HELP)).size(11.5).color(palette.muted));
                     });
                     ui.end_row();
                     for (i, (label, key)) in RETRO_FIELDS.iter().enumerate() {

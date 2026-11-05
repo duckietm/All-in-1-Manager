@@ -797,9 +797,17 @@ pub struct ClientFile {
 pub fn client_files(furni: &[NewFurni], gamedata: &Path) -> Vec<ClientFile> {
     let mut seen = HashSet::new();
     let mut files = Vec::new();
+    // The real names in each folder: on Windows "Chair.hab" opens chair.hab too, but the server is case-sensitive,
+    // so the name sent must be the one on disk. The exact name first, else the lower-case one.
+    let mut listings: HashMap<&'static str, HashSet<String>> = HashMap::new();
     let mut add = |folder: &'static str, name: String| {
         let dir = gamedata.join(folder);
-        let found = [name.clone(), name.to_lowercase()].into_iter().map(|n| (dir.join(&n), n)).find(|(path, _)| path.is_file());
+        let names = listings.entry(folder).or_insert_with(|| {
+            std::fs::read_dir(&dir)
+                .map(|entries| entries.flatten().filter(|e| e.path().is_file()).filter_map(|e| e.file_name().into_string().ok()).collect())
+                .unwrap_or_default()
+        });
+        let found = [name.clone(), name.to_lowercase()].into_iter().find(|n| names.contains(n)).map(|n| (dir.join(&n), n));
         if let Some((local, name)) = found {
             if seen.insert((folder, name.to_lowercase())) {
                 let size = std::fs::metadata(&local).map(|m| m.len()).unwrap_or(0);

@@ -210,11 +210,11 @@ impl InstallStep for ItemFixStep {
         ui.checkbox(&mut fields.kind, t("type (floor s / wall i), from FurnitureData.json"));
         widgets::muted(ui, palette, t("Off (default) for type: furni players already placed keep their floor or wall position, so a furni that changes type can end up broken in their rooms."), 11.5);
         ui.checkbox(&mut fields.size, t("width, length and stack_height, from the .hab files"));
-        widgets::muted(ui, palette, t("A multiheight furni gets only its width and length: its stack_height stays, the emulator takes the height of each state."), 11.5);
+        widgets::muted(ui, palette, t("A multiheight furni gets its width and length, and the height of its first state as stack_height (0.8 for 0.8;2.0;3.0;4.0): the state it is placed in."), 11.5);
         ui.checkbox(&mut fields.flags, t("allow_sit, allow_lay and allow_walk, from FurnitureData.json"));
         ui.checkbox(&mut fields.modes, t("interaction_modes_count, from the .hab files (interaction_type default only)"));
         ui.checkbox(&mut fields.multiheight, t("multiheight, as the .hab files say (logicType furniture_multiheight)"));
-        widgets::muted(ui, palette, t("Set where the .hab is a multiheight furni and items_base is not: interaction_type multiheight, a height per state from its images (rounded to a quarter, at least 0.10) and stack_height 0.00; recolorable keeps its interaction. A furni that is multiheight in items_base keeps its heights (only too many are cut off, below): many really are while their .hab says otherwise (stairs, stages); they are listed to check."), 11.5);
+        widgets::muted(ui, palette, t("Set where the .hab is a multiheight furni and items_base is not: interaction_type multiheight, a height per state from its images (rounded to a quarter, at least 0.10) and the first state's height as stack_height; recolorable keeps its interaction. A furni that is multiheight in items_base keeps its heights (only too many are cut off, below): many really are while their .hab says otherwise (stairs, stages); they are listed to check."), 11.5);
         ui.checkbox(&mut fields.extra_heights, t("multiheight with more heights than its .hab has states: keep the first ones"));
         widgets::muted(ui, palette, t("The emulator goes through every height, so a height without a state shows no graphic (5 heights for 4 states: the 5th click shows nothing). The first heights stay, one per state, and interaction_modes_count follows. Fewer heights than states are only listed: the missing heights are not in the .hab."), 11.5);
         widgets::muted(ui, palette, t("allow_stack is never changed: no file says whether a furni can be stacked on (the .hab only has its height), so the value you set stays."), 11.5);

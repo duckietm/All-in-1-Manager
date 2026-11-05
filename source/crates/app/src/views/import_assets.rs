@@ -38,6 +38,10 @@ struct Form {
     plan: Option<Plan>,
     database: String,
     caption: String,
+    /// The page the new page goes under, as typed: -1 (default) is the top of the catalogue.
+    parent: String,
+    /// The catalogue pages of the database (id -> caption), to check the parent.
+    pages: std::collections::BTreeMap<i64, String>,
     /// The new page is shown in the catalogue straight away (off: hidden until it is moved).
     visible: bool,
     /// Also a catalogue item for the items_base furni no catalogue item sells.
@@ -53,6 +57,8 @@ impl Default for Form {
             plan: None,
             database: String::new(),
             caption: furni_import::page_caption(chrono::Local::now().date_naive()),
+            parent: "-1".into(),
+            pages: Default::default(),
             visible: false,
             with_uncatalogued: false,
             restart: true,
@@ -89,6 +95,17 @@ impl ImportAssetsStep {
 impl Default for ImportAssetsStep {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// The parent_id typed in: -1 or the id of a catalogue page of the database.
+fn parent_id(typed: &str, pages: &std::collections::BTreeMap<i64, String>) -> Result<i64, String> {
+    let typed = typed.trim();
+    let id: i64 = typed.parse().map_err(|_| tf("parent_id \"{value}\" is not a number.", &[("value", typed)]))?;
+    if id == -1 || pages.contains_key(&id) {
+        Ok(id)
+    } else {
+        Err(tf("No catalogue page has id {id}: use -1 or the id of a page you have.", &[("id", &id.to_string())]))
     }
 }
 
@@ -167,7 +184,7 @@ impl InstallStep for ImportAssetsStep {
             bullets: vec![
                 t("items_base: size, height, sit / lay / walk / stack and the interaction modes from each furni's .hab file and FurnitureData.json; a colour variant (rare_dragonlamp*5) uses the .hab of its base.").into(),
                 t("catalog_items: 5 credits, amount 1, the offer id of FurnitureData.json.").into(),
-                t("Everything goes on one new catalogue page (parent_id -1); move the page, or its furni, where you want afterwards.").into(),
+                t("Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.").into(),
                 tf("A backup of the database comes first ({folder}); the import runs as one transaction, so it is done completely or not at all.", &[("folder", &server_tools::backup_directory())]),
             ],
             footnote: Some(t("Download Furnidata and Furniture in Habbo assets first; Deploy Assets puts the .hab files on the server, so the client shows the furniture.").into()),
@@ -255,8 +272,16 @@ impl InstallStep for ImportAssetsStep {
         ui.horizontal(|ui| {
             ui.label(RichText::new(t("Catalogue page")).size(13.0).strong());
             ui.add(egui::TextEdit::singleline(&mut form.caption).desired_width(220.0));
+            ui.add_space(12.0);
+            ui.label(RichText::new("parent_id").size(13.0).strong());
+            ui.add(egui::TextEdit::singleline(&mut form.parent).desired_width(70.0));
+            match parent_id(&form.parent, &form.pages) {
+                Ok(-1) => ui.label(RichText::new(t("at the top of the catalogue")).size(12.0).color(palette.muted)),
+                Ok(id) => ui.label(RichText::new(tf("under \"{caption}\"", &[("caption", form.pages.get(&id).map(String::as_str).unwrap_or(""))])).size(12.0).color(palette.success_text)),
+                Err(e) => ui.label(RichText::new(e).size(12.0).color(palette.warning_text)),
+            };
         });
-        widgets::muted(ui, palette, t("caption and caption_save of the new page; it gets parent_id -1, at the top of the catalogue."), 11.5);
+        widgets::muted(ui, palette, t("caption and caption_save of the new page, and the page it goes under: -1 (default) puts it at the top of the catalogue, or fill in the id of one of your pages (catalog_pages.id)."), 11.5);
         ui.checkbox(&mut form.visible, t("Show the page in the catalogue straight away"));
         widgets::muted(ui, palette, t("Off (default): the page is hidden, so players do not see the new furniture (rares too, at 5 credits) before you have checked the prices and moved it."), 11.5);
         ui.checkbox(
@@ -272,6 +297,9 @@ impl InstallStep for ImportAssetsStep {
         let Some(plan) = &form.plan else { return Some(t("Nothing to import: see the message above.").into()) };
         if form.caption.trim().is_empty() {
             return Some(t("Give the catalogue page a name.").into());
+        }
+        if let Err(e) = parent_id(&form.parent, &form.pages) {
+            return Some(e);
         }
         let extra = if form.with_uncatalogued { plan.uncatalogued.len() } else { 0 };
         (plan.new.is_empty() && extra == 0).then(|| t("There is nothing to import.").into())
@@ -293,13 +321,14 @@ impl InstallStep for ImportAssetsStep {
         };
         let furnidata: serde_json::Value = serde_json::from_slice(furnidata.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&furnidata))?;
         let state = furni_import::inspect(server.as_ref()).await?;
-        let (database, items_base, catalog_items) = (state.database.clone(), state.items_base, state.catalog_items);
+        let (database, items_base, catalog_items, pages) = (state.database.clone(), state.items_base, state.catalog_items, state.pages.clone());
         // Thousands of .hab files on a new hotel: not on the window's thread.
         let plan = tokio::task::spawn_blocking(move || furni_import::plan(&furnidata, &furniture, &state)).await?;
         let (new, no_bundle) = (plan.new.len(), plan.no_bundle.len());
         {
             let mut form = self.form.lock().unwrap();
             form.database = database.clone();
+            form.pages = pages;
             form.plan = Some(plan);
         }
         let now = tf(
@@ -319,10 +348,10 @@ impl InstallStep for ImportAssetsStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let (mut plan, caption, visible, with_uncatalogued, restart) = {
+        let (mut plan, caption, parent, visible, with_uncatalogued, restart) = {
             let form = self.form.lock().unwrap();
             let Some(plan) = form.plan.clone() else { fail!("Nothing to import.") };
-            (plan, form.caption.trim().to_string(), form.visible, form.with_uncatalogued, form.restart)
+            (plan, form.caption.trim().to_string(), form.parent.clone(), form.visible, form.with_uncatalogued, form.restart)
         };
         log("> Checking the database again ...");
         // Something may have been added since the overview: that is left out now.
@@ -341,7 +370,12 @@ impl InstallStep for ImportAssetsStep {
         log(&format!("  {}: {} new furniture, {} catalogue items for furniture without one", state.database, plan.new.len(), extra));
         ui.done(&state.database);
 
-        let sql = furni_import::sql(&plan, &caption, visible, with_uncatalogued);
+        // The parent must still be there (checked against the database as it is now).
+        let parent = match parent_id(&parent, &state.pages) {
+            Ok(id) => id,
+            Err(e) => fail!("{e}"),
+        };
+        let sql = furni_import::sql(&plan, &caption, parent, visible, with_uncatalogued);
         // A copy on this computer, to read back what ran.
         let (_, _, folder) = sources();
         let stamp = aio_core::config_dir::timestamp();

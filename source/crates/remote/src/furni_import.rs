@@ -119,6 +119,8 @@ pub struct DbState {
     pub uncatalogued: Vec<Uncatalogued>,
     pub items_base: usize,
     pub catalog_items: usize,
+    /// The catalogue pages by id, with their caption (for choosing the new page's parent).
+    pub pages: BTreeMap<i64, String>,
 }
 
 /// What an import would add.
@@ -283,7 +285,8 @@ pub fn page_caption(date: chrono::NaiveDate) -> String {
 /// The import as one transaction: the page, then the new items_base rows with their catalogue items, and (with
 /// `with_uncatalogued`) a catalogue item for every items_base row that has none. The new ids follow the highest ones
 /// in the tables, so nothing the hotel has is overwritten.
-pub fn sql(plan: &Plan, caption: &str, visible: bool, with_uncatalogued: bool) -> String {
+/// `parent_id` is the page the new page goes under (-1: at the top of the catalogue).
+pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncatalogued: bool) -> String {
     let mut out = String::new();
     out.push_str("-- Import Assets (All-in-1 Installer): Habbo furniture the database did not have.\n");
     out.push_str(&format!(
@@ -295,7 +298,7 @@ pub fn sql(plan: &Plan, caption: &str, visible: bool, with_uncatalogued: bool) -
     ));
     out.push_str("SET NAMES utf8mb4;\nSTART TRANSACTION;\n");
     out.push_str(&format!(
-        "INSERT INTO `catalog_pages` (`parent_id`, `page_layout`, `caption_save`, `caption`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`) VALUES (-1, 'default_3x3', {c}, {c}, 1, 1, 1, 99, {}, '1');\n",
+        "INSERT INTO `catalog_pages` (`parent_id`, `page_layout`, `caption_save`, `caption`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`) VALUES ({parent_id}, 'default_3x3', {c}, {c}, 1, 1, 1, 99, {}, '1');\n",
         yes(visible),
         c = sql_literal(caption)
     ));
@@ -338,7 +341,8 @@ for table in items_base catalog_pages catalog_items; do
 done
 echo "DB=$db"
 mariadb -N -B -r "$db" -e "SELECT 'B', id, sprite_id, type, item_name FROM items_base"
-mariadb -N -B -r "$db" -e "SELECT 'C', item_ids, offer_id FROM catalog_items""#;
+mariadb -N -B -r "$db" -e "SELECT 'C', item_ids, offer_id FROM catalog_items"
+mariadb -N -B -r "$db" -e "SELECT 'P', id, caption FROM catalog_pages""#;
 
 /// Parses the inspect output: "B<TAB>id<TAB>sprite<TAB>type<TAB>name" and "C<TAB>item_ids<TAB>offer_id" lines.
 pub fn parse_state(output: &str) -> DbState {
@@ -361,6 +365,11 @@ pub fn parse_state(output: &str) -> DbState {
                 // Floor and wall furni only; pets ("a0 pet0") and the like have no furni of their own. (HabFurniScan)
                 if let (Ok(id), true) = (id.parse::<i64>(), matches!(*kind, "s" | "i") && !name.starts_with("a0")) {
                     furni.push((id, name.to_string(), sprite.parse().unwrap_or(0)));
+                }
+            }
+            ["P", id, caption] => {
+                if let Ok(id) = id.parse() {
+                    state.pages.insert(id, caption.to_string());
                 }
             }
             ["C", ids, _offer] => {
@@ -528,21 +537,23 @@ mod tests {
         );
         assert_eq!(page_caption(chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap()), "import_20261105");
         let plan = Plan { new: vec![furni], uncatalogued: vec![Uncatalogued { id: 77, name: "lamp".into(), sprite_id: 9, offer_id: 3 }], ..Plan::default() };
-        let text = sql(&plan, "import_20261105", false, true);
+        let text = sql(&plan, "import_20261105", -1, false, true);
         assert!(text.contains("START TRANSACTION;") && text.trim_end().ends_with("COMMIT;"));
         assert!(text.contains("VALUES (-1, 'default_3x3', 'import_20261105', 'import_20261105', 1, 1, 1, 99, '0', '1');"));
         assert!(text.contains("(CAST(@offer + 2 AS UNSIGNED), CAST(77 AS CHAR), @page, 3, 0, 99, 'lamp',"), "{text}");
         assert!(text.contains("(CAST(@item + 1 AS UNSIGNED), 18, 'chair_o"), "{text}");
-        assert!(!sql(&plan, "x", true, false).contains("'lamp'"));
+        assert!(!sql(&plan, "x", -1, true, false).contains("'lamp'"));
+        assert!(sql(&plan, "x", 2, true, false).contains("VALUES (2, 'default_3x3', 'x', 'x', 1, 1, 1, 99, '1', '1');"));
     }
 
     #[test]
     fn reads_the_database_state() {
-        let output = "DB=hotel\nB\t1\t13\ts\tshelves_norja\nB\t2\t14\ts\tChair_Norja\nB\t3\t15\ti\tposter\nB\t4\t16\ts\ta0 pet0\nB\t5\t17\tr\trobot\nC\t1,3\t5\nC\t\t-1\n";
+        let output = "DB=hotel\nP\t2\tMeubels\nB\t1\t13\ts\tshelves_norja\nB\t2\t14\ts\tChair_Norja\nB\t3\t15\ti\tposter\nB\t4\t16\ts\ta0 pet0\nB\t5\t17\tr\trobot\nC\t1,3\t5\nC\t\t-1\n";
         let state = parse_state(output);
         assert_eq!(state.database, "hotel");
         assert_eq!((state.items_base, state.catalog_items), (5, 2));
         assert!(state.names.contains("chair_norja"));
+        assert_eq!(state.pages.get(&2).map(String::as_str), Some("Meubels"));
         assert_eq!(state.uncatalogued, vec![Uncatalogued { id: 2, name: "Chair_Norja".into(), sprite_id: 14, offer_id: -1 }]);
     }
 }

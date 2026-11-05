@@ -2308,7 +2308,6 @@
   "Compares the Habbo furniture you downloaded ({folder}) with the hotel database, and adds what it lacks to items_base with a catalogue item each, the way the All-in-1 Converter's Generate SQL does.": "Vergelijkt de Habbo-meubi die je hebt gedownload ({folder}) met de database van het hotel en voegt wat ontbreekt toe aan items_base, elk met een catalogusitem, zoals Generate SQL van de All-in-1 Converter dat doet.",
   "items_base: size, height, sit / lay / walk / stack and the interaction modes from each furni's .hab file and FurnitureData.json; a colour variant (rare_dragonlamp*5) uses the .hab of its base.": "items_base: grootte, hoogte, zitten / liggen / lopen / stapelen en de interactiemodi uit het .hab-bestand van elk meubi en FurnitureData.json; een kleurvariant (rare_dragonlamp*5) gebruikt de .hab van zijn basis.",
   "catalog_items: 5 credits, amount 1, the offer id of FurnitureData.json.": "catalog_items: 5 credits, aantal 1, de offer-id uit FurnitureData.json.",
-  "Everything goes on one new catalogue page (parent_id -1); move the page, or its furni, where you want afterwards.": "Alles komt op één nieuwe cataloguspagina (parent_id -1); verplaats de pagina, of de meubi erop, daarna waar je wilt.",
   "A backup of the database comes first ({folder}); the import runs as one transaction, so it is done completely or not at all.": "Eerst komt er een back-up van de database ({folder}); de import draait als één transactie, dus hij gebeurt helemaal of helemaal niet.",
   "Download Furnidata and Furniture in Habbo assets first; Deploy Assets puts the .hab files on the server, so the client shows the furniture.": "Download eerst Furnidata en Furniture in Habbo-assets; Assets uitrollen zet de .hab-bestanden op de server, zodat de client de meubi toont.",
   "Check the database": "De database controleren",
@@ -2328,7 +2327,6 @@
   "Missing in the database, but their .hab file is not in the download (or cannot be read): they are left out. Download Furniture in Habbo assets again to get them.": "Ontbreken in de database, maar hun .hab-bestand zit niet in de download (of is niet te lezen): ze worden overgeslagen. Download Furniture opnieuw in Habbo-assets om ze te krijgen.",
   "Floor and wall furniture in items_base that no catalogue item sells (often on purpose: prizes, gifts, internal furni). Only with the option below do they get a catalogue item on the new page.": "Vloer- en muurmeubi in items_base die geen enkel catalogusitem verkoopt (vaak met opzet: prijzen, cadeaus, interne meubi). Alleen met de optie hieronder krijgen ze een catalogusitem op de nieuwe pagina.",
   "Catalogue page": "Cataloguspagina",
-  "caption and caption_save of the new page; it gets parent_id -1, at the top of the catalogue.": "caption en caption_save van de nieuwe pagina; die krijgt parent_id -1, bovenaan in de catalogus.",
   "Show the page in the catalogue straight away": "De pagina meteen in de catalogus tonen",
   "Off (default): the page is hidden, so players do not see the new furniture (rares too, at 5 credits) before you have checked the prices and moved it.": "Uit (standaard): de pagina is verborgen, zodat spelers de nieuwe meubi (ook rares, voor 5 credits) niet zien voordat je de prijzen hebt gecontroleerd en hem hebt verplaatst.",
   "Also a catalogue item for the {count} furniture that is in items_base but not in the catalogue": "Ook een catalogusitem voor de {count} meubi die in items_base staan maar niet in de catalogus",
@@ -2362,5 +2360,11 @@
   "2. As it was before": "2. Zoals het eerst was",
   "The SQL that ran, on this computer:": "De SQL die is uitgevoerd, op deze computer:",
   "The Habbo furniture the hotel database lacks into items_base and the catalogue, with an overview first.": "De Habbo-meubi die de database van het hotel mist, in items_base en de catalogus, met eerst een overzicht.",
-  "The Habbo furniture the database lacks into items_base and the catalogue, with an overview first.": "De Habbo-meubi die de database mist, in items_base en de catalogus, met eerst een overzicht."
+  "The Habbo furniture the database lacks into items_base and the catalogue, with an overview first.": "De Habbo-meubi die de database mist, in items_base en de catalogus, met eerst een overzicht.",
+  "parent_id \"{value}\" is not a number.": "parent_id \"{value}\" is geen getal.",
+  "No catalogue page has id {id}: use -1 or the id of a page you have.": "Geen cataloguspagina heeft id {id}: gebruik -1 of de id van een pagina die je hebt.",
+  "at the top of the catalogue": "bovenaan in de catalogus",
+  "under \"{caption}\"": "onder \"{caption}\"",
+  "caption and caption_save of the new page, and the page it goes under: -1 (default) puts it at the top of the catalogue, or fill in the id of one of your pages (catalog_pages.id).": "caption en caption_save van de nieuwe pagina, en de pagina waar hij onder komt: -1 (standaard) zet hem bovenaan in de catalogus, of vul de id in van een van je pagina's (catalog_pages.id).",
+  "Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.": "Alles komt op één nieuwe cataloguspagina (parent_id -1, of onder een pagina die je kiest); verplaats de pagina, of de meubi erop, daarna waar je wilt."
 }

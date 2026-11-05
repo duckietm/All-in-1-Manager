@@ -468,7 +468,7 @@ impl GetAssetsView {
                         ui.add(
                             egui::TextEdit::multiline(&mut self.edit.urls.headers)
                                 .hint_text(format!("User-Agent:{}\nOrigin:https://example.com/", furniture_language::USER_AGENT))
-                                .desired_rows(2)
+                                .desired_rows(4)
                                 .desired_width(width)
                                 .margin(egui::vec2(8.0, 6.0)),
                         );

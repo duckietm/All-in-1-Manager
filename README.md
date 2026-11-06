@@ -528,7 +528,12 @@ Uses the address from the web access step; nothing to fill in. For `https://exam
 1. `yarn install` in `/var/www/Octane-Renderer`, then in `/var/www/Octane` (Node.js 26 and Yarn 4 from `/usr/bin`).
 2. In `/var/www/Octane/public/configuration`, `client-mode`, `hotlooks`, `infostand_backgrounds`, `news`,
    `renderer-config` and `ui-config` `.json` are created from the `.example` files (existing files are kept), and
-   the URL keys are set (an existing file that changes is saved as `.bak-<time>` first):
+   the URL keys are set (an existing file that changes is saved as `.bak-<time>` first).
+   `renderer-config`, `ui-config` and `client-mode` **follow their `.example`** on every run (also after
+   **Update Octane** pulls a newer one): a key the `.example` has and the `.json` lacks is added with the example's
+   value, also inside nested settings, and the keys are put in the example's order; keys only your `.json` has stay,
+   after them. A value already in the `.json` is never changed (lists neither) apart from the URL keys below. The
+   data files (`news`, `hotlooks`, `infostand_backgrounds`) are left as they are.
 
    | File | Keys |
    |---|---|

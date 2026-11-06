@@ -147,7 +147,7 @@ dependencies = [
 
 [[package]]
 name = "aio-assets"
-version = "2.0.15"
+version = "2.0.16"
 dependencies = [
  "anyhow",
  "flate2",

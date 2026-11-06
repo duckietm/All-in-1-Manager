@@ -188,6 +188,19 @@ pub fn classify(facts: &Facts) -> Vec<Line> {
         Some(false) => lines.push(line(Status::Warning, t("Clock"), t("Not synchronised: certificates and apt need the right time.").into(), None)),
         None => {}
     }
+    match facts.cpu_missing.as_deref() {
+        Some([]) => lines.push(line(Status::Ok, t("Instruction set"), t("x86-64-v2 or newer.").into(), None)),
+        Some(missing) => lines.push(line(
+            Status::Problem,
+            t("Instruction set"),
+            tf(
+                "Not x86-64-v2 (missing: {features}). Building the AtomCMS theme and EpicNext, and the All-in-1 converter, stop with \"Illegal instruction\" or refuse to start. On a VPS: ask the host to set the CPU type to \"host\" (or x86-64-v2 or newer).",
+                &[("features", &missing.join(", "))],
+            ),
+            None,
+        )),
+        None => {}
+    }
     lines.sort_by_key(|l| l.status);
     lines
 }
@@ -370,5 +383,16 @@ mod tests {
         assert!(lines.iter().any(|l| l.title == "Reboot"));
         // Services that are not installed are not listed.
         assert!(!lines.iter().any(|l| l.title == "MariaDB" || l.title == "Database backup"));
+    }
+
+    #[test]
+    fn a_processor_without_x86_64_v2_is_a_problem() {
+        let lines = classify(&facts("machine=x86_64\ncpu_flags= fpu sse sse2 pni cx16 lahf_lm hypervisor\n"));
+        let cpu = lines.iter().find(|l| l.title == "Instruction set").unwrap();
+        assert_eq!(cpu.status, Status::Problem);
+        assert!(cpu.detail.contains("SSE4.2, POPCNT"), "{}", cpu.detail);
+        let fine = classify(&facts("machine=x86_64\ncpu_flags= pni ssse3 cx16 sse4_1 sse4_2 popcnt lahf_lm\n"));
+        assert_eq!(fine.iter().find(|l| l.title == "Instruction set").unwrap().status, Status::Ok);
+        assert!(!classify(&facts("machine=aarch64\n")).iter().any(|l| l.title == "Instruction set"));
     }
 }

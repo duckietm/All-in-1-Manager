@@ -78,7 +78,7 @@ if ! grep -Eq '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config.d/\*\.conf' 
 fi
 echo "> {{DropIn}}"
 cat > {{DropIn}} <<'CONF'
-# Written by All-in-1 Installer (SSH login step): only SSH keys can log in.
+# Written by All-in-1 Manager (SSH login step): only SSH keys can log in.
 # Lost your key? Log in on the console of your hosting provider (KVM / VNC / rescue) and delete this file,
 # then: systemctl reload ssh
 PasswordAuthentication no

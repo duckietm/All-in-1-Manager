@@ -102,7 +102,7 @@ export PATH=/usr/sbin:/usr/bin:/sbin:/bin COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1
 set -o pipefail
 cat > /var/www/Octane/build.sh <<'BUILD'
 #!/bin/sh
-# Builds the Octane client into dist/ (written by All-in-1 Installer). Run it after changing
+# Builds the Octane client into dist/ (written by All-in-1 Manager). Run it after changing
 # public/configuration or after a git pull of Octane or Octane-Renderer.
 set -e
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1

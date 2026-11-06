@@ -8,22 +8,48 @@ on:
 jobs:
   notify:
     runs-on: ubuntu-latest
-    permissions: {}
+    # Read access to the code: GitHub no longer lists the changed files in push events, so they come from its API.
+    permissions:
+      contents: read
     if: github.event.head_commit != null
     steps:
       - name: Send Discord Notification
         env:
           WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
         run: |
-          PAYLOAD=$(jq -c '
+          set -uo pipefail
+          # What changed in this push: before...after, or the head commit alone for a new branch or when the compare
+          # fails. Only status and line counts are kept (the patches would make the list far too big).
+          FILTER='[.files[]? | {status, additions, deletions}]'
+          FILES=''
+          if [[ ! "$BEFORE" =~ ^0+$ ]]; then
+            FILES=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --jq "$FILTER" 2>/dev/null) || FILES=''
+          fi
+          if [ -z "$FILES" ] || [ "$FILES" = "[]" ]; then
+            FILES=$(gh api "repos/$REPO/commits/$AFTER" --jq "$FILTER" 2>/dev/null) || FILES='[]'
+          fi
+          [ -n "$FILES" ] || FILES='[]'
+
+          PAYLOAD=$(jq -c --argjson files "$FILES" '
             .head_commit as $c
             | (.repository.full_name) as $repo
             | (.ref | sub("refs/heads/"; "")) as $branch
             | ($c.message | split("\n")[0]) as $title
             | ($c.message | split("\n")[1:] | join("\n") | sub("^\\s+"; "")) as $body
-            | (($c.added | length) + ($c.modified | length) + ($c.removed | length)) as $files
+            | ($files | length) as $count
+            # GitHub lists at most 300 files of a compare.
+            | (if $count >= 300 then "300+" else ($count | tostring) end) as $touched
+            | ($files | map(select(.status == "added")) | length) as $added
+            | ($files | map(select(.status == "modified" or .status == "changed" or .status == "renamed" or .status == "copied")) | length) as $modified
+            | ($files | map(select(.status == "removed")) | length) as $removed
+            | ($files | map(.additions // 0) | add // 0) as $plus
+            | ($files | map(.deletions // 0) | add // 0) as $minus
             | {
-                username: "All-in-1 Installer",
+                username: "All-in-1 Manager",
                 avatar_url: "https://images.habbo.com/c_images/album1584/PT683.gif",
                 embeds: [
                   {
@@ -47,9 +73,11 @@ jobs:
                       url: "https://www.habbo.com/habbo-imaging/avatarimage?figure=hr-165-45.hd-180-2.ch-255-66.lg-280-110.sh-305-62&direction=2&head_direction=3&size=l&action=wav"
                     },
                     fields: [
-                      { name: "📦 Files touched", value: ("`" + ($files | tostring) + "`"), inline: true },
-                      { name: "➕ Added",         value: ("`" + ($c.added | length | tostring) + "`"), inline: true },
-                      { name: "✏️ Modified",      value: ("`" + ($c.modified | length | tostring) + "`"), inline: true }
+                      { name: "📦 Files touched", value: ("`" + $touched + "`"), inline: true },
+                      { name: "➕ Added",         value: ("`" + ($added | tostring) + "`"), inline: true },
+                      { name: "✏️ Modified",      value: ("`" + ($modified | tostring) + "`"), inline: true },
+                      { name: "🗑️ Removed",       value: ("`" + ($removed | tostring) + "`"), inline: true },
+                      { name: "📝 Lines",         value: ("`+" + ($plus | tostring) + " / -" + ($minus | tostring) + "`"), inline: true }
                     ],
                     footer: {
                       text: ($repo + " • pushed to " + $branch),

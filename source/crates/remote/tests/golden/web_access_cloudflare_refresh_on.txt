@@ -102,7 +102,7 @@ echo "> /var/scripts/CF_Refresh.sh: Cloudflare's ranges for NGINX, Traefik and P
 install -d -m 755 /var/scripts
 cat > /var/scripts/CF_Refresh.sh <<'REFRESH'
 #!/bin/bash
-# Keeps Cloudflare's IP ranges current for the hotel (written by All-in-1 Installer; weekly from /etc/cron.d/cf-refresh).
+# Keeps Cloudflare's IP ranges current for the hotel (written by All-in-1 Manager; weekly from /etc/cron.d/cf-refresh).
 # NGINX, Traefik and Polaris read the visitor's address from X-Forwarded-For past Cloudflare, instead of seeing Cloudflare's.
 set -u
 fail() { echo "ERROR: $*"; exit 1; }
@@ -114,7 +114,7 @@ echo "$(date '+%F %T') $(echo "$ranges" | grep -c .) Cloudflare ranges"
 
 # NGINX: the hotel site's trusted proxies. A reload keeps every connection.
 realip=/etc/nginx/hotel-real-ip.conf
-{ echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+{ echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Manager): Traefik and Cloudflare."
   echo "set_real_ip_from 127.0.0.1;"
   echo "$ranges" | sed 's/.*/set_real_ip_from &;/'; } > "$realip.new"
 if ! cmp -s "$realip.new" "$realip"; then
@@ -210,7 +210,7 @@ wait_loaded() {
 fi
 REFRESH
 chmod 755 /var/scripts/CF_Refresh.sh
-printf '# Cloudflare IP ranges for the hotel (All-in-1 Installer)\n0 4 * * 0 root /var/scripts/CF_Refresh.sh >> /var/log/cf-refresh.log 2>&1\n' > /etc/cron.d/cf-refresh
+printf '# Cloudflare IP ranges for the hotel (All-in-1 Manager)\n0 4 * * 0 root /var/scripts/CF_Refresh.sh >> /var/log/cf-refresh.log 2>&1\n' > /etc/cron.d/cf-refresh
 chmod 644 /etc/cron.d/cf-refresh
 echo "  /etc/cron.d/cf-refresh: every Sunday at 04:00, output in /var/log/cf-refresh.log"
 echo "> Running it now"

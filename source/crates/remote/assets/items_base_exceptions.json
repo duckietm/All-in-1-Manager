@@ -1,0 +1,13 @@
+[
+  {
+    "item_name": "olympics_c16_pommel",
+    "why": "A pommel horse: multiheight and sat on, at the height of the horse.",
+    "interaction_type": "multiheight",
+    "interaction_modes_count": 5,
+    "allow_sit": "1",
+    "allow_stack": "0",
+    "allow_walk": "0",
+    "stack_height": 2.00,
+    "multiheight": "2.00;2.25;2.50;2.75;3.00"
+  }
+]

@@ -268,14 +268,14 @@ pub fn server(info: FinishInfo) -> Box<dyn FinishPage> {
                 } else {
                     t("Some steps were skipped or failed (see below): run them again later if you need them.")
                 },
-                t("Now upload all the game assets to the server: download them with the All-in-1 downloader and upload them with WinSCP into the folders below.")
+                t("Now put the game assets on the server: download them with Assets → Habbo assets and send them with Assets → Deploy Assets (or upload them yourself with WinSCP into the folders below).")
             ),
         );
         step_list(ui, palette, &steps);
         section(ui, t("1. Download the assets"), |ui| {
-            widgets::text(ui, t("Use the All-in-1 downloader (github.com/duckietm/all-in-1-converter) to download all assets (gamedata, furniture, clothes, badges ...)."), 13.0);
+            widgets::text(ui, t("Assets → Habbo assets downloads everything (gamedata, furniture, clothes, badges ...) in the server's layout; Assets → Deploy Assets then sends only what is new."), 13.0);
         });
-        section(ui, t("2. Upload them with WinSCP"), |ui| winscp(ui, palette, &host, ssh_port, putty_key.as_deref()));
+        section(ui, t("2. Or upload them yourself with WinSCP"), |ui| winscp(ui, palette, &host, ssh_port, putty_key.as_deref()));
         section(ui, &tf("3. Where everything goes ({gamedata})", &[("gamedata", &octane::gamedata())]), |ui| asset_table(ui, palette));
         section(ui, t("4. After uploading"), |ui| after_upload(ui, palette, site.as_ref()));
     })
@@ -933,10 +933,10 @@ pub fn deploy(site: Option<WebAccessSettings>, summaries: Vec<Option<String>>, s
             widgets::text(ui, &tf("Players get the new files when they reload {client}.", &[("client", &client)]), 13.0);
             widgets::text(
                 ui,
-                t("New furniture also needs its rows in items_base and catalog_items: make the SQL with the All-in-1 converter (Hotel Tools → Generate SQL) and run it on the database (HeidiSQL over the SSH tunnel), then :update_items in the hotel or restart the emulator."),
+                t("New furniture also needs its rows in items_base and catalog_items: Assets → Import Assets adds them (and Import custom furniture for a retro's own furni)."),
                 13.0,
             );
-            colored(ui, t("Download more with the All-in-1 downloader and sync again: only the new files are sent."), 12.0, palette.subtle);
+            colored(ui, t("Download more with Assets → Habbo assets and sync again: only the new files are sent."), 12.0, palette.subtle);
         });
     })
 }
@@ -957,4 +957,166 @@ mod tests {
         assert_eq!(ASSETS.len(), 19);
         assert!(ASSETS.iter().all(|(folder, contents)| !folder.is_empty() && !contents.is_empty()));
     }
+}
+
+/// Import Assets' finish page: where the furniture went, how to move it, and the way back.
+pub fn import_assets(imported: super::import_assets::Imported, steps: Steps, shared: crate::gui::Shared) -> Box<dyn FinishPage> {
+    let upload = std::sync::Arc::new(std::sync::Mutex::new(super::import_assets::FileUpload::default()));
+    Page::boxed(move |ui, palette| {
+        let ok = clean(&steps);
+        let heading = match (&imported.result, ok) {
+            (Some(_), true) => tf("{count} furniture imported", &[("count", &imported.furniture.to_string())]),
+            (None, true) => t("Nothing was imported.").into(),
+            (_, false) => t("The furniture was not imported").into(),
+        };
+        let message = match (&imported.result, ok) {
+            (Some(r), true) if r.page_id <= 0 => t("items_base follows the merged FurnitureData.json again; there was no new furniture to import.").into(),
+            (Some(r), true) if r.pages > 1 => tf(
+                "{items} catalogue items on {pages} pages under {caption} (id {id}). Players see them after they reload the hotel.",
+                &[("items", &imported.catalogue_items.to_string()), ("pages", &r.pages.to_string()), ("caption", &imported.caption), ("id", &r.page_id.to_string())],
+            ),
+            (Some(r), true) => tf(
+                "{items} catalogue items on the page {caption} (id {id}). Players see it after they reload the hotel.",
+                &[("items", &imported.catalogue_items.to_string()), ("caption", &imported.caption), ("id", &r.page_id.to_string())],
+            ),
+            (None, true) => t("Every downloaded Habbo furniture was in the database already.").into(),
+            (_, false) => t(RUN_AGAIN).to_string(),
+        };
+        widgets::result_banner(ui, palette, if ok { ResultKind::Success } else { ResultKind::Warning }, &heading, &message);
+        step_list(ui, palette, &steps);
+        let Some(r) = &imported.result else { return };
+        if !imported.missing_files.is_empty() {
+            let files = &imported.missing_files;
+            let habs = files.iter().filter(|f| f.folder == "furniture").count();
+            let total: u64 = files.iter().map(|f| f.size).sum();
+            section(ui, t("The furniture's files on the server"), |ui| {
+                widgets::text(
+                    ui,
+                    &tf(
+                        "{habs} .hab files and {icons} icons of the imported furniture are not on the server yet ({size}); without them the client cannot show these furni.",
+                        &[("habs", &habs.to_string()), ("icons", &(files.len() - habs).to_string()), ("size", &format!("{:.1} MB", total as f64 / 1_048_576.0))],
+                    ),
+                    13.0,
+                );
+                let state = upload.lock().unwrap();
+                let (running, sent, result) = (state.running, state.sent, state.result.clone());
+                drop(state);
+                match (&result, running) {
+                    (_, true) => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            let done = if total > 0 { (sent as f32 / total as f32).min(1.0) } else { 0.0 };
+                            ui.add(egui::ProgressBar::new(done).desired_width(320.0).show_percentage());
+                        });
+                    }
+                    (Some(Ok(message)), false) => widgets::result_banner(ui, palette, ResultKind::Success, t("Uploaded"), message),
+                    (Some(Err(message)), false) => {
+                        widgets::result_banner(ui, palette, ResultKind::Warning, t("The upload stopped"), message);
+                        if ui.add(widgets::primary_button(t("Try again"))).clicked() {
+                            super::import_assets::upload_missing(&shared, files.clone(), upload.clone());
+                        }
+                    }
+                    (None, false) => {
+                        if ui.add(widgets::primary_button(&tf("Upload the {count} missing files", &[("count", &files.len().to_string())]))).clicked() {
+                            super::import_assets::upload_missing(&shared, files.clone(), upload.clone());
+                        }
+                    }
+                }
+            });
+        }
+        let page = r.page_id.to_string();
+        if r.page_id > 0 {
+            section(ui, t("1. Put the page where you want it"), |ui| {
+                widgets::text(ui, t("Under another page (the id of that page as parent_id), and visible:"), 13.0);
+                copy_box(ui, palette, &format!("UPDATE `catalog_pages` SET `parent_id` = <parent id>, `visible` = '1' WHERE `id` = {page};"));
+                widgets::text(ui, t("Or move its furniture to a page you have, and the empty page away:"), 13.0);
+                if r.pages > 1 {
+                    copy_box(
+                        ui,
+                        palette,
+                        &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` IN (SELECT `id` FROM `catalog_pages` WHERE `parent_id` = {page});\nDELETE FROM `catalog_pages` WHERE `parent_id` = {page} OR `id` = {page};"),
+                    );
+                } else {
+                    copy_box(ui, palette, &format!("UPDATE `catalog_items` SET `page_id` = <page id> WHERE `page_id` = {page};\nDELETE FROM `catalog_pages` WHERE `id` = {page};"));
+                }
+                widgets::text(ui, t("Run it in the SQL Editor, then restart the emulator (Tools) or reload the catalogue in the hotel."), 13.0);
+            });
+        }
+        section(ui, t("2. As it was before"), |ui| {
+            widgets::text(ui, t("The database before the import (Tools → Import full database puts it back):"), 13.0);
+            code(ui, palette, &r.safety_backup);
+            if let Some(sql) = &imported.local_sql {
+                widgets::text(ui, t("The SQL that ran, on this computer:"), 13.0);
+                code(ui, palette, &sql.display().to_string());
+            }
+            if let Some((merged, old)) = &imported.furnidata {
+                widgets::text(ui, t("The merged FurnitureData.json, on this computer:"), 13.0);
+                code(ui, palette, &merged.display().to_string());
+                if let Some(old) = old {
+                    widgets::text(ui, t("The FurnitureData.json that was on the server:"), 13.0);
+                    code(ui, palette, old);
+                }
+            }
+        });
+    })
+}
+
+/// Fix offer IDs' finish page: what changed, and the way back.
+pub fn offer_fix(updated: usize, generated: usize, safety_backup: Option<String>, furnidata: Option<(std::path::PathBuf, Option<String>)>, steps: Steps) -> Box<dyn FinishPage> {
+    Page::boxed(move |ui, palette| {
+        let ok = clean(&steps);
+        let (kind, heading, message) = if ok {
+            (
+                ResultKind::Success,
+                t("The offer IDs are in line").to_string(),
+                tf("{updates} catalogue items got another offer_id, {generated} furni a new offer id.", &[("updates", &updated.to_string()), ("generated", &generated.to_string())]),
+            )
+        } else {
+            (ResultKind::Warning, t("The offer IDs were not fixed").to_string(), t(RUN_AGAIN).to_string())
+        };
+        widgets::result_banner(ui, palette, kind, &heading, &message);
+        step_list(ui, palette, &steps);
+        if safety_backup.is_none() && furnidata.is_none() {
+            return;
+        }
+        section(ui, t("As it was before"), |ui| {
+            if let Some(backup) = &safety_backup {
+                widgets::text(ui, t("The database before the update (Tools → Import full database puts it back):"), 13.0);
+                code(ui, palette, backup);
+            }
+            if let Some((local, old)) = &furnidata {
+                if let Some(old) = old {
+                    widgets::text(ui, t("The FurnitureData.json that was on the server:"), 13.0);
+                    code(ui, palette, old);
+                }
+                widgets::text(ui, t("The new one, on this computer:"), 13.0);
+                code(ui, palette, &local.display().to_string());
+            }
+        });
+    })
+}
+
+/// Fix items_base's finish page: what changed, and the way back.
+pub fn item_fix(rows: usize, changes: usize, safety_backup: Option<String>, steps: Steps) -> Box<dyn FinishPage> {
+    Page::boxed(move |ui, palette| {
+        let ok = clean(&steps);
+        if ok {
+            widgets::result_banner(
+                ui,
+                palette,
+                ResultKind::Success,
+                t("items_base is in line"),
+                &tf("{rows} furni got {changes} new values. Players see it after they reload the hotel.", &[("rows", &rows.to_string()), ("changes", &changes.to_string())]),
+            );
+        } else {
+            widgets::result_banner(ui, palette, ResultKind::Warning, t("items_base was not fixed"), t(RUN_AGAIN));
+        }
+        step_list(ui, palette, &steps);
+        if let Some(backup) = &safety_backup {
+            section(ui, t("As it was before"), |ui| {
+                widgets::text(ui, t("The database before the update (Tools → Import full database puts it back):"), 13.0);
+                code(ui, palette, backup);
+            });
+        }
+    })
 }

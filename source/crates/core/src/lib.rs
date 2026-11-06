@@ -1,4 +1,4 @@
-//! All-in-1 Installer core: what lives on this computer. Settings, the configuration folder, the server layout,
+//! All-in-1 Manager core: what lives on this computer. Settings, the configuration folder, the server layout,
 //! MariaDB credentials, SSH key generation and the encrypted settings backup.
 
 pub mod backup;

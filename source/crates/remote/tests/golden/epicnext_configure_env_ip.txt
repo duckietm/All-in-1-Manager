@@ -120,6 +120,7 @@ env_set() {
 }
 env_set HOTEL_NAME '"Hotel"'
 env_set APP_URL 'http://192.0.2.10'
+env_set NEXT_PUBLIC_APP_URL 'http://192.0.2.10'
 env_set AUTH_URL 'http://192.0.2.10'
 env_set AUTH_TRUST_HOST 'true'
 env_set RCON_HOST '127.0.0.1'
@@ -174,7 +175,7 @@ env_set DATABASE_URL "mysql://$(enc "$dbuser"):$(enc "$dbpass")@127.0.0.1:3306/$
 # .env.example), while an unset one is fine: empty settings are commented out.
 empty=$(grep -cE '^[A-Za-z0-9_]+=("")?[[:space:]]*$' .env || true)
 if [ "$empty" -gt 0 ]; then
-  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Installer)/' .env
+  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Manager)/' .env
   echo "  $empty empty settings left unset (commented out): EpicNext refuses empty values"
 fi
 chmod 640 .env

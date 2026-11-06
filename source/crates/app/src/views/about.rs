@@ -35,7 +35,7 @@ impl AboutView {
 impl View for AboutView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         widgets::card(ui, palette, egui::Margin::same(20), |ui| {
-            ui.label(RichText::new("All-in-1 Installer").size(16.0).strong());
+            ui.label(RichText::new("All-in-1 Manager").size(16.0).strong());
             ui.label(RichText::new(tf("Version {version}", &[("version", update::CURRENT_VERSION)])).size(12.5).color(palette.subtle));
             ui.add_space(4.0);
             ui.horizontal(|ui| {

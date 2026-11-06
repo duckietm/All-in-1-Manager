@@ -1,21 +1,21 @@
 @echo off
-rem All-in-1 Installer: build it on Windows.
+rem All-in-1 Manager: build it on Windows.
 rem   build             a menu (also when you double-click this file)
-rem   build release     the program to hand out  -> public\release\all-in-1-installer.exe (with Assets\)
-rem   build dev         a debug build            -> public\dev\all-in-1-installer.exe
+rem   build release     the program to hand out  -> public\release\all-in-1-manager.exe (with Assets\)
+rem   build dev         a debug build            -> public\dev\all-in-1-manager.exe
 rem   build run         a debug build, and start it
 rem   build test        all tests
 rem Needs Rust (rustup.rs) and Visual Studio's "Desktop development with C++".
 setlocal
 cd /d "%~dp0"
-set "EXE=all-in-1-installer.exe"
+set "EXE=all-in-1-manager.exe"
 set "PAUSE_AT_END="
 set "CHOICE=%~1"
 
 if not "%CHOICE%"=="" goto :chosen
 set "PAUSE_AT_END=1"
 echo.
-echo  All-in-1 Installer - build
+echo  All-in-1 Manager - build
 echo.
 echo    1  Release  (the program to hand out, in public\release)
 echo    2  Dev      (debug build, in public\dev)

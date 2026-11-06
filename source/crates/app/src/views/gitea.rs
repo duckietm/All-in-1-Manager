@@ -69,7 +69,7 @@ pub fn login_path(host: &str) -> PathBuf {
 
 fn login_text(settings: &GiteaSettings, password: &str) -> String {
     format!(
-        "# Gitea admin (All-in-1 Installer)\nurl={}\nuser={}\nemail={}\npassword={password}\n",
+        "# Gitea admin (All-in-1 Manager)\nurl={}\nuser={}\nemail={}\npassword={password}\n",
         settings.url(),
         settings.admin_user,
         settings.admin_email
@@ -379,7 +379,7 @@ mod tests {
         let settings = GiteaSettings { domain: "git.a.com".into(), https: true, cloudflare: false, admin_user: "gitadmin".into(), admin_email: "x@a.com".into() };
         assert_eq!(
             login_text(&settings, "pw"),
-            "# Gitea admin (All-in-1 Installer)\nurl=https://git.a.com\nuser=gitadmin\nemail=x@a.com\npassword=pw\n"
+            "# Gitea admin (All-in-1 Manager)\nurl=https://git.a.com\nuser=gitadmin\nemail=x@a.com\npassword=pw\n"
         );
     }
 

@@ -61,7 +61,7 @@ impl InstallStep for OctaneStep {
                 ),
             ],
             footnote: Some(tf(
-                "The Habbo game assets are not copied: put them in {gamedata} with Addons → Deploy Assets (the All-in-1 downloader). Existing configuration files are kept; only their URLs are updated.",
+                "The Habbo game assets are not copied: download them with Assets → Habbo assets and put them in {gamedata} with Assets → Deploy Assets. Existing configuration files are kept; only their URLs are updated.",
                 &[("gamedata", &gamedata)],
             )),
         }

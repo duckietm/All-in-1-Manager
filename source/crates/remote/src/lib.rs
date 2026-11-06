@@ -1,4 +1,4 @@
-//! All-in-1 Installer remote side: the SSH connection and, per install step, the scripts it runs on the server as
+//! All-in-1 Manager remote side: the SSH connection and, per install step, the scripts it runs on the server as
 //! root. Every module mirrors one file of the C# installer's `SourceCode/Remote`, with the same commands in the same
 //! order; `tests/golden` holds what the C# code sends, and the parity tests compare with it.
 
@@ -20,19 +20,26 @@ pub mod doctor;
 pub mod emulator;
 pub mod emulator_assets;
 pub mod emulator_monitor;
+pub mod exceptions;
 pub mod external_texts;
 pub mod epicnext;
 pub mod fail2ban;
+pub mod furni_import;
+pub mod furni_merge;
 pub mod furniture_language;
 pub mod gamedata_files;
 pub mod git_clone;
 pub mod gitea;
+pub mod habbo_assets;
+pub mod item_fix;
 pub mod harden;
 pub mod hotel_site;
 pub mod local_ports;
 pub mod mariadb;
+pub mod multiheight;
 pub mod nginx;
 pub mod octane;
+pub mod offer_fix;
 pub mod php;
 pub mod plus_import;
 pub mod root_authorized_keys;

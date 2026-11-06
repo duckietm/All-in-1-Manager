@@ -98,7 +98,7 @@ load_cloudflare_ranges() {
   [ "$(echo "$ranges" | grep -c .)" -ge 10 ] || fail "Could not download Cloudflare's IP ranges${1:+; $1}."
   echo "  $(echo "$ranges" | grep -c .) ranges"
 }
-if grep -qs 'All-in-1 Installer' /var/scripts/CF_Refresh.sh; then
+if grep -qsE 'All-in-1 (Manager|Installer)' /var/scripts/CF_Refresh.sh; then
   rm -f /var/scripts/CF_Refresh.sh /etc/cron.d/cf-refresh
   echo "  No Cloudflare: the weekly refresh of Cloudflare's ranges is removed"
 fi

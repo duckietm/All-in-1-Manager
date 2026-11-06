@@ -1,6 +1,6 @@
 //! Settings (SettingsView.cs): the look, the window language, the servers and default SSH key for the login, the
-//! server layout with the emulator's account, the repository branches, importing your own SSH keys and the
-//! All-in-1 downloader. Everything is stored in configuration/settings.json.
+//! server layout with the emulator's account, the repository branches and importing your own SSH keys. Everything is
+//! stored in configuration/settings.json.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -36,7 +36,6 @@ struct Inbox {
     account: Option<(String, Banner, bool)>,
     layout_result: Option<Banner>,
     import: Option<ImportOutcome>,
-    downloader: Option<PathBuf>,
     creating: bool,
     importing: bool,
 }
@@ -97,9 +96,6 @@ pub struct SettingsView {
     paste: String,
     import_result: Banner,
 
-    downloader: String,
-    downloader_result: Banner,
-
     inbox: Arc<Mutex<Inbox>>,
 }
 
@@ -139,8 +135,6 @@ impl SettingsView {
             import_for: String::new(),
             paste: String::new(),
             import_result: None,
-            downloader: String::new(),
-            downloader_result: None,
             inbox: Arc::new(Mutex::new(Inbox::default())),
         };
         view.show_layout(&settings.layout.clone().unwrap_or_default());
@@ -157,8 +151,6 @@ impl SettingsView {
     fn reload(&mut self) {
         let settings = InstallerSettings::load();
         self.show_servers(&settings);
-        self.downloader = settings.downloader_path.clone().unwrap_or_default();
-        self.show_downloader_state(false);
         self.keys = config_dir::all_private_keys();
         self.default_key = settings.default_key_path().filter(|p| self.keys.contains(p));
         if self.import_for.trim().is_empty() {
@@ -233,7 +225,6 @@ impl SettingsView {
         }
         let account = inbox.account.take();
         let import = inbox.import.take();
-        let downloader = inbox.downloader.take();
         drop(inbox);
         if let Some((name, result, reload)) = account {
             self.account = name;
@@ -250,10 +241,6 @@ impl SettingsView {
                 }
                 self.reload();
             }
-        }
-        if let Some(path) = downloader {
-            self.downloader = path.display().to_string();
-            self.show_downloader_state(false);
         }
     }
 
@@ -793,78 +780,19 @@ impl SettingsView {
             }
         });
     }
-
-    // ---- Downloader ----
-
-    fn downloader_card(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
-        card_heading(
-            ui,
-            palette,
-            t("All-in-1 downloader"),
-            t("The All-in-1 downloader (github.com/duckietm/all-in-1-converter) saves the Habbo assets in Habbo_Default next to its executable. Addons → Deploy Assets copies them from there to /var/www/gamedata on the server."),
-        );
-        label(ui, palette, t("Executable (Habbo Downloader.exe, or the Linux binary)"));
-        ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.downloader).hint_text(RichText::new(t("e.g. C:\\Tools\\All-in-1\\Habbo Downloader.exe")).color(palette.subtle)).desired_width(ui.available_width() - 110.0));
-            if ui.add(widgets::secondary_button(t("Browse ..."))).clicked() {
-                let inbox = self.inbox.clone();
-                shared.spawn(async move {
-                    let file = rfd::AsyncFileDialog::new().set_title(t("Select the All-in-1 downloader (Habbo Downloader)")).pick_file().await;
-                    if let Some(file) = file {
-                        inbox.lock().unwrap().downloader = Some(file.path().to_path_buf());
-                    }
-                });
-            }
-        });
-        if ui.add(widgets::primary_button(t("Save"))).clicked() {
-            let mut settings = InstallerSettings::load();
-            let path = clean_path(&self.downloader);
-            settings.downloader_path = (!path.is_empty()).then_some(path);
-            match save(&settings) {
-                Ok(()) => self.show_downloader_state(true),
-                Err(error) => self.downloader_result = banner(ResultKind::Error, t("Not saved"), &error),
-            }
-        }
-        show_banner(ui, palette, &self.downloader_result);
-    }
-
-    fn show_downloader_state(&mut self, saved: bool) {
-        let path = clean_path(&self.downloader);
-        if path.is_empty() {
-            self.downloader_result = if saved { banner(ResultKind::Info, t("No downloader set"), t("Deploy Assets needs it.")) } else { None };
-            return;
-        }
-        self.downloader_result = match aio_remote::asset_sync::downloader_folder(Some(&path)) {
-            Some(folder) => {
-                let hab = folder.join(aio_remote::asset_sync::DEFAULT_FOLDER).join("hof_furni").join("hab");
-                let furniture = std::fs::read_dir(&hab)
-                    .map(|entries| entries.flatten().filter(|e| e.path().extension().is_some_and(|x| x.eq_ignore_ascii_case("hab"))).count())
-                    .unwrap_or(0);
-                banner(
-                    ResultKind::Success,
-                    if saved { t("Saved") } else { t("All-in-1 downloader found") },
-                    &tf(
-                        "{folder}: {count} furniture bundles (.hab) so far.",
-                        &[("folder", &folder.join(aio_remote::asset_sync::DEFAULT_FOLDER).display().to_string()), ("count", &furniture.to_string())],
-                    ),
-                )
-            }
-            None => banner(
-                ResultKind::Warning,
-                if saved { t("Saved, but Habbo_Default is not there") } else { t("Habbo_Default is not next to this file") },
-                t("Choose the downloader's executable; its folder needs Habbo_Default (the downloader makes it on its first run)."),
-            ),
-        };
-    }
 }
 
-impl View for SettingsView {
-    fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+impl SettingsView {
+    /// The page, with `backup` (the settings backup card, kept by the Tools view for its password dialog) after the
+    /// look and the language.
+    pub fn show_with(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared, backup: impl FnOnce(&mut egui::Ui)) {
         self.take_inbox(shared);
         let margin = egui::Margin::symmetric(24, 20);
         widgets::card(ui, palette, margin, |ui| self.look_card(ui, palette, shared));
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.language_card(ui, palette));
+        ui.add_space(18.0);
+        backup(ui);
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.defaults_card(ui, palette));
         ui.add_space(18.0);
@@ -873,8 +801,12 @@ impl View for SettingsView {
         widgets::card(ui, palette, margin, |ui| self.branches_card(ui, palette));
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.keys_card(ui, palette, shared));
-        ui.add_space(18.0);
-        widgets::card(ui, palette, margin, |ui| self.downloader_card(ui, palette, shared));
+    }
+}
+
+impl View for SettingsView {
+    fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        self.show_with(ui, palette, shared, |_| {});
     }
 
     /// Creating the emulator's account on the server runs.
@@ -925,10 +857,6 @@ const _: [&str; 2] = [n("stable, the version the hotel runs on"), n("the newest 
 
 fn branch_text(branch: &str, caption: &str) -> String {
     format!("{branch}   ({})", t(caption))
-}
-
-fn clean_path(text: &str) -> String {
-    text.trim().trim_matches('"').to_string()
 }
 
 fn file_name(path: &Path) -> String {
@@ -1123,7 +1051,6 @@ mod tests {
 
     #[test]
     fn small_helpers() {
-        assert_eq!(clean_path("  \"C:\\Tools\\dl.exe\" "), "C:\\Tools\\dl.exe");
         assert_eq!(key_item(Path::new("/c/keys/hotel.example.com/id_ed25519")), "id_ed25519   (keys/hotel.example.com)");
         assert_eq!(branch_text("dev", "the newest changes, not always stable"), "dev   (the newest changes, not always stable)");
     }

@@ -48,6 +48,13 @@ pub enum Page {
     RemoveCrowdSec,
     DefaultCatalog,
     DeployAssets,
+    ImportAssets,
+    ImportCustom,
+    OfferFix,
+    ItemFix,
+    GetAssets,
+    RetroAssets,
+    AssetTools,
     AssetExplorer,
     SqlEditor,
     Debug,
@@ -81,6 +88,8 @@ pub enum Request {
     Login,
     /// Run a Tools update on the Tools page (from the dashboard's components card).
     Update(views::tools::Component),
+    /// Restart a Docker service on the Tools page, so it runs the newer image that is already downloaded.
+    Restart(views::tools::Component),
     RestartForLook,
     /// Fetch GitHub again for the dashboard's card.
     CheckUpdates,
@@ -143,6 +152,10 @@ pub(crate) struct Wizards {
     pub(crate) remove_crowdsec: Wizard,
     pub(crate) default_catalog: Wizard,
     pub(crate) deploy: Wizard,
+    pub(crate) import_assets: Wizard,
+    pub(crate) import_custom: Wizard,
+    pub(crate) offer_fix: Wizard,
+    pub(crate) item_fix: Wizard,
 }
 
 impl Wizards {
@@ -161,11 +174,15 @@ impl Wizards {
             Page::RemoveCrowdSec => &mut self.remove_crowdsec,
             Page::DefaultCatalog => &mut self.default_catalog,
             Page::DeployAssets => &mut self.deploy,
+            Page::ImportAssets => &mut self.import_assets,
+            Page::ImportCustom => &mut self.import_custom,
+            Page::OfferFix => &mut self.offer_fix,
+            Page::ItemFix => &mut self.item_fix,
             _ => return None,
         })
     }
 
-    fn all(&self) -> [&Wizard; 13] {
+    fn all(&self) -> [&Wizard; 17] {
         [
             &self.install,
             &self.atom,
@@ -180,6 +197,10 @@ impl Wizards {
             &self.remove_crowdsec,
             &self.default_catalog,
             &self.deploy,
+            &self.import_assets,
+            &self.import_custom,
+            &self.offer_fix,
+            &self.item_fix,
         ]
     }
 }
@@ -192,6 +213,8 @@ pub struct App {
     settings: views::settings::SettingsView,
     tools: views::tools::ToolsView,
     explorer: views::asset_explorer::AssetExplorerView,
+    get_assets: views::get_assets::GetAssetsView,
+    asset_tools: views::asset_tools::AssetToolsView,
     sql: views::sql_editor::SqlEditorView,
     debug: views::debug::DebugView,
     history: views::history::HistoryView,
@@ -233,6 +256,8 @@ impl App {
             settings: views::settings::SettingsView::new(&shared),
             tools: views::tools::ToolsView::new(&shared),
             explorer: views::asset_explorer::AssetExplorerView::new(&shared),
+            get_assets: views::get_assets::GetAssetsView::new(&shared),
+            asset_tools: views::asset_tools::AssetToolsView::new(&shared),
             sql: views::sql_editor::SqlEditorView::new(&shared),
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
@@ -440,6 +465,18 @@ impl App {
                 t("Addon: a complete catalogue for a new hotel, with its furniture list and FurnitureData.json.").into(),
             ),
             Page::RemoveCms => (t("Remove the CMS").into(), t("Addon: Octane as the hotel's website again, as after the server installation.").into()),
+            Page::GetAssets => (
+                t("Habbo assets").into(),
+                t("Habbo's furniture, clothes, effects, badges and game data, downloaded on this computer, ready for Deploy Assets.").into(),
+            ),
+            Page::AssetTools => (
+                t("Asset tools").into(),
+                t("Decompile SWF and HAB files, compile edited HAB files, and convert SWF and NITRO to HAB, on this computer.").into(),
+            ),
+            Page::RetroAssets => (
+                t("Nitro retro").into(),
+                t("A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.").into(),
+            ),
             Page::AssetExplorer => (
                 "Asset Explorer".into(),
                 if session.is_none() {
@@ -460,6 +497,22 @@ impl App {
                 t("Deploy Assets").into(),
                 tf("Addon: copy the hotel's assets, the client's UI texts and the emulator's images to {gamedata} on the server.", &[("gamedata", &gamedata)]),
             ),
+            Page::ImportAssets => (
+                t("Import Assets").into(),
+                t("The Habbo furniture the hotel database lacks into items_base and the catalogue, with an overview first.").into(),
+            ),
+            Page::ImportCustom => (
+                t("Import custom furniture").into(),
+                t("A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.").into(),
+            ),
+            Page::OfferFix => (
+                t("Fix offer IDs").into(),
+                t("catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.").into(),
+            ),
+            Page::ItemFix => (
+                t("Fix items_base").into(),
+                t("sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.").into(),
+            ),
             Page::Debug => (
                 "Debug".into(),
                 if session.is_none() {
@@ -468,7 +521,7 @@ impl App {
                     tf("Live logs on {host}: the emulator, NGINX, Traefik, the firewall, Fail2Ban and CrowdSec.", &[("host", &host)])
                 },
             ),
-            Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, update, and move your settings.").into()),
+            Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, and update.").into()),
             Page::Doctor => (t("Health check").into(), tf("How {host} is doing: services, disk, certificate, backups, updates.", &[("host", &host)])),
             Page::ServerStatus => (t("Server status").into(), tf("Live figures of {host}, every 2 seconds.", &[("host", &host)])),
             Page::Terminal => (
@@ -483,8 +536,8 @@ impl App {
                 tf("The emulator on {host}: CPU per thread, the wired engine and slow wired rooms.", &[("host", &host)]),
             ),
             Page::History => (t("History").into(), t("What ran on which server, with its log: every install step and tool.").into()),
-            Page::About => (t("About").into(), "All-in-1 Installer".into()),
-            Page::Settings => (t("Settings").into(), t("Your servers and default SSH key, your own SSH keys, and the All-in-1 downloader.").into()),
+            Page::About => (t("About").into(), "All-in-1 Manager".into()),
+            Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, and your own SSH keys.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
         };
@@ -503,18 +556,18 @@ impl App {
                     ui.add_space(6.0);
                     ui.vertical(|ui| {
                         if theme::hotel() {
-                            let text = RichText::new("All-in-1 Installer").size(17.0).family(theme::title_family()).color(Fixed::hotel_yellow());
+                            let text = RichText::new("All-in-1 Manager").size(17.0).family(theme::title_family()).color(Fixed::hotel_yellow());
                             let galley_pos = ui.cursor().min;
                             ui.painter().text(
                                 galley_pos + egui::vec2(0.0, 2.0),
                                 egui::Align2::LEFT_TOP,
-                                "All-in-1 Installer",
+                                "All-in-1 Manager",
                                 egui::FontId::new(17.0, theme::title_family()),
                                 Color32::from_black_alpha(0xB0),
                             );
                             ui.label(text);
                         } else {
-                            ui.label(RichText::new("All-in-1 Installer").size(15.0).strong().color(Color32::WHITE));
+                            ui.label(RichText::new("All-in-1 Manager").size(15.0).strong().color(Color32::WHITE));
                         }
                         ui.label(RichText::new(t("Hotel server setup")).size(11.5).color(Fixed::sidebar_muted()));
                     });
@@ -538,8 +591,6 @@ impl App {
                             | Page::CrowdSec
                             | Page::RemoveCrowdSec
                             | Page::DefaultCatalog
-                            | Page::DeployAssets
-                            | Page::AssetExplorer
                             | Page::SqlEditor
                     ),
                     Page::Tools => matches!(current, Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor),
@@ -550,28 +601,47 @@ impl App {
                         clicked = Some(page);
                     }
                 };
-                nav(ui, t("Dashboard"), Icon::Home, Page::Dashboard);
-                // Each group folds away with a click on its heading; a folded group still shows the page you are on.
-                let groups: [(&str, &str, Vec<(&str, Icon, Page)>); 3] = [
-                    // The addons are one page of picture buttons, not a long list here.
-                    (
-                        "sidebar:server",
-                        t("SERVER"),
-                        vec![(t("Install New Server"), Icon::ServerPlus, Page::Install), (t("Addons"), Icon::Puzzle, Page::Addons)],
-                    ),
-                    ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
-                    ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
-                ];
-                for (key, heading, items) in groups {
-                    ui.add_space(14.0);
-                    let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
-                    ui.add_space(2.0);
-                    for (label, icon, page) in items {
-                        if open || selected(page) {
-                            nav(ui, label, icon, page);
+                // The menu scrolls when the window is too low for every item; the line at the bottom stays.
+                let list_height = (ui.available_height() - 44.0).max(80.0);
+                egui::ScrollArea::vertical().id_salt("sidebar-nav").max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
+                    nav(ui, t("Dashboard"), Icon::Home, Page::Dashboard);
+                    // Each group folds away with a click on its heading; a folded group still shows the page you are on.
+                    let groups: [(&str, &str, Vec<(&str, Icon, Page)>); 4] = [
+                        // The addons are one page of picture buttons, not a long list here.
+                        (
+                            "sidebar:server",
+                            t("SERVER"),
+                            vec![(t("Install New Server"), Icon::ServerPlus, Page::Install), (t("Addons"), Icon::Puzzle, Page::Addons)],
+                        ),
+                        (
+                            "sidebar:assets",
+                            t("ASSETS"),
+                            vec![
+                                (t("Habbo assets"), Icon::Download, Page::GetAssets),
+                                (t("Nitro retro"), Icon::Cube, Page::RetroAssets),
+                            (t("Asset tools"), Icon::Swap, Page::AssetTools),
+                                (t("Deploy Assets"), Icon::ArrowUp, Page::DeployAssets),
+                                (t("Import Assets"), Icon::Database, Page::ImportAssets),
+                                (t("Import custom furniture"), Icon::Cube, Page::ImportCustom),
+                                (t("Fix offer IDs"), Icon::Shopping, Page::OfferFix),
+                                (t("Fix items_base"), Icon::Wrench, Page::ItemFix),
+                                ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
+                            ],
+                        ),
+                        ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
+                        ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
+                    ];
+                    for (key, heading, items) in groups {
+                        ui.add_space(14.0);
+                        let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
+                        ui.add_space(2.0);
+                        for (label, icon, page) in items {
+                            if open || selected(page) {
+                                nav(ui, label, icon, page);
+                            }
                         }
                     }
-                }
+                });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.label(RichText::new(t("Targets Ubuntu Server and Debian")).size(11.5).color(Fixed::sidebar_muted()));
                     ui.add_space(4.0);
@@ -639,7 +709,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::SqlEditor | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -678,6 +748,10 @@ impl App {
             Page::RemoveCrowdSec => &self.wizards.remove_crowdsec,
             Page::DefaultCatalog => &self.wizards.default_catalog,
             Page::DeployAssets => &self.wizards.deploy,
+            Page::ImportAssets => &self.wizards.import_assets,
+            Page::ImportCustom => &self.wizards.import_custom,
+            Page::OfferFix => &self.wizards.offer_fix,
+            Page::ItemFix => &self.wizards.item_fix,
             _ => return None,
         };
         Some(wizard.status()).filter(|s| s != t("Ready."))
@@ -715,6 +789,11 @@ impl App {
         }
         match page {
             Page::AssetExplorer => self.explorer.show(ui, palette, &shared),
+            Page::AssetTools => scroll(ui, |ui| self.asset_tools.show(ui, palette, &shared)),
+            Page::GetAssets | Page::RetroAssets => {
+                self.get_assets.set_retro(page == Page::RetroAssets);
+                scroll(ui, |ui| self.get_assets.show(ui, palette, &shared))
+            }
             Page::SqlEditor => self.sql.show(ui, palette, &shared),
             Page::Debug => self.debug.show(ui, palette, &shared),
             Page::History => self.history.show(ui, palette, &shared),
@@ -723,7 +802,10 @@ impl App {
                 self.tools.show(ui, palette, &shared);
                 self.page = self.tools.page();
             }
-            Page::Settings => scroll(ui, |ui| self.settings.show(ui, palette, &shared)),
+            Page::Settings => {
+                let tools = &mut self.tools;
+                scroll(ui, |ui| self.settings.show_with(ui, palette, &shared, |ui| tools.settings_backup_card(ui, palette, &shared)))
+            }
             Page::About => scroll(ui, |ui| self.about.show(ui, palette, &shared)),
             Page::Addons => {
                 let mut clicked = None;
@@ -754,6 +836,12 @@ impl App {
                     if !self.any_busy() && self.shared.session().is_some() {
                         self.go(Page::Tools);
                         self.tools.update(component, &self.shared);
+                    }
+                }
+                Request::Restart(component) => {
+                    if !self.any_busy() && self.shared.session().is_some() {
+                        self.go(Page::Tools);
+                        self.tools.restart(component, &self.shared);
                     }
                 }
                 Request::CheckUpdates => {
@@ -901,21 +989,63 @@ pub fn open_url(url: &str) {
     let _ = result;
 }
 
+/// How the window is drawn. OpenGL needs a driver with OpenGL 2 or newer, which a Windows VM without (or with
+/// VMware's / Hyper-V's basic) display driver often lacks; DirectX 12 through wgpu always works on Windows 10 / 11,
+/// on Microsoft's software renderer (WARP) when there is no GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renderer {
+    Glow,
+    Wgpu,
+}
+
+impl Renderer {
+    /// The first one tried: DirectX on Windows, OpenGL elsewhere (Linux desktops have it, and it starts faster).
+    pub fn preferred() -> Self {
+        if cfg!(windows) { Renderer::Wgpu } else { Renderer::Glow }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Renderer::Glow => Renderer::Wgpu,
+            Renderer::Wgpu => Renderer::Glow,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Renderer::Glow => "glow",
+            Renderer::Wgpu => "wgpu",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "glow" | "opengl" | "gl" => Some(Renderer::Glow),
+            "wgpu" | "directx" | "dx12" => Some(Renderer::Wgpu),
+            _ => None,
+        }
+    }
+}
+
 /// Starts the window.
-pub fn run(runtime: tokio::runtime::Handle, dry_run: bool) -> eframe::Result<()> {
+pub fn run(runtime: tokio::runtime::Handle, dry_run: bool, renderer: Renderer) -> eframe::Result<()> {
     let icon = image::load_from_memory(include_bytes!("../../resources/app.ico")).ok().map(|image| {
         let image = image.to_rgba8();
         let (width, height) = image.dimensions();
         egui::IconData { rgba: image.into_raw(), width, height }
     });
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("All-in-1 Installer")
+        .with_title("All-in-1 Manager")
         .with_inner_size([1280.0, 820.0])
         .with_min_inner_size([1000.0, 680.0])
         .with_drag_and_drop(true);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions { viewport, centered: true, ..Default::default() };
-    eframe::run_native("All-in-1 Installer", options, Box::new(move |cc| Ok(Box::new(App::new(cc, runtime, dry_run)))))
+    let renderer = match renderer {
+        Renderer::Glow => eframe::Renderer::Glow,
+        Renderer::Wgpu => eframe::Renderer::Wgpu,
+    };
+    let options = eframe::NativeOptions { viewport, centered: true, renderer, ..Default::default() };
+    eframe::run_native("All-in-1 Manager", options, Box::new(move |cc| Ok(Box::new(App::new(cc, runtime, dry_run)))))
 }

@@ -108,7 +108,7 @@ map $http_upgrade $cms_{{name}}_connection {
 }
 "#;
 
-const CONFIG: &str = r#"# {{name}}: the hotel's website (written by All-in-1 Installer, Addons → CMS). {{what}}.
+const CONFIG: &str = r#"# {{name}}: the hotel's website (written by All-in-1 Manager, Addons → CMS). {{what}}.
 # Traefik (/opt/traefik) passes {{Url}} here, except /client, /gamedata and /custom (the hotel site on
 # 127.0.0.1:{{HotelPort}}) and Polaris' /ws and /api paths.
 

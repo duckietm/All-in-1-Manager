@@ -429,7 +429,7 @@ fn static_yaml(settings: &WebAccessSettings, crowdsec: bool) -> String {
         String::new()
     };
     format!(
-        "# Traefik static configuration (written by All-in-1 Installer).\nentryPoints:\n  web:\n    address: \":80\"\n    forwardedHeaders:\n      trustedIPs: [TRUSTED]{web}{websecure}\nproviders:\n  file:\n    directory: /etc/traefik/dynamic\n    watch: true{acme}\nlog:\n  level: INFO\n  noColor: true{extra}"
+        "# Traefik static configuration (written by All-in-1 Manager).\nentryPoints:\n  web:\n    address: \":80\"\n    forwardedHeaders:\n      trustedIPs: [TRUSTED]{web}{websecure}\nproviders:\n  file:\n    directory: /etc/traefik/dynamic\n    watch: true{acme}\nlog:\n  level: INFO\n  noColor: true{extra}"
     )
 }
 
@@ -454,7 +454,7 @@ sed -i "s#\[TRUSTED\]#[$trusted]#" "$t/traefik.yml""#;
 const COMPOSE: &str = r#"echo "> $t/compose.yaml"
 install -d -m 755 {{AccessLogDirectory}} "$t/plugins-storage"
 cat > "$t/compose.yaml" <<'EOF'
-# Traefik for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# Traefik for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 services:
   traefik:
     image: traefik:v3
@@ -474,7 +474,7 @@ pub const POLARIS_API_PATHS: [&str; 10] = ["auth", "authx", "badges", "cms", "em
 
 const ROUTES: &str = r#"echo "> $t/dynamic/hotel.yml: {{Url}}{{description}}"
 cat > "$t/dynamic/hotel.yml" <<'EOF'
-# The hotel's routes (written by All-in-1 Installer).
+# The hotel's routes (written by All-in-1 Manager).
 http:
   routers:
     polaris:
@@ -518,7 +518,7 @@ second=$(getent ahostsv4 "$www" 2>/dev/null | awk '{print $1}' | sort -u)
 if [ -n "$second" ] && { [ {{cloudflare}} = yes ] || [ -z "$main" ] || [ -n "$(printf '%s\n' $main $second | sort | uniq -d)" ]; }; then
   echo "> $t/dynamic/hotel-www.yml: $www → {{Url}}"
   cat > "$t/dynamic/hotel-www.yml" <<'EOF'
-# {{alias}} leads to the hotel's address (written by All-in-1 Installer).
+# {{alias}} leads to the hotel's address (written by All-in-1 Manager).
 http:
   routers:
     hotel-www:
@@ -671,7 +671,7 @@ pub const CLOUDFLARE_REFRESH_SCRIPT: &str = "/var/scripts/CF_Refresh.sh";
 pub const CLOUDFLARE_REFRESH_CRON: &str = "/etc/cron.d/cf-refresh";
 
 const CLOUDFLARE_REFRESH: &str = r##"#!/bin/bash
-# Keeps Cloudflare's IP ranges current for the hotel (written by All-in-1 Installer; weekly from {{CloudflareRefreshCron}}).
+# Keeps Cloudflare's IP ranges current for the hotel (written by All-in-1 Manager; weekly from {{CloudflareRefreshCron}}).
 # NGINX, Traefik and Polaris read the visitor's address from X-Forwarded-For past Cloudflare, instead of seeing Cloudflare's.
 set -u
 fail() { echo "ERROR: $*"; exit 1; }
@@ -683,7 +683,7 @@ echo "$(date '+%F %T') $(echo "$ranges" | grep -c .) Cloudflare ranges"
 
 # NGINX: the hotel site's trusted proxies. A reload keeps every connection.
 realip={{RealIpFile}}
-{ echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+{ echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Manager): Traefik and Cloudflare."
   echo "set_real_ip_from 127.0.0.1;"
   echo "$ranges" | sed 's/.*/set_real_ip_from &;/'; } > "$realip.new"
 if ! cmp -s "$realip.new" "$realip"; then
@@ -774,14 +774,14 @@ cat > {{CloudflareRefreshScript}} <<'REFRESH'
 {{content}}
 REFRESH
 chmod 755 {{CloudflareRefreshScript}}
-printf '# Cloudflare IP ranges for the hotel (All-in-1 Installer)\n0 4 * * 0 root {{CloudflareRefreshScript}} >> /var/log/cf-refresh.log 2>&1\n' > {{CloudflareRefreshCron}}
+printf '# Cloudflare IP ranges for the hotel (All-in-1 Manager)\n0 4 * * 0 root {{CloudflareRefreshScript}} >> /var/log/cf-refresh.log 2>&1\n' > {{CloudflareRefreshCron}}
 chmod 644 {{CloudflareRefreshCron}}
 echo "  {{CloudflareRefreshCron}}: every Sunday at 04:00, output in /var/log/cf-refresh.log"
 echo "> Running it now"
 {{CloudflareRefreshScript}} | sed 's/^/  /'
 [ "${PIPESTATUS[0]}" = 0 ] || fail "The refresh script failed (see above).""#;
 
-const REMOVE_REFRESH: &str = r#"if grep -qs 'All-in-1 Installer' {{CloudflareRefreshScript}}; then
+const REMOVE_REFRESH: &str = r#"if grep -qsE 'All-in-1 (Manager|Installer)' {{CloudflareRefreshScript}}; then
   rm -f {{CloudflareRefreshScript}} {{CloudflareRefreshCron}}
   echo "  No Cloudflare: the weekly refresh of Cloudflare's ranges is removed"
 fi"#;

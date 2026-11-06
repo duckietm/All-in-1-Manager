@@ -359,7 +359,7 @@ if [ -n "$url" ]; then
 fi
 cat > "$d/build.sh" <<'BUILD'
 #!/bin/sh
-# Builds the Polaris emulator into target/ (written by All-in-1 Installer).
+# Builds the Polaris emulator into target/ (written by All-in-1 Manager).
 #   ./build.sh               build without the unit tests (about 1 minute)
 #   ./build.sh --with-tests  also run the 4000+ unit tests (about 4 minutes)
 # pom.xml needs Maven 3.9.11+ and JDK 25, newer than most distributions ship: the installer puts the
@@ -446,7 +446,7 @@ grep -E '^db\.(hostname|port|database|username|params)=' "$d/config.ini" | sed '
 echo "> Writing the start script $d/emulator"
 cat > "$d/emulator" <<'START'
 #!/bin/sh
-# Starts the Polaris emulator; used by emulator.service (written by All-in-1 Installer).
+# Starts the Polaris emulator; used by emulator.service (written by All-in-1 Manager).
 # The previous log is kept as emulator.log.<time>; kept logs older than 30 days are removed.
 JAVA_HOME=JAVA_HOME_HERE
 MEMORY_MB=MEMORY_HERE

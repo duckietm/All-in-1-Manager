@@ -24,9 +24,25 @@ pub struct InstallerSettings {
     /// Private key path relative to the configuration folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_key: Option<String>,
-    /// The All-in-1 downloader's executable. Deploy Assets reads Habbo_Default from its folder.
+    /// The one Nitro retro of the first version (before profiles); read once into `retros`, never written again.
+    #[serde(default, skip_serializing)]
+    pub retro: Option<RetroUrls>,
+    /// Habbo assets: also the .swf of furniture, clothes, effects and pets (into the asset tools). New in the Rust port.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub assets_with_swf: bool,
+    /// The Nitro retro profiles: a name and its renderer-config.json URLs. New in the Rust port.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub retros: Vec<RetroProfile>,
+    /// The name of the profile last worked with.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retro_selected: Option<String>,
+    /// The hotel's name, filled in for %hotel_name% in the default catalogue's texts. New in the Rust port.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub downloader_path: Option<String>,
+    pub hotel_name: Option<String>,
+    /// Where Get Assets downloads to (its gamedata/ mirrors the server's); None means [`default_assets_folder`].
+    /// New in the Rust port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assets_path: Option<String>,
     /// The branch chosen per repository ("duckietm/Octane" to "dev"); a repository that is not in here uses main.
     pub branches: BTreeMap<String, String>,
     /// Paths on the server and the emulator's account; None means the defaults. Read once at startup.
@@ -75,6 +91,107 @@ fn file() -> PathBuf {
     config_dir::directory().join("settings.json")
 }
 
+/// A Nitro retro's renderer-config.json values for Get Assets' custom downloads. A folder may also be given as the
+/// full pattern (".../furniture/%libname%.nitro").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetroUrls {
+    /// furnidata.url: the retro's FurnitureData.json.
+    #[serde(default)]
+    pub furnidata: String,
+    /// furni.asset.url: the furniture folder.
+    #[serde(default)]
+    pub furniture: String,
+    /// furni.asset.icon.url: the furniture icons folder.
+    #[serde(default)]
+    pub furniture_icons: String,
+    /// avatar.asset.url: the clothes folder.
+    #[serde(default)]
+    pub clothes: String,
+    /// avatar.figuredata.url: FigureData.json.
+    #[serde(default)]
+    pub figuredata: String,
+    /// avatar.figuremap.url: FigureMap.json.
+    #[serde(default)]
+    pub figuremap: String,
+    /// The bundle format the retro serves: "hab", "nitro" or "swf"; empty tries all three (Auto).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
+    /// The Referer sent with every request ("https://leet.city/"), for a CDN that only answers its own hotel.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub referer: String,
+    /// Extra request headers, one "Name: value" per line (a User-Agent here replaces the built-in one).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub headers: String,
+    /// Download through the system's curl instead of the built-in client (for a CDN behind Cloudflare's bot check).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_curl: bool,
+    /// Downloads at the same time; 0 is the default (16).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub parallel: u8,
+}
+
+fn is_zero(n: &u8) -> bool {
+    *n == 0
+}
+
+impl RetroUrls {
+    pub fn is_empty(&self) -> bool {
+        [&self.furnidata, &self.furniture, &self.furniture_icons, &self.clothes, &self.figuredata, &self.figuremap].iter().all(|v| v.trim().is_empty())
+    }
+
+    /// The Referer and the extra headers as (name, value) pairs, in the order given; empty lines and lines starting
+    /// with '#' are skipped. A line without "Name: value" is an error that names it.
+    pub fn request_headers(&self) -> Result<Vec<(String, String)>, String> {
+        let mut headers = Vec::new();
+        if !self.referer.trim().is_empty() {
+            headers.push(("Referer".to_string(), self.referer.trim().to_string()));
+        }
+        for line in self.headers.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            match line.split_once(':') {
+                Some((name, value)) if !name.trim().is_empty() && !name.trim().contains(' ') => {
+                    headers.push((name.trim().to_string(), value.trim().to_string()));
+                }
+                _ => return Err(format!("Header \"{line}\" is not \"Name: value\".")),
+            }
+        }
+        Ok(headers)
+    }
+}
+
+/// A named Nitro retro: its downloads go to Habbo_Assets/custom/<folder name>.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetroProfile {
+    pub name: String,
+    #[serde(flatten)]
+    pub urls: RetroUrls,
+}
+
+impl RetroProfile {
+    /// The name as a folder name: characters Windows refuses become '_', no leading or trailing dots and spaces.
+    pub fn folder_name(&self) -> String {
+        let cleaned: String =
+            self.name.trim().chars().map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c }).collect();
+        let cleaned = cleaned.trim_matches(|c: char| c == '.' || c == ' ').to_string();
+        if cleaned.is_empty() { "retro".into() } else { cleaned }
+    }
+}
+
+impl RetroUrls {
+    /// The host of the FurnitureData.json URL ("dinohotel.nl"), a name for a profile made from it.
+    pub fn host(&self) -> Option<String> {
+        let url = [&self.furnidata, &self.furniture, &self.clothes, &self.figuremap].into_iter().find(|u| !u.trim().is_empty())?;
+        let rest = url.trim().split("://").nth(1).unwrap_or(url.trim());
+        let host = rest.split(['/', '?', ':']).next().unwrap_or("").trim_start_matches("www.");
+        (!host.is_empty()).then(|| host.to_string())
+    }
+}
+
+/// Get Assets' folder when Settings name none: Habbo_Assets next to the configuration folder.
+pub fn default_assets_folder() -> PathBuf {
+    let configuration = config_dir::directory();
+    configuration.parent().map(|p| p.join("Habbo_Assets")).unwrap_or_else(|| configuration.join("Habbo_Assets"))
+}
+
 impl InstallerSettings {
     pub fn load() -> Self {
         Self::load_from(&file())
@@ -115,6 +232,22 @@ impl InstallerSettings {
         list
     }
 
+    /// The retro profiles; the single retro of the first version becomes a profile named after its host.
+    pub fn retro_profiles(&self) -> Vec<RetroProfile> {
+        let mut profiles = self.retros.clone();
+        if profiles.is_empty() {
+            if let Some(urls) = self.retro.clone().filter(|u| !u.is_empty()) {
+                profiles.push(RetroProfile { name: urls.host().unwrap_or_else(|| "retro".into()), urls });
+            }
+        }
+        profiles
+    }
+
+    /// Get Assets' folder: the one chosen in Settings, or [`default_assets_folder`].
+    pub fn assets_folder(&self) -> PathBuf {
+        self.assets_path.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(PathBuf::from).unwrap_or_else(default_assets_folder)
+    }
+
     /// The default key as a full path, when it still exists.
     pub fn default_key_path(&self) -> Option<PathBuf> {
         let key = self.default_key.as_deref().filter(|k| !k.is_empty())?;
@@ -149,6 +282,43 @@ pub fn relative_key(full_path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_first_retro_becomes_a_profile() {
+        let old = r#"{"Servers":[],"Branches":{},"Retro":{"furnidata":"https://www.dinohotel.nl/gamedata/config/FurnitureData.json"}}"#;
+        let settings: InstallerSettings = serde_json::from_str(old).unwrap();
+        let profiles = settings.retro_profiles();
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].name, "dinohotel.nl");
+        let saved = serde_json::to_string(&InstallerSettings { retros: profiles, ..settings }).unwrap();
+        assert!(!saved.contains("\"Retro\":") && saved.contains("\"Retros\":"), "{saved}");
+        let profile = RetroProfile { name: " My: Hotel. ".into(), urls: RetroUrls::default() };
+        assert_eq!(profile.folder_name(), "My_ Hotel");
+        assert_eq!(RetroProfile::default().folder_name(), "retro");
+    }
+
+    #[test]
+    fn referer_and_custom_headers() {
+        let urls = RetroUrls {
+            referer: " https://leet.city/ ".into(),
+            headers: "User-Agent: Mozilla/5.0 (Windows NT 10.0)\n\n# a comment\nX-Token:abc:def\n".into(),
+            ..RetroUrls::default()
+        };
+        assert_eq!(
+            urls.request_headers().unwrap(),
+            vec![
+                ("Referer".into(), "https://leet.city/".into()),
+                ("User-Agent".into(), "Mozilla/5.0 (Windows NT 10.0)".into()),
+                ("X-Token".into(), "abc:def".into()),
+            ]
+        );
+        assert!(RetroUrls { headers: "no colon here".into(), ..RetroUrls::default() }.request_headers().is_err());
+        assert!(RetroUrls::default().request_headers().unwrap().is_empty());
+        // Empty ones are not written to the settings file.
+        let empty = serde_json::to_string(&RetroUrls::default()).unwrap();
+        assert!(!empty.contains("referer") && !empty.contains("use_curl") && !empty.contains("parallel"), "{empty}");
+    }
+
     use super::*;
 
     #[test]

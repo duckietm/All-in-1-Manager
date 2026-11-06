@@ -1,4 +1,4 @@
-# All-in-1 Installer
+# All-in-1 Manager
 
 A desktop installer, written in Rust, that sets up a **full hotel server** on an **Ubuntu Server or Debian**
 machine over SSH:
@@ -56,8 +56,11 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 - **The whole server in one wizard**: SSH key, NGINX, PHP 8.5, MariaDB 12.3, Node.js, the Polaris / Octane clones,
   the emulator as a service, Traefik with Let's Encrypt (and Cloudflare), the Octane client, hardening and SSH keys
   only. Every step says what it will do first, and can be run again.
-- **Addons**: AtomCMS, EpicNext or your own CMS, Gitea, Fail2Ban, CrowdSec, Deploy Assets, an Asset Explorer and a
-  SQL Editor over the SSH tunnel.
+- **Addons**: AtomCMS, EpicNext or your own CMS, Gitea, Fail2Ban, CrowdSec, the default catalogue and a SQL Editor over the SSH
+  tunnel.
+- **Assets** (its own section in the sidebar): Habbo assets (Habbo's own furniture, clothes, effects, badges and
+  game data as .hab and JSON), Nitro retro (a retro's custom furniture and clothes), Asset tools (decompile and
+  compile .hab, SWF / NITRO to HAB), Deploy Assets and an Asset Explorer.
 - **Running the hotel**: restarts, updates of the emulator, Octane, AtomCMS and the containers, database backup and
   import (also PlusEMU), live server status, the emulator's wired CPU, an SSH terminal in the window, a **Health
   check** with a fix for each problem, and a **History** of every run with its log.
@@ -66,21 +69,27 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 
 ## Quick start
 
-1. Download `all-in-1-installer-windows-x64.exe` or `all-in-1-installer-linux-x64` from the
-   [releases](https://github.com/duckietm/All-in-1-installer/releases) and start it (on Linux: `chmod +x` first).
+1. Download `all-in-1-manager-windows-x64.exe` or `all-in-1-manager-linux-x64` from the
+   [releases](https://github.com/duckietm/All-in-1-Manager/releases) and start it (on Linux: `chmod +x` first).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
 3. **Install New Server** and follow the steps. Each one explains what it does; **Skip** leaves it out.
-4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Deploy Assets** for the game's files.
+4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Habbo assets** and
+   **Deploy Assets** (sidebar → ASSETS) for the game's files.
 5. Afterwards **Tools** runs the hotel: **Health check** first when something seems wrong.
 
-To look around first: `all-in-1-installer --dry-run` logs in to nothing and only shows the commands.
+To look around first: `all-in-1-manager --dry-run` logs in to nothing and only shows the commands.
+
+**Does not open (a Windows VM)?** On Windows the window is drawn with DirectX 12 (wgpu), which works without a GPU
+too (VMware SVGA 3D, Hyper-V, Microsoft's software renderer). If that fails, the installer starts itself again with
+OpenGL; if neither works it says so in a message box, and the reason is in `configuration/start-error.log` next to the
+program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 
 ## Contents
 
 - [Requirements](#requirements)
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
-  [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+  [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -88,8 +97,8 @@ To look around first: `all-in-1-installer --dry-run` logs in to nothing and only
 ## Requirements
 
 **On your computer** (Windows 10/11 x64 or Linux x64): nothing. The installer is one file, with everything it
-needs inside (fonts, the client images for Deploy Assets). Download `all-in-1-installer-windows-x64.exe` or
-`all-in-1-installer-linux-x64` from the [releases](https://github.com/duckietm/All-in-1-installer/releases), or
+needs inside (fonts, the client images for Deploy Assets). Download `all-in-1-manager-windows-x64.exe` or
+`all-in-1-manager-linux-x64` from the [releases](https://github.com/duckietm/All-in-1-Manager/releases), or
 [build it](#building). On Linux it needs a desktop (X11 or Wayland) and OpenGL.
 
 **The server**: a fresh Ubuntu Server (22.04 or newer) or Debian (12 or newer) machine you can reach over SSH as
@@ -187,7 +196,7 @@ trusts the host key seen during the first login.
 #### The configuration directory
 
 `configuration/` is created next to the installer (falling back to
-`%LOCALAPPDATA%\All-in-1 Installer\configuration` or `~/.local/share/All-in-1 Installer/configuration`
+`%LOCALAPPDATA%\All-in-1 Manager\configuration` or `~/.local/share/All-in-1 Manager/configuration`
 when that folder is read-only). Keys are stored per server:
 
 ```
@@ -520,7 +529,12 @@ Uses the address from the web access step; nothing to fill in. For `https://exam
 1. `yarn install` in `/var/www/Octane-Renderer`, then in `/var/www/Octane` (Node.js 26 and Yarn 4 from `/usr/bin`).
 2. In `/var/www/Octane/public/configuration`, `client-mode`, `hotlooks`, `infostand_backgrounds`, `news`,
    `renderer-config` and `ui-config` `.json` are created from the `.example` files (existing files are kept), and
-   the URL keys are set (an existing file that changes is saved as `.bak-<time>` first):
+   the URL keys are set (an existing file that changes is saved as `.bak-<time>` first).
+   `renderer-config`, `ui-config` and `client-mode` **follow their `.example`** on every run (also after
+   **Update Octane** pulls a newer one): a key the `.example` has and the `.json` lacks is added with the example's
+   value, also inside nested settings, and the keys are put in the example's order; keys only your `.json` has stay,
+   after them. A value already in the `.json` is never changed (lists neither) apart from the URL keys below. The
+   data files (`news`, `hotlooks`, `infostand_backgrounds`) are left as they are.
 
    | File | Keys |
    |---|---|
@@ -644,8 +658,8 @@ reload ssh.
 After the last step (done or skipped) the wizard shows **Successfully completed** (or *Completed, with steps to look
 at* when a step was skipped or failed), with what every step did, and then:
 
-1. Download all assets with the **All-in-1 downloader**.
-2. Upload them with **WinSCP**: SFTP, the server and SSH port, user `root`, the `.ppk` key from the configuration
+1. Download all assets with **Assets → Habbo assets** and send them with **Assets → Deploy Assets**.
+2. Or upload them yourself with **WinSCP**: SFTP, the server and SSH port, user `root`, the `.ppk` key from the configuration
    folder (*Advanced… → SSH → Authentication*), into `/var/www/gamedata/`.
 3. Where everything goes:
 
@@ -704,9 +718,9 @@ A new step implements `InstallStep` (`source/crates/app/src/gui/step.rs`) and is
 ## Addons
 
 **Addons** (in the sidebar under SERVER) opens a menu with one button per addon, for things that go on top of a
-finished server installation. In the Hotel look every button (the addons, the dashboard and Tools) has its own
-soft Habbo-style picture in the background (a room, the lido, a disco, bricks, a garden, space ...), with the text on a solid
-plate so it reads the same on every picture; the Professional look keeps the plain tiles.
+finished server installation. In the Hotel look every button (the addons, the dashboard and Tools) is filled with its
+own colour (a soft gradient with a few light bubbles), with white text on it; every colour is dark enough for white
+text, which a test checks. The Professional look keeps the plain tiles.
 The addons and Tools use the login from the start of the program: there is no separate login per page. **Back**
 returns to the dashboard and keeps the login (and the SQL Editor's database connection) open.
 
@@ -806,10 +820,12 @@ imported assets; with an empty folder it clones the repository into `/var/www/ep
    the one already in `.env`, AtomCMS' `cms` login, or else a MariaDB account of its own, `epicnext` (made with root,
    with the cms account's rights on the hotel database only). `REDIS_URL` is left unset when no Valkey/Redis runs, and empty settings from `.env.example` (such as
    `DISCORD_WEBHOOK_URL=`) are commented out: EpicNext's settings check refuses empty values. Before the migrations
-   the step runs that check (`src/env.ts`) itself, so a wrong setting shows in seconds instead of after the build. `HOTEL_NAME`, `APP_URL` and `AUTH_URL` (the site's
+   the step runs that check (`src/env.ts`) itself, so a wrong setting shows in seconds instead of after the build. `HOTEL_NAME`, `APP_URL`, `NEXT_PUBLIC_APP_URL` and `AUTH_URL` (the site's
    address), `AUTH_TRUST_HOST=true` (behind Traefik), a random `AUTH_SECRET` (made once, so logins stay valid), and
    `RCON_HOST`/`RCON_PORT` from the emulator's `config.ini`.
-4. **Build**: `pnpm install --frozen-lockfile`, the base tables (EpicNext was built on an AtomCMS database and its migrations
+4. **Build**: `pnpm install --frozen-lockfile` (when EpicNext's lockfile pins versions younger than pnpm's minimum
+   release age, such as a Next.js release of yesterday, the step names them and when the newest was published: run it
+   again once they are old enough; the check is never turned off), the base tables (EpicNext was built on an AtomCMS database and its migrations
    expect AtomCMS' tables, such as `website_housekeeping_permissions`: the ones the hotel database lacks are made
    from its own `drizzle/drafts/0000_premium_spirit.sql`, the emulator's tables are not touched),
    `users.password` widened to `VARCHAR(255)` when it is shorter (Polaris makes it `VARCHAR(64)`, too short for
@@ -1091,11 +1107,99 @@ A marker in `gamedata/config/.all-in-1-catalog` remembers the installed version,
 installed)** for the same catalogue. Meant for a new hotel: furniture players already own keeps its `items_base`
 number, so on a hotel with a different furniture list it would turn into other furniture.
 
+### Habbo assets
+
+**Habbo assets** (sidebar → ASSETS) downloads Habbo's own assets on this computer, the first part of the
+[All-in-1 converter](https://github.com/duckietm/all-in-1-converter) moved into the installer. No server connection is
+needed. Everything goes into `Habbo_Assets/gamedata` next to the configuration folder (or a folder you choose), laid
+out exactly like `/var/www/gamedata`, so **Deploy Assets** copies it as it is. Only `.hab` bundles, JSON and images
+are kept: what Habbo still serves as XML or text is converted to the JSON Octane loads, and no `.swf` or XML is
+saved. A file that is already there is not downloaded again, and an error page from Habbo's CDN is never saved as an
+asset.
+
+Pick the hotel (its language goes into the furnidata, productdata and texts), tick what you want and press
+**Download the selected**, or **Download all**. The switch **Download only .hab** / **Download .hab and .swf** (off,
+only .hab, by default; remembered) also fetches the .swf of furniture, clothes, effects and pets, into the asset
+tools' `Assets_tools/Original_SWF_Files/<type>`, never into gamedata, so never to the server:
+
+| Download | Into `gamedata/` |
+|---|---|
+| Badges (from all nine hotels) | `c_images/album1584` |
+| Clothes | `clothes/*.hab`, `config/FigureData.json`, `config/FigureMap.json` |
+| Effects | `effect/*.hab`, `config/EffectMap.json`, `config/HabboAvatarActions.json` |
+| Furnidata | `config/FurnitureData.json` |
+| Furniture | `furniture/*.hab`, `icons/*_icon.png` |
+| Catalogue icons | `c_images/catalogue` |
+| MP3 | `sounds` |
+| Productdata | `config/ProductData.json` |
+| Quest images | `c_images/Quests` |
+| Reception images | `c_images/reception`, `c_images/web_promo_small`, ... |
+| Texts | `config/ExternalTexts.json` |
+| Variables | `downloads/ExternalVariables.json` (stays on this computer) |
+| Pets | `pets/*.hab` |
+| Effect icons | `c_images/fx_icons` |
+
+Habbo has no download link for the effect icons (`fx_icon_<type>` for the avatar editor): they are inside the Habbo
+Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choose that `app.asar` (choosing it ticks
+**Effect icons**); **Download all** takes them along when it is set. **Clothes: make every clothing set wearable** turns off `sellable` in
+FigureData.json, the converter's "disable all sellable" question. The `.hab` files are saved as Habbo serves them
+(the converter's optional WebP repacking of their sheets is not part of this yet).
+
+### Nitro retro (custom assets)
+
+**Nitro retro** (sidebar → ASSETS) downloads a Nitro hotel's own furniture and clothes. Fill in the six values from its
+`renderer-config.json` (`furnidata.url`, `furni.asset.url`, `furni.asset.icon.url`, `avatar.asset.url`,
+`avatar.figuredata.url`, `avatar.figuremap.url`; a folder or the full `.../%libname%.nitro` pattern), give it a
+name and **Save**. The three JSON fields also take a file on this computer (**Choose ...**: a FurnitureData.json,
+FigureData.json or FigureMap.json saved from the browser, for example); the bundles then still come from the folder
+links. Every retro is a **profile**: switch between them with one click, **+ New profile** starts an
+empty one, **Delete profile** removes one (its downloaded folder stays). Profiles are kept in Settings, so they are
+there next time (also saved when you press **Download**).
+
+- **Custom furniture**: the retro's FurnitureData.json, every furniture bundle and the icon of every colour. An old
+  Flash retro's (or Habbo's) furnidata XML works too: it is saved as FurnitureData.json, and its revision per furni
+  is used for hof_furni-style folders (`<folder>/<revision>/<name>.swf`, then `<folder>/<name>.swf`).
+- **Custom clothes**: FigureData.json, FigureMap.json and every clothing bundle (not hh_human_fx and hh_pets);
+  figuredata and figuremap XML are converted to JSON.
+
+Each profile downloads into `Habbo_Assets/custom/<name>/gamedata` (laid out like gamedata; characters a folder name
+cannot have become `_`), which Deploy Assets does **not** copy: upload
+what you want by hand with the Asset Explorer. A retro serves `.hab`, `.nitro` or `.swf`: choose it per profile (**Format**), or leave it on **Auto**, which finds
+out per bundle (trying the one that worked last first) and saves every bundle as `.hab`: a `.nitro` is repacked
+with the same files, a `.swf` is converted (furniture, clothes, pets and effects: the All-in-1 converter's SWF
+compilers ported to Rust, the JSON and sprite sheet as it makes them; the sheet stays PNG). A `.swf` that cannot be
+converted is kept in `custom/<name>/source/`; **Convert the kept .swf files** tries those again without downloading. The bundle formats and conversions live in their own crate, `aio-assets`, so other parts of the
+installer can use them too.
+
+### Asset tools
+
+**Asset tools** (sidebar → ASSETS) works on files on this computer, in `Habbo_Assets/Assets_tools`, the All-in-1
+converter's Hotel Tools for bundles with one clear folder layout (the folders are made for you):
+
+```text
+Assets_tools/
+  Original_SWF_Files/<type>/       put .swf files here (type: furni, clothes, pets, effects)
+  Original_NITRO_Files/<type>/     put .nitro files here
+  converted/<type>/                the .hab files SWF / NITRO to HAB makes
+  Decompiled_SWF_Files/<type>/<name>/   debugging: images/, binaryData/ (the XML), symbolClass/symbols.csv
+  Decompiled_HAB_Files/<type>/<name>/   each .hab as its .json and image, to edit
+  Compiled_HAB_Files/<type>/       the edited folders packed as .hab again
+```
+
+- **Decompile SWF files**: Original_SWF_Files → Decompiled_SWF_Files, for debugging (images, XML and symbols, like
+  FFDEC's export; no ActionScript or sounds).
+- **Decompile HAB files**: converted → Decompiled_HAB_Files; **Compile HAB files**: Decompiled_HAB_Files →
+  Compiled_HAB_Files (every file in the folder goes in, as edited).
+- **SWF / NITRO furniture, clothes, pets, effects to HAB**: Original_SWF_Files/<type> or Original_NITRO_Files/<type>
+  → converted/<type>. The .swf can also come from a Nitro retro profile (**Custom: <name>**: the .swf it kept in
+  `custom/<name>/source/`). A .hab already in converted is skipped unless **Replace** is ticked. The work runs on
+  all CPU cores but one; one broken file fails alone.
+
 ### Deploy Assets
 
-**Deploy Assets** copies what the [All-in-1 downloader](https://github.com/duckietm/all-in-1-converter) downloaded to
-`/var/www/gamedata` on the server, where Octane loads it. Set the downloader's executable in **Settings** first: its
-folder holds `Habbo_Default`.
+**Deploy Assets** (sidebar → ASSETS) copies what **Habbo assets** downloaded to `/var/www/gamedata` on the server, where Octane loads it,
+folder for folder (`gamedata/furniture` to `/var/www/gamedata/furniture`, and so on): the download already has the
+server's layout.
 
 ![Deploy Assets](public/docs/screenshots/deploy-assets.png)
 
@@ -1105,24 +1209,10 @@ files), and they keep their dates, so the next sync sends only what was download
 deleted: your own furniture, badges and the emulator's files stay. Before uploading it checks the free disk space;
 afterwards `gamedata-permissions` gives the emulator and NGINX access again.
 
-| Downloader (`Habbo_Default/...`) | Server (`/var/www/gamedata/...`) |
-|---|---|
-| `hof_furni/hab/*.hab` | `furniture` |
-| `hof_furni/icons/*.png` | `icons` |
-| `clothes/hab/*.hab` | `clothes` |
-| `effects/hab/*.hab` | `effect` |
-| `pets/hab/*.hab` | `pets` |
-| `badges` | `c_images/album1584` |
-| `icons/*.png` | `c_images/catalogue` |
-| `fx_icons/*.png` | `c_images/fx_icons` |
-| `quests` | `c_images/Quests` |
-| `reception` / `reception/web_promo_small` | `c_images/reception` / `c_images/web_promo_small` |
-| `mp3/*.mp3` | `sounds` |
-| `files/json`: FurnitureData, ProductData, FigureData, FigureMap, EffectMap, HabboAvatarActions, ExternalTexts | `config` |
-
 The config JSON files are only added when they are missing: hotels and the emulator edit them (custom furniture,
-badge texts). Tick **Also replace config JSON files** to overwrite them with the downloader's. New furniture also needs
-its rows in `items_base` and `catalog_items`: make the SQL with the All-in-1 converter (Hotel Tools → Generate SQL).
+badge texts). Tick **Also replace config JSON files** to overwrite them with the downloaded ones. New furniture also
+needs its rows in `items_base` and `catalog_items`: **Import Assets** adds them (**Import custom furniture** for a
+retro's own furni).
 
 #### UI texts
 
@@ -1232,10 +1322,15 @@ port; **Log in to MariaDB** asks again.
 **Octane and Octane Renderer** as one row (they depend on each other: both versions are shown, the new commits of both
 are counted together, and **Update** updates the renderer first, then Octane, then builds the client); AtomCMS when it is
 installed; and the Docker services **Traefik** and, once installed, **Gitea**. For those the check compares the image on
-the server with Docker Hub's newest for the same tag (`docker buildx imagetools inspect`, which reads only the
-registry's index: nothing is downloaded or changed), and shows **NEW IMAGE WAITING** when a newer image is downloaded but
+the server with Docker Hub's newest for the same tag (a `HEAD` request of the tag's manifest, which does not count
+against Docker Hub's pull limit; `docker buildx imagetools inspect` only when that gives nothing, and to read the newest
+version number; nothing is downloaded or changed), shows **NOT CHECKED** with the reason when Docker Hub does not answer
+or limits the server's requests, and shows **NEW IMAGE WAITING** when a newer image is downloaded but
 the old container still runs (a `docker restart` keeps the image the container was made from; **Update** and
-**Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page.
+**Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page. For Traefik
+with a waiting image the button is **Restart** instead: it runs **Restart Traefik**, which makes the new container from
+the downloaded image without asking Docker Hub (so it also works while Docker Hub limits downloads), and checks again
+afterwards so the row shows the new version.
 
 **Settings** (sidebar, under GENERAL):
 
@@ -1282,10 +1377,6 @@ the old container still runs (a `docker restart` keeps the image the container w
   `provided_<type>.pub`, for the SSH key step to install for root.
 
 ![Settings: servers](public/docs/screenshots/settings-servers.png)
-
-- **All-in-1 downloader**: the path of the downloader's executable (`Habbo Downloader.exe`, or the Linux binary).
-  Deploy Assets takes the files from the `Habbo_Default` folder next to it; the card shows how many furniture bundles
-  it found.
 
 ## Debug
 
@@ -1335,6 +1426,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 | **Import full database** | uploads a `.sql` or `.sql.gz`, makes a safety backup (`<db>-before-import-<time>.sql.gz`), stops the emulator, recreates the database with its character set and imports (database names in `CREATE DATABASE` / `USE` lines become the hotel's), clears AtomCMS' cache, and starts the emulator, which updates the database to its version. A file that is not a SQL dump is refused before anything changes |
 | **Furniture language** | the furniture names and descriptions in another hotel's language (the 9 Habbo hotels): its furnidata is downloaded and converted, the hotel's own furni stay, and `items_base` / `catalog_items` follow it (sprite ids, catalogue items, offer ids), after a safety backup and with the emulator restarted. See [Default catalogue](#default-catalogue) |
 | **Import Plus database** | a PlusEMU dump (such as Plus' fresh install) into the Polaris hotel database: the reverse of [plus-migrator](https://github.com/plus-emulator/plus-migrator). Choose **Furniture and catalog** or **Furniture only**. It uploads the `.sql` / `.sql.gz`, makes a safety backup (`<db>-before-plus-import-<time>.sql.gz`), stops the emulator, loads the dump into a staging database `plus_import` next to the hotel's, converts, drops the staging database and starts the emulator. See [Import Plus database](#import-plus-database) |
+| **Check multiheight** | compares every floor and wall furni in `items_base` that has a `multiheight` with the states of its `.hab` in `gamedata/furniture` (counted as the converter counts interaction modes: the first visualization with animations, its highest animation id + 1). It lists furni with **too many heights** (the last ones show no graphic, e.g. `0.8;2.0;3.0;4.0;5.0` for 4 states), a wrong `interaction_modes_count`, **too few heights** (states that cannot be reached; add the heights by hand, they are not in the `.hab`) and furni without a readable `.hab`. After a yes, too many heights are cut to one per state (the first heights stay) and `interaction_modes_count` is set to match, in one transaction that only changes rows still as they were read; then the emulator restarts. Needs Node.js on the server (installed with Octane) |
 | **Recover SQL password** | gives MariaDB's root a new random 32-character password (asks first) and saves it in `configuration/database/<server>/mariadb.txt`; a changed file is kept as `mariadb.txt.bak-<time>`. Changes `root@localhost` (its socket login stays) and `root@'%'` when it exists. When root cannot log in through the socket any more, MariaDB is restarted for a moment with `--skip-grant-tables --skip-networking` to change it and then started normally. Then it tests the new password over 127.0.0.1 and the socket. Without a saved file, the CMS and emulator accounts are read from AtomCMS' `.env` and the emulator's `config.ini`, so the new file is complete. The emulator and AtomCMS use their own accounts and are not affected |
 | **Check for updates** | `git fetch` of the emulator, Octane, Octane-Renderer and AtomCMS, and per clone how many commits a `git pull` would bring in, with the newest one. The commits are counted against the branch chosen in **Settings → Repository branches**, not against the branch the clone happens to be on, so a clone still on `main` while `dev` is chosen reports what `dev` has and says `main → dev`. AtomCMS has no choice and is counted against its own branch. A fetch only fills the remote branches: no file on the server is changed and the hotel keeps running. The same check runs by itself right after you log in here, and again after an update, so **Update emulator** and **Update Octane** say `3 new commit(s)` or `up to date` before you press them |
 | **Update system** | `apt-get update`, `upgrade` and `dist-upgrade` (changed configuration files are kept); says when a reboot is needed |
@@ -1374,7 +1466,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 The conversion is `source/crates/remote/sql/plus-to-polaris-furniture.sql` and `plus-to-polaris-catalog.sql`, built into
 the program.
 
-**Settings backup** (no server needed): **Export encrypted settings** writes the whole configuration directory
+**Settings backup** (on the **Settings** page, no server needed): **Export encrypted settings** writes the whole configuration directory
 (SSH keys, .ppk files, MariaDB passwords of every server) to one `.aio-settings` file, encrypted with AES-256-GCM
 and a key derived from your password (PBKDF2-SHA256, 600,000 rounds). **Import encrypted settings** on another
 computer restores it; the settings already there are kept next to it as `configuration.bak-<time>`. A wrong
@@ -1401,7 +1493,13 @@ recorded.
 
 ## Updating the installer itself
 
-The program checks at startup whether a newer release of <https://github.com/duckietm/All-in-1-installer> is out
+**Renamed from All-in-1 Installer.** The repository was `duckietm/All-in-1-installer` and the program
+`all-in-1-installer`. Releases still carry `all-in-1-installer-windows-x64.exe` / `-linux-x64` next to the new names,
+so a version from before the rename updates itself to the All-in-1 Manager. Its settings stay: the `configuration`
+folder next to the program, or `All-in-1 Installer\configuration` in the user's data folder while that one exists;
+files the installer wrote on a server are recognised by both names, and the old history files are still read.
+
+The program checks at startup whether a newer release of <https://github.com/duckietm/All-in-1-Manager> is out
 (releases tagged `rust-v<version>`). When there is one, it says what is new and offers **Update and restart**: the
 release file is downloaded next to the running program, the running one is renamed to `<name>.old`, the new one takes
 its place under the same name, and the program starts again. **Later** keeps the version you have; the question comes
@@ -1413,7 +1511,7 @@ a repository without releases all mean no question is asked. A debug build (`car
 **About → Check for updates** checks again at any time.
 
 The version it compares is `version` in `[workspace.package]` of `Cargo.toml` against the release's tag. The file it
-downloads is `all-in-1-installer-windows-x64.exe` on Windows and `all-in-1-installer-linux-x64` on Linux.
+downloads is `all-in-1-manager-windows-x64.exe` on Windows and `all-in-1-manager-linux-x64` on Linux.
 
 ## Building
 
@@ -1436,7 +1534,7 @@ build test         ./build.sh test        # all tests
 On Windows it needs Visual Studio's "Desktop development with C++" (Rust uses its linker). The same with Python:
 
 ```bash
-python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-installer(.exe)
+python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-manager(.exe)
 python source/tools/build.py release           # release build  -> public/release/ (with Assets/ next to it)
 python source/tools/build.py dev --run         # and start it
 cargo test --workspace                         # all tests, including the parity tests
@@ -1453,7 +1551,7 @@ needs no GUI.
 ### Dry run
 
 ```bash
-all-in-1-installer --dry-run
+all-in-1-manager --dry-run
 ```
 
 logs in to nothing: every command a step would send to the server (the scripts, what goes over stdin, uploads and
@@ -1470,7 +1568,7 @@ first (the health check then finds a sample server), and `AIO_SCREENSHOT_THEME=d
 `AIO_SCREENSHOT_LOOK=hotel|professional` and `AIO_SCREENSHOT_LANG=<code>` set the rest. For example:
 
 ```bash
-AIO_SCREENSHOT=install.png AIO_SCREENSHOT_PAGE=install AIO_SCREENSHOT_STEP=2 AIO_SCREENSHOT_CONNECT=1 all-in-1-installer
+AIO_SCREENSHOT=install.png AIO_SCREENSHOT_PAGE=install AIO_SCREENSHOT_STEP=2 AIO_SCREENSHOT_CONNECT=1 all-in-1-manager
 ```
 
 The pictures in `public/docs/screenshots` are made this way with the latest release, in English and the light theme
@@ -1494,7 +1592,7 @@ the C# sources they compile are in the git history up to commit `50dd986`.
 Every push to `main` makes a release (`.github/workflows/release.yml`), and the version goes up by itself: when the
 version in `Cargo.toml` already has a release, the last number is raised (2.0.3 → 2.0.4), the bot commits
 `Version 2.0.4` to `main`, and that commit is tested, built and published as `rust-v2.0.4` with
-`all-in-1-installer-windows-x64.exe` and `all-in-1-installer-linux-x64`, the files the update check looks for. A
+`all-in-1-manager-windows-x64.exe` and `all-in-1-manager-linux-x64`, the files the update check looks for. A
 version you set yourself and that has no release yet (for a bigger step, e.g. 2.1.0) is released as it is. Pushes
 that only change the README, the licence or `public/docs` release nothing. After a release, `git pull` brings the
 bot's version commit to your copy.
@@ -1519,12 +1617,14 @@ source/                          The code
   tools/                         build.py, version.py, i18n_keys.py (texts to translate), make_icon.py (the program icon)
   Assets/                        Client images packed into the program (Deploy Assets → Images)
   crates/core/                   What lives on this computer
-    src/settings.rs              configuration/settings.json: servers, default key, downloader, branches, look, layout, language
+    src/settings.rs              configuration/settings.json: servers, default key, branches, look, layout, language, assets, retros
     src/layout.rs                Paths on the server, the emulator's account and the database name, with their checks
     src/config_dir.rs            The configuration/ folder: keys per server, mariadb.txt, owner-only files
     src/credentials.rs           Generated MariaDB passwords and their file format
     src/keys.rs                  SSH keys: generation (encrypted OpenSSH + PuTTY .ppk v2), public key formats, .ppk reader
     src/backup.rs                Encrypted export / import of the configuration folder (AES-256-GCM, PBKDF2)
+  crates/assets/                 Habbo's asset bundles: .hab, .nitro and .asar read and written, and the
+                                 conversions to .hab every part of the installer uses (no network, no server)
   crates/remote/                 Everything that happens on the server
     src/server.rs                The Server trait: commands as root, streaming, follow, stdin, SFTP, tunnel, shell
     src/ssh.rs                   The SSH login (russh): password, keyboard-interactive or key, the OS check, sudo -> root

@@ -1,5 +1,5 @@
-//! Copies the assets the All-in-1 downloader (github.com/duckietm/all-in-1-converter) put in its Habbo_Default folder
-//! to /var/www/gamedata, in the layout Octane's configuration uses. Only new and changed files are sent, as one tar
+//! Copies the assets Assets → Habbo assets downloaded (`<assets>/gamedata`, laid out like the server's gamedata) to
+//! /var/www/gamedata, in the layout Octane's configuration uses. Only new and changed files are sent, as one tar
 //! stream per folder over the SSH session; nothing on the server is deleted. (AssetSync.cs)
 //!
 //! [`tar_stream`] is the tar writer of every upload (this module, emulator_assets, gamedata_files).
@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use crate::script;
 use crate::server::{shell_quote, Log, Progress, Result, Server};
 
-/// A folder of the All-in-1 downloader and where its files go in /var/www/gamedata.
-/// `source` is relative to the downloader's folder, with '/'; `target` relative to /var/www/gamedata. `only`: file
+/// A folder on this computer and where its files go in /var/www/gamedata.
+/// `source` is relative to the source's base folder, with '/'; `target` relative to /var/www/gamedata. `only`: file
 /// names to take (None takes every file matching `pattern`). `add_only`: only add missing files and leave existing
 /// ones alone unless asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,43 +62,6 @@ impl AssetPlan {
     pub fn upload_count(&self) -> usize {
         self.new.len() + self.changed.len()
     }
-}
-
-pub const DEFAULT_FOLDER: &str = "Habbo_Default";
-
-/// Config files Octane loads from gamedata/config.
-pub const CONFIG_FILES: [&str; 7] =
-    ["FurnitureData.json", "ProductData.json", "FigureData.json", "FigureMap.json", "EffectMap.json", "HabboAvatarActions.json", "ExternalTexts.json"];
-
-pub fn mappings() -> Vec<AssetMapping> {
-    vec![
-        AssetMapping::new("Furniture", "Habbo_Default/hof_furni/hab", "furniture", "*.hab"),
-        AssetMapping::new("Furniture icons", "Habbo_Default/hof_furni/icons", "icons", "*.png"),
-        AssetMapping::new("Clothes", "Habbo_Default/clothes/hab", "clothes", "*.hab"),
-        AssetMapping::new("Effects", "Habbo_Default/effects/hab", "effect", "*.hab"),
-        AssetMapping::new("Pets", "Habbo_Default/pets/hab", "pets", "*.hab"),
-        AssetMapping::new("Badges", "Habbo_Default/badges", "c_images/album1584", "*"),
-        AssetMapping::new("Catalogue icons", "Habbo_Default/icons", "c_images/catalogue", "*.png"),
-        AssetMapping::new("Effect icons", "Habbo_Default/fx_icons", "c_images/fx_icons", "*.png"),
-        AssetMapping::new("Quest images", "Habbo_Default/quests", "c_images/Quests", "*"),
-        AssetMapping::new("Hotel view", "Habbo_Default/reception", "c_images/reception", "*"),
-        AssetMapping::new("Promo images", "Habbo_Default/reception/web_promo_small", "c_images/web_promo_small", "*"),
-        AssetMapping::new("Sounds", "Habbo_Default/mp3", "sounds", "*.mp3"),
-        // Only added when missing, because the emulator edits ExternalTexts.json for custom badges and hotels edit the others.
-        AssetMapping {
-            only: Some(CONFIG_FILES.iter().map(|s| s.to_string()).collect()),
-            add_only: true,
-            ..AssetMapping::new("Game data (config JSON)", "Habbo_Default/files/json", "config", "*.json")
-        },
-    ]
-}
-
-/// The folder holding Habbo_Default for the downloader chosen in Settings, or None.
-pub fn downloader_folder(executable: Option<&str>) -> Option<PathBuf> {
-    let executable = executable.filter(|e| !e.trim().is_empty())?;
-    let path = Path::new(executable);
-    let folder = if path.is_dir() { path.to_path_buf() } else { path.parent().map(Path::to_path_buf).unwrap_or_default() };
-    folder.join(DEFAULT_FOLDER).is_dir().then_some(folder)
 }
 
 /// A `Directory.EnumerateFiles` search pattern: `*` and `?`, case-insensitive on Windows like its file system.
@@ -153,14 +116,71 @@ fn scan(folder: &Path, mapping: &AssetMapping) -> Vec<LocalFile> {
     files
 }
 
-/// Compares every folder with the server using a single listing command.
-pub async fn plan(server: &dyn Server, downloader_folder: &Path, overwrite_config: bool) -> Result<Vec<AssetPlan>> {
-    let mappings = mappings();
+/// Where Deploy Assets copies from: a folder on this computer and its mappings to /var/www/gamedata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    /// The folder shown in the window.
+    pub label: PathBuf,
+    /// What the mappings' `source` paths are relative to.
+    pub base: PathBuf,
+    pub mappings: Vec<AssetMapping>,
+}
+
+/// Get Assets' folder (`<assets>/gamedata`, laid out like the server's gamedata) as one mapping per folder that holds
+/// files, each to the same folder on the server. config/ is only added when missing: the emulator edits ExternalTexts.json
+/// for custom badges and hotels edit the others.
+pub fn gamedata_mappings(assets_folder: &Path) -> Vec<AssetMapping> {
+    let root = assets_folder.join(crate::habbo_assets::GAMEDATA);
+    let mut folders = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(folder) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&folder) else { continue };
+        let mut has_files = false;
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => stack.push(entry.path()),
+                Ok(kind) if kind.is_file() => has_files = true,
+                _ => {}
+            }
+        }
+        if has_files && folder != root {
+            let relative: Vec<String> =
+                folder.strip_prefix(&root).unwrap_or(&folder).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            folders.push(relative.join("/"));
+        }
+    }
+    folders.sort();
+    folders
+        .into_iter()
+        .map(|target| AssetMapping {
+            add_only: target == "config",
+            ..AssetMapping::new(&target, &format!("{}/{target}", crate::habbo_assets::GAMEDATA), &target, "*")
+        })
+        .collect()
+}
+
+/// What Deploy Assets copies from: the downloaded Habbo assets, when the folder holds files.
+pub fn sources(assets_folder: &Path) -> Vec<Source> {
+    let own = gamedata_mappings(assets_folder);
+    if own.is_empty() {
+        return Vec::new();
+    }
+    vec![Source { label: assets_folder.join(crate::habbo_assets::GAMEDATA), base: assets_folder.to_path_buf(), mappings: own }]
+}
+
+/// Compares every folder of every source with the server using a single listing command. A file an earlier source
+/// already sends to the same place is not sent again by a later one.
+pub async fn plan_sources(server: &dyn Server, sources: &[Source], overwrite_config: bool) -> Result<Vec<AssetPlan>> {
+    let all: Vec<(&Path, &AssetMapping)> = sources.iter().flat_map(|s| s.mappings.iter().map(move |m| (s.base.as_path(), m))).collect();
     let gamedata = crate::octane::gamedata();
-    let mut script: String = mappings
+    let mut script: String = all
         .iter()
         .enumerate()
-        .map(|(i, m)| {
+        .map(|(i, (_, m))| {
             format!(
                 "echo '== {i}'; find {} -maxdepth 1 -type f -printf '%f\\t%s\\t%T@\\n' 2>/dev/null",
                 shell_quote(&format!("{gamedata}/{}", m.target))
@@ -172,31 +192,43 @@ pub async fn plan(server: &dyn Server, downloader_folder: &Path, overwrite_confi
     let result = server.run_as_root(&script).await?;
     let remote = parse_listing(&result.output);
 
+    let mut planned: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
     let mut plans = Vec::new();
-    for (i, mapping) in mappings.into_iter().enumerate() {
-        let mut source = downloader_folder.to_path_buf();
+    for (i, (base, mapping)) in all.into_iter().enumerate() {
+        let mut source = base.to_path_buf();
         for part in mapping.source.split('/') {
             source.push(part);
         }
-        let local = scan(&source, &mapping);
+        let local = scan(&source, mapping);
         let empty = HashMap::new();
         let there = remote.get(&i).unwrap_or(&empty);
         let mut fresh = Vec::new();
         let mut changed = Vec::new();
         for file in &local {
-            match there.get(&file.name) {
-                None => fresh.push(file.clone()),
+            if planned.contains(&(mapping.target.clone(), file.name.clone())) {
+                continue;
+            }
+            let chosen = match there.get(&file.name) {
+                None => {
+                    fresh.push(file.clone());
+                    true
+                }
                 Some(&(size, modified)) => {
-                    if (!mapping.add_only || overwrite_config) && (size != file.size || file.modified as f64 > modified + 2.0) {
+                    let differs = (!mapping.add_only || overwrite_config) && (size != file.size || file.modified as f64 > modified + 2.0);
+                    if differs {
                         changed.push(file.clone());
                     }
+                    differs
                 }
+            };
+            if chosen {
+                planned.insert((mapping.target.clone(), file.name.clone()));
             }
         }
         plans.push(AssetPlan {
             local_count: local.len(),
             local_bytes: local.iter().map(|f| f.size).sum(),
-            mapping,
+            mapping: mapping.clone(),
             source_path: source,
             new: fresh,
             changed,
@@ -570,6 +602,34 @@ mod tests {
     }
 
     #[test]
+    fn get_assets_folder_maps_one_to_one() {
+        let root = tempfile::tempdir().unwrap();
+        let g = root.path().join("gamedata");
+        for (folder, file) in [("furniture", "chair.hab"), ("config", "FurnitureData.json"), ("c_images/album1584", "ADM.gif"), ("c_images/reception/x", "bg.png")] {
+            std::fs::create_dir_all(g.join(folder)).unwrap();
+            std::fs::write(g.join(folder).join(file), b"1").unwrap();
+        }
+        std::fs::create_dir_all(g.join("empty")).unwrap();
+        std::fs::create_dir_all(g.join(".hidden")).unwrap();
+        std::fs::write(g.join(".hidden/a"), b"1").unwrap();
+        let mappings = gamedata_mappings(root.path());
+        let targets: Vec<(&str, &str, bool)> = mappings.iter().map(|m| (m.target.as_str(), m.source.as_str(), m.add_only)).collect();
+        assert_eq!(
+            targets,
+            [
+                ("c_images/album1584", "gamedata/c_images/album1584", false),
+                ("c_images/reception/x", "gamedata/c_images/reception/x", false),
+                ("config", "gamedata/config", true),
+                ("furniture", "gamedata/furniture", false),
+            ]
+        );
+        let sources = sources(root.path());
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].label, g);
+        assert!(super::sources(&root.path().join("nothing")).is_empty());
+    }
+
+    #[test]
     fn pax_times() {
         assert_eq!(tar_stream::pax_time(UNIX_EPOCH + Duration::new(5, 100)), "5.0000001");
         assert_eq!(tar_stream::pax_time(UNIX_EPOCH + Duration::new(5, 500_000_000)), "5.5");
@@ -597,7 +657,7 @@ mod tests {
     #[test]
     fn plans_count() {
         let plan = AssetPlan {
-            mapping: mappings()[0].clone(),
+            mapping: AssetMapping::new("Furniture", "gamedata/furniture", "furniture", "*"),
             source_path: PathBuf::new(),
             local_count: 3,
             local_bytes: 30,
@@ -606,7 +666,5 @@ mod tests {
         };
         assert_eq!(plan.upload_count(), 2);
         assert_eq!(plan.upload_bytes(), 15);
-        assert_eq!(mappings().len(), 13);
-        assert!(mappings()[12].add_only);
     }
 }

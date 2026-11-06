@@ -197,7 +197,7 @@ echo "> Gitea on 127.0.0.1:$port"
 trusted=$(sed -n 's/^TRUSTED=//p' "$g/.env" 2>/dev/null) || trusted=
 write_env() {
   cat > "$g/.env" <<EOF
-# Gitea (written by All-in-1 Installer, Addons → Gitea).
+# Gitea (written by All-in-1 Manager, Addons → Gitea).
 DOMAIN={{Domain}}
 ROOT_URL={{Url}}/
 CLOUDFLARE={{cloudflare}}
@@ -210,7 +210,7 @@ EOF
 write_env
 echo "> $g/compose.yaml"
 cat > "$g/compose.yaml" <<'EOF'
-# Gitea for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# Gitea for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 # Its own network, not the host's: the image always starts an SSH server (port 22 inside), which must not
 # meet the server's SSH. Only the web port is published, on 127.0.0.1, for Traefik.
 services:
@@ -277,7 +277,7 @@ echo "  $(docker exec {{Container}} gitea --version 2>/dev/null | awk '{print "G
 
 echo "> {{RouteFile}}: {{Url}} to Gitea"
 cat > {{RouteFile}} <<EOF
-# Gitea (written by All-in-1 Installer, Addons → Gitea). Traefik picks it up without a restart.
+# Gitea (written by All-in-1 Manager, Addons → Gitea). Traefik picks it up without a restart.
 http:
   routers:
     gitea:

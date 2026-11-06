@@ -60,6 +60,29 @@ pub fn furniture_data() -> String {
     format!("{}/config/FurnitureData.json", octane::gamedata())
 }
 
+/// What the packed catalogue has where the hotel's name goes (page texts, a bot's motto).
+pub const HOTEL_NAME: &str = "%hotel_name%";
+
+/// Why `name` cannot be the hotel's name in the catalogue, or None. It goes into SQL strings and into a bot's
+/// "name:...;motto:..." data, so no quotes, backslashes, ; : % or < >.
+pub fn hotel_name_problem(name: &str) -> Option<&'static str> {
+    let name = name.trim();
+    if name.is_empty() {
+        Some("Enter the hotel's name.")
+    } else if name.chars().count() > 32 {
+        Some("The hotel's name is longer than 32 characters.")
+    } else if name.chars().any(|c| c.is_control() || matches!(c, '\'' | '"' | '\\' | ';' | ':' | '%' | '<' | '>' | '`')) {
+        Some("The hotel's name cannot have ' \" \\ ; : % < > or `.")
+    } else {
+        None
+    }
+}
+
+/// The catalogue (or a page text) with the hotel's name filled in.
+pub fn with_hotel_name(text: &str, name: &str) -> String {
+    text.replace(HOTEL_NAME, name.trim())
+}
+
 /// "exported 2026-11-01" from the first line of Catalog_Export.sql, as the catalogue's version.
 pub fn version_of(sql: &str) -> Option<String> {
     let first = sql.lines().next()?;
@@ -291,6 +314,16 @@ mod tests {
         );
         assert_eq!(version_of("SET NAMES utf8mb4;"), None);
         assert_eq!(version_of(""), None);
+    }
+
+    #[test]
+    fn the_hotel_name() {
+        assert_eq!(with_hotel_name("De %hotel_name% Badgewinkel", " Camwijs "), "De Camwijs Badgewinkel");
+        assert_eq!(hotel_name_problem("Habbo Hotel 2"), None);
+        assert_eq!(hotel_name_problem("Café Ünïcode-hotel!"), None);
+        for bad in ["", "  ", "it's", "a;b", "x:y", "100%", "<b>", "back\\slash", &"x".repeat(33)] {
+            assert!(hotel_name_problem(bad).is_some(), "{bad:?}");
+        }
     }
 
     #[test]

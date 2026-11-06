@@ -337,7 +337,7 @@ env_set DATABASE_URL "mysql://$(enc "$dbuser"):$(enc "$dbpass")@127.0.0.1:3306/$
 # .env.example), while an unset one is fine: empty settings are commented out.
 empty=$(grep -cE '^[A-Za-z0-9_]+=("")?[[:space:]]*$' .env || true)
 if [ "$empty" -gt 0 ]; then
-  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Installer)/' .env
+  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Manager)/' .env
   echo "  $empty empty settings left unset (commented out): EpicNext refuses empty values"
 fi
 chmod 640 .env
@@ -354,9 +354,11 @@ pub async fn configure_env(
     credentials: Option<&DatabaseCredentials>,
     log: Log<'_>,
 ) -> Result<()> {
-    let values: [(&str, String); 5] = [
+    let values: [(&str, String); 6] = [
         ("HOTEL_NAME", env_value(hotel_name)),
         ("APP_URL", site.url()),
+        // The address the browser code is built with; EpicNext's checks require it to equal APP_URL.
+        ("NEXT_PUBLIC_APP_URL", site.url()),
         ("AUTH_URL", site.url()),
         // Behind Traefik and NGINX: NextAuth takes the host from the forwarded headers.
         ("AUTH_TRUST_HOST", "true".into()),
@@ -411,7 +413,23 @@ corepack pnpm store prune >/dev/null 2>&1 || true
 echo "> Disk: $(free_mb) MB free"
 need_disk 3072 "pnpm install"
 echo "> pnpm install --frozen-lockfile"
-run corepack pnpm install --frozen-lockfile --reporter=append-only || fail "pnpm install stopped (see above)."
+pnpm_log=$(mktemp)
+if ! (run corepack pnpm install --frozen-lockfile --reporter=append-only | tee "$pnpm_log"; exit "${PIPESTATUS[0]}"); then
+  # pnpm's supply-chain check refuses package versions younger than its minimum release age. When EpicNext commits
+  # a lockfile with versions newer than that (a fresh Next.js release), every install stops until they are old
+  # enough. The check stays on: the step says which versions and that it works again once they are old enough.
+  if grep -q 'MINIMUM_RELEASE_AGE' "$pnpm_log"; then
+    young=$(grep -oE '^ *[@a-zA-Z0-9._/-]+@[0-9][^ ]* was published at' "$pnpm_log" | awk '{print $1}' | sort -u | tr '\n' ' ')
+    newest=$(grep -oE 'published at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}' "$pnpm_log" | awk '{print $3}' | sort | tail -n 1)
+    rm -f "$pnpm_log"
+    echo "  EpicNext's lockfile pins $(echo $young | wc -w) package versions that pnpm's supply-chain check finds too new:"
+    echo "    $young" | fold -s -w 110 | sed 's/^/  /'
+    fail "pnpm only installs package versions once they are older than its minimum release age (a guard against freshly published malicious packages), and EpicNext's latest lockfile has newer ones${newest:+ (the newest published ${newest/T/ } UTC)}. pnpm installed nothing. Run this step again once they are old enough (usually a day or two after that), or ask EpicNext's author to commit a lockfile that passes the check."
+  fi
+  rm -f "$pnpm_log"
+  fail "pnpm install stopped (see above)."
+fi
+rm -f "$pnpm_log"
 # EpicNext was built on an AtomCMS database: its migrations expect AtomCMS' tables (such as
 # website_housekeeping_permissions). The ones the hotel database lacks come from its own base schema.
 db=$(grep -sE '^db.database=' {{EmulatorDirectory}}/config.ini | cut -d= -f2 | tr -d '[:space:]')
@@ -538,7 +556,7 @@ if [ -n "$pid" ] && [ "$(readlink /proc/$pid/cwd)" != {{Directory}} ]; then
 fi
 echo "> {{ServiceFile}}"
 cat > {{ServiceFile}} <<'UNIT'
-# EpicNext CMS (written by All-in-1 Installer, Addons → CMS). NGINX (cms-{{SiteName}}) passes the site here.
+# EpicNext CMS (written by All-in-1 Manager, Addons → CMS). NGINX (cms-{{SiteName}}) passes the site here.
 [Unit]
 Description=EpicNext CMS
 After=network-online.target mariadb.service

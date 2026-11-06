@@ -96,6 +96,15 @@ struct Form {
     read: Option<Arc<Read>>,
     fields: Fields,
     source: Source,
+    /// The hotel database read, and every database on the server with an items_base table (to choose from).
+    database: String,
+    databases: Vec<String>,
+    /// To read another database from the page: the server and the runtime the check ran on.
+    server: Option<Arc<dyn Server>>,
+    runtime: Option<tokio::runtime::Handle>,
+    /// Reading another database now, or why that failed.
+    reloading: bool,
+    reload_error: Option<String>,
     /// The local FurnitureData.json files read so far (or why they could not be).
     local: HashMap<Source, Result<Arc<Value>, String>>,
     /// The plan, and the choices it was made for.
@@ -113,6 +122,12 @@ impl Default for Form {
             read: None,
             fields: Fields::default(),
             source: Source::default(),
+            database: String::new(),
+            databases: Vec::new(),
+            server: None,
+            runtime: None,
+            reloading: false,
+            reload_error: None,
             local: HashMap::new(),
             plan: None,
             restart: true,
@@ -176,13 +191,13 @@ struct Output {
 }
 
 pub struct ItemFixStep {
-    form: Mutex<Form>,
+    form: Arc<Mutex<Form>>,
     output: Mutex<Output>,
 }
 
 impl ItemFixStep {
     pub fn new() -> Self {
-        Self { form: Mutex::new(Form::default()), output: Mutex::new(Output::default()) }
+        Self { form: Arc::new(Mutex::new(Form::default())), output: Mutex::new(Output::default()) }
     }
 }
 
@@ -268,6 +283,27 @@ impl InstallStep for ItemFixStep {
         let form = &mut *form;
         if form.read.is_none() {
             return;
+        }
+        ui.add_space(8.0);
+        ui.label(RichText::new(t("Hotel database")).size(14.0).strong());
+        let mut picked = form.database.clone();
+        ui.add_enabled_ui(!form.reloading, |ui| {
+            egui::ComboBox::from_id_salt("item_fix_database").selected_text(&picked).width(260.0).show_ui(ui, |ui| {
+                for database in &form.databases {
+                    ui.selectable_value(&mut picked, database.clone(), database);
+                }
+            });
+        });
+        if form.reloading {
+            widgets::muted(ui, palette, &tf("Reading {database} ...", &[("database", &picked)]), 11.5);
+        } else if let Some(error) = &form.reload_error {
+            widgets::muted(ui, palette, &tf("Cannot be used: {error}", &[("error", error)]), 12.0);
+        } else {
+            widgets::muted(ui, palette, t("Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database)."), 11.5);
+        }
+        if picked != form.database && !form.reloading {
+            // Started while the page holds the lock: the task takes it only when it is done reading.
+            reload(form, self.form.clone(), picked, ui.ctx().clone());
         }
         ui.add_space(8.0);
         ui.label(RichText::new(t("FurnitureData.json to match")).size(14.0).strong());
@@ -367,6 +403,9 @@ impl InstallStep for ItemFixStep {
 
     fn validate(&self) -> Option<String> {
         let mut form = self.form.lock().unwrap();
+        if form.reloading {
+            return Some(t("Still reading the database: wait a moment.").into());
+        }
         let Some(plan) = form.plan() else { return Some(t("Nothing to fix: see the message above.").into()) };
         plan.updates.is_empty().then(|| t("Nothing changes with what is chosen.").into())
     }
@@ -380,7 +419,16 @@ impl InstallStep for ItemFixStep {
             // The local files are read again: they may have been downloaded or merged since.
             form.local.clear();
         }
-        choose_database(server.as_ref(), &ui).await?;
+        let (database_used, databases) = choose_database(server.as_ref(), &ui).await?;
+        {
+            let mut form = self.form.lock().unwrap();
+            form.database = database_used;
+            form.databases = databases;
+            form.server = Some(server.clone());
+            form.runtime = Some(tokio::runtime::Handle::current());
+            form.reloading = false;
+            form.reload_error = None;
+        }
         let (database, rows) = item_fix::read_items(server.as_ref()).await?;
         // The server's FurnitureData.json (it can be a merged or custom one) and the local ones. The chosen one is
         // used; when it is not there, the first of the others that is (a server without the file yet, say).
@@ -515,10 +563,10 @@ impl InstallStep for ItemFixStep {
 /// Makes sure the tools use a database that has items_base. The configured one (the emulator's config.ini, else
 /// Settings) is used when it has one; otherwise the only database that has items_base, or the one the user picks
 /// among several. The choice holds for every tool until the installer closes and is saved in Settings.
-async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<()> {
+async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<(String, Vec<String>)> {
     let (configured, found) = item_fix::hotel_databases(server).await?;
     if found.iter().any(|d| *d == configured) {
-        return Ok(());
+        return Ok((configured, found));
     }
     let chosen = match found.as_slice() {
         [] => fail!("{}", tf("No database on this server has an items_base table (looked for {database} first): install the emulator's database first.", &[("database", &configured)])),
@@ -532,14 +580,54 @@ async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<()>
             }
         }
     };
-    aio_core::ServerLayout::choose_database(&chosen);
+    use_database(&chosen);
+    ui.log(&tf("> Hotel database: {database} ({configured} has no items_base table)", &[("database", &chosen), ("configured", &configured)]));
+    Ok((chosen, found))
+}
+
+/// `database` for every tool until the installer closes, and saved as Settings > Server layout > Hotel database.
+fn use_database(database: &str) {
+    aio_core::ServerLayout::choose_database(database);
     let mut settings = aio_core::InstallerSettings::load();
     let mut layout = settings.layout.clone().unwrap_or_default();
-    layout.database = chosen.clone();
+    layout.database = database.to_string();
     settings.layout = Some(layout);
     let _ = settings.save();
-    ui.log(&tf("> Hotel database: {database} ({configured} has no items_base table)", &[("database", &chosen), ("configured", &configured)]));
-    Ok(())
+}
+
+/// Reads `database`'s items_base (and the .hab files its furni need) from the page, after the user chose it.
+fn reload(locked: &mut Form, form: Arc<Mutex<Form>>, database: String, ctx: egui::Context) {
+    let (Some(server), Some(runtime)) = (locked.server.clone(), locked.runtime.clone()) else { return };
+    locked.reloading = true;
+    locked.reload_error = None;
+    use_database(&database);
+    runtime.spawn(async move {
+        let result = async {
+            let (_, rows) = item_fix::read_items(server.as_ref()).await?;
+            let folders = bundle_folders();
+            let read = tokio::task::spawn_blocking(move || {
+                let bundles = item_fix::read_bundles(&item_fix::bundle_names(&rows), &folders);
+                (rows, bundles)
+            })
+            .await?;
+            anyhow::Ok(read)
+        }
+        .await;
+        let mut f = form.lock().unwrap();
+        f.reloading = false;
+        match result {
+            Ok((rows, bundles)) => {
+                let server_furnidata = f.read.as_ref().map(|r| r.server_furnidata.clone()).unwrap_or_else(|| Err(t("Nothing read yet.").to_string()));
+                f.read = Some(Arc::new(Read { rows, server_furnidata, bundles }));
+                f.database = database;
+                f.plan = None;
+                f.rows = None;
+            }
+            Err(error) => f.reload_error = Some(format!("{database}: {error}")),
+        }
+        drop(f);
+        ctx.request_repaint();
+    });
 }
 
 pub fn wizard(shared: &Shared) -> Wizard {

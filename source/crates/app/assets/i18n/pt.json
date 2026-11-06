@@ -2559,5 +2559,8 @@
   "Which database is the hotel's?": "Que base de dados é a do hotel?",
   "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} não tem tabela items_base neste servidor. Que base de dados é a do hotel? A escolha vale para todas as ferramentas e fica guardada nas Definições (Estrutura do servidor, Base de dados do hotel).",
   "> FurnitureData.json: {chosen} cannot be used, {used} is": "> FurnitureData.json: {chosen} não pode ser usado, {used} pode",
-  "No FurnitureData.json can be used:": "Nenhum FurnitureData.json pode ser usado:"
+  "No FurnitureData.json can be used:": "Nenhum FurnitureData.json pode ser usado:",
+  "Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Cada base de dados do servidor com uma tabela items_base. A escolha vale para todas as ferramentas e fica guardada nas Definições (Estrutura do servidor, Base de dados do hotel).",
+  "Reading {database} ...": "A ler {database} ...",
+  "Still reading the database: wait a moment.": "A base de dados ainda está a ser lida: aguarde um momento."
 }

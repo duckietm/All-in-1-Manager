@@ -2559,5 +2559,8 @@
   "Which database is the hotel's?": "Mikä tietokanta on hotellin?",
   "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Tietokannalla {database} ei ole tällä palvelimella items_base-taulua. Mikä tietokanta on hotellin? Valinta koskee kaikkia työkaluja ja tallennetaan asetuksiin (Palvelimen rakenne, Hotellin tietokanta).",
   "> FurnitureData.json: {chosen} cannot be used, {used} is": "> FurnitureData.json: {chosen} ei ole käytettävissä, {used} on",
-  "No FurnitureData.json can be used:": "Mitään FurnitureData.jsonia ei voi käyttää:"
+  "No FurnitureData.json can be used:": "Mitään FurnitureData.jsonia ei voi käyttää:",
+  "Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Jokainen palvelimen tietokanta, jossa on items_base-taulu. Valinta koskee kaikkia työkaluja ja tallennetaan asetuksiin (Palvelimen rakenne, Hotellin tietokanta).",
+  "Reading {database} ...": "Luetaan {database} ...",
+  "Still reading the database: wait a moment.": "Tietokantaa luetaan vielä: odota hetki."
 }

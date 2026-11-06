@@ -2559,5 +2559,8 @@
   "Which database is the hotel's?": "Otelin veritabanı hangisi?",
   "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} bu sunucuda items_base tablosuna sahip değil. Otelin veritabanı hangisi? Seçim tüm araçlar için geçerlidir ve Ayarlar'a kaydedilir (Sunucu düzeni, Otel veritabanı).",
   "> FurnitureData.json: {chosen} cannot be used, {used} is": "> FurnitureData.json: {chosen} kullanılamıyor, {used} kullanılıyor",
-  "No FurnitureData.json can be used:": "Hiçbir FurnitureData.json kullanılamıyor:"
+  "No FurnitureData.json can be used:": "Hiçbir FurnitureData.json kullanılamıyor:",
+  "Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Sunucuda items_base tablosu olan her veritabanı. Seçim tüm araçlar için geçerlidir ve Ayarlar'a kaydedilir (Sunucu düzeni, Otel veritabanı).",
+  "Reading {database} ...": "{database} okunuyor ...",
+  "Still reading the database: wait a moment.": "Veritabanı hâlâ okunuyor: biraz bekleyin."
 }

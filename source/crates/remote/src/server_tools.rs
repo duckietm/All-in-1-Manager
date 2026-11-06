@@ -15,13 +15,15 @@ pub fn backup_directory() -> String {
 pub const KEPT_BACKUPS: usize = 10;
 
 /// Sets $db: the hotel database from the emulator's config.ini, or the layout's database. (DatabaseName)
+/// `|| true`: without config.ini (an emulator elsewhere) grep exits with 2, which stopped scripts that run with
+/// pipefail (the backup) before they said anything.
 pub fn database_name() -> String {
     // Chosen during this run (the configured one was not there): exactly that one.
     if let Some(chosen) = ServerLayout::chosen_database() {
         return format!("db={chosen}");
     }
     format!(
-        "db=$(grep -sE '^db.database=' {}/config.ini | cut -d= -f2 | tr -d '[:space:]')\ndb=${{db:-{}}}",
+        "db=$(grep -sE '^db.database=' {}/config.ini | cut -d= -f2 | tr -d '[:space:]') || true\ndb=${{db:-{}}}",
         crate::emulator::directory(),
         ServerLayout::current().database
     )

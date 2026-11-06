@@ -747,10 +747,21 @@ grep -E '^PAGES?=' "$out" || true"#;
 
 /// Runs the uploaded SQL of [`sql`] on the hotel database, after a safety backup of it.
 pub async fn import(server: &dyn Server, remote_sql: &str, log: Log<'_>) -> Result<ImportResult> {
-    let backup = server_tools::backup_database(server, log).await?;
+    import_with(server, remote_sql, true, log).await
+}
+
+/// [`import`], with the backup first only when `backup` (the fixes let the user turn it off); without it
+/// `safety_backup` is empty.
+pub async fn import_with(server: &dyn Server, remote_sql: &str, backup: bool, log: Log<'_>) -> Result<ImportResult> {
+    let safety_backup = if backup {
+        server_tools::backup_database(server, log).await?.remote_path
+    } else {
+        log("> No backup first (turned off)");
+        String::new()
+    };
     let body = fill(IMPORT, &[("DatabaseName", &server_tools::database_name()), ("SqlFile", &crate::server::shell_quote(remote_sql))]);
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Importing the furniture failed", &["PAGE", "PAGES"], None).await?;
-    Ok(ImportResult { safety_backup: backup.remote_path, page_id: values.long("PAGE"), pages: values.long("PAGES") })
+    Ok(ImportResult { safety_backup, page_id: values.long("PAGE"), pages: values.long("PAGES") })
 }
 
 const PUT_FURNITURE_DATA: &str = r#"set -o pipefail

@@ -105,6 +105,8 @@ struct Form {
     /// Reading another database now, or why that failed.
     reloading: bool,
     reload_error: Option<String>,
+    /// A database backup before the update (on by default).
+    backup: bool,
     /// The local FurnitureData.json files read so far (or why they could not be).
     local: HashMap<Source, Result<Arc<Value>, String>>,
     /// The plan, and the choices it was made for.
@@ -128,6 +130,7 @@ impl Default for Form {
             runtime: None,
             reloading: false,
             reload_error: None,
+            backup: true,
             local: HashMap::new(),
             plan: None,
             restart: true,
@@ -397,6 +400,8 @@ impl InstallStep for ItemFixStep {
             }
         }
         ui.add_space(8.0);
+        ui.checkbox(&mut form.backup, t("Back up the database first"));
+        widgets::muted(ui, palette, &tf("A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.", &[("folder", &server_tools::backup_directory())]), 11.5);
         ui.checkbox(&mut form.restart, t("Restart the emulator afterwards"));
         widgets::muted(ui, palette, t("The emulator reads items_base and the catalogue when it starts: players are disconnected for a moment. Off: restart it yourself later (Tools)."), 11.5);
     }
@@ -502,14 +507,14 @@ impl InstallStep for ItemFixStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let (read, fields, restart, source, furnidata) = {
+        let (read, fields, restart, source, furnidata, backup) = {
             let mut form = self.form.lock().unwrap();
             let Some(read) = form.read.clone() else { fail!("Nothing to fix.") };
             let furnidata = match form.furnidata() {
                 Ok(furnidata) => furnidata,
                 Err(error) => fail!("{error}"),
             };
-            (read, form.fields, form.restart, form.source, furnidata)
+            (read, form.fields, form.restart, form.source, furnidata, form.backup)
         };
         match source.local_file() {
             None => {
@@ -540,9 +545,10 @@ impl InstallStep for ItemFixStep {
         server.run_as_root(&format!("install -d -m 700 {directory}")).await?;
         let remote_sql = format!("{directory}/items-base-fix-{stamp}.sql");
         server.upload(&local_sql, &remote_sql, &|_| {}).await?;
-        let result = furni_import::import(server, &remote_sql, &log).await?;
+        let result = furni_import::import_with(server, &remote_sql, backup, &log).await?;
         ui.done(&tf("{count} furni", &[("count", &plan.rows().to_string())]));
-        *self.output.lock().unwrap() = Output { rows: plan.rows(), changes: plan.changes.len(), safety_backup: Some(result.safety_backup) };
+        let safety_backup = Some(result.safety_backup).filter(|b| !b.is_empty());
+        *self.output.lock().unwrap() = Output { rows: plan.rows(), changes: plan.changes.len(), safety_backup };
 
         if restart {
             let stopped = server_tools::stop_emulator(server, &log).await?;
@@ -563,7 +569,7 @@ impl InstallStep for ItemFixStep {
 /// Makes sure the tools use a database that has items_base. The configured one (the emulator's config.ini, else
 /// Settings) is used when it has one; otherwise the only database that has items_base, or the one the user picks
 /// among several. The choice holds for every tool until the installer closes and is saved in Settings.
-async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<(String, Vec<String>)> {
+pub(super) async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<(String, Vec<String>)> {
     let (configured, found) = item_fix::hotel_databases(server).await?;
     if found.iter().any(|d| *d == configured) {
         return Ok((configured, found));
@@ -586,7 +592,7 @@ async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<(St
 }
 
 /// `database` for every tool until the installer closes, and saved as Settings > Server layout > Hotel database.
-fn use_database(database: &str) {
+pub(super) fn use_database(database: &str) {
     aio_core::ServerLayout::choose_database(database);
     let mut settings = aio_core::InstallerSettings::load();
     let mut layout = settings.layout.clone().unwrap_or_default();

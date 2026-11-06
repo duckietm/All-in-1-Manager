@@ -2562,5 +2562,7 @@
   "No FurnitureData.json can be used:": "Mitään FurnitureData.jsonia ei voi käyttää:",
   "Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Jokainen palvelimen tietokanta, jossa on items_base-taulu. Valinta koskee kaikkia työkaluja ja tallennetaan asetuksiin (Palvelimen rakenne, Hotellin tietokanta).",
   "Reading {database} ...": "Luetaan {database} ...",
-  "Still reading the database: wait a moment.": "Tietokantaa luetaan vielä: odota hetki."
+  "Still reading the database: wait a moment.": "Tietokantaa luetaan vielä: odota hetki.",
+  "A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.": "Täysi vedos kansioon {folder} ennen muutoksia, palautettavissa kohdasta Työkalut > Tuo koko tietokanta. Pois: nopeampi, mutta mihinkään ei voi palata.",
+  "Back up the database first": "Varmuuskopioi tietokanta ensin"
 }

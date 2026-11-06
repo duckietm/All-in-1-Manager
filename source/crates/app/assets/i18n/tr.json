@@ -2562,5 +2562,7 @@
   "No FurnitureData.json can be used:": "Hiçbir FurnitureData.json kullanılamıyor:",
   "Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Sunucuda items_base tablosu olan her veritabanı. Seçim tüm araçlar için geçerlidir ve Ayarlar'a kaydedilir (Sunucu düzeni, Otel veritabanı).",
   "Reading {database} ...": "{database} okunuyor ...",
-  "Still reading the database: wait a moment.": "Veritabanı hâlâ okunuyor: biraz bekleyin."
+  "Still reading the database: wait a moment.": "Veritabanı hâlâ okunuyor: biraz bekleyin.",
+  "A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.": "Herhangi bir şey değişmeden önce {folder} içinde tam bir döküm; Araçlar > Tam veritabanını içe aktar ile geri yüklenir. Kapalı: daha hızlı, ama geri dönülecek bir şey yok.",
+  "Back up the database first": "Önce veritabanını yedekle"
 }

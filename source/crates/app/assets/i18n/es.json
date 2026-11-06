@@ -2562,5 +2562,7 @@
   "No FurnitureData.json can be used:": "No se puede usar ningún FurnitureData.json:",
   "Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Cada base de datos del servidor con una tabla items_base. La elección vale para todas las herramientas y se guarda en Ajustes (Estructura del servidor, Base de datos del hotel).",
   "Reading {database} ...": "Leyendo {database} ...",
-  "Still reading the database: wait a moment.": "Aún se está leyendo la base de datos: espera un momento."
+  "Still reading the database: wait a moment.": "Aún se está leyendo la base de datos: espera un momento.",
+  "A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.": "Un volcado completo en {folder} antes de cualquier cambio, para restaurarlo con Herramientas > Importar base de datos completa. Desactivado: más rápido, pero sin vuelta atrás.",
+  "Back up the database first": "Hacer primero una copia de la base de datos"
 }

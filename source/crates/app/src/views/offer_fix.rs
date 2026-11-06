@@ -30,6 +30,16 @@ struct Form {
     /// The server's FurnitureData.json as the check read it: the import reads it again and stops when it changed.
     source: Option<Arc<serde_json::Value>>,
     database: String,
+    /// Every database on the server with an items_base table (to choose from).
+    databases: Vec<String>,
+    /// To read another database from the page: the server and the runtime the check ran on.
+    server: Option<Arc<dyn Server>>,
+    runtime: Option<tokio::runtime::Handle>,
+    /// Reading another database now, or why that failed.
+    reloading: bool,
+    reload_error: Option<String>,
+    /// A database backup before the update (on by default).
+    backup: bool,
     restart: bool,
     list: List,
     filter: String,
@@ -39,7 +49,21 @@ struct Form {
 
 impl Default for Form {
     fn default() -> Self {
-        Self { plan: None, source: None, database: String::new(), restart: true, list: List::Updates, filter: String::new(), rows: None }
+        Self {
+            plan: None,
+            source: None,
+            database: String::new(),
+            databases: Vec::new(),
+            server: None,
+            runtime: None,
+            reloading: false,
+            reload_error: None,
+            backup: true,
+            restart: true,
+            list: List::Updates,
+            filter: String::new(),
+            rows: None,
+        }
     }
 }
 
@@ -73,13 +97,13 @@ struct Output {
 }
 
 pub struct OfferFixStep {
-    form: Mutex<Form>,
+    form: Arc<Mutex<Form>>,
     output: Mutex<Output>,
 }
 
 impl OfferFixStep {
     pub fn new() -> Self {
-        Self { form: Mutex::new(Form::default()), output: Mutex::new(Output::default()) }
+        Self { form: Arc::new(Mutex::new(Form::default())), output: Mutex::new(Output::default()) }
     }
 }
 
@@ -173,6 +197,27 @@ impl InstallStep for OfferFixStep {
         let mut form = self.form.lock().unwrap();
         let form = &mut *form;
         let Some(plan) = form.plan.clone() else { return };
+        ui.add_space(8.0);
+        ui.label(RichText::new(t("Hotel database")).size(14.0).strong());
+        let mut picked = form.database.clone();
+        ui.add_enabled_ui(!form.reloading, |ui| {
+            egui::ComboBox::from_id_salt("offer_fix_database").selected_text(&picked).width(260.0).show_ui(ui, |ui| {
+                for database in &form.databases {
+                    ui.selectable_value(&mut picked, database.clone(), database);
+                }
+            });
+        });
+        if form.reloading {
+            widgets::muted(ui, palette, &tf("Reading {database} ...", &[("database", &picked)]), 11.5);
+        } else if let Some(error) = &form.reload_error {
+            widgets::muted(ui, palette, &tf("Cannot be used: {error}", &[("error", error)]), 12.0);
+        } else {
+            widgets::muted(ui, palette, t("Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database)."), 11.5);
+        }
+        if picked != form.database && !form.reloading {
+            // Started while the page holds the lock: the task takes it only when it is done reading.
+            reload(form, self.form.clone(), picked, ui.ctx().clone());
+        }
         let rows = form.rows();
         ui.add_space(8.0);
         ui.label(RichText::new(t("What changes")).size(14.0).strong());
@@ -208,18 +253,32 @@ impl InstallStep for OfferFixStep {
             List::Kept => table(ui, palette, "offer_kept", &[300.0, 120.0], &["classname", "offerid"], &rows),
         }
         ui.add_space(8.0);
+        ui.checkbox(&mut form.backup, t("Back up the database first"));
+        widgets::muted(ui, palette, &tf("A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.", &[("folder", &server_tools::backup_directory())]), 11.5);
         ui.checkbox(&mut form.restart, t("Restart the emulator afterwards"));
         widgets::muted(ui, palette, t("The emulator reads items_base and the catalogue when it starts: players are disconnected for a moment. Off: restart it yourself later (Tools)."), 11.5);
     }
 
     fn validate(&self) -> Option<String> {
         let form = self.form.lock().unwrap();
+        if form.reloading {
+            return Some(t("Still reading the database: wait a moment.").into());
+        }
         let Some(plan) = &form.plan else { return Some(t("Nothing to fix: see the message above.").into()) };
         (plan.updates.is_empty() && !plan.furnidata_changes()).then(|| t("Every offer id is right already.").into())
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         self.form.lock().unwrap().plan = None;
+        let (_, databases) = super::item_fix::choose_database(server.as_ref(), &ui).await?;
+        {
+            let mut form = self.form.lock().unwrap();
+            form.databases = databases;
+            form.server = Some(server.clone());
+            form.runtime = Some(tokio::runtime::Handle::current());
+            form.reloading = false;
+            form.reload_error = None;
+        }
         let (database, catalog) = offer_fix::read_catalog(server.as_ref()).await?;
         // Always the server's own FurnitureData.json: it can be a merged or custom one.
         let furnidata = Arc::new(download_furnidata(server.as_ref()).await?);
@@ -248,10 +307,10 @@ impl InstallStep for OfferFixStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let (plan, source, restart) = {
+        let (plan, source, restart, backup) = {
             let form = self.form.lock().unwrap();
             let (Some(plan), Some(source)) = (form.plan.clone(), form.source.clone()) else { fail!("Nothing to fix.") };
-            (plan, source, form.restart)
+            (plan, source, form.restart, form.backup)
         };
         log("> Reading the server's FurnitureData.json again ...");
         // The fix is worked out from the file the check read; a file changed since (a new merge or custom file)
@@ -277,8 +336,8 @@ impl InstallStep for OfferFixStep {
             log(&format!("  The SQL is kept in {}", local_sql.display()));
             let remote_sql = format!("{directory}/offer-ids-{stamp}.sql");
             server.upload(&local_sql, &remote_sql, &|_| {}).await?;
-            let result = furni_import::import(server, &remote_sql, &log).await?;
-            output.safety_backup = Some(result.safety_backup);
+            let result = furni_import::import_with(server, &remote_sql, backup, &log).await?;
+            output.safety_backup = Some(result.safety_backup).filter(|b| !b.is_empty());
             output.updated = plan.updates.len();
             ui.done(&tf("{count} catalogue items", &[("count", &plan.updates.len().to_string())]));
         } else {
@@ -315,6 +374,35 @@ impl InstallStep for OfferFixStep {
             ),
         ))
     }
+}
+
+/// Reads `database`'s catalogue from the page, after the user chose it, and works the plan out again with the
+/// FurnitureData.json the check read.
+fn reload(locked: &mut Form, form: Arc<Mutex<Form>>, database: String, ctx: egui::Context) {
+    let (Some(server), Some(runtime), Some(furnidata)) = (locked.server.clone(), locked.runtime.clone(), locked.source.clone()) else { return };
+    locked.reloading = true;
+    locked.reload_error = None;
+    super::item_fix::use_database(&database);
+    runtime.spawn(async move {
+        let result = async {
+            let (_, catalog) = offer_fix::read_catalog(server.as_ref()).await?;
+            let plan = tokio::task::spawn_blocking(move || offer_fix::plan_new(&furnidata, &catalog)).await?;
+            anyhow::Ok(plan)
+        }
+        .await;
+        let mut f = form.lock().unwrap();
+        f.reloading = false;
+        match result {
+            Ok(plan) => {
+                f.plan = Some(Arc::new(plan));
+                f.database = database;
+                f.rows = None;
+            }
+            Err(error) => f.reload_error = Some(format!("{database}: {error}")),
+        }
+        drop(f);
+        ctx.request_repaint();
+    });
 }
 
 pub fn wizard(shared: &Shared) -> Wizard {

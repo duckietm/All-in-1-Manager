@@ -99,7 +99,7 @@ load_cloudflare_ranges() {
   echo "  $(echo "$ranges" | grep -c .) ranges"
 }
 set -o pipefail
-db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]') || true
 db=${db:-habbo}
 staging=plus_import
 f='/var/backups/all-in-1/plus-import-1.sql'

@@ -2562,5 +2562,7 @@
   "No FurnitureData.json can be used:": "Geen enkele FurnitureData.json is te gebruiken:",
   "Every database on the server with an items_base table. The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "Elke database op de server met een items_base-tabel. De keuze geldt voor elke tool en wordt bewaard in Instellingen (Serverindeling, Hoteldatabase).",
   "Reading {database} ...": "{database} lezen ...",
-  "Still reading the database: wait a moment.": "De database wordt nog gelezen: even geduld."
+  "Still reading the database: wait a moment.": "De database wordt nog gelezen: even geduld.",
+  "A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.": "Een volledige dump in {folder} voordat er iets verandert, terug te zetten met Tools > Volledige database importeren. Uit: sneller, maar niets om naar terug te gaan.",
+  "Back up the database first": "Eerst een back-up van de database maken"
 }

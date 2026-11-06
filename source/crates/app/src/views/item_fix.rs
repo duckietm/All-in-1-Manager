@@ -88,7 +88,7 @@ enum List {
 struct Read {
     rows: Vec<ItemRow>,
     /// The server's FurnitureData.json (the local ones are read when chosen).
-    server_furnidata: Arc<Value>,
+    server_furnidata: Result<Arc<Value>, String>,
     bundles: HashMap<String, Option<Bundle>>,
 }
 
@@ -141,7 +141,7 @@ impl Form {
     /// The chosen FurnitureData.json: the server's as the check read it, a local one read once.
     fn furnidata(&mut self) -> Result<Arc<Value>, String> {
         let Some(path) = self.source.local_file() else {
-            return self.read.as_ref().map(|r| r.server_furnidata.clone()).ok_or_else(|| t("Nothing read yet.").to_string());
+            return self.read.as_ref().map(|r| r.server_furnidata.clone()).unwrap_or_else(|| Err(t("Nothing read yet.").to_string()));
         };
         self.local.entry(self.source).or_insert_with(|| read_local_json(&path).map(Arc::new)).clone()
     }
@@ -275,7 +275,10 @@ impl InstallStep for ItemFixStep {
             ui.radio_value(&mut form.source, source, source.label());
         }
         match form.source.local_file() {
-            None => widgets::muted(ui, palette, &tf("{file}: what the hotel uses now, also when it is a merged or custom one.", &[("file", &aio_remote::offer_fix::furniture_data_path())]), 11.5),
+            None => match form.furnidata() {
+                Ok(_) => widgets::muted(ui, palette, &tf("{file}: what the hotel uses now, also when it is a merged or custom one.", &[("file", &aio_remote::offer_fix::furniture_data_path())]), 11.5),
+                Err(error) => widgets::muted(ui, palette, &tf("Cannot be used: {error}", &[("error", &error)]), 12.0),
+            },
             Some(path) => {
                 if let Err(error) = form.furnidata() {
                     widgets::muted(ui, palette, &tf("Cannot be used: {error}", &[("error", &error)]), 12.0);
@@ -379,30 +382,41 @@ impl InstallStep for ItemFixStep {
         }
         choose_database(server.as_ref(), &ui).await?;
         let (database, rows) = item_fix::read_items(server.as_ref()).await?;
-        // The server's FurnitureData.json (it can be a merged or custom one), or the local one chosen.
-        let server_furnidata = Arc::new(super::offer_fix::download_furnidata(server.as_ref()).await?);
+        // The server's FurnitureData.json (it can be a merged or custom one) and the local ones. The chosen one is
+        // used; when it is not there, the first of the others that is (a server without the file yet, say).
+        let server_furnidata = super::offer_fix::download_furnidata(server.as_ref()).await.map(Arc::new).map_err(|e| format!("{}: {e}", aio_remote::offer_fix::furniture_data_path()));
         let folders = bundle_folders();
-        let (fields, mut source) = {
+        let (fields, chosen_source) = {
             let form = self.form.lock().unwrap();
             (form.fields, form.source)
         };
-        let furnidata = match source.local_file() {
-            None => server_furnidata.clone(),
-            Some(path) => {
-                let read = tokio::task::spawn_blocking(move || read_local_json(&path).map(Arc::new)).await?;
-                let mut form = self.form.lock().unwrap();
-                form.local.insert(source, read.clone());
-                match read {
-                    Ok(value) => value,
-                    // Not there (any more): the server's, and the choice shows why the other cannot be used.
-                    Err(_) => {
-                        source = Source::Server;
-                        form.source = Source::Server;
-                        server_furnidata.clone()
-                    }
+        let order = std::iter::once(chosen_source).chain(Source::ALL.into_iter().filter(|s| *s != chosen_source));
+        let mut found = None;
+        let mut reasons = Vec::new();
+        for source in order {
+            let attempt = match source.local_file() {
+                None => server_furnidata.clone(),
+                Some(path) => {
+                    let read = tokio::task::spawn_blocking(move || read_local_json(&path).map(Arc::new)).await?;
+                    self.form.lock().unwrap().local.insert(source, read.clone());
+                    read
                 }
+            };
+            match attempt {
+                Ok(value) => {
+                    found = Some((source, value));
+                    break;
+                }
+                Err(reason) => reasons.push(format!("{}: {reason}", source.label())),
             }
+        }
+        let Some((source, furnidata)) = found else {
+            fail!("{}\n{}", t("No FurnitureData.json can be used:"), reasons.join("\n"));
         };
+        if source != chosen_source {
+            ui.log(&tf("> FurnitureData.json: {chosen} cannot be used, {used} is", &[("chosen", chosen_source.label()), ("used", source.label())]));
+        }
+        self.form.lock().unwrap().source = source;
         // Thousands of .hab files: not on the window's thread.
         let chosen = furnidata.clone();
         let (read, plan) = tokio::task::spawn_blocking(move || {
@@ -452,7 +466,7 @@ impl InstallStep for ItemFixStep {
         match source.local_file() {
             None => {
                 log("> Reading the server's FurnitureData.json again ...");
-                if super::offer_fix::download_furnidata(server).await? != *read.server_furnidata {
+                if read.server_furnidata.as_deref().ok() != Some(&super::offer_fix::download_furnidata(server).await?) {
                     fail!("{}", t("FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one."));
                 }
             }

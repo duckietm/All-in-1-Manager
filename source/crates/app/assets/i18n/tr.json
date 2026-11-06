@@ -2557,5 +2557,7 @@
   "No database on this server has an items_base table (looked for {database} first): install the emulator's database first.": "Bu sunucudaki hiçbir veritabanında items_base tablosu yok (önce {database} arandı): önce emülatörün veritabanını kurun.",
   "No hotel database chosen.": "Otel veritabanı seçilmedi.",
   "Which database is the hotel's?": "Otelin veritabanı hangisi?",
-  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} bu sunucuda items_base tablosuna sahip değil. Otelin veritabanı hangisi? Seçim tüm araçlar için geçerlidir ve Ayarlar'a kaydedilir (Sunucu düzeni, Otel veritabanı)."
+  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} bu sunucuda items_base tablosuna sahip değil. Otelin veritabanı hangisi? Seçim tüm araçlar için geçerlidir ve Ayarlar'a kaydedilir (Sunucu düzeni, Otel veritabanı).",
+  "> FurnitureData.json: {chosen} cannot be used, {used} is": "> FurnitureData.json: {chosen} kullanılamıyor, {used} kullanılıyor",
+  "No FurnitureData.json can be used:": "Hiçbir FurnitureData.json kullanılamıyor:"
 }

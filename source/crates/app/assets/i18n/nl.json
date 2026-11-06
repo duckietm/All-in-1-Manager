@@ -2557,5 +2557,7 @@
   "No database on this server has an items_base table (looked for {database} first): install the emulator's database first.": "Geen enkele database op deze server heeft een items_base-tabel (eerst gezocht naar {database}): installeer eerst de database van de emulator.",
   "No hotel database chosen.": "Geen hoteldatabase gekozen.",
   "Which database is the hotel's?": "Welke database is die van het hotel?",
-  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} heeft geen items_base-tabel op deze server. Welke database is die van het hotel? De keuze geldt voor elke tool en wordt bewaard in Instellingen (Serverindeling, Hoteldatabase)."
+  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} heeft geen items_base-tabel op deze server. Welke database is die van het hotel? De keuze geldt voor elke tool en wordt bewaard in Instellingen (Serverindeling, Hoteldatabase).",
+  "> FurnitureData.json: {chosen} cannot be used, {used} is": "> FurnitureData.json: {chosen} is niet te gebruiken, {used} wel",
+  "No FurnitureData.json can be used:": "Geen enkele FurnitureData.json is te gebruiken:"
 }

@@ -2557,5 +2557,7 @@
   "No database on this server has an items_base table (looked for {database} first): install the emulator's database first.": "Nenhuma base de dados deste servidor tem uma tabela items_base (procurou-se primeiro {database}): instale primeiro a base de dados do emulador.",
   "No hotel database chosen.": "Nenhuma base de dados do hotel escolhida.",
   "Which database is the hotel's?": "Que base de dados é a do hotel?",
-  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} não tem tabela items_base neste servidor. Que base de dados é a do hotel? A escolha vale para todas as ferramentas e fica guardada nas Definições (Estrutura do servidor, Base de dados do hotel)."
+  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} não tem tabela items_base neste servidor. Que base de dados é a do hotel? A escolha vale para todas as ferramentas e fica guardada nas Definições (Estrutura do servidor, Base de dados do hotel).",
+  "> FurnitureData.json: {chosen} cannot be used, {used} is": "> FurnitureData.json: {chosen} não pode ser usado, {used} pode",
+  "No FurnitureData.json can be used:": "Nenhum FurnitureData.json pode ser usado:"
 }

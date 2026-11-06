@@ -15,7 +15,7 @@ import sys
 
 SOURCE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(SOURCE)
-EXE = "all-in-1-installer" + (".exe" if os.name == "nt" else "")
+EXE = "all-in-1-manager" + (".exe" if os.name == "nt" else "")
 
 
 def main():

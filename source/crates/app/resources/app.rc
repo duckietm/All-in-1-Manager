@@ -11,12 +11,12 @@ BEGIN
   BEGIN
     BLOCK "040904B0"
     BEGIN
-      VALUE "CompanyName",      "All-in-1 Installer"
-      VALUE "FileDescription",  "All-in-1 Installer - a full hotel server over SSH"
+      VALUE "CompanyName",      "All-in-1 Manager"
+      VALUE "FileDescription",  "All-in-1 Manager - a full hotel server over SSH"
       VALUE "FileVersion",      "2.0.17"
-      VALUE "InternalName",     "all-in-1-installer"
-      VALUE "OriginalFilename", "all-in-1-installer.exe"
-      VALUE "ProductName",      "All-in-1 Installer"
+      VALUE "InternalName",     "all-in-1-manager"
+      VALUE "OriginalFilename", "all-in-1-manager.exe"
+      VALUE "ProductName",      "All-in-1 Manager"
       VALUE "ProductVersion",   "2.0.17"
     END
   END

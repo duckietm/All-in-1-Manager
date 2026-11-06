@@ -3,7 +3,7 @@ name = "aio-remote"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "All-in-1 Installer: the SSH connection to the server and every install step's scripts"
+description = "All-in-1 Manager: the SSH connection to the server and every install step's scripts"
 
 [dependencies]
 aio-assets.workspace = true

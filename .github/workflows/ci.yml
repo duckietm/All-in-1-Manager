@@ -26,8 +26,8 @@ jobs:
         run: cargo build --release -p aio-app
       - uses: actions/upload-artifact@v4
         with:
-          name: all-in-1-installer-windows-x64
-          path: target/release/all-in-1-installer.exe
+          name: all-in-1-manager-windows-x64
+          path: target/release/all-in-1-manager.exe
 
   linux:
     name: Linux x64
@@ -44,5 +44,5 @@ jobs:
         run: cargo build --release -p aio-app
       - uses: actions/upload-artifact@v4
         with:
-          name: all-in-1-installer-linux-x64
-          path: target/release/all-in-1-installer
+          name: all-in-1-manager-linux-x64
+          path: target/release/all-in-1-manager

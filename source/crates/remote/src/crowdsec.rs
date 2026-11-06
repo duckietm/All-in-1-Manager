@@ -228,7 +228,7 @@ key=$(sed -n 's/^BOUNCER_KEY=//p' "$c/.env" 2>/dev/null) || key=
 enrolled=$(sed -n 's/^ENROLLED=//p' "$c/.env" 2>/dev/null) || enrolled=
 umask 077
 cat > "$c/.env" <<EOF
-# CrowdSec (written by All-in-1 Installer, Addons → CrowdSec).
+# CrowdSec (written by All-in-1 Manager, Addons → CrowdSec).
 LAPI_PORT=$port
 BOUNCER_KEY=$key
 INSTANCE={{InstanceName}}
@@ -239,7 +239,7 @@ umask 022
 echo "> $c/.env: CrowdSec's API on 127.0.0.1:$port"
 
 cat > "$c/acquis.yaml" <<'EOF'
-# What CrowdSec reads (written by All-in-1 Installer): Traefik's access log, every request to the hotel.
+# What CrowdSec reads (written by All-in-1 Manager): Traefik's access log, every request to the hotel.
 filenames:
   - {{AccessLog}}
 labels:
@@ -247,7 +247,7 @@ labels:
 EOF
 
 cat > "$c/parsers/hotel-assets.yaml" <<'EOF'
-# The hotel's own files are not suspicious (written by All-in-1 Installer): a room loads hundreds of furniture
+# The hotel's own files are not suspicious (written by All-in-1 Manager): a room loads hundreds of furniture
 # files at once, and missing ones answer 404. Without this, players would look like crawlers or scanners.
 name: all-in-1/hotel-assets
 description: "Requests for the hotel's assets (gamedata, client) are never counted"
@@ -258,7 +258,7 @@ whitelist:
 EOF
 
 cat > "$c/compose.yaml" <<'EOF'
-# CrowdSec for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# CrowdSec for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 services:
   crowdsec:
     image: {{Image}}
@@ -345,7 +345,7 @@ pub async fn install_engine(server: &dyn Server, settings: &CrowdSecSettings, lo
 
 const ALLOWLIST: &str = r#"cs() { docker exec {{Container}} cscli "$@"; }
 cs allowlists delete {{AllowlistName}} >/dev/null 2>&1 || true
-cs allowlists create {{AllowlistName}} -d "Never banned (All-in-1 Installer)" >/dev/null || fail "Could not make CrowdSec's allowlist."
+cs allowlists create {{AllowlistName}} -d "Never banned (All-in-1 Manager)" >/dev/null || fail "Could not make CrowdSec's allowlist."
 for e in {{entries}}; do
   cs allowlists add {{AllowlistName}} "$e" >/dev/null || fail "CrowdSec does not take $e for the allowlist."
   case "$e" in */*) cs decisions delete -r "$e" >/dev/null 2>&1 ;; *) cs decisions delete -i "$e" >/dev/null 2>&1 ;; esac
@@ -402,7 +402,7 @@ if [ {{cloudflare}} = yes ]; then
 fi
 umask 077
 cat > {{MiddlewareFile}} <<EOF
-# CrowdSec's bouncer on every route (written by All-in-1 Installer, Addons → CrowdSec; Tools → CrowdSec).
+# CrowdSec's bouncer on every route (written by All-in-1 Manager, Addons → CrowdSec; Tools → CrowdSec).
 http:
   middlewares:
     {{Middleware}}:

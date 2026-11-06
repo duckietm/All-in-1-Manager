@@ -536,7 +536,7 @@ impl App {
                 tf("The emulator on {host}: CPU per thread, the wired engine and slow wired rooms.", &[("host", &host)]),
             ),
             Page::History => (t("History").into(), t("What ran on which server, with its log: every install step and tool.").into()),
-            Page::About => (t("About").into(), "All-in-1 Installer".into()),
+            Page::About => (t("About").into(), "All-in-1 Manager".into()),
             Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, your own SSH keys, and the All-in-1 downloader.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
@@ -556,18 +556,18 @@ impl App {
                     ui.add_space(6.0);
                     ui.vertical(|ui| {
                         if theme::hotel() {
-                            let text = RichText::new("All-in-1 Installer").size(17.0).family(theme::title_family()).color(Fixed::hotel_yellow());
+                            let text = RichText::new("All-in-1 Manager").size(17.0).family(theme::title_family()).color(Fixed::hotel_yellow());
                             let galley_pos = ui.cursor().min;
                             ui.painter().text(
                                 galley_pos + egui::vec2(0.0, 2.0),
                                 egui::Align2::LEFT_TOP,
-                                "All-in-1 Installer",
+                                "All-in-1 Manager",
                                 egui::FontId::new(17.0, theme::title_family()),
                                 Color32::from_black_alpha(0xB0),
                             );
                             ui.label(text);
                         } else {
-                            ui.label(RichText::new("All-in-1 Installer").size(15.0).strong().color(Color32::WHITE));
+                            ui.label(RichText::new("All-in-1 Manager").size(15.0).strong().color(Color32::WHITE));
                         }
                         ui.label(RichText::new(t("Hotel server setup")).size(11.5).color(Fixed::sidebar_muted()));
                     });
@@ -1035,7 +1035,7 @@ pub fn run(runtime: tokio::runtime::Handle, dry_run: bool, renderer: Renderer) -
         egui::IconData { rgba: image.into_raw(), width, height }
     });
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("All-in-1 Installer")
+        .with_title("All-in-1 Manager")
         .with_inner_size([1280.0, 820.0])
         .with_min_inner_size([1000.0, 680.0])
         .with_drag_and_drop(true);
@@ -1047,5 +1047,5 @@ pub fn run(runtime: tokio::runtime::Handle, dry_run: bool, renderer: Renderer) -
         Renderer::Wgpu => eframe::Renderer::Wgpu,
     };
     let options = eframe::NativeOptions { viewport, centered: true, renderer, ..Default::default() };
-    eframe::run_native("All-in-1 Installer", options, Box::new(move |cc| Ok(Box::new(App::new(cc, runtime, dry_run)))))
+    eframe::run_native("All-in-1 Manager", options, Box::new(move |cc| Ok(Box::new(App::new(cc, runtime, dry_run)))))
 }

@@ -1,4 +1,4 @@
-//! All-in-1 Installer: sets up a full hotel server (Polaris Emulator, Octane, Octane Renderer, MariaDB, NGINX, PHP,
+//! All-in-1 Manager: sets up a full hotel server (Polaris Emulator, Octane, Octane Renderer, MariaDB, NGINX, PHP,
 //! Traefik, and the addons) on an Ubuntu Server or Debian machine over SSH.
 //!
 //! `--dry-run` connects to nothing: every command the steps would send is shown in their logs instead.
@@ -14,7 +14,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "All-in-1 Installer {}\n\n  --dry-run            show the commands instead of running them on a server\n  --renderer=wgpu|glow  draw with DirectX / Vulkan (wgpu) or OpenGL (glow)\n  --version            print the version",
+            "All-in-1 Manager {}\n\n  --dry-run            show the commands instead of running them on a server\n  --renderer=wgpu|glow  draw with DirectX / Vulkan (wgpu) or OpenGL (glow)\n  --version            print the version",
             update::CURRENT_VERSION
         );
         return;
@@ -81,5 +81,5 @@ fn show_start_failure(message: &str) {
         "{message}\n\nThe graphics driver offers neither DirectX 12 nor OpenGL 2. On a virtual machine: turn on 3D acceleration for its display (VMware: Display > Accelerate 3D graphics) or install its guest tools, then start the installer again.\n\nDetails: {}",
         log.display()
     );
-    rfd::MessageDialog::new().set_title("All-in-1 Installer").set_description(text).set_level(rfd::MessageLevel::Error).set_buttons(rfd::MessageButtons::Ok).show();
+    rfd::MessageDialog::new().set_title("All-in-1 Manager").set_description(text).set_level(rfd::MessageLevel::Error).set_buttons(rfd::MessageButtons::Ok).show();
 }

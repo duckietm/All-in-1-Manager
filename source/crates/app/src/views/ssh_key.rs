@@ -375,7 +375,7 @@ impl InstallStep for SshKeyStep {
     fn enter(&self, server: &dyn Server) {
         let mut form = self.form.lock().unwrap();
         if form.comment.trim().is_empty() {
-            form.comment = format!("all-in-1-installer@{}", server.login().host);
+            form.comment = format!("all-in-1-manager@{}", server.login().host);
         }
         form.browse_problem = None;
     }

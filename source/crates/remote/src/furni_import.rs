@@ -562,7 +562,7 @@ pub fn pages(names: &[&str], per_page: usize) -> Vec<(String, Vec<usize>)> {
 /// overwritten.
 pub fn sql(plan: &Plan, caption: &str, parent_id: i64, visible: bool, with_uncatalogued: bool, per_page: usize) -> String {
     let mut out = String::new();
-    out.push_str("-- Import Assets (All-in-1 Installer): furniture the database did not have.\n");
+    out.push_str("-- Import Assets (All-in-1 Manager): furniture the database did not have.\n");
     out.push_str(&format!(
         "-- {} new furniture ({} floor, {} wall), {} catalogue items for furniture without one.\n",
         plan.new.len(),

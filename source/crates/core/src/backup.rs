@@ -63,7 +63,7 @@ pub fn import_into(target: &Path, file: &Path, password: &str) -> Result<(Option
     let data = std::fs::read(file).with_context(|| format!("Could not read {}", file.display()))?;
     let header = MAGIC.len() + SALT_SIZE + 4 + NONCE_SIZE + TAG_SIZE;
     if data.len() < header || &data[..MAGIC.len()] != MAGIC {
-        bail!("This is not a settings backup of the All-in-1 Installer.");
+        bail!("This is not a settings backup of the All-in-1 Manager.");
     }
     let mut at = MAGIC.len();
     let salt = &data[at..at + SALT_SIZE];

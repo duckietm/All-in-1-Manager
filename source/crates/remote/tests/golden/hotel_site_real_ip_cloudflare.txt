@@ -5,7 +5,7 @@ if [ yes = yes ]; then
   cf=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
     | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
   if [ "$(echo "$cf" | grep -c .)" -ge 10 ]; then
-    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Manager): Traefik and Cloudflare."
       echo "set_real_ip_from 127.0.0.1;"
       echo "$cf" | sed 's/.*/set_real_ip_from &;/'; } > "$realip"
     echo "> $realip: 127.0.0.1 and $(echo "$cf" | grep -c .) Cloudflare ranges (the visitor's address, not Cloudflare's)"
@@ -16,7 +16,7 @@ if [ yes = yes ]; then
     echo "  Could not download Cloudflare's ranges: NGINX sees Cloudflare's address until this runs again"
   fi
 else
-  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Installer): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
+  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Manager): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
   echo "> $realip: 127.0.0.1 (Traefik)"
 fi
 if [ -f /etc/nginx/sites-available/hotel ] && ! grep -q 'include /etc/nginx/hotel-real-ip.conf' /etc/nginx/sites-available/hotel; then

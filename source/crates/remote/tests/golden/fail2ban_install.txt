@@ -113,7 +113,7 @@ f=/etc/fail2ban/jail.d/all-in-1.local
 install -d -m 755 /etc/fail2ban/jail.d
 [ -f "$f" ] && cp -p "$f" "$f.bak"
 cat > "$f" <<'CONF'
-# Written by All-in-1 Installer (Addons -> Fail2Ban; the whitelist also in Tools -> Fail2Ban).
+# Written by All-in-1 Manager (Addons -> Fail2Ban; the whitelist also in Tools -> Fail2Ban).
 # Changes here are overwritten by the next run of the addon or the whitelist tool.
 
 [DEFAULT]

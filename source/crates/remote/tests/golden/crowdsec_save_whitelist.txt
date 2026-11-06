@@ -101,7 +101,7 @@ load_cloudflare_ranges() {
 [ "$(docker inspect -f '{{.State.Running}}' crowdsec 2>/dev/null)" = true ] || fail "CrowdSec does not run: run Addons → CrowdSec first."
 cs() { docker exec crowdsec cscli "$@"; }
 cs allowlists delete all-in-1 >/dev/null 2>&1 || true
-cs allowlists create all-in-1 -d "Never banned (All-in-1 Installer)" >/dev/null || fail "Could not make CrowdSec's allowlist."
+cs allowlists create all-in-1 -d "Never banned (All-in-1 Manager)" >/dev/null || fail "Could not make CrowdSec's allowlist."
 for e in '203.0.113.5' '198.51.100.0/24'; do
   cs allowlists add all-in-1 "$e" >/dev/null || fail "CrowdSec does not take $e for the allowlist."
   case "$e" in */*) cs decisions delete -r "$e" >/dev/null 2>&1 ;; *) cs decisions delete -i "$e" >/dev/null 2>&1 ;; esac
@@ -118,7 +118,7 @@ if [ no = yes ]; then
 fi
 umask 077
 cat > /opt/traefik/dynamic/crowdsec.yml <<EOF
-# CrowdSec's bouncer on every route (written by All-in-1 Installer, Addons → CrowdSec; Tools → CrowdSec).
+# CrowdSec's bouncer on every route (written by All-in-1 Manager, Addons → CrowdSec; Tools → CrowdSec).
 http:
   middlewares:
     crowdsec:

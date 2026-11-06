@@ -105,7 +105,7 @@ added=
 if grep -Eq '^[[:space:]]*#?[[:space:]]*net.ipv4.tcp_syncookies[[:space:]]*=' /etc/sysctl.conf; then
   sed -i -E 's|^[[:space:]]*#?[[:space:]]*net.ipv4.tcp_syncookies[[:space:]]*=.*|net.ipv4.tcp_syncookies=1|' /etc/sysctl.conf
 else
-  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Installer)\n' >> /etc/sysctl.conf
+  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Manager)\n' >> /etc/sysctl.conf
   added=yes
   echo 'net.ipv4.tcp_syncookies=1' >> /etc/sysctl.conf
 fi
@@ -113,7 +113,7 @@ if sysctl -w 'net.ipv4.tcp_syncookies=1' >/dev/null 2>&1; then echo "  net.ipv4.
 if grep -Eq '^[[:space:]]*#?[[:space:]]*net.ipv4.tcp_max_syn_backlog[[:space:]]*=' /etc/sysctl.conf; then
   sed -i -E 's|^[[:space:]]*#?[[:space:]]*net.ipv4.tcp_max_syn_backlog[[:space:]]*=.*|net.ipv4.tcp_max_syn_backlog=2048|' /etc/sysctl.conf
 else
-  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Installer)\n' >> /etc/sysctl.conf
+  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Manager)\n' >> /etc/sysctl.conf
   added=yes
   echo 'net.ipv4.tcp_max_syn_backlog=2048' >> /etc/sysctl.conf
 fi
@@ -121,7 +121,7 @@ if sysctl -w 'net.ipv4.tcp_max_syn_backlog=2048' >/dev/null 2>&1; then echo "  n
 if grep -Eq '^[[:space:]]*#?[[:space:]]*net.ipv4.tcp_synack_retries[[:space:]]*=' /etc/sysctl.conf; then
   sed -i -E 's|^[[:space:]]*#?[[:space:]]*net.ipv4.tcp_synack_retries[[:space:]]*=.*|net.ipv4.tcp_synack_retries=3|' /etc/sysctl.conf
 else
-  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Installer)\n' >> /etc/sysctl.conf
+  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Manager)\n' >> /etc/sysctl.conf
   added=yes
   echo 'net.ipv4.tcp_synack_retries=3' >> /etc/sysctl.conf
 fi

@@ -107,7 +107,7 @@ if [ -n "$pid" ] && [ "$(readlink /proc/$pid/cwd)" != /var/www/epicnext ]; then
 fi
 echo "> /etc/systemd/system/epicnext-cms.service"
 cat > /etc/systemd/system/epicnext-cms.service <<'UNIT'
-# EpicNext CMS (written by All-in-1 Installer, Addons → CMS). NGINX (cms-epicnext) passes the site here.
+# EpicNext CMS (written by All-in-1 Manager, Addons → CMS). NGINX (cms-epicnext) passes the site here.
 [Unit]
 Description=EpicNext CMS
 After=network-online.target mariadb.service

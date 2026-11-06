@@ -409,7 +409,7 @@ pub fn semicolons(multiheight: &str) -> Option<String> {
 
 /// The updates as one transaction; a multiheight furni is never touched, also when it became one meanwhile.
 pub fn sql(plan: &FixPlan) -> String {
-    let mut out = String::from("-- Fix items_base (All-in-1 Installer): values as FurnitureData.json and the .hab files give them.\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n");
+    let mut out = String::from("-- Fix items_base (All-in-1 Manager): values as FurnitureData.json and the .hab files give them.\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n");
     for (id, set) in &plan.updates {
         // A row whose multiheight this fix sets or removes is meant, and so is a multiheight furni whose size it
         // fixes; every other one must not be a multiheight furni.

@@ -3,7 +3,7 @@ name = "aio-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "All-in-1 Installer: settings, the configuration folder, server layout, credentials, SSH keys and the settings backup"
+description = "All-in-1 Manager: settings, the configuration folder, server layout, credentials, SSH keys and the settings backup"
 
 [dependencies]
 anyhow.workspace = true

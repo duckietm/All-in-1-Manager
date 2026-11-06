@@ -337,7 +337,7 @@ env_set DATABASE_URL "mysql://$(enc "$dbuser"):$(enc "$dbpass")@127.0.0.1:3306/$
 # .env.example), while an unset one is fine: empty settings are commented out.
 empty=$(grep -cE '^[A-Za-z0-9_]+=("")?[[:space:]]*$' .env || true)
 if [ "$empty" -gt 0 ]; then
-  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Installer)/' .env
+  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Manager)/' .env
   echo "  $empty empty settings left unset (commented out): EpicNext refuses empty values"
 fi
 chmod 640 .env
@@ -556,7 +556,7 @@ if [ -n "$pid" ] && [ "$(readlink /proc/$pid/cwd)" != {{Directory}} ]; then
 fi
 echo "> {{ServiceFile}}"
 cat > {{ServiceFile}} <<'UNIT'
-# EpicNext CMS (written by All-in-1 Installer, Addons → CMS). NGINX (cms-{{SiteName}}) passes the site here.
+# EpicNext CMS (written by All-in-1 Manager, Addons → CMS). NGINX (cms-{{SiteName}}) passes the site here.
 [Unit]
 Description=EpicNext CMS
 After=network-online.target mariadb.service

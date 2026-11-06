@@ -10,7 +10,9 @@ use chrono::{DateTime, Local, NaiveDateTime};
 use crate::config_dir;
 
 pub const KEPT_PER_SERVER: usize = 300;
-const MAGIC: &str = "# All-in-1 Installer history";
+const MAGIC: &str = "# All-in-1 Manager history";
+/// The header of runs saved before the rename (All-in-1 Installer): still read.
+const OLD_MAGIC: &str = "# All-in-1 Installer history";
 const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 /// How a run ended.
@@ -153,7 +155,8 @@ pub fn read_entry(path: &Path) -> Option<Entry> {
     use std::io::BufRead;
     let file = std::fs::File::open(path).ok()?;
     let mut lines = std::io::BufReader::new(file).lines();
-    if lines.next()?.ok()? != MAGIC {
+    let first = lines.next()?.ok()?;
+    if first != MAGIC && first != OLD_MAGIC {
         return None;
     }
     let mut values = std::collections::HashMap::new();
@@ -181,7 +184,7 @@ pub fn read_entry(path: &Path) -> Option<Entry> {
 pub fn read_log(path: &Path) -> Vec<String> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut lines = text.lines();
-    if lines.next() != Some(MAGIC) {
+    if !matches!(lines.next(), Some(MAGIC | OLD_MAGIC)) {
         return text.lines().map(str::to_string).collect();
     }
     // The header ends at the first empty line.

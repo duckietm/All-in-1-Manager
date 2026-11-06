@@ -1,7 +1,7 @@
 //! Keeps the program itself up to date (AppUpdate.cs). At startup it asks GitHub for the newest release; when that
 //! release is newer than the running build, the download replaces the running file and the program starts again.
-//! Releases of the Rust build are tagged `rust-v<version>` and carry `all-in-1-installer-windows-x64.exe` /
-//! `all-in-1-installer-linux-x64`. Only published releases count: no internet, a draft or pre-release, or a
+//! Releases of the Rust build are tagged `rust-v<version>` and carry `all-in-1-manager-windows-x64.exe` /
+//! `all-in-1-manager-linux-x64`. Only published releases count: no internet, a draft or pre-release, or a
 //! repository without releases all mean no question is asked.
 
 use std::path::{Path, PathBuf};
@@ -10,13 +10,13 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const REPOSITORY: &str = "duckietm/All-in-1-installer";
+pub const REPOSITORY: &str = "duckietm/All-in-1-Manager";
 const TAG_PREFIX: &str = "rust-v";
 
 #[cfg(windows)]
-pub const ASSET_NAME: &str = "all-in-1-installer-windows-x64.exe";
+pub const ASSET_NAME: &str = "all-in-1-manager-windows-x64.exe";
 #[cfg(not(windows))]
-pub const ASSET_NAME: &str = "all-in-1-installer-linux-x64";
+pub const ASSET_NAME: &str = "all-in-1-manager-linux-x64";
 
 /// Where to get the newest program by hand.
 pub fn download_page() -> String {
@@ -59,7 +59,7 @@ struct GithubAsset {
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         // The GitHub API refuses requests without a user agent.
-        .user_agent(format!("All-in-1-Installer/{CURRENT_VERSION}"))
+        .user_agent(format!("All-in-1-Manager/{CURRENT_VERSION}"))
         .timeout(std::time::Duration::from_secs(20 * 60))
         .build()
         .expect("HTTP client")

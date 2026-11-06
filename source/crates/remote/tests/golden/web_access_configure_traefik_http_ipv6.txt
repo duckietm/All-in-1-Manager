@@ -110,7 +110,7 @@ fi
 if [ -f /opt/traefik/dynamic/crowdsec.yml ]; then
   echo "> $t/traefik.yml (with CrowdSec)"
   cat > "$t/traefik.yml" <<'EOF'
-# Traefik static configuration (written by All-in-1 Installer).
+# Traefik static configuration (written by All-in-1 Manager).
 entryPoints:
   web:
     address: ":80"
@@ -137,7 +137,7 @@ EOF
 else
   echo "> $t/traefik.yml"
   cat > "$t/traefik.yml" <<'EOF'
-# Traefik static configuration (written by All-in-1 Installer).
+# Traefik static configuration (written by All-in-1 Manager).
 entryPoints:
   web:
     address: ":80"
@@ -156,7 +156,7 @@ sed -i "s#\[TRUSTED\]#[$trusted]#" "$t/traefik.yml"
 
 echo "> $t/dynamic/hotel.yml: http://[2001:db8::1]/ws and /api to Polaris, the rest to NGINX"
 cat > "$t/dynamic/hotel.yml" <<'EOF'
-# The hotel's routes (written by All-in-1 Installer).
+# The hotel's routes (written by All-in-1 Manager).
 http:
   routers:
     polaris:
@@ -193,7 +193,7 @@ rm -f "$t/dynamic/hotel-www.yml"
 echo "> $t/compose.yaml"
 install -d -m 755 /var/log/traefik "$t/plugins-storage"
 cat > "$t/compose.yaml" <<'EOF'
-# Traefik for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# Traefik for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 services:
   traefik:
     image: traefik:v3

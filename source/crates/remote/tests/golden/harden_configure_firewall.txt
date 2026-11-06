@@ -138,7 +138,7 @@ echo "  MariaDB (3306) and the emulator's ports stay closed (use an SSH tunnel f
 
 echo "> ufw enable"
 ufw --force enable
-printf 'Firewall set up by the All-in-1 Installer harden step on %s.\nThe other steps no longer open ports; run the harden step again to change the rules.\n' "$(date)" > /etc/ufw/all-in-1-hardened
+printf 'Firewall set up by the All-in-1 Manager harden step on %s.\nThe other steps no longer open ports; run the harden step again to change the rules.\n' "$(date)" > /etc/ufw/all-in-1-hardened
 ufw status verbose | sed 's/^/  /' | grep -v '^  $' | grep -v 'Cloudflare' || true
 [ -z "$ranges" ] || echo "  (+ $(ufw status | grep -c Cloudflare) Cloudflare rules for 80,443)"
 echo "> Firewall log: /var/log/ufw.log"

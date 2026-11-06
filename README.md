@@ -1,4 +1,4 @@
-# All-in-1 Installer
+# All-in-1 Manager
 
 A desktop installer, written in Rust, that sets up a **full hotel server** on an **Ubuntu Server or Debian**
 machine over SSH:
@@ -69,15 +69,15 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 
 ## Quick start
 
-1. Download `all-in-1-installer-windows-x64.exe` or `all-in-1-installer-linux-x64` from the
-   [releases](https://github.com/duckietm/All-in-1-installer/releases) and start it (on Linux: `chmod +x` first).
+1. Download `all-in-1-manager-windows-x64.exe` or `all-in-1-manager-linux-x64` from the
+   [releases](https://github.com/duckietm/All-in-1-Manager/releases) and start it (on Linux: `chmod +x` first).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
 3. **Install New Server** and follow the steps. Each one explains what it does; **Skip** leaves it out.
 4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Habbo assets** and
    **Deploy Assets** (sidebar → ASSETS) for the game's files.
 5. Afterwards **Tools** runs the hotel: **Health check** first when something seems wrong.
 
-To look around first: `all-in-1-installer --dry-run` logs in to nothing and only shows the commands.
+To look around first: `all-in-1-manager --dry-run` logs in to nothing and only shows the commands.
 
 **Does not open (a Windows VM)?** On Windows the window is drawn with DirectX 12 (wgpu), which works without a GPU
 too (VMware SVGA 3D, Hyper-V, Microsoft's software renderer). If that fails, the installer starts itself again with
@@ -97,8 +97,8 @@ program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 ## Requirements
 
 **On your computer** (Windows 10/11 x64 or Linux x64): nothing. The installer is one file, with everything it
-needs inside (fonts, the client images for Deploy Assets). Download `all-in-1-installer-windows-x64.exe` or
-`all-in-1-installer-linux-x64` from the [releases](https://github.com/duckietm/All-in-1-installer/releases), or
+needs inside (fonts, the client images for Deploy Assets). Download `all-in-1-manager-windows-x64.exe` or
+`all-in-1-manager-linux-x64` from the [releases](https://github.com/duckietm/All-in-1-Manager/releases), or
 [build it](#building). On Linux it needs a desktop (X11 or Wayland) and OpenGL.
 
 **The server**: a fresh Ubuntu Server (22.04 or newer) or Debian (12 or newer) machine you can reach over SSH as
@@ -195,7 +195,7 @@ trusts the host key seen during the first login.
 #### The configuration directory
 
 `configuration/` is created next to the installer (falling back to
-`%LOCALAPPDATA%\All-in-1 Installer\configuration` or `~/.local/share/All-in-1 Installer/configuration`
+`%LOCALAPPDATA%\All-in-1 Manager\configuration` or `~/.local/share/All-in-1 Manager/configuration`
 when that folder is read-only). Keys are stored per server:
 
 ```
@@ -1506,7 +1506,13 @@ recorded.
 
 ## Updating the installer itself
 
-The program checks at startup whether a newer release of <https://github.com/duckietm/All-in-1-installer> is out
+**Renamed from All-in-1 Installer.** The repository was `duckietm/All-in-1-installer` and the program
+`all-in-1-installer`. Releases still carry `all-in-1-installer-windows-x64.exe` / `-linux-x64` next to the new names,
+so a version from before the rename updates itself to the All-in-1 Manager. Its settings stay: the `configuration`
+folder next to the program, or `All-in-1 Installer\configuration` in the user's data folder while that one exists;
+files the installer wrote on a server are recognised by both names, and the old history files are still read.
+
+The program checks at startup whether a newer release of <https://github.com/duckietm/All-in-1-Manager> is out
 (releases tagged `rust-v<version>`). When there is one, it says what is new and offers **Update and restart**: the
 release file is downloaded next to the running program, the running one is renamed to `<name>.old`, the new one takes
 its place under the same name, and the program starts again. **Later** keeps the version you have; the question comes
@@ -1518,7 +1524,7 @@ a repository without releases all mean no question is asked. A debug build (`car
 **About → Check for updates** checks again at any time.
 
 The version it compares is `version` in `[workspace.package]` of `Cargo.toml` against the release's tag. The file it
-downloads is `all-in-1-installer-windows-x64.exe` on Windows and `all-in-1-installer-linux-x64` on Linux.
+downloads is `all-in-1-manager-windows-x64.exe` on Windows and `all-in-1-manager-linux-x64` on Linux.
 
 ## Building
 
@@ -1541,7 +1547,7 @@ build test         ./build.sh test        # all tests
 On Windows it needs Visual Studio's "Desktop development with C++" (Rust uses its linker). The same with Python:
 
 ```bash
-python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-installer(.exe)
+python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-manager(.exe)
 python source/tools/build.py release           # release build  -> public/release/ (with Assets/ next to it)
 python source/tools/build.py dev --run         # and start it
 cargo test --workspace                         # all tests, including the parity tests
@@ -1558,7 +1564,7 @@ needs no GUI.
 ### Dry run
 
 ```bash
-all-in-1-installer --dry-run
+all-in-1-manager --dry-run
 ```
 
 logs in to nothing: every command a step would send to the server (the scripts, what goes over stdin, uploads and
@@ -1575,7 +1581,7 @@ first (the health check then finds a sample server), and `AIO_SCREENSHOT_THEME=d
 `AIO_SCREENSHOT_LOOK=hotel|professional` and `AIO_SCREENSHOT_LANG=<code>` set the rest. For example:
 
 ```bash
-AIO_SCREENSHOT=install.png AIO_SCREENSHOT_PAGE=install AIO_SCREENSHOT_STEP=2 AIO_SCREENSHOT_CONNECT=1 all-in-1-installer
+AIO_SCREENSHOT=install.png AIO_SCREENSHOT_PAGE=install AIO_SCREENSHOT_STEP=2 AIO_SCREENSHOT_CONNECT=1 all-in-1-manager
 ```
 
 The pictures in `public/docs/screenshots` are made this way with the latest release, in English and the light theme
@@ -1599,7 +1605,7 @@ the C# sources they compile are in the git history up to commit `50dd986`.
 Every push to `main` makes a release (`.github/workflows/release.yml`), and the version goes up by itself: when the
 version in `Cargo.toml` already has a release, the last number is raised (2.0.3 → 2.0.4), the bot commits
 `Version 2.0.4` to `main`, and that commit is tested, built and published as `rust-v2.0.4` with
-`all-in-1-installer-windows-x64.exe` and `all-in-1-installer-linux-x64`, the files the update check looks for. A
+`all-in-1-manager-windows-x64.exe` and `all-in-1-manager-linux-x64`, the files the update check looks for. A
 version you set yourself and that has no release yet (for a bigger step, e.g. 2.1.0) is released as it is. Pushes
 that only change the README, the licence or `public/docs` release nothing. After a release, `git pull` brings the
 bot's version commit to your copy.

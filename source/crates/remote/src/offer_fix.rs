@@ -150,7 +150,7 @@ pub fn plan_new(furnidata: &Value, catalog: &[CatalogRow]) -> OfferPlan {
 
 /// The updates as one transaction. Each names the offer id the item had, so an item changed meanwhile is left.
 pub fn sql(plan: &OfferPlan) -> String {
-    let mut out = String::from("-- Fix offer IDs (All-in-1 Installer): catalog_items.offer_id as FurnitureData.json has it.\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n");
+    let mut out = String::from("-- Fix offer IDs (All-in-1 Manager): catalog_items.offer_id as FurnitureData.json has it.\nSET NAMES utf8mb4;\nSTART TRANSACTION;\n");
     for (id, name, from, to) in &plan.updates {
         out.push_str(&format!("UPDATE `catalog_items` SET `offer_id` = {to} WHERE `id` = {id} AND `offer_id` = {from}; -- {}\n", sql_literal(name).replace('\n', " ")));
     }

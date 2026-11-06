@@ -214,7 +214,7 @@ grep -E '"(start|build)": ' package.json | sed 's/^ */  /'
 command -v setfacl >/dev/null 2>&1 || { echo "> Installing acl (setfacl)"; apt_update >/dev/null; apt-get install -y acl >/dev/null; }
 cat > /usr/local/sbin/gamedata-permissions <<'PERMS'
 #!/bin/sh
-# Read/write access to /var/www/gamedata for the www-data group (written by All-in-1 Installer).
+# Read/write access to /var/www/gamedata for the www-data group (written by All-in-1 Manager).
 # The emulator (a member of www-data) writes custom badges to c_images/album1584 and edits config/*.json;
 # NGINX reads everything. The default ACLs give files and folders created later the same rights, also when
 # they are copied in as root or another user. Run this again when an upload changed the permissions.

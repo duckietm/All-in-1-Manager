@@ -6,7 +6,7 @@ fi
 if [ -f /opt/traefik/dynamic/crowdsec.yml ]; then
   echo "> $t/traefik.yml (with CrowdSec)"
   cat > "$t/traefik.yml" <<'EOF'
-# Traefik static configuration (written by All-in-1 Installer).
+# Traefik static configuration (written by All-in-1 Manager).
 entryPoints:
   web:
     address: ":80"
@@ -49,7 +49,7 @@ EOF
 else
   echo "> $t/traefik.yml"
   cat > "$t/traefik.yml" <<'EOF'
-# Traefik static configuration (written by All-in-1 Installer).
+# Traefik static configuration (written by All-in-1 Manager).
 entryPoints:
   web:
     address: ":80"

@@ -561,7 +561,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// The merged Assets folder in the temp folder, made again for each check (Assets/ next to the exe may change).
 async fn local_assets() -> anyhow::Result<PathBuf> {
-    let into = std::env::temp_dir().join(format!("all-in-1-installer-{}", std::process::id())).join("Assets");
+    let into = std::env::temp_dir().join(format!("all-in-1-manager-{}", std::process::id())).join("Assets");
     let beside = emulator_assets::local_assets();
     let target = into.clone();
     tokio::task::spawn_blocking(move || prepare_assets(CLIENT_ASSETS, &beside, &target)).await??;

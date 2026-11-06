@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# All-in-1 Installer: build it on Linux (and macOS).
-#   ./build.sh release   the program to hand out  -> public/release/all-in-1-installer (with Assets/)
-#   ./build.sh dev       a debug build            -> public/dev/all-in-1-installer
+# All-in-1 Manager: build it on Linux (and macOS).
+#   ./build.sh release   the program to hand out  -> public/release/all-in-1-manager (with Assets/)
+#   ./build.sh dev       a debug build            -> public/dev/all-in-1-manager
 #   ./build.sh run       a debug build, and start it
 #   ./build.sh test      all tests
 # Needs Rust (rustup.rs); on Linux also: sudo apt-get install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev
 set -euo pipefail
 cd "$(dirname "$0")"
-exe=all-in-1-installer
+exe=all-in-1-manager
 choice=${1:-release}
 
 command -v cargo >/dev/null || { echo "Rust is not installed: install it from https://rustup.rs"; exit 1; }

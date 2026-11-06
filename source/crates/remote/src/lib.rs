@@ -1,4 +1,4 @@
-//! All-in-1 Installer remote side: the SSH connection and, per install step, the scripts it runs on the server as
+//! All-in-1 Manager remote side: the SSH connection and, per install step, the scripts it runs on the server as
 //! root. Every module mirrors one file of the C# installer's `SourceCode/Remote`, with the same commands in the same
 //! order; `tests/golden` holds what the C# code sends, and the parity tests compare with it.
 

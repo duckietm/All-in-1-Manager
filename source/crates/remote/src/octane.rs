@@ -251,7 +251,7 @@ pub async fn configure(server: &dyn Server, site: &WebAccessSettings, log: Log<'
 }
 
 const PERMISSIONS_SCRIPT_CONTENT: &str = r#"#!/bin/sh
-# Read/write access to {{Gamedata}} for the www-data group (written by All-in-1 Installer).
+# Read/write access to {{Gamedata}} for the www-data group (written by All-in-1 Manager).
 # The emulator (a member of www-data) writes custom badges to c_images/album1584 and edits config/*.json;
 # NGINX reads everything. The default ACLs give files and folders created later the same rights, also when
 # they are copied in as root or another user. Run this again when an upload changed the permissions.
@@ -393,7 +393,7 @@ const BUILD: &str = r#"{{Environment}}
 set -o pipefail
 cat > {{Octane}}/build.sh <<'BUILD'
 #!/bin/sh
-# Builds the Octane client into dist/ (written by All-in-1 Installer). Run it after changing
+# Builds the Octane client into dist/ (written by All-in-1 Manager). Run it after changing
 # public/configuration or after a git pull of Octane or Octane-Renderer.
 set -e
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1

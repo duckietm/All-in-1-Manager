@@ -1,10 +1,12 @@
 //! Fix offer IDs: catalog_items.offer_id and the server's FurnitureData.json brought in line, as the All-in-1
 //! Converter's SetOfferID does (see aio_remote::offer_fix). The page shows what changes first.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use aio_remote::offer_fix::{self, OfferPlan};
+use aio_remote::offer_fix::{self, CatalogRow, OfferPlan};
+use super::item_fix::{furnidata_for, Source};
 use aio_remote::{fail, furni_import, server_tools, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
@@ -29,6 +31,13 @@ struct Form {
     plan: Option<Arc<OfferPlan>>,
     /// The server's FurnitureData.json as the check read it: the import reads it again and stops when it changed.
     source: Option<Arc<serde_json::Value>>,
+    /// Which FurnitureData.json to match, the server's as the check read it (or why not), the local ones read so far,
+    /// why the chosen one cannot be used, and the catalogue the check read (to work the plan out again).
+    choice: Source,
+    server_furnidata: Result<Arc<serde_json::Value>, String>,
+    local: HashMap<Source, Result<Arc<serde_json::Value>, String>>,
+    choice_error: Option<String>,
+    catalog: Option<Arc<Vec<CatalogRow>>>,
     database: String,
     /// Every database on the server with an items_base table (to choose from).
     databases: Vec<String>,
@@ -52,6 +61,11 @@ impl Default for Form {
         Self {
             plan: None,
             source: None,
+            choice: Source::default(),
+            server_furnidata: Err(String::new()),
+            local: HashMap::new(),
+            choice_error: None,
+            catalog: None,
             database: String::new(),
             databases: Vec::new(),
             server: None,
@@ -196,6 +210,35 @@ impl InstallStep for OfferFixStep {
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
         let mut form = self.form.lock().unwrap();
         let form = &mut *form;
+        let Some(_) = form.plan.clone() else { return };
+        ui.add_space(8.0);
+        ui.label(RichText::new(t("FurnitureData.json to match")).size(14.0).strong());
+        let before = form.choice;
+        for source in Source::ALL {
+            ui.radio_value(&mut form.choice, source, source.label());
+        }
+        if form.choice != before {
+            match (furnidata_for(form.choice, &form.server_furnidata, &mut form.local), form.catalog.clone()) {
+                (Ok(furnidata), Some(catalog)) => {
+                    form.plan = Some(Arc::new(offer_fix::plan_new(&furnidata, &catalog)));
+                    form.source = Some(furnidata);
+                    form.choice_error = None;
+                    form.rows = None;
+                }
+                (Err(error), _) => form.choice_error = Some(error),
+                (Ok(_), None) => {}
+            }
+        }
+        match (&form.choice_error, form.choice.local_file()) {
+            (Some(error), _) => widgets::muted(ui, palette, &tf("Cannot be used: {error}", &[("error", error)]), 12.0),
+            (None, None) => widgets::muted(ui, palette, &tf("{file}: what the hotel uses now, also when it is a merged or custom one.", &[("file", &offer_fix::furniture_data_path())]), 11.5),
+            (None, Some(path)) => widgets::muted(
+                ui,
+                palette,
+                &tf("{file}. With its offer ids fixed it is put on the server as {server} (the one there is kept as .bak-<time>), so the hotel and the catalogue agree.", &[("file", &path.display().to_string()), ("server", &offer_fix::furniture_data_path())]),
+                11.5,
+            ),
+        }
         let Some(plan) = form.plan.clone() else { return };
         ui.add_space(8.0);
         ui.label(RichText::new(t("Hotel database")).size(14.0).strong());
@@ -264,6 +307,9 @@ impl InstallStep for OfferFixStep {
         if form.reloading {
             return Some(t("Still reading the database: wait a moment.").into());
         }
+        if let Some(error) = &form.choice_error {
+            return Some(tf("Cannot be used: {error}", &[("error", error)]));
+        }
         let Some(plan) = &form.plan else { return Some(t("Nothing to fix: see the message above.").into()) };
         (plan.updates.is_empty() && !plan.furnidata_changes()).then(|| t("Every offer id is right already.").into())
     }
@@ -280,16 +326,50 @@ impl InstallStep for OfferFixStep {
             form.reload_error = None;
         }
         let (database, catalog) = offer_fix::read_catalog(server.as_ref()).await?;
-        // Always the server's own FurnitureData.json: it can be a merged or custom one.
-        let furnidata = Arc::new(download_furnidata(server.as_ref()).await?);
+        let catalog = Arc::new(catalog);
+        // The chosen FurnitureData.json; when it is not there, the first of the others that is.
+        let server_furnidata = download_furnidata(server.as_ref()).await.map(Arc::new).map_err(|e| format!("{}: {e}", offer_fix::furniture_data_path()));
+        let chosen = self.form.lock().unwrap().choice;
+        let (picked, local, reasons) = tokio::task::spawn_blocking({
+            let server_furnidata = server_furnidata.clone();
+            move || {
+                let mut local = HashMap::new();
+                let mut reasons = Vec::new();
+                let order = std::iter::once(chosen).chain(Source::ALL.into_iter().filter(|s| *s != chosen));
+                let mut picked = None;
+                for source in order {
+                    match furnidata_for(source, &server_furnidata, &mut local) {
+                        Ok(value) => {
+                            picked = Some((source, value));
+                            break;
+                        }
+                        Err(reason) => reasons.push(format!("{}: {reason}", source.label())),
+                    }
+                }
+                (picked, local, reasons)
+            }
+        })
+        .await?;
+        let Some((choice, furnidata)) = picked else {
+            fail!("{}\n{}", t("No FurnitureData.json can be used:"), reasons.join("\n"));
+        };
+        if choice != chosen {
+            ui.log(&tf("> FurnitureData.json: {chosen} cannot be used, {used} is", &[("chosen", chosen.label()), ("used", choice.label())]));
+        }
         let source = furnidata.clone();
-        let plan = tokio::task::spawn_blocking(move || offer_fix::plan_new(&furnidata, &catalog)).await?;
+        let for_plan = catalog.clone();
+        let plan = tokio::task::spawn_blocking(move || offer_fix::plan_new(&furnidata, &for_plan)).await?;
         let (updates, generated, nothing) = (plan.updates.len(), plan.generated.len(), plan.updates.is_empty() && !plan.furnidata_changes());
         {
             let mut form = self.form.lock().unwrap();
             form.database = database.clone();
             form.plan = Some(Arc::new(plan));
             form.source = Some(source);
+            form.choice = choice;
+            form.server_furnidata = server_furnidata;
+            form.local = local;
+            form.choice_error = None;
+            form.catalog = Some(catalog);
             form.rows = None;
         }
         if nothing {
@@ -307,18 +387,23 @@ impl InstallStep for OfferFixStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let (plan, source, restart, backup) = {
+        let (plan, source, restart, backup, choice) = {
             let form = self.form.lock().unwrap();
             let (Some(plan), Some(source)) = (form.plan.clone(), form.source.clone()) else { fail!("Nothing to fix.") };
-            (plan, source, form.restart, form.backup)
+            (plan, source, form.restart, form.backup, form.choice)
         };
-        log("> Reading the server's FurnitureData.json again ...");
-        // The fix is worked out from the file the check read; a file changed since (a new merge or custom file)
-        // would be overwritten with the old one.
-        if download_furnidata(server).await? != *source {
-            fail!("{}", t("FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one."));
+        match choice.local_file() {
+            None => {
+                log("> Reading the server's FurnitureData.json again ...");
+                // The fix is worked out from the file the check read; a file changed since (a new merge or custom
+                // file) would be overwritten with the old one.
+                if download_furnidata(server).await? != *source {
+                    fail!("{}", t("FurnitureData.json on the server changed since the check: go Back and open this page again, so the fix starts from the new one."));
+                }
+                log("  unchanged since the check");
+            }
+            Some(path) => log(&format!("> FurnitureData.json: {}", path.display())),
         }
-        log("  unchanged since the check");
         log("> Checking the database again ...");
         let (database, catalog) = offer_fix::read_catalog(server).await?;
         log(&format!("  {database}: {} catalogue items, {} to update", catalog.len(), plan.updates.len()));
@@ -344,7 +429,8 @@ impl InstallStep for OfferFixStep {
             ui.done(t("nothing to update"));
         }
 
-        if plan.furnidata_changes() {
+        // A local FurnitureData.json goes on the server also without new offer ids: the catalogue now follows it.
+        if plan.furnidata_changes() || choice.local_file().is_some() {
             let local_json = folder.join(format!("FurnitureData_offer_ids_{stamp}.json"));
             std::fs::write(&local_json, serde_json::to_string_pretty(&plan.furnidata)?)?;
             let remote_json = format!("{directory}/offer-ids-{stamp}.json");
@@ -386,15 +472,18 @@ fn reload(locked: &mut Form, form: Arc<Mutex<Form>>, database: String, ctx: egui
     runtime.spawn(async move {
         let result = async {
             let (_, catalog) = offer_fix::read_catalog(server.as_ref()).await?;
-            let plan = tokio::task::spawn_blocking(move || offer_fix::plan_new(&furnidata, &catalog)).await?;
-            anyhow::Ok(plan)
+            let catalog = Arc::new(catalog);
+            let for_plan = catalog.clone();
+            let plan = tokio::task::spawn_blocking(move || offer_fix::plan_new(&furnidata, &for_plan)).await?;
+            anyhow::Ok((plan, catalog))
         }
         .await;
         let mut f = form.lock().unwrap();
         f.reloading = false;
         match result {
-            Ok(plan) => {
+            Ok((plan, catalog)) => {
                 f.plan = Some(Arc::new(plan));
+                f.catalog = Some(catalog);
                 f.database = database;
                 f.rows = None;
             }

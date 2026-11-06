@@ -163,7 +163,6 @@ set -o pipefail
 mariadb -N "$db" -e 'SELECT 1' >/dev/null 2>&1 || fail "The hotel database $db does not exist or MariaDB does not run: run Install New Server first."
 [ "$(mariadb -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '$db' AND table_name = 'catalog_items'")" = 1 ] ||
   fail "$db has no catalog_items table: run the Emulator step first."
-[ -f {{FurnitureData}} ] || fail "{{FurnitureData}} is not there: install the catalogue or run Deploy Assets first."
 echo "DB=$db"
 mariadb -N -B -r "$db" -e "SELECT 'C', id, offer_id, catalog_name FROM catalog_items""#;
 

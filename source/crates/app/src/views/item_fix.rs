@@ -33,7 +33,7 @@ fn bundle_folders() -> Vec<PathBuf> {
 
 /// Which FurnitureData.json the furni are matched to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-enum Source {
+pub(super) enum Source {
     /// The one on the server (/var/www/gamedata/config): what the hotel uses now, also when it is a merged one.
     #[default]
     Server,
@@ -44,9 +44,9 @@ enum Source {
 }
 
 impl Source {
-    const ALL: [Source; 3] = [Source::Server, Source::Habbo, Source::Custom];
+    pub(super) const ALL: [Source; 3] = [Source::Server, Source::Habbo, Source::Custom];
 
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Source::Server => t("The server's FurnitureData.json"),
             Source::Habbo => t("Habbo's original FurnitureData.json (Get Assets)"),
@@ -55,7 +55,7 @@ impl Source {
     }
 
     /// The file on this computer; None for the server's.
-    fn local_file(self) -> Option<PathBuf> {
+    pub(super) fn local_file(self) -> Option<PathBuf> {
         let assets = aio_core::InstallerSettings::load().assets_folder();
         match self {
             Source::Server => None,
@@ -65,7 +65,15 @@ impl Source {
     }
 }
 
-fn read_local_json(path: &std::path::Path) -> Result<Value, String> {
+/// The FurnitureData.json of `source`: the server's as read (or why not), a local one read once into `local`.
+pub(super) fn furnidata_for(source: Source, server: &Result<Arc<Value>, String>, local: &mut HashMap<Source, Result<Arc<Value>, String>>) -> Result<Arc<Value>, String> {
+    match source.local_file() {
+        None => server.clone(),
+        Some(path) => local.entry(source).or_insert_with(|| read_local_json(&path).map(Arc::new)).clone(),
+    }
+}
+
+pub(super) fn read_local_json(path: &std::path::Path) -> Result<Value, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let value: Value = serde_json::from_slice(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(&bytes)).map_err(|e| format!("{}: {e}", path.display()))?;
     if !value["roomitemtypes"]["furnitype"].is_array() && !value["wallitemtypes"]["furnitype"].is_array() {

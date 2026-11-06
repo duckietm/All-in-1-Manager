@@ -1,4 +1,4 @@
-//! Deploy Assets: the downloader's files, the client's UI texts and the emulator's images, three steps in one wizard.
+//! Deploy Assets: the downloaded Habbo assets, the client's UI texts and the emulator's images, three steps in one wizard.
 //! (AssetSyncStep.cs, UiTextsStep.cs, EmulatorAssetsStep.cs, InstallerWindow._deployWizard)
 
 use std::collections::HashMap;
@@ -57,7 +57,7 @@ fn small(ui: &mut egui::Ui, text: &str, size: f32, color: Color32, strong: bool)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Sync from the All-in-1 downloader (AssetSyncStep.cs)
+// Sync the downloaded Habbo assets (AssetSyncStep.cs)
 
 #[derive(Clone)]
 struct PlanRow {
@@ -83,10 +83,9 @@ pub struct AssetSyncStep {
     summary: Mutex<Option<String>>,
 }
 
-/// Get Assets' folder and, when Settings name it, the All-in-1 downloader's Habbo_Default.
+/// The downloaded Habbo assets (Assets → Habbo assets).
 fn sources() -> Vec<asset_sync::Source> {
-    let settings = aio_core::InstallerSettings::load();
-    asset_sync::sources(&settings.assets_folder(), settings.downloader_path.as_deref())
+    asset_sync::sources(&aio_core::InstallerSettings::load().assets_folder())
 }
 
 fn source_list(sources: &[asset_sync::Source]) -> String {
@@ -149,7 +148,7 @@ impl InstallStep for AssetSyncStep {
             icon: Icon::Download,
             heading: t("Sync the downloaded assets").into(),
             description: tf(
-                "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder; and the All-in-1 downloader's Habbo_Default folder too when Settings name it.",
+                "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder.",
                 &[
                     ("folder", &aio_remote::habbo_assets::gamedata_folder(&aio_core::InstallerSettings::load().assets_folder()).display().to_string()),
                     ("gamedata", &octane::gamedata()),
@@ -213,7 +212,7 @@ impl InstallStep for AssetSyncStep {
             ui.detected(
                 ResultKind::Warning,
                 t("Nothing downloaded yet"),
-                t("Download assets with Assets → Habbo assets first (or choose the All-in-1 downloader in Settings), then come back here."),
+                t("Download assets with Assets → Habbo assets first, then come back here."),
             );
             return Ok(false);
         }

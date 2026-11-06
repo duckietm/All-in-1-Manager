@@ -652,8 +652,8 @@ reload ssh.
 After the last step (done or skipped) the wizard shows **Successfully completed** (or *Completed, with steps to look
 at* when a step was skipped or failed), with what every step did, and then:
 
-1. Download all assets with the **All-in-1 downloader**.
-2. Upload them with **WinSCP**: SFTP, the server and SSH port, user `root`, the `.ppk` key from the configuration
+1. Download all assets with **Assets → Habbo assets** and send them with **Assets → Deploy Assets**.
+2. Or upload them yourself with **WinSCP**: SFTP, the server and SSH port, user `root`, the `.ppk` key from the configuration
    folder (*Advanced… → SSH → Authentication*), into `/var/www/gamedata/`.
 3. Where everything goes:
 
@@ -1192,9 +1192,8 @@ Assets_tools/
 ### Deploy Assets
 
 **Deploy Assets** (sidebar → ASSETS) copies what **Habbo assets** downloaded to `/var/www/gamedata` on the server, where Octane loads it,
-folder for folder (`gamedata/furniture` to `/var/www/gamedata/furniture`, and so on). When **Settings** name the
-[All-in-1 downloader](https://github.com/duckietm/all-in-1-converter), its `Habbo_Default` folder is copied too, with
-the mapping below; a file from Habbo assets that is already sent to the same place is not sent twice.
+folder for folder (`gamedata/furniture` to `/var/www/gamedata/furniture`, and so on): the download already has the
+server's layout.
 
 ![Deploy Assets](public/docs/screenshots/deploy-assets.png)
 
@@ -1204,24 +1203,10 @@ files), and they keep their dates, so the next sync sends only what was download
 deleted: your own furniture, badges and the emulator's files stay. Before uploading it checks the free disk space;
 afterwards `gamedata-permissions` gives the emulator and NGINX access again.
 
-| All-in-1 downloader (`Habbo_Default/...`) | Server (`/var/www/gamedata/...`) |
-|---|---|
-| `hof_furni/hab/*.hab` | `furniture` |
-| `hof_furni/icons/*.png` | `icons` |
-| `clothes/hab/*.hab` | `clothes` |
-| `effects/hab/*.hab` | `effect` |
-| `pets/hab/*.hab` | `pets` |
-| `badges` | `c_images/album1584` |
-| `icons/*.png` | `c_images/catalogue` |
-| `fx_icons/*.png` | `c_images/fx_icons` |
-| `quests` | `c_images/Quests` |
-| `reception` / `reception/web_promo_small` | `c_images/reception` / `c_images/web_promo_small` |
-| `mp3/*.mp3` | `sounds` |
-| `files/json`: FurnitureData, ProductData, FigureData, FigureMap, EffectMap, HabboAvatarActions, ExternalTexts | `config` |
-
 The config JSON files are only added when they are missing: hotels and the emulator edit them (custom furniture,
-badge texts). Tick **Also replace config JSON files** to overwrite them with the downloader's. New furniture also needs
-its rows in `items_base` and `catalog_items`: make the SQL with the All-in-1 converter (Hotel Tools → Generate SQL).
+badge texts). Tick **Also replace config JSON files** to overwrite them with the downloaded ones. New furniture also
+needs its rows in `items_base` and `catalog_items`: **Import Assets** adds them (**Import custom furniture** for a
+retro's own furni).
 
 #### UI texts
 
@@ -1386,10 +1371,6 @@ afterwards so the row shows the new version.
   `provided_<type>.pub`, for the SSH key step to install for root.
 
 ![Settings: servers](public/docs/screenshots/settings-servers.png)
-
-- **All-in-1 downloader**: the path of the downloader's executable (`Habbo Downloader.exe`, or the Linux binary).
-  Deploy Assets takes the files from the `Habbo_Default` folder next to it; the card shows how many furniture bundles
-  it found.
 
 ## Debug
 
@@ -1630,7 +1611,7 @@ source/                          The code
   tools/                         build.py, version.py, i18n_keys.py (texts to translate), make_icon.py (the program icon)
   Assets/                        Client images packed into the program (Deploy Assets → Images)
   crates/core/                   What lives on this computer
-    src/settings.rs              configuration/settings.json: servers, default key, downloader, branches, look, layout, language
+    src/settings.rs              configuration/settings.json: servers, default key, branches, look, layout, language, assets, retros
     src/layout.rs                Paths on the server, the emulator's account and the database name, with their checks
     src/config_dir.rs            The configuration/ folder: keys per server, mariadb.txt, owner-only files
     src/credentials.rs           Generated MariaDB passwords and their file format

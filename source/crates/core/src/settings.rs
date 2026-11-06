@@ -24,9 +24,6 @@ pub struct InstallerSettings {
     /// Private key path relative to the configuration folder.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_key: Option<String>,
-    /// The All-in-1 downloader's executable. Deploy Assets reads Habbo_Default from its folder.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub downloader_path: Option<String>,
     /// The one Nitro retro of the first version (before profiles); read once into `retros`, never written again.
     #[serde(default, skip_serializing)]
     pub retro: Option<RetroUrls>,

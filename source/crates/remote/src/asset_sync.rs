@@ -1,5 +1,5 @@
-//! Copies the assets the All-in-1 downloader (github.com/duckietm/all-in-1-converter) put in its Habbo_Default folder
-//! to /var/www/gamedata, in the layout Octane's configuration uses. Only new and changed files are sent, as one tar
+//! Copies the assets Assets → Habbo assets downloaded (`<assets>/gamedata`, laid out like the server's gamedata) to
+//! /var/www/gamedata, in the layout Octane's configuration uses. Only new and changed files are sent, as one tar
 //! stream per folder over the SSH session; nothing on the server is deleted. (AssetSync.cs)
 //!
 //! [`tar_stream`] is the tar writer of every upload (this module, emulator_assets, gamedata_files).
@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use crate::script;
 use crate::server::{shell_quote, Log, Progress, Result, Server};
 
-/// A folder of the All-in-1 downloader and where its files go in /var/www/gamedata.
-/// `source` is relative to the downloader's folder, with '/'; `target` relative to /var/www/gamedata. `only`: file
+/// A folder on this computer and where its files go in /var/www/gamedata.
+/// `source` is relative to the source's base folder, with '/'; `target` relative to /var/www/gamedata. `only`: file
 /// names to take (None takes every file matching `pattern`). `add_only`: only add missing files and leave existing
 /// ones alone unless asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,43 +62,6 @@ impl AssetPlan {
     pub fn upload_count(&self) -> usize {
         self.new.len() + self.changed.len()
     }
-}
-
-pub const DEFAULT_FOLDER: &str = "Habbo_Default";
-
-/// Config files Octane loads from gamedata/config.
-pub const CONFIG_FILES: [&str; 7] =
-    ["FurnitureData.json", "ProductData.json", "FigureData.json", "FigureMap.json", "EffectMap.json", "HabboAvatarActions.json", "ExternalTexts.json"];
-
-pub fn mappings() -> Vec<AssetMapping> {
-    vec![
-        AssetMapping::new("Furniture", "Habbo_Default/hof_furni/hab", "furniture", "*.hab"),
-        AssetMapping::new("Furniture icons", "Habbo_Default/hof_furni/icons", "icons", "*.png"),
-        AssetMapping::new("Clothes", "Habbo_Default/clothes/hab", "clothes", "*.hab"),
-        AssetMapping::new("Effects", "Habbo_Default/effects/hab", "effect", "*.hab"),
-        AssetMapping::new("Pets", "Habbo_Default/pets/hab", "pets", "*.hab"),
-        AssetMapping::new("Badges", "Habbo_Default/badges", "c_images/album1584", "*"),
-        AssetMapping::new("Catalogue icons", "Habbo_Default/icons", "c_images/catalogue", "*.png"),
-        AssetMapping::new("Effect icons", "Habbo_Default/fx_icons", "c_images/fx_icons", "*.png"),
-        AssetMapping::new("Quest images", "Habbo_Default/quests", "c_images/Quests", "*"),
-        AssetMapping::new("Hotel view", "Habbo_Default/reception", "c_images/reception", "*"),
-        AssetMapping::new("Promo images", "Habbo_Default/reception/web_promo_small", "c_images/web_promo_small", "*"),
-        AssetMapping::new("Sounds", "Habbo_Default/mp3", "sounds", "*.mp3"),
-        // Only added when missing, because the emulator edits ExternalTexts.json for custom badges and hotels edit the others.
-        AssetMapping {
-            only: Some(CONFIG_FILES.iter().map(|s| s.to_string()).collect()),
-            add_only: true,
-            ..AssetMapping::new("Game data (config JSON)", "Habbo_Default/files/json", "config", "*.json")
-        },
-    ]
-}
-
-/// The folder holding Habbo_Default for the downloader chosen in Settings, or None.
-pub fn downloader_folder(executable: Option<&str>) -> Option<PathBuf> {
-    let executable = executable.filter(|e| !e.trim().is_empty())?;
-    let path = Path::new(executable);
-    let folder = if path.is_dir() { path.to_path_buf() } else { path.parent().map(Path::to_path_buf).unwrap_or_default() };
-    folder.join(DEFAULT_FOLDER).is_dir().then_some(folder)
 }
 
 /// A `Directory.EnumerateFiles` search pattern: `*` and `?`, case-insensitive on Windows like its file system.
@@ -164,7 +127,8 @@ pub struct Source {
 }
 
 /// Get Assets' folder (`<assets>/gamedata`, laid out like the server's gamedata) as one mapping per folder that holds
-/// files, each to the same folder on the server. config/ is only added when missing, like the downloader's JSON.
+/// files, each to the same folder on the server. config/ is only added when missing: the emulator edits ExternalTexts.json
+/// for custom badges and hotels edit the others.
 pub fn gamedata_mappings(assets_folder: &Path) -> Vec<AssetMapping> {
     let root = assets_folder.join(crate::habbo_assets::GAMEDATA);
     let mut folders = Vec::new();
@@ -199,24 +163,13 @@ pub fn gamedata_mappings(assets_folder: &Path) -> Vec<AssetMapping> {
         .collect()
 }
 
-/// What Deploy Assets copies from: Get Assets' folder when it holds files, then the All-in-1 downloader's
-/// Habbo_Default when Settings name it.
-pub fn sources(assets_folder: &Path, downloader_executable: Option<&str>) -> Vec<Source> {
-    let mut sources = Vec::new();
+/// What Deploy Assets copies from: the downloaded Habbo assets, when the folder holds files.
+pub fn sources(assets_folder: &Path) -> Vec<Source> {
     let own = gamedata_mappings(assets_folder);
-    if !own.is_empty() {
-        sources.push(Source { label: assets_folder.join(crate::habbo_assets::GAMEDATA), base: assets_folder.to_path_buf(), mappings: own });
+    if own.is_empty() {
+        return Vec::new();
     }
-    if let Some(folder) = downloader_folder(downloader_executable) {
-        sources.push(Source { label: folder.join(DEFAULT_FOLDER), base: folder, mappings: mappings() });
-    }
-    sources
-}
-
-/// Compares every folder with the server using a single listing command (the All-in-1 downloader alone).
-pub async fn plan(server: &dyn Server, downloader_folder: &Path, overwrite_config: bool) -> Result<Vec<AssetPlan>> {
-    let source = Source { label: downloader_folder.join(DEFAULT_FOLDER), base: downloader_folder.to_path_buf(), mappings: mappings() };
-    plan_sources(server, &[source], overwrite_config).await
+    vec![Source { label: assets_folder.join(crate::habbo_assets::GAMEDATA), base: assets_folder.to_path_buf(), mappings: own }]
 }
 
 /// Compares every folder of every source with the server using a single listing command. A file an earlier source
@@ -670,10 +623,10 @@ mod tests {
                 ("furniture", "gamedata/furniture", false),
             ]
         );
-        let sources = sources(root.path(), None);
+        let sources = sources(root.path());
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].label, g);
-        assert!(super::sources(&root.path().join("nothing"), None).is_empty());
+        assert!(super::sources(&root.path().join("nothing")).is_empty());
     }
 
     #[test]
@@ -704,7 +657,7 @@ mod tests {
     #[test]
     fn plans_count() {
         let plan = AssetPlan {
-            mapping: mappings()[0].clone(),
+            mapping: AssetMapping::new("Furniture", "gamedata/furniture", "furniture", "*"),
             source_path: PathBuf::new(),
             local_count: 3,
             local_bytes: 30,
@@ -713,7 +666,5 @@ mod tests {
         };
         assert_eq!(plan.upload_count(), 2);
         assert_eq!(plan.upload_bytes(), 15);
-        assert_eq!(mappings().len(), 13);
-        assert!(mappings()[12].add_only);
     }
 }

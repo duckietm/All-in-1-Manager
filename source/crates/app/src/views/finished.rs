@@ -268,14 +268,14 @@ pub fn server(info: FinishInfo) -> Box<dyn FinishPage> {
                 } else {
                     t("Some steps were skipped or failed (see below): run them again later if you need them.")
                 },
-                t("Now upload all the game assets to the server: download them with the All-in-1 downloader and upload them with WinSCP into the folders below.")
+                t("Now put the game assets on the server: download them with Assets → Habbo assets and send them with Assets → Deploy Assets (or upload them yourself with WinSCP into the folders below).")
             ),
         );
         step_list(ui, palette, &steps);
         section(ui, t("1. Download the assets"), |ui| {
-            widgets::text(ui, t("Use the All-in-1 downloader (github.com/duckietm/all-in-1-converter) to download all assets (gamedata, furniture, clothes, badges ...)."), 13.0);
+            widgets::text(ui, t("Assets → Habbo assets downloads everything (gamedata, furniture, clothes, badges ...) in the server's layout; Assets → Deploy Assets then sends only what is new."), 13.0);
         });
-        section(ui, t("2. Upload them with WinSCP"), |ui| winscp(ui, palette, &host, ssh_port, putty_key.as_deref()));
+        section(ui, t("2. Or upload them yourself with WinSCP"), |ui| winscp(ui, palette, &host, ssh_port, putty_key.as_deref()));
         section(ui, &tf("3. Where everything goes ({gamedata})", &[("gamedata", &octane::gamedata())]), |ui| asset_table(ui, palette));
         section(ui, t("4. After uploading"), |ui| after_upload(ui, palette, site.as_ref()));
     })
@@ -933,10 +933,10 @@ pub fn deploy(site: Option<WebAccessSettings>, summaries: Vec<Option<String>>, s
             widgets::text(ui, &tf("Players get the new files when they reload {client}.", &[("client", &client)]), 13.0);
             widgets::text(
                 ui,
-                t("New furniture also needs its rows in items_base and catalog_items: make the SQL with the All-in-1 converter (Hotel Tools → Generate SQL) and run it on the database (HeidiSQL over the SSH tunnel), then :update_items in the hotel or restart the emulator."),
+                t("New furniture also needs its rows in items_base and catalog_items: Assets → Import Assets adds them (and Import custom furniture for a retro's own furni)."),
                 13.0,
             );
-            colored(ui, t("Download more with the All-in-1 downloader and sync again: only the new files are sent."), 12.0, palette.subtle);
+            colored(ui, t("Download more with Assets → Habbo assets and sync again: only the new files are sent."), 12.0, palette.subtle);
         });
     })
 }

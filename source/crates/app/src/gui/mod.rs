@@ -537,7 +537,7 @@ impl App {
             ),
             Page::History => (t("History").into(), t("What ran on which server, with its log: every install step and tool.").into()),
             Page::About => (t("About").into(), "All-in-1 Manager".into()),
-            Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, your own SSH keys, and the All-in-1 downloader.").into()),
+            Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, and your own SSH keys.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
         };

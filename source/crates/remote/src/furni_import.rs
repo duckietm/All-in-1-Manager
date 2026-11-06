@@ -86,14 +86,19 @@ pub fn multiheight_count(column: &str) -> usize {
 /// The lowest height a multiheight state gets: a state of height 0 would act as the floor.
 pub const MIN_STATE_HEIGHT: f64 = 0.10;
 
-/// The heights of a multiheight furni (logicType furniture_multiheight), one per state (animation), from how far
+/// The heights of a multiheight furni (logicType furniture_multiheight, or furniture_recolorable whose states change
+/// its height), one per state (animation), from how far
 /// each state's image moves up or down: in the 64 px images 32 px is one tile of height (16 px in the 32 px ones).
 /// The highest state is the bundle's height (logic.model.dimensions.z); every height is rounded to a quarter, and at
 /// least 0.10. None for other furni, or when the images do not tell.
 pub fn multiheight_heights(json: &Value) -> Option<Heights> {
-    if json.get("logicType").and_then(Value::as_str) != Some("furniture_multiheight") {
-        return None;
-    }
+    // A recolourable furni (bc_block_1_recolorable) can be one too: its states then move its image up or down, and
+    // the emulator gives it the height of its state from the multiheight list. One whose images stay put is not.
+    let recolorable = match json.get("logicType").and_then(Value::as_str) {
+        Some("furniture_multiheight") => false,
+        Some("furniture_recolorable") => true,
+        _ => return None,
+    };
     let name = json.get("name").and_then(Value::as_str)?;
     let visualizations = json.get("visualizations")?.as_array()?;
     let visualization = [64, 32].iter().find_map(|size| visualizations.iter().find(|v| v.get("size").and_then(Value::as_i64) == Some(*size)))?;
@@ -136,6 +141,9 @@ pub fn multiheight_heights(json: &Value) -> Option<Heights> {
             if quarter < MIN_STATE_HEIGHT { MIN_STATE_HEIGHT } else { quarter }
         })
         .collect();
+    if recolorable && heights.windows(2).all(|w| w[0] == w[1]) {
+        return None;
+    }
     Heights::new(&heights)
 }
 
@@ -883,6 +891,38 @@ mod tests {
 
     fn bundle(width: f64, length: f64, height: f64, modes: i64) -> Option<Bundle> {
         Some(Bundle { width, length, height, modes, multiheight: None })
+    }
+
+    /// bc_block_1_recolorable.hab: logicType furniture_recolorable, 5 states whose images step down.
+    fn recolorable_json(tops: [[i64; 4]; 5]) -> Value {
+        let mut assets = serde_json::Map::new();
+        for (state, ys) in tops.iter().enumerate() {
+            for (layer, y) in ys.iter().enumerate() {
+                let letter = (b'a' + layer as u8) as char;
+                assets.insert(format!("blk_rc_64_{letter}_0_{state}"), json!({ "y": y }));
+            }
+        }
+        let mut animations = serde_json::Map::new();
+        for state in 0..5 {
+            let layers: serde_json::Map<String, Value> =
+                (0..4).map(|l| (l.to_string(), json!({"frameSequences": {"0": {"frames": {"0": {"id": state}}}}}))).collect();
+            animations.insert(state.to_string(), json!({ "layers": layers }));
+        }
+        json!({
+            "name": "blk_rc",
+            "logicType": "furniture_recolorable",
+            "logic": {"model": {"dimensions": {"x": 1, "y": 1, "z": 1}}},
+            "visualizations": [{"size": 64, "layerCount": 4, "directions": {"0": {}, "90": {}}, "animations": animations}],
+            "assets": assets,
+        })
+    }
+
+    #[test]
+    fn a_recolorable_whose_states_move_is_multiheight() {
+        let moving = recolorable_json([[52, 52, 35, 53], [44, 44, 27, 45], [35, 35, 18, 36], [26, 26, 9, 27], [17, 17, 1, 18]]);
+        assert_eq!(multiheight_heights(&moving).map(|h| h.column()).as_deref(), Some("1.00;0.75;0.50;0.25;0.10"));
+        let still = recolorable_json([[52, 52, 35, 53]; 5]);
+        assert_eq!(multiheight_heights(&still), None, "images that stay put: no heights");
     }
 
     #[test]

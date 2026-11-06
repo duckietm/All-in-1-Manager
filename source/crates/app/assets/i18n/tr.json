@@ -2564,5 +2564,6 @@
   "Reading {database} ...": "{database} okunuyor ...",
   "Still reading the database: wait a moment.": "Veritabanı hâlâ okunuyor: biraz bekleyin.",
   "A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.": "Herhangi bir şey değişmeden önce {folder} içinde tam bir döküm; Araçlar > Tam veritabanını içe aktar ile geri yüklenir. Kapalı: daha hızlı, ama geri dönülecek bir şey yok.",
-  "Back up the database first": "Önce veritabanını yedekle"
+  "Back up the database first": "Önce veritabanını yedekle",
+  "A recolourable furni (interaction recolorable, name ending in _recolorable) gets the heights, number of states and first height of its multiheight twin (bc_cylinder_recolorable from bc_cylinder), as the emulator's own migration does: they share their states.": "Yeniden renklendirilebilir bir mobilya (etkileşim recolorable, adı _recolorable ile biten), emülatörün kendi geçişinin yaptığı gibi multiheight ikizinin yüksekliklerini, durum sayısını ve ilk yüksekliğini alır (bc_cylinder'dan bc_cylinder_recolorable): durumlarını paylaşırlar."
 }

@@ -2564,5 +2564,6 @@
   "Reading {database} ...": "Luetaan {database} ...",
   "Still reading the database: wait a moment.": "Tietokantaa luetaan vielä: odota hetki.",
   "A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.": "Täysi vedos kansioon {folder} ennen muutoksia, palautettavissa kohdasta Työkalut > Tuo koko tietokanta. Pois: nopeampi, mutta mihinkään ei voi palata.",
-  "Back up the database first": "Varmuuskopioi tietokanta ensin"
+  "Back up the database first": "Varmuuskopioi tietokanta ensin",
+  "A recolourable furni (interaction recolorable, name ending in _recolorable) gets the heights, number of states and first height of its multiheight twin (bc_cylinder_recolorable from bc_cylinder), as the emulator's own migration does: they share their states.": "Uudelleenväritettävä kaluste (vuorovaikutus recolorable, nimi päättyy _recolorable) saa multiheight-kaksosensa korkeudet, tilojen määrän ja ensimmäisen korkeuden (bc_cylinder_recolorable kalusteesta bc_cylinder), kuten emulaattorin oma migraatio tekee: niillä on samat tilat."
 }

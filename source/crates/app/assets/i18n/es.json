@@ -2564,5 +2564,6 @@
   "Reading {database} ...": "Leyendo {database} ...",
   "Still reading the database: wait a moment.": "Aún se está leyendo la base de datos: espera un momento.",
   "A full dump in {folder} before anything changes, to put back with Tools > Import full database. Off: faster, but nothing to go back to.": "Un volcado completo en {folder} antes de cualquier cambio, para restaurarlo con Herramientas > Importar base de datos completa. Desactivado: más rápido, pero sin vuelta atrás.",
-  "Back up the database first": "Hacer primero una copia de la base de datos"
+  "Back up the database first": "Hacer primero una copia de la base de datos",
+  "A recolourable furni (interaction recolorable, name ending in _recolorable) gets the heights, number of states and first height of its multiheight twin (bc_cylinder_recolorable from bc_cylinder), as the emulator's own migration does: they share their states.": "Un furni recoloreable (interacción recolorable, nombre que termina en _recolorable) recibe las alturas, el número de estados y la primera altura de su gemelo multiheight (bc_cylinder_recolorable de bc_cylinder), como hace la migración del propio emulador: comparten sus estados."
 }

@@ -110,6 +110,8 @@ pub struct FixPlan {
     pub multiheight_count_differs: Vec<(String, String, String)>,
     /// Multiheight furni whose extra heights are cut off (Fields::extra_heights).
     pub extra_heights: usize,
+    /// Recolourable furni that get the heights of their multiheight twin (bc_cylinder_recolorable from bc_cylinder).
+    pub recolorable_heights: usize,
     /// item_names whose .hab is not here: their size and modes are left as they are.
     pub no_bundle: Vec<String>,
 }
@@ -161,6 +163,27 @@ pub fn bundle_names(rows: &[ItemRow]) -> Vec<String> {
 /// Works out the fix. `bundles` holds what each bundle (by name in lower case) gives, None when it is not here.
 pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Option<Bundle>>, fields: Fields) -> FixPlan {
     let (exact, lower) = index(furnidata);
+    let bundle_of = |row: &ItemRow| bundles.get(&bundle_name(&row.name).to_lowercase()).copied().flatten();
+    // The heights each multiheight furni ends up with (its extra heights cut off when that is chosen), by item_name in
+    // lower case: a recolourable twin takes them, as the emulator's migration does (bc_cylinder_recolorable from
+    // bc_cylinder: they share their states).
+    let twins: HashMap<String, Vec<String>> = rows
+        .iter()
+        .filter(|r| r.interaction_type.trim().eq_ignore_ascii_case("multiheight"))
+        .filter_map(|r| {
+            let mut values: Vec<String> = r.multiheight.split([';', ',']).map(str::trim).filter(|v| !v.is_empty()).map(str::to_string).collect();
+            if values.len() < 2 && values.iter().all(|v| v == "0") {
+                return None;
+            }
+            if let (true, Some(b)) = (fields.extra_heights, bundle_of(r)) {
+                let states = b.modes.max(0) as usize;
+                if states >= 2 && values.len() > states {
+                    values.truncate(states);
+                }
+            }
+            Some((r.name.trim().to_lowercase(), values))
+        })
+        .collect();
     let mut plan = FixPlan::default();
     for row in rows {
         if !matches!(row.kind, 's' | 'i') || row.name.starts_with("a0") {
@@ -216,10 +239,30 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
         }
         let interaction = row.interaction_type.trim().to_lowercase();
         let plain_interaction = matches!(interaction.as_str(), "default" | "multiheight" | "recolorable");
+        // A recolourable furni with a multiheight twin: the twin's heights, state count and the first state's height
+        // as stack_height (the emulator gives a recolourable furni with a multiheight list the height of its state).
+        let twin = if fields.multiheight && interaction == "recolorable" {
+            row.name.trim().to_lowercase().strip_suffix("_recolorable").and_then(|base| twins.get(base)).filter(|h| !h.is_empty())
+        } else {
+            None
+        };
+        if let Some(heights) = twin {
+            let column = heights.join(";");
+            let first = first_height(&column);
+            if row.multiheight != column || row.modes != heights.len() as i64 || first.is_some_and(|f| format!("{f:.2}") != format!("{:.2}", row.stack_height)) {
+                plan.recolorable_heights += 1;
+            }
+            change("multiheight", row.multiheight.clone(), column.clone(), sql_literal(&column));
+            change("interaction_modes_count", row.modes.to_string(), heights.len().to_string(), heights.len().to_string());
+            if let Some(first) = first {
+                change("stack_height", format!("{:.2}", row.stack_height), format!("{first:.2}"), format!("{first:.2}"));
+            }
+        }
+        let from_twin = twin.is_some();
         // More heights than the .hab has states (counted like interaction_modes_count): the emulator cycles through
         // every height, so the extra ones show no graphic. The first heights stay, one per state.
         let mut trimmed = false;
-        if let (true, true, true, Some(bundle)) = (fields.extra_heights, row.is_multiheight(), plain_interaction, bundle) {
+        if let (true, true, true, false, Some(bundle)) = (fields.extra_heights, row.is_multiheight(), plain_interaction, from_twin, bundle) {
             let values: Vec<&str> = row.multiheight.split([';', ',']).map(str::trim).filter(|v| !v.is_empty()).collect();
             let states = bundle.modes.max(0) as usize;
             if states >= 2 && values.len() > states {
@@ -232,16 +275,16 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
         }
         // Heights written with ',' ("0.8,2.0,3.0"): the emulator splits on ';' only and then has none, so a click
         // does nothing. The same values, with ';'.
-        if fields.multiheight && !trimmed {
+        if fields.multiheight && !trimmed && !from_twin {
             if let Some(fixed) = semicolons(&row.multiheight) {
                 change("multiheight", row.multiheight.clone(), fixed.clone(), sql_literal(&fixed));
             }
         }
         // Multiheight as the .hab says it (logicType furniture_multiheight): only for the plain interactions, so a
         // gate or wired furni is never turned into another one.
-        let mut multiheight = row.is_multiheight();
+        let mut multiheight = row.is_multiheight() || from_twin;
         let recolorable = interaction == "recolorable" || row.name.to_lowercase().ends_with("_recolorable");
-        if let (true, Some(bundle), true) = (fields.multiheight, bundle, plain_interaction) {
+        if let (true, Some(bundle), true, false) = (fields.multiheight, bundle, plain_interaction, from_twin) {
             match (bundle.multiheight, multiheight) {
                 // Multiheight by its .hab, not in items_base: the interaction and a height per state.
                 (Some(heights), false) => {
@@ -279,7 +322,8 @@ pub fn plan(rows: &[ItemRow], furnidata: &Value, bundles: &HashMap<String, Optio
                         change("width", row.width.to_string(), width.to_string(), width.to_string());
                         change("length", row.length.to_string(), length.to_string(), length.to_string());
                     }
-                    if let Some(first) = first_height(&row.multiheight) {
+                    // A recolourable furni that took its twin's heights got its stack_height from them above.
+                    if let (false, Some(first)) = (from_twin, first_height(&row.multiheight)) {
                         change("stack_height", format!("{:.2}", row.stack_height), format!("{first:.2}"), format!("{first:.2}"));
                     }
                     if !set.is_empty() {
@@ -676,6 +720,43 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].sprite_id, rows[0].stack_height, rows[0].interaction_type.as_str()), (13, 1.0, "vendingmachine"));
         assert_eq!((rows[1].kind, rows[1].name.as_str(), rows[1].multiheight.as_str()), ('i', "poster with\ttab", ""));
+    }
+
+    #[test]
+    fn a_recolorable_takes_its_twins_heights() {
+        let furnidata = json!({"roomitemtypes": {"furnitype": [
+            {"id": 1, "classname": "bc_cylinder"}, {"id": 2, "classname": "bc_cylinder_recolorable"}, {"id": 3, "classname": "lonely_recolorable"}
+        ]}});
+        let cylinder = Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 5, multiheight: None });
+        let bundles: HashMap<String, Option<Bundle>> =
+            [("bc_cylinder", cylinder), ("bc_cylinder_recolorable", cylinder), ("lonely_recolorable", cylinder)].into_iter().map(|(n, b)| (n.to_string(), b)).collect();
+        let with = |id: i64, name: &str, interaction: &str, multiheight: &str, modes: i64, stack: f64| ItemRow {
+            interaction_type: interaction.into(),
+            multiheight: multiheight.into(),
+            modes,
+            stack_height: stack,
+            sprite_id: id,
+            ..row(id, name, 's')
+        };
+        let rows = [
+            // The multiheight twin, with one height too many for its 5 states.
+            with(1, "bc_cylinder", "multiheight", "0.5;1.0;1.5;2.0;2.5;3.0", 6, 0.5),
+            with(2, "bc_cylinder_recolorable", "recolorable", "0", 5, 1.0),
+            with(3, "lonely_recolorable", "recolorable", "0", 1, 1.0),
+        ];
+        let plan = plan(&rows, &furnidata, &bundles, Fields::default());
+        let of = |name: &str| -> Vec<(&str, String)> { plan.changes.iter().filter(|c| c.name == name).map(|c| (c.column, c.to.clone())).collect() };
+        assert_eq!(
+            of("bc_cylinder_recolorable"),
+            [("multiheight", "0.5;1.0;1.5;2.0;2.5".to_string()), ("stack_height", "0.50".to_string())],
+            "the twin's heights after its cut; 5 modes it had already"
+        );
+        assert!(of("lonely_recolorable").is_empty(), "no multiheight twin: left alone");
+        assert_eq!(plan.recolorable_heights, 1);
+        let text = sql(&plan);
+        assert!(text.contains("SET `multiheight` = '0.5;1.0;1.5;2.0;2.5', `stack_height` = 0.50 WHERE `id` = 2;"), "{text}");
+        let off = super::plan(&rows, &furnidata, &bundles, Fields { multiheight: false, ..Fields::default() });
+        assert!(!off.changes.iter().any(|c| c.name == "bc_cylinder_recolorable"));
     }
 
     #[test]

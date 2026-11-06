@@ -2551,5 +2551,11 @@
   "{file}. Furni that are not in it are left alone; sprite_id and sit / lay / walk come from it, not from the server's.": "{file}. İçinde olmayan mobilyalara dokunulmaz; sprite_id ve sit / lay / walk sunucununkinden değil, bundan gelir.",
   "{file}: what the hotel uses now, also when it is a merged or custom one.": "{file}: otelin şu an kullandığı, birleştirilmiş veya özel olsa da.",
   "Download it first: ASSETS → Habbo assets, FurnitureData.json.": "Önce indirin: ASSETS → Habbo assets, FurnitureData.json.",
-  "Make it first: ASSETS → Import custom furniture.": "Önce oluşturun: ASSETS → Import custom furniture."
+  "Make it first: ASSETS → Import custom furniture.": "Önce oluşturun: ASSETS → Import custom furniture.",
+  "> Hotel database: {database} ({configured} has no items_base table)": "> Otel veritabanı: {database} ({configured} içinde items_base tablosu yok)",
+  "Has an items_base table.": "items_base tablosu var.",
+  "No database on this server has an items_base table (looked for {database} first): install the emulator's database first.": "Bu sunucudaki hiçbir veritabanında items_base tablosu yok (önce {database} arandı): önce emülatörün veritabanını kurun.",
+  "No hotel database chosen.": "Otel veritabanı seçilmedi.",
+  "Which database is the hotel's?": "Otelin veritabanı hangisi?",
+  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} bu sunucuda items_base tablosuna sahip değil. Otelin veritabanı hangisi? Seçim tüm araçlar için geçerlidir ve Ayarlar'a kaydedilir (Sunucu düzeni, Otel veritabanı)."
 }

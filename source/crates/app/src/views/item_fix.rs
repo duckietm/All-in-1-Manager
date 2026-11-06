@@ -377,6 +377,7 @@ impl InstallStep for ItemFixStep {
             // The local files are read again: they may have been downloaded or merged since.
             form.local.clear();
         }
+        choose_database(server.as_ref(), &ui).await?;
         let (database, rows) = item_fix::read_items(server.as_ref()).await?;
         // The server's FurnitureData.json (it can be a merged or custom one), or the local one chosen.
         let server_furnidata = Arc::new(super::offer_fix::download_furnidata(server.as_ref()).await?);
@@ -495,6 +496,36 @@ impl InstallStep for ItemFixStep {
             &tf("{rows} furni got {changes} new values. Players see it after they reload the hotel.", &[("rows", &plan.rows().to_string()), ("changes", &plan.changes.len().to_string())]),
         ))
     }
+}
+
+/// Makes sure the tools use a database that has items_base. The configured one (the emulator's config.ini, else
+/// Settings) is used when it has one; otherwise the only database that has items_base, or the one the user picks
+/// among several. The choice holds for every tool until the installer closes and is saved in Settings.
+async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<()> {
+    let (configured, found) = item_fix::hotel_databases(server).await?;
+    if found.iter().any(|d| *d == configured) {
+        return Ok(());
+    }
+    let chosen = match found.as_slice() {
+        [] => fail!("{}", tf("No database on this server has an items_base table (looked for {database} first): install the emulator's database first.", &[("database", &configured)])),
+        [only] => only.clone(),
+        several => {
+            let options = several.iter().map(|d| crate::gui::dialogs::Choice::new(d, t("Has an items_base table."), Some(d.clone()))).collect();
+            let message = tf("{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).", &[("database", &configured)]);
+            match ui.choose(t("Hotel database"), t("Which database is the hotel's?"), &message, None, options).await {
+                Some(chosen) => chosen,
+                None => fail!("{}", t("No hotel database chosen.")),
+            }
+        }
+    };
+    aio_core::ServerLayout::choose_database(&chosen);
+    let mut settings = aio_core::InstallerSettings::load();
+    let mut layout = settings.layout.clone().unwrap_or_default();
+    layout.database = chosen.clone();
+    settings.layout = Some(layout);
+    let _ = settings.save();
+    ui.log(&tf("> Hotel database: {database} ({configured} has no items_base table)", &[("database", &chosen), ("configured", &configured)]));
+    Ok(())
 }
 
 pub fn wizard(shared: &Shared) -> Wizard {

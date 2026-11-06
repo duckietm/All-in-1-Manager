@@ -2551,5 +2551,11 @@
   "{file}. Furni that are not in it are left alone; sprite_id and sit / lay / walk come from it, not from the server's.": "{file}. Möbel, die nicht darin stehen, bleiben unberührt; sprite_id und sit / lay / walk kommen daraus, nicht aus der des Servers.",
   "{file}: what the hotel uses now, also when it is a merged or custom one.": "{file}: was das Hotel jetzt nutzt, auch wenn es eine zusammengeführte oder eigene ist.",
   "Download it first: ASSETS → Habbo assets, FurnitureData.json.": "Zuerst herunterladen: ASSETS → Habbo assets, FurnitureData.json.",
-  "Make it first: ASSETS → Import custom furniture.": "Zuerst erstellen: ASSETS → Import custom furniture."
+  "Make it first: ASSETS → Import custom furniture.": "Zuerst erstellen: ASSETS → Import custom furniture.",
+  "> Hotel database: {database} ({configured} has no items_base table)": "> Hotel-Datenbank: {database} ({configured} hat keine items_base-Tabelle)",
+  "Has an items_base table.": "Hat eine items_base-Tabelle.",
+  "No database on this server has an items_base table (looked for {database} first): install the emulator's database first.": "Keine Datenbank auf diesem Server hat eine items_base-Tabelle (zuerst nach {database} gesucht): installiere zuerst die Datenbank des Emulators.",
+  "No hotel database chosen.": "Keine Hotel-Datenbank gewählt.",
+  "Which database is the hotel's?": "Welche Datenbank gehört zum Hotel?",
+  "{database} has no items_base table on this server. Which database is the hotel's? The choice is used by every tool and saved in Settings (Server layout, Hotel database).": "{database} hat auf diesem Server keine items_base-Tabelle. Welche Datenbank gehört zum Hotel? Die Wahl gilt für jedes Tool und wird in den Einstellungen gespeichert (Server-Layout, Hotel-Datenbank)."
 }

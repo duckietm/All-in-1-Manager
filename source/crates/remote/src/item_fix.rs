@@ -378,6 +378,27 @@ pub fn sql(plan: &FixPlan) -> String {
     out
 }
 
+const DATABASES: &str = r#"{{DatabaseName}}
+echo "DB=$db"
+mariadb -N -B -e "SELECT DISTINCT table_schema FROM information_schema.tables WHERE table_name = 'items_base' ORDER BY table_schema" | sed 's/^/HAS=/'"#;
+
+/// The hotel database the tools would use now, and every database on the server that has an items_base table.
+pub async fn hotel_databases(server: &dyn Server) -> Result<(String, Vec<String>)> {
+    let body = fill(DATABASES, &[("DatabaseName", &server_tools::database_name())]);
+    let result = server.run_as_root(&script::with_prelude(&body)).await?;
+    if !result.succeeded() {
+        let reason = result.error.lines().chain(result.output.lines()).map(str::trim).find(|l| !l.is_empty()).unwrap_or("").to_string();
+        return Err(crate::server::ServerError(format!("MariaDB does not answer (does it run? Tools > Restart MariaDB): {reason}")).into());
+    }
+    Ok(parse_databases(&result.output))
+}
+
+fn parse_databases(output: &str) -> (String, Vec<String>) {
+    let configured = output.lines().find_map(|l| l.strip_prefix("DB=")).unwrap_or("").trim().to_string();
+    let found = output.lines().filter_map(|l| l.strip_prefix("HAS=")).map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+    (configured, found)
+}
+
 const READ: &str = r#"{{DatabaseName}}
 set -o pipefail
 mariadb -N "$db" -e 'SELECT 1' >/dev/null 2>&1 || fail "The hotel database $db does not exist or MariaDB does not run: run Install New Server first."
@@ -655,6 +676,13 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!((rows[0].sprite_id, rows[0].stack_height, rows[0].interaction_type.as_str()), (13, 1.0, "vendingmachine"));
         assert_eq!((rows[1].kind, rows[1].name.as_str(), rows[1].multiheight.as_str()), ('i', "poster with\ttab", ""));
+    }
+
+    #[test]
+    fn hotel_databases_are_parsed() {
+        let (configured, found) = parse_databases("DB=habbo\nHAS=hotel_live\nHAS=hotel_test\n");
+        assert_eq!(configured, "habbo");
+        assert_eq!(found, ["hotel_live", "hotel_test"]);
     }
 
     #[test]

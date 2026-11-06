@@ -52,6 +52,10 @@ pub const ROOT_ACCOUNT: &str = "root";
 
 static CURRENT: OnceLock<ServerLayout> = OnceLock::new();
 
+/// The hotel database chosen during this run (a tool found the configured one missing and the user picked
+/// another): wins over the emulator's config.ini and the layout until the installer closes.
+static CHOSEN_DATABASE: std::sync::RwLock<Option<String>> = std::sync::RwLock::new(None);
+
 fn path_pattern() -> &'static Regex {
     static P: OnceLock<Regex> = OnceLock::new();
     P.get_or_init(|| Regex::new("^/[A-Za-z0-9._/-]+$").unwrap())
@@ -76,6 +80,22 @@ impl ServerLayout {
     /// Fixes the layout for this run (startup, tests). Ignored when it was already read.
     pub fn init(layout: ServerLayout) {
         let _ = CURRENT.set(layout);
+    }
+
+    /// Uses `name` as the hotel database for the rest of this run. False (and nothing changes) for a name that is
+    /// not a plain database name.
+    pub fn choose_database(name: &str) -> bool {
+        let name = name.trim();
+        if !database_pattern().is_match(name) {
+            return false;
+        }
+        *CHOSEN_DATABASE.write().unwrap() = Some(name.to_string());
+        true
+    }
+
+    /// The database chosen during this run, if one was.
+    pub fn chosen_database() -> Option<String> {
+        CHOSEN_DATABASE.read().unwrap().clone()
     }
 
     /// A Linux user name: lower case letters, digits, '_' and '-', starting with a letter or '_'.

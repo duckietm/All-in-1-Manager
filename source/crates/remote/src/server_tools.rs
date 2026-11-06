@@ -16,6 +16,10 @@ pub const KEPT_BACKUPS: usize = 10;
 
 /// Sets $db: the hotel database from the emulator's config.ini, or the layout's database. (DatabaseName)
 pub fn database_name() -> String {
+    // Chosen during this run (the configured one was not there): exactly that one.
+    if let Some(chosen) = ServerLayout::chosen_database() {
+        return format!("db={chosen}");
+    }
     format!(
         "db=$(grep -sE '^db.database=' {}/config.ini | cut -d= -f2 | tr -d '[:space:]')\ndb=${{db:-{}}}",
         crate::emulator::directory(),

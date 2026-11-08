@@ -85,6 +85,8 @@ struct State {
     /// The image picker over the editor (icon_image, page_headline ...), the files of the server's
     /// c_images/catalogue (None until read), and the files fetched from it for their preview (None: could not be).
     picker: Option<Picker>,
+    /// The HTML editor of a page text (page_text1 ...).
+    html: Option<HtmlEditor>,
     catalogue_files: Option<Vec<String>>,
     listing: bool,
     fetched: HashMap<String, Option<Arc<Vec<u8>>>>,
@@ -206,6 +208,13 @@ struct Picker {
     column: usize,
     icon: bool,
     search: String,
+}
+
+/// The HTML editor of one page text: the text as typed and the selection (characters) the toolbar wraps.
+struct HtmlEditor {
+    column: usize,
+    text: String,
+    selection: (usize, usize),
 }
 
 /// The catalog_pages columns that hold a catalogue image, and whether it is the page icon.
@@ -731,12 +740,25 @@ impl Ctl {
 
     async fn save_row(self) {
         let Some((generation, session, database)) = self.session() else { return };
-        let (table, id, page, changes) = {
+        let (table, id, page, changes, cleaned) = {
             let mut s = self.lock();
             let Some(table) = s.editor.as_ref().map(|e| e.table) else { return };
             let columns = s.columns.get(table).cloned().unwrap_or_default();
             let Some(editor) = s.editor.as_mut() else { return };
-            let changes = editor.changes(&columns);
+            let mut changes = editor.changes(&columns);
+            // Page texts keep only the HTML Octane and the gameserver both show, however they were typed.
+            let mut cleaned: Vec<String> = Vec::new();
+            if table == "catalog_pages" {
+                for (name, value) in changes.iter_mut() {
+                    if let (true, Some(text)) = (catalog_admin::PAGE_TEXT_COLUMNS.contains(&name.as_str()), value.as_mut()) {
+                        let safe = catalog_admin::safe_page_html(text);
+                        if safe != *text {
+                            cleaned.push(name.clone());
+                            *text = safe;
+                        }
+                    }
+                }
+            }
             if let Some(problem) = changes.iter().find_map(|(name, value)| {
                 let column = columns.iter().find(|c| c.name == *name)?;
                 value.as_deref().and_then(|v| catalog_admin::field_problem(column, v))
@@ -749,7 +771,7 @@ impl Ctl {
                 return;
             }
             editor.saving = true;
-            (editor.table, editor.id, editor.page, changes)
+            (editor.table, editor.id, editor.page, changes, cleaned)
         };
         let result = catalog_admin::save_row(&session, &database, table, id, &changes).await;
         let ok = result.is_ok();
@@ -764,7 +786,11 @@ impl Ctl {
                     Status { text: tf("Saved {count} values of the offer. Publish to show it in the hotel.", &[("count", &changes.len().to_string())]), error: false }
                 }
                 Ok(_) if table == "catalog_pages" => {
-                    Status { text: tf("Saved {count} values of the page. Publish to show it in the hotel.", &[("count", &changes.len().to_string())]), error: false }
+                    let mut text = tf("Saved {count} values of the page. Publish to show it in the hotel.", &[("count", &changes.len().to_string())]);
+                    if !cleaned.is_empty() {
+                        text = format!("{text} {}", tf("HTML the client does not show was taken out of {columns}.", &[("columns", &cleaned.join(", "))]));
+                    }
+                    Status { text, error: false }
                 }
                 Ok(_) => Status {
                     text: tf("Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.", &[("count", &changes.len().to_string())]),
@@ -917,6 +943,7 @@ impl View for CatalogExplorerView {
             let s = &mut *guard;
             editor_window(&ctx, palette, s, &mut self.images, &mut actions);
             picker_window(&ctx, palette, s, &mut self.images, &mut actions);
+            html_window(&ctx, palette, s);
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
                     s.prompt = None;
@@ -1566,6 +1593,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     let fetching = &s.fetching;
     let mut want: Vec<String> = Vec::new();
     let mut open_picker: Option<(usize, bool)> = None;
+    let mut open_html: Option<usize> = None;
     let Some(editor) = s.editor.as_mut() else { return };
     let columns = s.columns.get(editor.table).cloned().unwrap_or_default();
     let furni = editor.furni.and_then(|id| s.furni.get(&id).cloned().or_else(|| s.unoffered.iter().flatten().find(|f| f.id == id).cloned()));
@@ -1674,6 +1702,11 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                                 ui.add(egui::TextEdit::singleline(&mut editor.values[i]).desired_width(width));
                             }
                         });
+                        if editor.table == "catalog_pages" && catalog_admin::PAGE_TEXT_COLUMNS.contains(&column.name.as_str()) {
+                            if ui.add_enabled(!editor.nulls[i], widgets::secondary_button(t("HTML ..."))).on_hover_text(t("A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.")).clicked() {
+                                open_html = Some(i);
+                            }
+                        }
                         if let (true, Some(icon)) = (editor.table == "catalog_pages", image_column(&column.name)) {
                             // The image the value means, small, and the picker.
                             let files = value_files(&editor.values[i], icon);
@@ -1740,6 +1773,10 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
         s.fetching.extend(want.iter().cloned());
         actions.push(Action::FetchFiles(want));
     }
+    if let Some(column) = open_html {
+        let text = s.editor.as_ref().and_then(|e| e.values.get(column).cloned()).unwrap_or_default();
+        s.html = Some(HtmlEditor { column, text, selection: (0, 0) });
+    }
     if let Some((column, icon)) = open_picker {
         s.picker = Some(Picker { column, icon, search: String::new() });
         if s.catalogue_files.is_none() && !s.listing && !s.sample {
@@ -1750,6 +1787,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     if close {
         s.editor = None;
         s.picker = None;
+        s.html = None;
     }
 }
 
@@ -1862,6 +1900,219 @@ fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     if close {
         s.picker = None;
     }
+}
+
+/// The HTML editor of a page text: a toolbar that wraps the selection, the text, and a preview of what the client
+/// shows. Use writes the safe HTML (catalog_admin::safe_page_html) in the field.
+fn html_window(ctx: &egui::Context, palette: &Palette, s: &mut State) {
+    let Some(html) = s.html.as_mut() else { return };
+    let Some(editor) = s.editor.as_mut() else {
+        s.html = None;
+        return;
+    };
+    let name = s.columns.get(editor.table).and_then(|c| c.get(html.column)).map(|c| c.name.clone()).unwrap_or_default();
+    let mut close = false;
+    let mut apply = false;
+    egui::Modal::new(egui::Id::new("catalog-html-editor")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(20, 16))).show(ctx, |ui| {
+        ui.set_width(760.0);
+        ui.label(RichText::new(tf("HTML of {column}", &[("column", &name)])).size(16.0).strong());
+        ui.label(
+            RichText::new(t("Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align."))
+                .size(11.5)
+                .color(palette.muted),
+        );
+        ui.add_space(8.0);
+        // The toolbar: wraps the selection in a tag, or puts one in at the cursor.
+        let mut wrap: Option<(String, String)> = None;
+        ui.horizontal_wrapped(|ui| {
+            let tool = |ui: &mut egui::Ui, label: RichText, tip: &str| ui.add(egui::Button::new(label).min_size(egui::vec2(30.0, 26.0))).on_hover_text(tip).clicked();
+            if tool(ui, RichText::new("B").strong(), t("Bold")) {
+                wrap = Some(("<b>".into(), "</b>".into()));
+            }
+            if tool(ui, RichText::new("I").italics(), t("Italic")) {
+                wrap = Some(("<i>".into(), "</i>".into()));
+            }
+            if tool(ui, RichText::new("U").underline(), t("Underline")) {
+                wrap = Some(("<u>".into(), "</u>".into()));
+            }
+            if tool(ui, RichText::new("↵"), t("Line break")) {
+                wrap = Some(("<br>".into(), String::new()));
+            }
+            if tool(ui, RichText::new("¶"), t("Paragraph")) {
+                wrap = Some(("<p>".into(), "</p>".into()));
+            }
+            if tool(ui, RichText::new("🔗"), t("Link (opens in a new tab)")) {
+                wrap = Some(("<a href=\"https://\" target=\"_blank\">".into(), "</a>".into()));
+            }
+            if tool(ui, RichText::new("🖼"), t("Image (http or https)")) {
+                wrap = Some(("<img src=\"https://\" alt=\"\">".into(), String::new()));
+            }
+            ui.add_space(8.0);
+            for (color, hex) in [(Color32::from_rgb(214, 39, 40), "#d62728"), (Color32::from_rgb(31, 119, 180), "#1f77b4"), (Color32::from_rgb(44, 160, 44), "#2ca02c"), (Color32::from_rgb(255, 127, 14), "#ff7f0e"), (Color32::BLACK, "#000000")] {
+                let (rect, response) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), Sense::click());
+                ui.painter().rect_filled(rect.shrink(2.0), CornerRadius::same(4), color);
+                ui.painter().rect_stroke(rect.shrink(2.0), CornerRadius::same(4), Stroke::new(1.0_f32, palette.muted), egui::StrokeKind::Inside);
+                if response.on_hover_text(tf("Text colour {color}", &[("color", hex)])).clicked() {
+                    wrap = Some((format!("<span style=\"color: {hex}\">"), "</span>".into()));
+                }
+            }
+        });
+        if let Some((open, end)) = wrap {
+            let chars: Vec<char> = html.text.chars().collect();
+            let (a, b) = (html.selection.0.min(html.selection.1).min(chars.len()), html.selection.0.max(html.selection.1).min(chars.len()));
+            let before: String = chars[..a].iter().collect();
+            let inside: String = chars[a..b].iter().collect();
+            let after: String = chars[b..].iter().collect();
+            html.text = format!("{before}{open}{inside}{end}{after}");
+            let at = a + open.chars().count() + inside.chars().count();
+            html.selection = (at, at);
+        }
+        ui.add_space(6.0);
+        let output = egui::TextEdit::multiline(&mut html.text).code_editor().desired_rows(8).desired_width(f32::INFINITY).show(ui);
+        if let Some(range) = output.cursor_range {
+            html.selection = (range.primary.ccursor.index, range.secondary.ccursor.index);
+        }
+        ui.add_space(8.0);
+        let safe = catalog_admin::safe_page_html(&html.text);
+        ui.label(RichText::new(t("Preview")).size(13.0).strong());
+        egui::Frame::new().fill(game::NAV).stroke(Stroke::new(1.0_f32, game::TILE_EDGE)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            egui::ScrollArea::vertical().id_salt("catalog-html-preview").max_height(160.0).show(ui, |ui| {
+                ui.label(html_preview(&safe));
+            });
+        });
+        if safe != html.text {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(t("Part of this HTML is not shown by the client (or not allowed): it is taken out when used.")).size(12.0).color(palette.warning_text));
+                if ui.add(widgets::secondary_button(t("Clean up"))).on_hover_text(&safe).clicked() {
+                    html.text = safe.clone();
+                }
+            });
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.add(widgets::primary_button(t("Use"))).clicked() {
+                apply = true;
+            }
+            if ui.add(widgets::secondary_button(t("Cancel"))).clicked() {
+                close = true;
+            }
+        });
+    });
+    if apply {
+        let safe = catalog_admin::safe_page_html(&html.text);
+        if let Some(value) = editor.values.get_mut(html.column) {
+            *value = safe;
+        }
+        close = true;
+    }
+    if close {
+        s.html = None;
+    }
+}
+
+/// Safe page HTML as the client shows it, roughly: bold, italic, underline, colour, links, line breaks and paragraphs.
+fn html_preview(html: &str) -> egui::text::LayoutJob {
+    #[derive(Clone, Default)]
+    struct Look {
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        link: bool,
+        color: Option<Color32>,
+    }
+    fn color(value: &str) -> Option<Color32> {
+        let value = value.trim().to_lowercase();
+        let hex = value.strip_prefix('#')?;
+        let full = if hex.len() == 3 { hex.chars().flat_map(|c| [c, c]).collect::<String>() } else { hex.to_string() };
+        if full.len() != 6 {
+            return None;
+        }
+        let n = u32::from_str_radix(&full, 16).ok()?;
+        Some(Color32::from_rgb((n >> 16) as u8, (n >> 8) as u8, n as u8))
+    }
+    fn decode(text: &str) -> String {
+        text.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ").replace("&amp;", "&")
+    }
+    let mut job = egui::text::LayoutJob::default();
+    let mut stack: Vec<(String, Look)> = Vec::new();
+    let mut look = Look::default();
+    let add = |job: &mut egui::text::LayoutJob, text: &str, look: &Look| {
+        if text.is_empty() {
+            return;
+        }
+        // Real bold: the bold UI font (Ubuntu Bold) the app installs as the "bold" family.
+        let family = if look.bold { egui::FontFamily::Name("bold".into()) } else { egui::FontFamily::Proportional };
+        let mut format = egui::TextFormat {
+            font_id: egui::FontId::new(13.0, family),
+            color: if look.link { game::TITLE } else { look.color.unwrap_or(game::TEXT) },
+            italics: look.italic,
+            ..Default::default()
+        };
+        if look.underline || look.link {
+            format.underline = Stroke::new(1.0_f32, format.color);
+        }
+        job.append(&decode(text), 0.0, format);
+    };
+    let mut rest = html;
+    while !rest.is_empty() {
+        match rest.find('<') {
+            Some(0) => {
+                let end = rest.find('>').unwrap_or(rest.len() - 1);
+                let tag = &rest[1..end];
+                rest = &rest[(end + 1).min(rest.len())..];
+                let closing = tag.starts_with('/');
+                let name: String = tag.trim_start_matches('/').chars().take_while(|c| c.is_ascii_alphanumeric()).collect::<String>().to_lowercase();
+                if closing {
+                    if let Some(at) = stack.iter().rposition(|(n, _)| *n == name) {
+                        look = stack[at].1.clone();
+                        stack.truncate(at);
+                    }
+                    if matches!(name.as_str(), "p" | "div") {
+                        add(&mut job, "\n", &look);
+                    }
+                    continue;
+                }
+                match name.as_str() {
+                    "br" => add(&mut job, "\n", &look),
+                    "img" => add(&mut job, "[image]", &Look { italic: true, ..look.clone() }),
+                    _ => {
+                        stack.push((name.clone(), look.clone()));
+                        match name.as_str() {
+                            "b" | "strong" => look.bold = true,
+                            "i" | "em" => look.italic = true,
+                            "u" => look.underline = true,
+                            "a" => look.link = true,
+                            _ => {}
+                        }
+                        if let Some(style) = tag.split("style=\"").nth(1).and_then(|s| s.split('"').next()) {
+                            for declaration in style.split(';') {
+                                if let Some((property, value)) = declaration.split_once(':') {
+                                    match property.trim() {
+                                        "color" => look.color = color(value).or(look.color),
+                                        "font-weight" if value.trim().starts_with("bold") || value.trim().parse::<u32>().is_ok_and(|w| w >= 600) => look.bold = true,
+                                        "font-style" if value.trim() == "italic" => look.italic = true,
+                                        "text-decoration" if value.contains("underline") => look.underline = true,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Some(at) => {
+                add(&mut job, &rest[..at], &look);
+                rest = &rest[at..];
+            }
+            None => {
+                add(&mut job, rest, &look);
+                rest = "";
+            }
+        }
+    }
+    job
 }
 
 /// A column's type and comment, for its hover text.
@@ -2086,6 +2337,12 @@ fn sample(s: &mut State) {
             _ => "items_base",
         };
         sample_editor(s, table, 102, Some(102));
+        if let (Ok(_), Some(editor)) = (std::env::var("AIO_SCREENSHOT_HTML"), s.editor.as_ref()) {
+            if let Some(column) = s.columns.get(editor.table).and_then(|c| c.iter().position(|c| c.name == "page_text1")) {
+                let text = "<p>The <b>rarest</b> furni of the hotel, <span style=\"color: #d62728; position: fixed\">only this week</span>!</p>\n<a href=\"https://hotel.example.com/rares\">See all rares</a><script>steal()</script>".to_string();
+                s.html = Some(HtmlEditor { column, text, selection: (0, 0) });
+            }
+        }
         if let (Some(kind), Some(editor)) = (std::env::var("AIO_SCREENSHOT_PICKER").ok(), s.editor.as_ref()) {
             let name = if kind == "icon" { "icon_image" } else { "page_headline" };
             if let Some(column) = s.columns.get(editor.table).and_then(|c| c.iter().position(|c| c.name == name)) {
@@ -2237,6 +2494,13 @@ mod tests {
             });
         });
         got
+    }
+
+    #[test]
+    fn the_preview_shows_the_text_with_its_breaks() {
+        let job = html_preview("<p>A <b>bold</b> &amp; <a href=\"#x\">link</a></p>B<br>C<img src=\"https://h/a.png\">");
+        assert_eq!(job.text, "A bold & link\nB\nC[image]");
+        assert!(job.sections.iter().any(|s| s.format.underline.width > 0.0), "the link is underlined");
     }
 
     #[test]

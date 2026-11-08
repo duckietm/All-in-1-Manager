@@ -3283,5 +3283,22 @@
   "Reading the server's catalogue images ...": "Leyendo las imágenes del catálogo del servidor ...",
   "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Las imágenes de c_images/catalogue de este ordenador y del servidor: un clic escribe el nombre (sin .gif, el cliente lo añade).",
   "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Los iconos de página (c_images/catalogue/icon_<n>.png) de este ordenador y del servidor: un clic escribe el número en icon_image.",
-  "{count} shown": "{count} mostradas"
+  "{count} shown": "{count} mostradas",
+  "A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.": "Un pequeño editor HTML con vista previa; solo se conserva el HTML que Octane y el servidor de juego muestran ambos.",
+  "Bold": "Negrita",
+  "Clean up": "Limpiar",
+  "HTML ...": "HTML ...",
+  "HTML of {column}": "HTML de {column}",
+  "HTML the client does not show was taken out of {columns}.": "Se quitó de {columns} el HTML que el cliente no muestra.",
+  "Image (http or https)": "Imagen (http o https)",
+  "Italic": "Cursiva",
+  "Line break": "Salto de línea",
+  "Link (opens in a new tab)": "Enlace (se abre en una pestaña nueva)",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Solo se conserva lo que Octane y el servidor de juego muestran ambos: b, i, u, strong, em, br, p, div, span, a (http, https, mailto o #, se abre en una pestaña nueva) e img (http o https); estilos solo color, background-color, font-weight, font-style, font-size, text-decoration e text-align.",
+  "Paragraph": "Párrafo",
+  "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Parte de este HTML no lo muestra el cliente (o no está permitido): se quita al usarlo.",
+  "Preview": "Vista previa",
+  "Text colour {color}": "Color del texto {color}",
+  "Underline": "Subrayado",
+  "Use": "Usar"
 }

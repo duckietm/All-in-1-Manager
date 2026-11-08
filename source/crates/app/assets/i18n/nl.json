@@ -3283,5 +3283,22 @@
   "Reading the server's catalogue images ...": "De catalogusafbeeldingen van de server lezen ...",
   "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "De afbeeldingen in c_images/catalogue van deze computer en de server: een klik schrijft de naam (zonder .gif, de client voegt dat toe).",
   "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "De pagina-iconen (c_images/catalogue/icon_<n>.png) van deze computer en de server: een klik schrijft het nummer in icon_image.",
-  "{count} shown": "{count} getoond"
+  "{count} shown": "{count} getoond",
+  "A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.": "Een kleine HTML-editor met voorbeeld; alleen de HTML die Octane en de gameserver allebei tonen blijft.",
+  "Bold": "Vet",
+  "Clean up": "Opschonen",
+  "HTML ...": "HTML ...",
+  "HTML of {column}": "HTML van {column}",
+  "HTML the client does not show was taken out of {columns}.": "HTML die de client niet toont is uit {columns} gehaald.",
+  "Image (http or https)": "Afbeelding (http of https)",
+  "Italic": "Cursief",
+  "Line break": "Regeleinde",
+  "Link (opens in a new tab)": "Link (opent in een nieuw tabblad)",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Alleen wat Octane en de gameserver allebei tonen blijft: b, i, u, strong, em, br, p, div, span, a (http, https, mailto of #, opent in een nieuw tabblad) en img (http of https); stijlen alleen color, background-color, font-weight, font-style, font-size, text-decoration en text-align.",
+  "Paragraph": "Alinea",
+  "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Een deel van deze HTML toont de client niet (of is niet toegestaan): het wordt eruit gehaald bij gebruik.",
+  "Preview": "Voorbeeld",
+  "Text colour {color}": "Tekstkleur {color}",
+  "Underline": "Onderstrepen",
+  "Use": "Gebruiken"
 }

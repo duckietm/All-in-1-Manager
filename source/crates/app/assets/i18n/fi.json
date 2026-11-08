@@ -3283,5 +3283,22 @@
   "Reading the server's catalogue images ...": "Luetaan palvelimen luettelokuvia ...",
   "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Tämän tietokoneen ja palvelimen c_images/catalogue-kansion kuvat: napsautus kirjoittaa nimen (ilman .gif-päätettä, asiakas lisää sen).",
   "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Tämän tietokoneen ja palvelimen sivukuvakkeet (c_images/catalogue/icon_<n>.png): napsautus kirjoittaa numeron kenttään icon_image.",
-  "{count} shown": "{count} näytetty"
+  "{count} shown": "{count} näytetty",
+  "A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.": "Pieni HTML-editori esikatselulla; vain HTML, jonka sekä Octane että pelipalvelin näyttävät, säilyy.",
+  "Bold": "Lihavointi",
+  "Clean up": "Siivoa",
+  "HTML ...": "HTML ...",
+  "HTML of {column}": "Sarakkeen {column} HTML",
+  "HTML the client does not show was taken out of {columns}.": "HTML, jota asiakas ei näytä, poistettiin sarakkeista {columns}.",
+  "Image (http or https)": "Kuva (http tai https)",
+  "Italic": "Kursiivi",
+  "Line break": "Rivinvaihto",
+  "Link (opens in a new tab)": "Linkki (avautuu uuteen välilehteen)",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Vain se, minkä sekä Octane että pelipalvelin näyttävät, säilyy: b, i, u, strong, em, br, p, div, span, a (http, https, mailto tai #, avautuu uuteen välilehteen) ja img (http tai https); tyylit vain color, background-color, font-weight, font-style, font-size, text-decoration ja text-align.",
+  "Paragraph": "Kappale",
+  "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Osaa tästä HTML:stä asiakas ei näytä (tai sitä ei sallita): se poistetaan käytettäessä.",
+  "Preview": "Esikatselu",
+  "Text colour {color}": "Tekstin väri {color}",
+  "Underline": "Alleviivaus",
+  "Use": "Käytä"
 }

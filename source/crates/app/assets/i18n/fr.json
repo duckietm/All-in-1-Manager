@@ -3283,5 +3283,22 @@
   "Reading the server's catalogue images ...": "Lecture des images du catalogue du serveur ...",
   "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Les images de c_images/catalogue de cet ordinateur et du serveur : un clic écrit le nom (sans .gif, le client l'ajoute).",
   "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Les icônes de page (c_images/catalogue/icon_<n>.png) de cet ordinateur et du serveur : un clic écrit le numéro dans icon_image.",
-  "{count} shown": "{count} affichées"
+  "{count} shown": "{count} affichées",
+  "A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.": "Un petit éditeur HTML avec aperçu ; seul le HTML qu'Octane et le serveur de jeu affichent tous deux est gardé.",
+  "Bold": "Gras",
+  "Clean up": "Nettoyer",
+  "HTML ...": "HTML ...",
+  "HTML of {column}": "HTML de {column}",
+  "HTML the client does not show was taken out of {columns}.": "Le HTML que le client n'affiche pas a été retiré de {columns}.",
+  "Image (http or https)": "Image (http ou https)",
+  "Italic": "Italique",
+  "Line break": "Saut de ligne",
+  "Link (opens in a new tab)": "Lien (s'ouvre dans un nouvel onglet)",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Seul ce qu'Octane et le serveur de jeu affichent tous deux est gardé: b, i, u, strong, em, br, p, div, span, a (http, https, mailto ou #, s'ouvre dans un nouvel onglet) et img (http ou https); styles uniquement color, background-color, font-weight, font-style, font-size, text-decoration et text-align.",
+  "Paragraph": "Paragraphe",
+  "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Une partie de ce HTML n'est pas affichée par le client (ou n'est pas permise) : elle est retirée à l'utilisation.",
+  "Preview": "Aperçu",
+  "Text colour {color}": "Couleur du texte {color}",
+  "Underline": "Souligné",
+  "Use": "Utiliser"
 }

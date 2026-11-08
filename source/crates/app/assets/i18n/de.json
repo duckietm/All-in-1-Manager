@@ -3283,5 +3283,22 @@
   "Reading the server's catalogue images ...": "Die Katalogbilder des Servers werden gelesen ...",
   "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Die Bilder in c_images/catalogue dieses Computers und des Servers: ein Klick schreibt den Namen (ohne .gif, der Client fügt es an).",
   "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Die Seitensymbole (c_images/catalogue/icon_<n>.png) dieses Computers und des Servers: ein Klick schreibt die Nummer in icon_image.",
-  "{count} shown": "{count} angezeigt"
+  "{count} shown": "{count} angezeigt",
+  "A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.": "Ein kleiner HTML-Editor mit Vorschau; nur das HTML, das Octane und der Gameserver beide zeigen, bleibt.",
+  "Bold": "Fett",
+  "Clean up": "Bereinigen",
+  "HTML ...": "HTML ...",
+  "HTML of {column}": "HTML von {column}",
+  "HTML the client does not show was taken out of {columns}.": "HTML, das der Client nicht zeigt, wurde aus {columns} entfernt.",
+  "Image (http or https)": "Bild (http oder https)",
+  "Italic": "Kursiv",
+  "Line break": "Zeilenumbruch",
+  "Link (opens in a new tab)": "Link (öffnet in einem neuen Tab)",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Nur was Octane und der Gameserver beide zeigen, bleibt: b, i, u, strong, em, br, p, div, span, a (http, https, mailto oder #, öffnet in einem neuen Tab) und img (http oder https); Stile nur color, background-color, font-weight, font-style, font-size, text-decoration und text-align.",
+  "Paragraph": "Absatz",
+  "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Ein Teil dieses HTML wird vom Client nicht gezeigt (oder ist nicht erlaubt): er wird beim Übernehmen entfernt.",
+  "Preview": "Vorschau",
+  "Text colour {color}": "Textfarbe {color}",
+  "Underline": "Unterstreichen",
+  "Use": "Übernehmen"
 }

@@ -3283,5 +3283,22 @@
   "Reading the server's catalogue images ...": "Sunucunun katalog görselleri okunuyor ...",
   "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Bu bilgisayarın ve sunucunun c_images/catalogue içindeki görselleri: bir tıklama adı yazar (.gif olmadan, istemci ekler).",
   "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Bu bilgisayarın ve sunucunun sayfa simgeleri (c_images/catalogue/icon_<n>.png): bir tıklama numarayı icon_image'a yazar.",
-  "{count} shown": "{count} gösteriliyor"
+  "{count} shown": "{count} gösteriliyor",
+  "A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.": "Önizlemeli küçük bir HTML düzenleyici; yalnızca Octane ve oyun sunucusunun ikisinin de gösterdiği HTML kalır.",
+  "Bold": "Kalın",
+  "Clean up": "Temizle",
+  "HTML ...": "HTML ...",
+  "HTML of {column}": "{column} HTML'i",
+  "HTML the client does not show was taken out of {columns}.": "İstemcinin göstermediği HTML {columns} içinden çıkarıldı.",
+  "Image (http or https)": "Görsel (http veya https)",
+  "Italic": "İtalik",
+  "Line break": "Satır sonu",
+  "Link (opens in a new tab)": "Bağlantı (yeni sekmede açılır)",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Yalnızca Octane ve oyun sunucusunun ikisinin de gösterdiği kalır: b, i, u, strong, em, br, p, div, span, a (http, https, mailto veya #, yeni sekmede açılır) ve img (http veya https); stiller yalnızca color, background-color, font-weight, font-style, font-size, text-decoration ve text-align.",
+  "Paragraph": "Paragraf",
+  "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Bu HTML'in bir kısmını istemci göstermez (ya da izin verilmez): kullanılırken çıkarılır.",
+  "Preview": "Önizleme",
+  "Text colour {color}": "Metin rengi {color}",
+  "Underline": "Altı çizili",
+  "Use": "Kullan"
 }

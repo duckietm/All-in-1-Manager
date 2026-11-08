@@ -29,6 +29,8 @@ russh-sftp.workspace = true
 mysql_async.workspace = true
 reqwest.workspace = true
 roxmltree = "0.19"
+# Page texts of the catalogue: only the HTML Octane and the gameserver both allow.
+ammonia = "4"
 
 [dev-dependencies]
 tempfile.workspace = true

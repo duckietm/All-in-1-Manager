@@ -1424,6 +1424,15 @@ in fields of several lines ...). After a save the tree is read again; **Publish*
 server's images are fetched over the SSH connection as they come into view. A click writes the icon's number, or the
 image's name without `.gif` (the client adds it).
 
+The page texts (`page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`) have **HTML ...**: a small HTML
+editor with a toolbar (bold, italic, underline, line break, paragraph, link, image, text colours; it wraps the
+selection), the HTML, and a preview of what the client shows. Only the HTML both Octane (`SanitizeHtml`, DOMPurify)
+and the gameserver's catalogue admin (Jsoup safelist) show is kept: `b i u strong em br p div span a img`; `href`
+to http(s), mailto or `#...` (links open in a new tab), images from http(s) only, `class` and `style` with text
+properties only (color, background-color, font-weight, font-style, font-size, text-decoration, text-align; no `url()`
+or `expression()`). Scripts, event handlers, forms, frames and other tags are taken out, their text stays. The editor
+says when something would go and offers **Clean up**; **Use**, and every save of a page, keeps only the safe HTML.
+
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
 catalogue again, as on the Catalogue page.

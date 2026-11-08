@@ -3260,5 +3260,14 @@
   "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} furnis recibieron una oferta en {page} (3 créditos: pon el precio en la página Catálogo). Publica para mostrarlo en el hotel.",
   "{count} furni without an offer.": "{count} furnis sin oferta.",
   "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} furnis sin oferta; se muestran los primeros {shown}, busca para acotar.",
-  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} está ahora bajo {parent}. Publica para mostrarlo en el hotel."
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} está ahora bajo {parent}. Publica para mostrarlo en el hotel.",
+  "Edit furni (items_base) ...": "Editar furni (items_base) ...",
+  "Edit furni: {name}": "Editar furni: {name}",
+  "Every column of the furni's items_base row. Changed values are marked; Save writes only those.": "Cada columna de la fila items_base del furni. Los valores cambiados están marcados; Guardar escribe solo esos.",
+  "Flags": "Opciones",
+  "Nothing changed.": "No ha cambiado nada.",
+  "Reading the furni ...": "Leyendo el furni ...",
+  "Save changes ({count})": "Guardar cambios ({count})",
+  "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} valores guardados. El emulador lee items_base al arrancar: reinícialo (Herramientas), o :update_items en el hotel.",
+  "Values": "Valores"
 }

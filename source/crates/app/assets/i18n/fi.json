@@ -3260,5 +3260,14 @@
   "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} kalustetta sai tarjouksen sivulla {page} (3 krediittiä: aseta hinta Luettelo-sivulla). Julkaise näyttääksesi sen hotellissa.",
   "{count} furni without an offer.": "{count} kalustetta ilman tarjousta.",
   "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} kalustetta ilman tarjousta; ensimmäiset {shown} näytetään, rajaa haulla.",
-  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} on nyt sivun {parent} alla. Julkaise näyttääksesi sen hotellissa."
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} on nyt sivun {parent} alla. Julkaise näyttääksesi sen hotellissa.",
+  "Edit furni (items_base) ...": "Muokkaa kalustetta (items_base) ...",
+  "Edit furni: {name}": "Muokkaa kalustetta: {name}",
+  "Every column of the furni's items_base row. Changed values are marked; Save writes only those.": "Kalusteen items_base-rivin jokainen sarake. Muutetut arvot on merkitty; Tallenna kirjoittaa vain ne.",
+  "Flags": "Liput",
+  "Nothing changed.": "Mitään ei muuttunut.",
+  "Reading the furni ...": "Luetaan kalustetta ...",
+  "Save changes ({count})": "Tallenna muutokset ({count})",
+  "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} arvoa tallennettu. Emulaattori lukee items_base-taulun käynnistyessään: käynnistä se uudelleen (Työkalut) tai :update_items hotellissa.",
+  "Values": "Arvot"
 }

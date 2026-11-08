@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use aio_remote::catalog_admin::{self, Furni, Offer, Page, PageUndo, PlaceUndo};
+use aio_remote::catalog_admin::{self, FieldKind, Furni, FurniColumn, Offer, Page, PageUndo, PlaceUndo};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
@@ -80,6 +80,9 @@ struct State {
     session_for: Option<usize>,
     opening: bool,
     prompt: Option<Prompt>,
+    /// The furni editor (right-click on a furni), and the items_base columns once read.
+    editor: Option<Editor>,
+    furni_columns: Option<Vec<FurniColumn>>,
     login_visible: bool,
     database: String,
     subtitle: String,
@@ -157,6 +160,33 @@ impl State {
     }
 }
 
+/// One furni's items_base row being edited: each column's value as loaded and as typed (None / ticked: NULL).
+struct Editor {
+    id: i64,
+    /// Read from the database (None until it is).
+    original: Option<Vec<Option<String>>>,
+    values: Vec<String>,
+    nulls: Vec<bool>,
+    saving: bool,
+    status: Status,
+}
+
+impl Editor {
+    /// The columns whose value differs from what was loaded.
+    fn changes(&self, columns: &[FurniColumn]) -> Vec<(String, Option<String>)> {
+        let Some(original) = &self.original else { return Vec::new() };
+        columns
+            .iter()
+            .enumerate()
+            .filter(|(i, c)| c.name != "id" && *i < self.values.len())
+            .filter_map(|(i, c)| {
+                let now = if self.nulls[i] { None } else { Some(self.values[i].trim().to_string()) };
+                (now != original[i]).then(|| (c.name.clone(), now))
+            })
+            .collect()
+    }
+}
+
 /// What the last change did, to put it back.
 enum Undo {
     Offers(PlaceUndo),
@@ -187,6 +217,8 @@ enum Action {
     PlaceFurni { ids: Vec<i64>, page: i64, before: Option<i64> },
     MovePage { id: i64, parent: i64, before: Option<i64> },
     LoadUnoffered,
+    EditFurni(i64),
+    SaveFurni,
     Undo,
     Publish,
 }
@@ -564,6 +596,91 @@ impl Ctl {
         });
     }
 
+    /// Opens the editor of furni `id`: the items_base columns (read once) and its row.
+    async fn edit_furni(self, id: i64) {
+        let Some((generation, session, database)) = self.session() else { return };
+        self.with(generation, |s| {
+            s.editor = Some(Editor { id, original: None, values: Vec::new(), nulls: Vec::new(), saving: false, status: Status::default() });
+        });
+        let cached = self.lock().furni_columns.clone();
+        let columns = match cached {
+            Some(columns) => Ok(columns),
+            None => catalog_admin::furni_columns(&session, &database).await,
+        };
+        let row = catalog_admin::load_furni_row(&session, &database, id).await;
+        self.with(generation, |s| {
+            let Some(editor) = s.editor.as_mut().filter(|e| e.id == id) else { return };
+            match (columns, row) {
+                (Ok(columns), Ok(row)) => {
+                    let original: Vec<Option<String>> = columns.iter().map(|c| row.iter().find(|(name, _)| *name == c.name).and_then(|(_, v)| v.clone())).collect();
+                    editor.values = original.iter().map(|v| v.clone().unwrap_or_default()).collect();
+                    editor.nulls = original.iter().map(Option::is_none).collect();
+                    editor.original = Some(original);
+                    s.furni_columns = Some(columns);
+                }
+                (Err(error), _) | (_, Err(error)) => editor.status = Status { text: error.to_string(), error: true },
+            }
+        });
+    }
+
+    async fn save_furni(self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let (id, changes) = {
+            let mut s = self.lock();
+            let columns = s.furni_columns.clone().unwrap_or_default();
+            let Some(editor) = s.editor.as_mut() else { return };
+            let changes = editor.changes(&columns);
+            if let Some(problem) = changes.iter().find_map(|(name, value)| {
+                let column = columns.iter().find(|c| c.name == *name)?;
+                value.as_deref().and_then(|v| catalog_admin::field_problem(column, v))
+            }) {
+                editor.status = Status { text: problem, error: true };
+                return;
+            }
+            if changes.is_empty() {
+                editor.status = Status { text: t("Nothing changed.").into(), error: false };
+                return;
+            }
+            editor.saving = true;
+            (editor.id, changes)
+        };
+        let result = catalog_admin::save_furni(&session, &database, id, &changes).await;
+        let ok = result.is_ok();
+        self.with(generation, |s| {
+            let Some(editor) = s.editor.as_mut() else { return };
+            editor.saving = false;
+            editor.status = match result {
+                Ok(_) => Status {
+                    text: tf("Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.", &[("count", &changes.len().to_string())]),
+                    error: false,
+                },
+                Err(error) => Status { text: error.to_string(), error: true },
+            };
+        });
+        if ok {
+            // The new values as the database has them, and the names in the windows.
+            let row = catalog_admin::load_furni_row(&session, &database, id).await;
+            let names = catalog_admin::furni_by_ids(&session, &database, &[id]).await;
+            self.with(generation, |s| {
+                let columns = s.furni_columns.clone().unwrap_or_default();
+                if let (Some(editor), Ok(row)) = (s.editor.as_mut().filter(|e| e.id == id), row) {
+                    let original: Vec<Option<String>> = columns.iter().map(|c| row.iter().find(|(name, _)| *name == c.name).and_then(|(_, v)| v.clone())).collect();
+                    editor.values = original.iter().map(|v| v.clone().unwrap_or_default()).collect();
+                    editor.nulls = original.iter().map(Option::is_none).collect();
+                    editor.original = Some(original);
+                }
+                for furni in names.into_iter().flatten() {
+                    if let Some(list) = s.unoffered.as_mut() {
+                        if let Some(entry) = list.iter_mut().find(|f| f.id == furni.id) {
+                            *entry = furni.clone();
+                        }
+                    }
+                    s.furni.insert(furni.id, furni);
+                }
+            });
+        }
+    }
+
     async fn publish(self) {
         let Some(server) = self.shared.session() else { return };
         let generation = self.lock().generation;
@@ -623,6 +740,7 @@ impl View for CatalogExplorerView {
         {
             let mut guard = self.state.lock().unwrap();
             let s = &mut *guard;
+            editor_window(&ctx, palette, s, &mut self.images, &mut actions);
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
                     s.prompt = None;
@@ -692,6 +810,9 @@ impl View for CatalogExplorerView {
                 Action::PlaceFurni { ids, page, before } => ctl.spawn(move |c| c.place_furni(ids, page, before)),
                 Action::MovePage { id, parent, before } => ctl.spawn(move |c| c.move_page(id, parent, before)),
                 Action::LoadUnoffered => ctl.spawn(|c| async move { c.load_unoffered().await }),
+                Action::EditFurni(id) if self.state.lock().unwrap().sample => sample_editor(&mut self.state.lock().unwrap(), id),
+                Action::EditFurni(id) => ctl.spawn(move |c| c.edit_furni(id)),
+                Action::SaveFurni => ctl.spawn(|c| c.save_furni()),
                 Action::Undo => ctl.spawn(|c| c.undo()),
                 Action::Publish => ctl.spawn(|c| c.publish()),
             }
@@ -1031,7 +1152,7 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
 /// The open page: its title, the furni grid (drop targets) and the info box of the selected furni.
 fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize, actions: &mut Vec<Action>) {
     if s.panes[index].root == Some(UNOFFERED) {
-        unoffered(ui, ctx, s, images, index);
+        unoffered(ui, ctx, s, images, index, actions);
         return;
     }
     let Some(page_id) = s.panes[index].page else { return };
@@ -1102,6 +1223,17 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                             painter.text(rect.left_top() + egui::vec2(4.0, 3.0), egui::Align2::LEFT_TOP, "+", egui::FontId::proportional(11.0), game::TITLE);
                         }
                         let response = response.on_hover_text(furni.as_ref().map(|f| f.public_name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| offer.catalog_name.clone()));
+                        let bundle: Vec<i64> = catalog_admin::item_ids(&offer.item_ids).unwrap_or_default();
+                        response.context_menu(|ui| {
+                            for id in &bundle {
+                                let name = s.furni.get(id).map(|f| if f.public_name.is_empty() { f.item_name.clone() } else { f.public_name.clone() }).unwrap_or_else(|| id.to_string());
+                                let label = if bundle.len() > 1 { tf("Edit furni: {name}", &[("name", &name)]) } else { t("Edit furni (items_base) ...").to_string() };
+                                if ui.button(label).clicked() {
+                                    actions.push(Action::EditFurni(*id));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                         if response.dnd_hover_payload::<DragOffers>().is_some() || response.dnd_hover_payload::<DragFurni>().is_some() {
                             hovered_before = Some((offer.id, rect));
                         }
@@ -1152,7 +1284,7 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
 }
 
 /// The Without offer tab: the furni no offer sells, as tiles to drag onto a page.
-fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize) {
+fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize, actions: &mut Vec<Action>) {
     egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::hover());
@@ -1192,6 +1324,12 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
                         draw_furni(painter, ctx, images, Some(furni), &offer, rect.shrink(4.0), 1);
                         let name = if furni.public_name.is_empty() { furni.item_name.clone() } else { format!("{} ({})", furni.public_name, furni.item_name) };
                         let response = response.on_hover_text(name);
+                        response.context_menu(|ui| {
+                            if ui.button(t("Edit furni (items_base) ...")).clicked() {
+                                actions.push(Action::EditFurni(furni.id));
+                                ui.close_menu();
+                            }
+                        });
                         let pane = &mut s.panes[index];
                         if response.drag_started() {
                             if !pane.furni_selected.contains(&furni.id) {
@@ -1217,6 +1355,141 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
             }
         });
     });
+}
+
+/// The furni editor: every items_base column of one furni, the flags as ticks, the rest in the table's order.
+fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images, actions: &mut Vec<Action>) {
+    let Some(editor) = s.editor.as_mut() else { return };
+    let columns = s.furni_columns.clone().unwrap_or_default();
+    let furni = s.furni.get(&editor.id).cloned().or_else(|| s.unoffered.iter().flatten().find(|f| f.id == editor.id).cloned());
+    let mut close = false;
+    let changed = editor.changes(&columns).len();
+    egui::Modal::new(egui::Id::new("catalog-furni-editor")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(22, 18))).show(ctx, |ui| {
+        ui.set_width(640.0);
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 72.0), Sense::hover());
+            ui.painter().rect_filled(rect, CornerRadius::same(6), game::PAGE_BAR);
+            let offer = Offer { catalog_name: furni.as_ref().map(|f| f.item_name.clone()).unwrap_or_default(), ..Offer::default() };
+            draw_furni(ui.painter(), ctx, images, furni.as_ref(), &offer, rect.shrink(4.0), 2);
+            ui.vertical(|ui| {
+                let name = furni.as_ref().map(|f| if f.public_name.is_empty() { f.item_name.clone() } else { f.public_name.clone() }).unwrap_or_default();
+                ui.label(RichText::new(name).size(17.0).strong());
+                ui.label(RichText::new(format!("{} · items_base id {}", furni.as_ref().map(|f| f.item_name.as_str()).unwrap_or(""), editor.id)).size(12.0).color(palette.muted));
+                ui.label(RichText::new(t("Every column of the furni's items_base row. Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
+            });
+        });
+        ui.add_space(10.0);
+        let Some(original) = editor.original.clone() else {
+            if editor.status.text.is_empty() {
+                ui.label(RichText::new(t("Reading the furni ...")).color(palette.muted));
+            } else {
+                ui.label(RichText::new(&editor.status.text).color(palette.error_text));
+            }
+            ui.add_space(8.0);
+            if ui.add(widgets::secondary_button(t("Close"))).clicked() {
+                close = true;
+            }
+            return;
+        };
+        let mark = |ui: &mut egui::Ui, i: usize, editor: &Editor| {
+            let now = if editor.nulls[i] { None } else { Some(editor.values[i].trim().to_string()) };
+            if now != original[i] {
+                ui.label(RichText::new("●").size(10.0).color(palette.warning_text));
+            }
+        };
+        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.6).auto_shrink([false, true]).show(ui, |ui| {
+            // The flags, as ticks in three columns.
+            let flags: Vec<usize> = columns.iter().enumerate().filter(|(_, c)| c.kind() == FieldKind::Flag).map(|(i, _)| i).collect();
+            if !flags.is_empty() {
+                ui.label(RichText::new(t("Flags")).size(13.0).strong());
+                egui::Grid::new("furni-flags").num_columns(3).spacing([18.0, 4.0]).show(ui, |ui| {
+                    for (n, i) in flags.iter().enumerate() {
+                        let column = &columns[*i];
+                        ui.horizontal(|ui| {
+                            let mut on = editor.values[*i].trim() == "1";
+                            if ui.checkbox(&mut on, &column.name).on_hover_text(hover(column)).changed() {
+                                editor.values[*i] = if on { "1" } else { "0" }.into();
+                                editor.nulls[*i] = false;
+                            }
+                            mark(ui, *i, editor);
+                        });
+                        if n % 3 == 2 {
+                            ui.end_row();
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+            }
+            ui.label(RichText::new(t("Values")).size(13.0).strong());
+            egui::Grid::new("furni-values").num_columns(3).spacing([12.0, 6.0]).min_col_width(80.0).show(ui, |ui| {
+                for (i, column) in columns.iter().enumerate() {
+                    let kind = column.kind();
+                    if kind == FieldKind::Flag {
+                        continue;
+                    }
+                    ui.label(RichText::new(&column.name).size(12.5)).on_hover_text(hover(column));
+                    ui.horizontal(|ui| {
+                        let editable = column.name != "id";
+                        ui.add_enabled_ui(editable && !editor.nulls[i], |ui| match &kind {
+                            FieldKind::Choice(options) => {
+                                egui::ComboBox::from_id_salt(("furni-choice", i)).selected_text(editor.values[i].clone()).width(220.0).show_ui(ui, |ui| {
+                                    for option in options {
+                                        ui.selectable_value(&mut editor.values[i], option.clone(), option);
+                                    }
+                                });
+                            }
+                            _ => {
+                                let width = if matches!(kind, FieldKind::Text { max: None } | FieldKind::Text { max: Some(65..) }) { 380.0 } else { 140.0 };
+                                ui.add(egui::TextEdit::singleline(&mut editor.values[i]).desired_width(width));
+                            }
+                        });
+                        if column.nullable && column.name != "id" {
+                            ui.checkbox(&mut editor.nulls[i], "NULL");
+                        }
+                        mark(ui, i, editor);
+                    });
+                    let problem = (!editor.nulls[i]).then(|| catalog_admin::field_problem(column, &editor.values[i])).flatten();
+                    match problem {
+                        Some(problem) => ui.label(RichText::new(problem).size(11.0).color(palette.error_text)),
+                        None => ui.label(RichText::new(&column.column_type).size(11.0).color(palette.muted)),
+                    };
+                    ui.end_row();
+                }
+            });
+        });
+        ui.add_space(10.0);
+        if !editor.status.text.is_empty() {
+            let color = if editor.status.error { palette.error_text } else { palette.muted };
+            ui.add(egui::Label::new(RichText::new(&editor.status.text).size(12.0).color(color)).wrap());
+            ui.add_space(6.0);
+        }
+        ui.horizontal(|ui| {
+            let label = if changed > 0 { tf("Save changes ({count})", &[("count", &changed.to_string())]) } else { t("Save").to_string() };
+            if ui.add_enabled(changed > 0 && !editor.saving && !s.sample, widgets::primary_button(&label)).clicked() {
+                actions.push(Action::SaveFurni);
+            }
+            if ui.add_enabled(changed > 0 && !editor.saving, widgets::secondary_button(t("Undo changes"))).clicked() {
+                editor.values = original.iter().map(|v| v.clone().unwrap_or_default()).collect();
+                editor.nulls = original.iter().map(Option::is_none).collect();
+                editor.status = Status::default();
+            }
+            if ui.add(widgets::secondary_button(t("Close"))).clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        s.editor = None;
+    }
+}
+
+/// A column's type and comment, for its hover text.
+fn hover(column: &FurniColumn) -> String {
+    if column.comment.trim().is_empty() {
+        column.column_type.clone()
+    } else {
+        format!("{}\n{}", column.column_type, column.comment)
+    }
 }
 
 /// Click selects one; Ctrl toggles; Shift selects from the last one clicked.
@@ -1425,6 +1698,45 @@ fn sample(s: &mut State) {
     s.sample = true;
     s.database = "habbo".into();
     s.subtitle = t("A sample catalogue: the dry run has no database.").into();
+    if std::env::var_os("AIO_SCREENSHOT_EDITOR").is_some() {
+        sample_editor(s, 102);
+    }
+}
+
+/// The editor on a sample furni (the columns of Arcturus' items_base), for the screenshot.
+fn sample_editor(s: &mut State, id: i64) {
+    let columns: Vec<(&str, &str, &str)> = vec![
+        ("id", "int(11)", "102"),
+        ("sprite_id", "int(11)", "4906"),
+        ("item_name", "varchar(70)", "throne"),
+        ("public_name", "varchar(56)", "Throne"),
+        ("width", "int(11)", "1"),
+        ("length", "int(11)", "1"),
+        ("stack_height", "double(4,2)", "1.6"),
+        ("allow_stack", "enum('0','1')", "0"),
+        ("allow_sit", "enum('0','1')", "1"),
+        ("allow_lay", "enum('0','1')", "0"),
+        ("allow_walk", "enum('0','1')", "0"),
+        ("allow_gift", "enum('0','1')", "1"),
+        ("allow_trade", "enum('0','1')", "1"),
+        ("allow_recycle", "enum('0','1')", "0"),
+        ("allow_marketplace_sell", "enum('0','1')", "1"),
+        ("allow_inventory_stack", "enum('0','1')", "1"),
+        ("type", "enum('s','i','e','h','v','r','b','p')", "s"),
+        ("interaction_type", "varchar(500)", "default"),
+        ("interaction_modes_count", "int(11)", "1"),
+        ("vending_ids", "varchar(255)", "0"),
+        ("multiheight", "varchar(50)", "0"),
+        ("customparams", "varchar(256)", ""),
+        ("effect_id_male", "int(11)", "0"),
+        ("effect_id_female", "int(11)", "0"),
+        ("clothing_on_walk", "varchar(255)", ""),
+    ];
+    s.furni_columns = Some(columns.iter().map(|(name, kind, _)| FurniColumn { name: name.to_string(), column_type: kind.to_string(), nullable: false, comment: String::new() }).collect());
+    let original: Vec<Option<String>> = columns.iter().map(|(_, _, v)| Some(v.to_string())).collect();
+    let mut values: Vec<String> = original.iter().map(|v| v.clone().unwrap_or_default()).collect();
+    values[6] = "1.5".into();
+    s.editor = Some(Editor { id, nulls: vec![false; values.len()], values, original: Some(original), saving: false, status: Status::default() });
 }
 
 /// The screenshot's drops, without a database.

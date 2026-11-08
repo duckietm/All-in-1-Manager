@@ -1575,6 +1575,122 @@ pub async fn undo_page_move(session: &SqlSession, database: &str, undo: &PageUnd
     Ok(session.execute(&statements).await?.0)
 }
 
+// ---- The furni editor: one items_base row, every column ---------------------------------------------------
+
+/// How a column of items_base is edited, from its type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FieldKind {
+    /// `enum('0','1')` (allow_sit, allow_trade ...) or `tinyint(1)`: a tick.
+    Flag,
+    /// Another enum: one of these.
+    Choice(Vec<String>),
+    Integer { unsigned: bool },
+    Decimal,
+    /// Text, at most this many characters when the type says so.
+    Text { max: Option<usize> },
+}
+
+/// One column of items_base as `SHOW FULL COLUMNS` describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FurniColumn {
+    pub name: String,
+    /// The type as MariaDB writes it: `int(11)`, `enum('0','1')`, `varchar(70)`, `double(4,2)` ...
+    pub column_type: String,
+    pub nullable: bool,
+    pub comment: String,
+}
+
+impl FurniColumn {
+    pub fn kind(&self) -> FieldKind {
+        field_kind(&self.column_type)
+    }
+}
+
+/// The field for a column type.
+pub fn field_kind(column_type: &str) -> FieldKind {
+    let lower = column_type.trim().to_lowercase();
+    let size = || lower.split_once('(').and_then(|(_, rest)| rest.split([')', ',']).next()?.trim().parse::<usize>().ok());
+    if lower.starts_with("enum(") && lower.ends_with(')') {
+        let inner = &column_type.trim()[5..column_type.trim().len() - 1];
+        let options: Vec<String> = inner.split(',').map(|o| o.trim().trim_matches('\'').replace("''", "'")).collect();
+        let mut sorted = options.clone();
+        sorted.sort();
+        return if sorted == ["0", "1"] { FieldKind::Flag } else { FieldKind::Choice(options) };
+    }
+    if lower.starts_with("tinyint(1)") {
+        return FieldKind::Flag;
+    }
+    if ["tinyint", "smallint", "mediumint", "int", "bigint"].iter().any(|t| lower.starts_with(t)) {
+        return FieldKind::Integer { unsigned: lower.contains("unsigned") };
+    }
+    if ["double", "float", "decimal", "real"].iter().any(|t| lower.starts_with(t)) {
+        return FieldKind::Decimal;
+    }
+    if lower.starts_with("varchar") || lower.starts_with("char") {
+        return FieldKind::Text { max: size() };
+    }
+    FieldKind::Text { max: None }
+}
+
+/// Why `value` cannot go in the column, or None.
+pub fn field_problem(column: &FurniColumn, value: &str) -> Option<String> {
+    let value = value.trim();
+    match column.kind() {
+        FieldKind::Flag => (!matches!(value, "0" | "1")).then(|| format!("{}: 0 or 1", column.name)),
+        FieldKind::Choice(options) => (!options.iter().any(|o| o == value)).then(|| format!("{}: one of {}", column.name, options.join(", "))),
+        FieldKind::Integer { unsigned } => match value.parse::<i64>() {
+            Ok(n) if unsigned && n < 0 => Some(format!("{}: not below 0", column.name)),
+            Ok(_) => None,
+            Err(_) => Some(format!("{}: a whole number", column.name)),
+        },
+        FieldKind::Decimal => value.parse::<f64>().is_err().then(|| format!("{}: a number such as 1.25", column.name)),
+        FieldKind::Text { max: Some(max) } => (value.chars().count() > max).then(|| format!("{}: at most {max} characters", column.name)),
+        FieldKind::Text { max: None } => None,
+    }
+}
+
+fn furni_column_from_row(row: &[SqlValue]) -> FurniColumn {
+    // SHOW FULL COLUMNS: Field, Type, Collation, Null, Key, Default, Extra, Privileges, Comment.
+    FurniColumn {
+        name: text(row.first()),
+        column_type: text(row.get(1)),
+        nullable: text(row.get(3)).eq_ignore_ascii_case("YES"),
+        comment: text(row.get(8)),
+    }
+}
+
+/// The columns of items_base, in the table's order.
+pub async fn furni_columns(session: &SqlSession, database: &str) -> Result<Vec<FurniColumn>> {
+    let result = session.columns(database, "items_base").await?;
+    Ok(result.rows.iter().map(|row| furni_column_from_row(row)).collect())
+}
+
+/// One furni's row: each column's value as text (None: NULL), by column name.
+pub async fn load_furni_row(session: &SqlSession, database: &str, id: i64) -> Result<Vec<(String, Option<String>)>> {
+    let result = session.table_data(database, "items_base", &format!("`id` = {id}"), None, false, 0, 1).await?;
+    let columns = result.columns.unwrap_or_default();
+    let Some(row) = result.rows.first() else {
+        return Err(ServerError(format!("items_base has no furni with id {id}.")).into());
+    };
+    Ok(columns.iter().zip(row).map(|(c, v)| (c.name.clone(), crate::sql_session::display(v, Some(c), usize::MAX))).collect())
+}
+
+/// The UPDATE of the changed columns of furni `id` (None: NULL).
+pub fn furni_update_statement(database: &str, id: i64, changes: &[(String, Option<String>)]) -> (String, Vec<SqlValue>) {
+    let set: Vec<String> = changes.iter().map(|(column, _)| format!("{} = ?", quote(column))).collect();
+    let mut params: Vec<SqlValue> = changes.iter().map(|(_, value)| value.clone().map(SqlValue::Text).unwrap_or(SqlValue::Null)).collect();
+    params.push(SqlValue::Int(id));
+    (format!("UPDATE {}.items_base SET {} WHERE id = ?", quote(database), set.join(", ")), params)
+}
+
+/// Saves the changed columns of furni `id` in one statement.
+pub async fn save_furni(session: &SqlSession, database: &str, id: i64, changes: &[(String, Option<String>)]) -> Result<u64> {
+    if changes.is_empty() {
+        return Ok(0);
+    }
+    Ok(session.execute(&[furni_update_statement(database, id, changes)]).await?.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1601,6 +1717,27 @@ mod tests {
         let statements = page_order_statements("hotel", 1, &[4, 2]);
         assert_eq!(statements[0].0, "UPDATE `hotel`.catalog_pages SET parent_id = ?, order_num = ? WHERE id = ?");
         assert_eq!(statements[1].1, vec![SqlValue::Int(1), SqlValue::Int(2), SqlValue::Int(2)]);
+    }
+
+    #[test]
+    fn furni_columns_become_fields() {
+        assert_eq!(field_kind("enum('0','1')"), FieldKind::Flag);
+        assert_eq!(field_kind("tinyint(1)"), FieldKind::Flag);
+        assert_eq!(field_kind("enum('s','i','e','h','v','r','b','p')"), FieldKind::Choice(["s", "i", "e", "h", "v", "r", "b", "p"].map(String::from).to_vec()));
+        assert_eq!(field_kind("int(11) unsigned"), FieldKind::Integer { unsigned: true });
+        assert_eq!(field_kind("int(11)"), FieldKind::Integer { unsigned: false });
+        assert_eq!(field_kind("double(4,2)"), FieldKind::Decimal);
+        assert_eq!(field_kind("varchar(70)"), FieldKind::Text { max: Some(70) });
+        assert_eq!(field_kind("text"), FieldKind::Text { max: None });
+        let column = |t: &str| FurniColumn { name: "x".into(), column_type: t.into(), nullable: false, comment: String::new() };
+        assert_eq!(field_problem(&column("int(11) unsigned"), "-1").as_deref(), Some("x: not below 0"));
+        assert_eq!(field_problem(&column("int(11)"), "12"), None);
+        assert!(field_problem(&column("double(4,2)"), "1,5").is_some());
+        assert_eq!(field_problem(&column("varchar(3)"), "abcd").as_deref(), Some("x: at most 3 characters"));
+        assert!(field_problem(&column("enum('0','1')"), "2").is_some());
+        let (sql, params) = furni_update_statement("hotel", 7, &[("allow_sit".into(), Some("1".into())), ("vending_ids".into(), None)]);
+        assert_eq!(sql, "UPDATE `hotel`.items_base SET `allow_sit` = ?, `vending_ids` = ? WHERE id = ?");
+        assert_eq!(params, vec![SqlValue::Text("1".into()), SqlValue::Null, SqlValue::Int(7)]);
     }
 
     #[test]

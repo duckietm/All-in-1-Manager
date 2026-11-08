@@ -3260,5 +3260,14 @@
   "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} Möbel haben ein Angebot auf {page} bekommen (3 Taler: setze den Preis auf der Seite Katalog). Veröffentliche, um es im Hotel zu zeigen.",
   "{count} furni without an offer.": "{count} Möbel ohne Angebot.",
   "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} Möbel ohne Angebot; die ersten {shown} angezeigt, suche, um einzugrenzen.",
-  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} liegt jetzt unter {parent}. Veröffentliche, um es im Hotel zu zeigen."
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} liegt jetzt unter {parent}. Veröffentliche, um es im Hotel zu zeigen.",
+  "Edit furni (items_base) ...": "Möbel bearbeiten (items_base) ...",
+  "Edit furni: {name}": "Möbel bearbeiten: {name}",
+  "Every column of the furni's items_base row. Changed values are marked; Save writes only those.": "Jede Spalte der items_base-Zeile des Möbels. Geänderte Werte sind markiert; Speichern schreibt nur diese.",
+  "Flags": "Schalter",
+  "Nothing changed.": "Nichts geändert.",
+  "Reading the furni ...": "Das Möbel wird gelesen ...",
+  "Save changes ({count})": "Änderungen speichern ({count})",
+  "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} Werte gespeichert. Der Emulator liest items_base beim Start: starte ihn neu (Tools) oder :update_items im Hotel.",
+  "Values": "Werte"
 }

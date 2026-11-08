@@ -3260,5 +3260,14 @@
   "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} mobilya {page} sayfasında teklif aldı (3 kredi: fiyatı Katalog sayfasında ayarlayın). Otelde göstermek için yayınlayın.",
   "{count} furni without an offer.": "Teklifsiz {count} mobilya.",
   "{count} furni without an offer; the first {shown} shown, search to narrow it.": "Teklifsiz {count} mobilya; ilk {shown} gösteriliyor, daraltmak için arayın.",
-  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} artık {parent} altında. Otelde göstermek için yayınlayın."
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} artık {parent} altında. Otelde göstermek için yayınlayın.",
+  "Edit furni (items_base) ...": "Mobilyayı düzenle (items_base) ...",
+  "Edit furni: {name}": "Mobilyayı düzenle: {name}",
+  "Every column of the furni's items_base row. Changed values are marked; Save writes only those.": "Mobilyanın items_base satırının her sütunu. Değişen değerler işaretlidir; Kaydet yalnızca onları yazar.",
+  "Flags": "Bayraklar",
+  "Nothing changed.": "Hiçbir şey değişmedi.",
+  "Reading the furni ...": "Mobilya okunuyor ...",
+  "Save changes ({count})": "Değişiklikleri kaydet ({count})",
+  "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} değer kaydedildi. Emülatör items_base'i başlarken okur: yeniden başlatın (Araçlar) ya da otelde :update_items.",
+  "Values": "Değerler"
 }

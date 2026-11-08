@@ -3260,5 +3260,14 @@
   "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} meubels kregen een aanbieding op {page} (3 credits: zet de prijs op de pagina Catalogus). Publiceer om het in het hotel te tonen.",
   "{count} furni without an offer.": "{count} meubels zonder aanbieding.",
   "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} meubels zonder aanbieding; de eerste {shown} getoond, zoek om het te beperken.",
-  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} staat nu onder {parent}. Publiceer om het in het hotel te tonen."
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} staat nu onder {parent}. Publiceer om het in het hotel te tonen.",
+  "Edit furni (items_base) ...": "Meubel bewerken (items_base) ...",
+  "Edit furni: {name}": "Meubel bewerken: {name}",
+  "Every column of the furni's items_base row. Changed values are marked; Save writes only those.": "Elke kolom van de items_base-rij van het meubel. Gewijzigde waarden zijn gemarkeerd; Opslaan schrijft alleen die.",
+  "Flags": "Vlaggen",
+  "Nothing changed.": "Niets gewijzigd.",
+  "Reading the furni ...": "Het meubel lezen ...",
+  "Save changes ({count})": "Wijzigingen opslaan ({count})",
+  "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} waarden opgeslagen. De emulator leest items_base bij het starten: herstart hem (Tools), of :update_items in het hotel.",
+  "Values": "Waarden"
 }

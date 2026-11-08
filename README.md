@@ -1402,6 +1402,14 @@ The **Without offer** tab (after the root pages) lists the furni no offer sells 
 id): drag them onto a page in the other window, or a page in its tree, and each gets an offer there (named after its
 class name, 3 credits; the price is set on the Catalogue page).
 
+**Right-click** a furni (in a page or on the Without offer tab) and **Edit furni** opens its `items_base` row: every
+column of the table as this emulator has it, read from the database (so other columns work too). The `enum('0','1')`
+flags (allow_sit, allow_trade ...) are ticks, other enums a list (`type`), numbers and text fields with their column
+type next to them (the column's comment on hover); a column that may be NULL has a NULL tick, and `id` stays as it
+is. Changed values are marked and checked (whole numbers, decimals, the text length); **Save changes** writes only
+those, in one statement. A bundle offers an entry per furni. The emulator reads `items_base` when it starts: restart
+it (Tools) or use `:update_items` in the hotel.
+
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
 catalogue again, as on the Catalogue page.

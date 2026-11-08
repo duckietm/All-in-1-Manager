@@ -3260,5 +3260,14 @@
   "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} mobis ont reçu une offre sur {page} (3 crédits : réglez le prix sur la page Catalogue). Publiez pour l'afficher dans l'hôtel.",
   "{count} furni without an offer.": "{count} mobis sans offre.",
   "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} mobis sans offre ; les {shown} premiers affichés, cherchez pour affiner.",
-  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} est maintenant sous {parent}. Publiez pour l'afficher dans l'hôtel."
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} est maintenant sous {parent}. Publiez pour l'afficher dans l'hôtel.",
+  "Edit furni (items_base) ...": "Modifier le mobi (items_base) ...",
+  "Edit furni: {name}": "Modifier le mobi : {name}",
+  "Every column of the furni's items_base row. Changed values are marked; Save writes only those.": "Chaque colonne de la ligne items_base du mobi. Les valeurs modifiées sont marquées ; Enregistrer n'écrit que celles-ci.",
+  "Flags": "Options",
+  "Nothing changed.": "Rien n'a changé.",
+  "Reading the furni ...": "Lecture du mobi ...",
+  "Save changes ({count})": "Enregistrer les modifications ({count})",
+  "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} valeurs enregistrées. L'émulateur lit items_base au démarrage : redémarrez-le (Outils), ou :update_items dans l'hôtel.",
+  "Values": "Valeurs"
 }

@@ -713,6 +713,16 @@ fn is_front_page(page: &Page) -> bool {
     page.layout.trim().to_lowercase().starts_with("frontpage")
 }
 
+/// What was dropped on `response`, when it is a `P`. egui's `dnd_release_payload` takes the payload before it checks
+/// its type, so asking for the wrong type first would throw a dragged page or furni away: look first.
+fn released<P: std::any::Any + Send + Sync>(response: &egui::Response) -> Option<Arc<P>> {
+    if egui::DragAndDrop::has_payload_of_type::<P>(&response.ctx) {
+        response.dnd_release_payload::<P>()
+    } else {
+        None
+    }
+}
+
 /// The furni an offer shows: its first items_base id.
 fn first_furni(offer: &Offer) -> Option<i64> {
     catalog_admin::item_ids(&offer.item_ids).and_then(|ids| ids.first().copied())
@@ -825,7 +835,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                     }
                     let color = if *id == UNOFFERED { game::TITLE } else if *visible { game::TEXT } else { game::HIDDEN };
                     ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, caption, font, color);
-                    if let Some(page) = response.dnd_release_payload::<DragPage>() {
+                    if let Some(page) = released::<DragPage>(&response) {
                         if *id != UNOFFERED {
                             actions.push(Action::MovePage { id: page.0, parent: *id, before: None });
                         }
@@ -978,12 +988,12 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 let caption = if page.enabled { page.caption.clone() } else { format!("{} ({})", page.caption, t("off")) };
                 let galley = ui.painter().layout(caption, egui::FontId::proportional(12.0), text_color, (rect.right() - x - 4.0).max(10.0));
                 ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, text_color);
-                if let (Some(payload), false) = (response.dnd_release_payload::<DragOffers>(), locked) {
+                if let (Some(payload), false) = (released::<DragOffers>(&response), locked) {
                     let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
                     actions.push(Action::Place { ids: payload.ids.clone(), page: id, before: None, copy });
-                } else if let (Some(payload), false) = (response.dnd_release_payload::<DragFurni>(), locked) {
+                } else if let (Some(payload), false) = (released::<DragFurni>(&response), locked) {
                     actions.push(Action::PlaceFurni { ids: payload.0.clone(), page: id, before: None });
-                } else if let (Some(dragged), Some(zone)) = (response.dnd_release_payload::<DragPage>(), page_zone) {
+                } else if let (Some(dragged), Some(zone)) = (released::<DragPage>(&response), page_zone) {
                     let (parent, before) = match zone {
                         Zone::Into => (id, None),
                         Zone::Before => (page.parent_id, Some(id)),
@@ -1095,10 +1105,10 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                         if response.dnd_hover_payload::<DragOffers>().is_some() || response.dnd_hover_payload::<DragFurni>().is_some() {
                             hovered_before = Some((offer.id, rect));
                         }
-                        if let Some(payload) = response.dnd_release_payload::<DragFurni>() {
+                        if let Some(payload) = released::<DragFurni>(&response) {
                             actions.push(Action::PlaceFurni { ids: payload.0.clone(), page: page_id, before: Some(offer.id) });
                         }
-                        if let Some(payload) = response.dnd_release_payload::<DragOffers>() {
+                        if let Some(payload) = released::<DragOffers>(&response) {
                             let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
                             // Dropped on itself (a click that moved a little): nothing changes.
                             if copy || !payload.ids.contains(&offer.id) {
@@ -1128,11 +1138,11 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
             ui.painter().rect_stroke(area, CornerRadius::same(6), Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
         }
         if hovered_before.is_none() {
-            if let Some(payload) = area_response.dnd_release_payload::<DragOffers>() {
+            if let Some(payload) = released::<DragOffers>(&area_response) {
                 let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
                 actions.push(Action::Place { ids: payload.ids.clone(), page: page_id, before: None, copy });
             }
-            if let Some(payload) = area_response.dnd_release_payload::<DragFurni>() {
+            if let Some(payload) = released::<DragFurni>(&area_response) {
                 actions.push(Action::PlaceFurni { ids: payload.0.clone(), page: page_id, before: None });
             }
         }
@@ -1440,4 +1450,43 @@ fn sample_place(s: &mut State, ids: &[i64], page: i64, before: Option<i64>, copy
     pool.extend(placed);
     let offers = order.iter().filter_map(|id| pool.iter().find(|o| o.id == *id).cloned()).collect();
     s.offers.insert(page, offers);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A frame with the pointer at `pos`, pressed or released, and a drop target over the whole screen that asks for
+    /// offers first and then for a page, as a tree row does.
+    fn frame(ctx: &egui::Context, pos: egui::Pos2, pressed: Option<bool>, start: Option<DragPage>) -> (Option<i64>, bool) {
+        let mut input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(400.0, 300.0))), ..Default::default() };
+        input.events.push(egui::Event::PointerMoved(pos));
+        if let Some(pressed) = pressed {
+            input.events.push(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+        }
+        let mut got = (None, false);
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = ui.allocate_rect(ui.max_rect(), Sense::click_and_drag());
+                if let Some(page) = start.clone() {
+                    egui::DragAndDrop::set_payload(ctx, page);
+                }
+                let offers = released::<DragOffers>(&response).is_some();
+                let page = released::<DragPage>(&response).map(|p| p.0);
+                got = (page, offers);
+            });
+        });
+        got
+    }
+
+    #[test]
+    fn a_dropped_page_is_not_thrown_away_by_an_offer_target() {
+        let ctx = egui::Context::default();
+        let at = egui::pos2(100.0, 100.0);
+        frame(&ctx, at, None, None);
+        frame(&ctx, at, Some(true), Some(DragPage(42)));
+        let (page, offers) = frame(&ctx, at + egui::vec2(20.0, 20.0), Some(false), None);
+        assert!(!offers, "the payload is a page, not offers");
+        assert_eq!(page, Some(42), "the page arrives although the offers were asked for first");
+    }
 }

@@ -1,0 +1,873 @@
+//! Players: search the hotel's players by name or id, see what the hotel stores about one (rank, currencies, club,
+//! badges, furni, pets, bots, rooms, room visits, bans and mutes) and act on them through the emulator's RCON: give
+//! credits, points or a badge, send an alert, disconnect, set the rank. Reading goes through the same MariaDB login
+//! as the SQL Editor; every action is confirmed first and the emulator's answer is shown.
+
+use std::sync::{Arc, Mutex};
+
+use aio_remote::players_admin::{self, Action as Rcon, Player, PlayerRow, Problem, Rank, SearchPage};
+use aio_remote::rcon::{self, Answer};
+use aio_remote::sql_session::SqlSession;
+use aio_remote::Server;
+use eframe::egui::{self, RichText};
+use egui_extras::{Column, TableBuilder};
+
+use super::sql_editor::login::{Login, Prompt};
+use super::sql_editor::text;
+use crate::gui::dialogs::Choice;
+use crate::gui::theme::Palette;
+use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
+use crate::i18n::{t, tf};
+
+const FIELD_HEIGHT: f32 = 26.0;
+
+fn currency_name(kind: i64) -> String {
+    match kind {
+        0 => t("Duckets").to_string(),
+        5 => t("Diamonds").to_string(),
+        _ => tf("Points type {type}", &[("type", &kind.to_string())]),
+    }
+}
+
+fn furni_kind(kind: &str) -> &'static str {
+    match kind {
+        "s" => t("Floor furni"),
+        "i" => t("Wall furni"),
+        "e" => t("Effects"),
+        "b" => t("Badge furni"),
+        "r" => t("Bot furni"),
+        "p" => t("Pet furni"),
+        "h" => t("Club furni"),
+        "" => t("Unknown furni"),
+        _ => t("Other furni"),
+    }
+}
+
+fn action_name(action: &Rcon) -> String {
+    match action {
+        Rcon::GiveCredits(amount) => tf("Give {amount} credits", &[("amount", &amount.to_string())]),
+        Rcon::GivePoints(kind, amount) => tf("Give {amount} {currency}", &[("amount", &amount.to_string()), ("currency", &currency_name(*kind))]),
+        Rcon::GiveBadge(code) => tf("Give the badge {code}", &[("code", code)]),
+        Rcon::Alert(_) => t("Send an alert").to_string(),
+        Rcon::Disconnect => t("Disconnect").to_string(),
+        Rcon::SetRank(rank) => tf("Set the rank to {rank}", &[("rank", &rank.to_string())]),
+    }
+}
+
+fn problem_text(problem: Problem) -> &'static str {
+    match problem {
+        Problem::Amount => t("The amount must be a whole number above 0."),
+        Problem::CurrencyType => t("The currency type cannot be below 0."),
+        Problem::Badge => t("A badge code is 1 to 32 letters, digits, _ or -."),
+        Problem::Alert => t("The alert must have 1 to 4096 characters."),
+        Problem::Rank => t("Choose a rank."),
+    }
+}
+
+/// The emulator's answer in words.
+fn answer_text(action: &Rcon, name: &str, answer: &Answer) -> (String, bool) {
+    let done = action_name(action);
+    match answer.status {
+        rcon::STATUS_OK if answer.message == "offline" => (tf("{action} for {name}: done. {name} is offline, so it was written to the database.", &[("action", &done), ("name", name)]), false),
+        rcon::STATUS_OK if answer.message.is_empty() => (tf("{action} for {name}: done.", &[("action", &done), ("name", name)]), false),
+        rcon::STATUS_OK => (tf("{action} for {name}: done ({message}).", &[("action", &done), ("name", name), ("message", &answer.message)]), false),
+        rcon::USER_NOT_FOUND if action.online_only() => (tf("{action} for {name}: the emulator did not find {name} online.", &[("action", &done), ("name", name)]), true),
+        _ => {
+            let message = if answer.message.is_empty() { tf("status {status}", &[("status", &answer.status.to_string())]) } else { answer.message.clone() };
+            (tf("{action} for {name}: the emulator refused: {message}", &[("action", &done), ("name", name), ("message", &message)]), true)
+        }
+    }
+}
+
+#[derive(Default, Clone)]
+struct Status {
+    text: String,
+    error: bool,
+}
+
+/// The action fields as typed.
+#[derive(Default)]
+struct Inputs {
+    credits: String,
+    points: String,
+    points_type: String,
+    badge: String,
+    alert: String,
+    rank: Option<i64>,
+}
+
+#[derive(Default)]
+struct State {
+    query: String,
+    online_only: bool,
+    applied: (String, bool),
+    page_number: i64,
+    page: Option<SearchPage>,
+    ranks: Vec<Rank>,
+    chosen: Option<i64>,
+    player: Option<Player>,
+    inputs: Inputs,
+    generation: u64,
+    session: Option<Arc<SqlSession>>,
+    session_for: Option<usize>,
+    opening: bool,
+    prompt: Option<Prompt>,
+    login_visible: bool,
+    database: String,
+    subtitle: String,
+    busy: bool,
+    status: Status,
+}
+
+impl State {
+    fn close(&mut self, shared: &Shared) {
+        self.generation += 1;
+        if let Some(session) = self.session.take() {
+            shared.spawn(async move {
+                if let Ok(session) = Arc::try_unwrap(session) {
+                    session.close().await;
+                }
+            });
+        }
+        let generation = self.generation;
+        *self = State { generation, ..State::default() };
+    }
+
+    fn ok(&mut self, text: String) {
+        self.status = Status { text, error: false };
+    }
+
+    fn error(&mut self, text: String) {
+        self.status = Status { text, error: true };
+    }
+
+    fn rank_name(&self, id: i64) -> String {
+        self.ranks.iter().find(|r| r.id == id).map(|r| format!("{} ({})", r.name, r.id)).unwrap_or_else(|| id.to_string())
+    }
+}
+
+pub struct PlayersView {
+    state: Arc<Mutex<State>>,
+}
+
+#[derive(Clone)]
+struct Ctl {
+    state: Arc<Mutex<State>>,
+    shared: Shared,
+}
+
+impl Ctl {
+    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
+        self.state.lock().unwrap()
+    }
+
+    fn with<R>(&self, generation: u64, change: impl FnOnce(&mut State) -> R) -> Option<R> {
+        let result = {
+            let mut state = self.lock();
+            (state.generation == generation).then(|| change(&mut state))
+        };
+        self.shared.ctx.request_repaint();
+        result
+    }
+
+    fn session(&self) -> Option<(u64, Arc<SqlSession>, String)> {
+        let state = self.lock();
+        state.session.clone().map(|s| (state.generation, s, state.database.clone()))
+    }
+
+    fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(&self, task: impl FnOnce(Ctl) -> F) {
+        self.shared.spawn(task(self.clone()));
+    }
+
+    /// Logs in to MariaDB like the SQL Editor, loads the ranks and the first page of players.
+    async fn open(self, ask_first: bool) {
+        let Some(server) = self.shared.session() else { return };
+        let generation = {
+            let mut state = self.lock();
+            if state.opening {
+                return;
+            }
+            state.opening = true;
+            state.generation
+        };
+        if self.connect(server, ask_first, generation).await {
+            self.load_ranks().await;
+            self.search(0, true).await;
+        }
+        self.with(generation, |s| s.opening = false);
+    }
+
+    async fn connect(&self, server: Arc<dyn Server>, ask_first: bool, generation: u64) -> bool {
+        if server.is_dry_run() {
+            self.with(generation, |s| s.error(t("Dry run: there is no MariaDB to connect to.").into()));
+            return false;
+        }
+        self.with(generation, |s| s.subtitle = t("Looking for the hotel database ...").into());
+        let database = match aio_remote::catalog_admin::hotel_database(&*server).await {
+            Ok(database) => database,
+            Err(error) => {
+                self.with(generation, |s| s.error(error.to_string()));
+                return false;
+            }
+        };
+        let host = server.login().host.clone();
+        let saved = aio_core::config_dir::load_database_credentials(&host);
+        let mut login = Login {
+            user: saved.as_ref().map(|s| s.root_user.clone()).filter(|u| !u.is_empty()).unwrap_or_else(|| "root".into()),
+            password: saved.as_ref().map(|s| s.root_password.clone()).unwrap_or_default(),
+            port: saved.as_ref().map(|s| s.port).filter(|p| *p > 0).unwrap_or(3306),
+        };
+        let mut problem = saved.is_none().then(|| t("No saved MariaDB password for this server on this computer: enter an account.").to_string());
+        let mut ask = ask_first || saved.is_none();
+        let session = loop {
+            if ask {
+                let (prompt, answer) = Prompt::new(&host, &login, problem.take());
+                if self.with(generation, |s| s.prompt = Some(prompt)).is_none() {
+                    return false;
+                }
+                match answer.await.ok().flatten() {
+                    Some(entered) => login = entered,
+                    None => {
+                        self.with(generation, |s| {
+                            s.login_visible = true;
+                            s.subtitle = t("Not logged in to MariaDB. Click Log in to MariaDB.").into();
+                        });
+                        return false;
+                    }
+                }
+            }
+            self.with(generation, |s| s.subtitle = tf("Connecting to MariaDB as {user} ...", &[("user", &login.user)]));
+            match SqlSession::open(&*server, &login.user, &login.password, login.port).await {
+                Ok(session) => break session,
+                Err(error) => {
+                    let message = error.to_string();
+                    problem = Some(if text::is_access_denied(&message) {
+                        tf("MariaDB refused {user}: {message}", &[("user", &login.user), ("message", &message)])
+                    } else {
+                        tf("Could not reach MariaDB on 127.0.0.1:{port} of the server: {message}", &[("port", &login.port.to_string()), ("message", &message)])
+                    });
+                    ask = true;
+                }
+            }
+        };
+        let session = Arc::new(session);
+        let subtitle = tf("The players in {database} on {host}, through the SSH tunnel. Actions go to the emulator over RCON.", &[("database", &database), ("host", &host)]);
+        let kept = self.with(generation, |s| {
+            s.session = Some(session.clone());
+            s.database = database.clone();
+            s.login_visible = false;
+            s.subtitle = subtitle;
+        });
+        if kept.is_none() {
+            if let Ok(session) = Arc::try_unwrap(session) {
+                session.close().await;
+            }
+            return false;
+        }
+        true
+    }
+
+    async fn load_ranks(&self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let ranks = players_admin::ranks(&session, &database).await;
+        self.with(generation, |s| match ranks {
+            Ok(ranks) => s.ranks = ranks,
+            Err(error) => s.error(error.to_string()),
+        });
+    }
+
+    /// Loads a page of players: with the search typed when `fresh`, else with the search of the page shown.
+    async fn search(&self, page: i64, fresh: bool) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let (query, online_only) = {
+            let mut s = self.lock();
+            if fresh {
+                s.applied = (s.query.trim().to_string(), s.online_only);
+            }
+            s.busy = true;
+            s.applied.clone()
+        };
+        let loaded = players_admin::search(&session, &database, &query, online_only, page).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match loaded {
+                Ok(loaded) => {
+                    let text = if loaded.rows.is_empty() { t("No players found.").to_string() } else { tf("{count} players on page {page}.", &[("count", &loaded.rows.len().to_string()), ("page", &(page + 1).to_string())]) };
+                    s.ok(text);
+                    s.page_number = page;
+                    s.page = Some(loaded);
+                }
+                Err(error) => s.error(error.to_string()),
+            }
+        });
+    }
+
+    async fn load_player(&self, id: i64) {
+        let Some((generation, session, database)) = self.session() else { return };
+        self.with(generation, |s| {
+            s.busy = true;
+            s.chosen = Some(id);
+        });
+        let loaded = players_admin::load(&session, &database, id).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            if s.chosen != Some(id) {
+                return;
+            }
+            match loaded {
+                Ok(Some(player)) => {
+                    if s.player.as_ref().map(|p| p.id) != Some(id) {
+                        s.inputs = Inputs { rank: Some(player.rank), ..Inputs::default() };
+                    }
+                    s.player = Some(player);
+                }
+                Ok(None) => {
+                    s.player = None;
+                    s.error(tf("There is no player with id {id}.", &[("id", &id.to_string())]));
+                }
+                Err(error) => s.error(error.to_string()),
+            }
+        });
+    }
+
+    /// Asks first, sends the action over RCON, shows the answer and reads the player again.
+    async fn act(self, id: i64, name: String, online: bool, action: Rcon) {
+        let Some(server) = self.shared.session() else { return };
+        let Some((generation, _, _)) = self.session() else { return };
+        if let Some(problem) = action.problem() {
+            self.with(generation, |s| s.error(problem_text(problem).to_string()));
+            return;
+        }
+        let what = action_name(&action);
+        let mut message = match &action {
+            Rcon::Alert(text) => tf("{name} gets this alert:\n\n{text}", &[("name", &name), ("text", text)]),
+            Rcon::Disconnect => tf("{name} is disconnected from the hotel and can log in again.", &[("name", &name)]),
+            Rcon::SetRank(rank) => {
+                let rank = self.lock().rank_name(*rank);
+                tf("{name} gets the rank {rank} and its permissions. The emulator logs the change.", &[("name", &name), ("rank", &rank)])
+            }
+            _ => tf("The emulator gives this to {name} and logs it.", &[("name", &name)]),
+        };
+        if !online && !action.online_only() {
+            message.push_str("\n\n");
+            message.push_str(t("The player is offline: the emulator writes it to the database."));
+        }
+        let options = vec![Choice::new(what.clone(), t("Send it to the emulator now."), true).primary(), Choice::new(t("Cancel"), t("Do nothing."), false)];
+        if !self.shared.dialogs.choose(t("Are you sure?"), &tf("{action} for {name}?", &[("action", &what), ("name", &name)]), &message, false, options).await {
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let answer = players_admin::act(&*server, id, &action).await;
+        let worked = self.with(generation, |s| {
+            s.busy = false;
+            match answer {
+                Ok(answer) => {
+                    let (text, error) = answer_text(&action, &name, &answer);
+                    s.status = Status { text, error };
+                    if !error {
+                        match &action {
+                            Rcon::GiveCredits(_) => s.inputs.credits.clear(),
+                            Rcon::GivePoints(..) => s.inputs.points.clear(),
+                            Rcon::GiveBadge(_) => s.inputs.badge.clear(),
+                            Rcon::Alert(_) => s.inputs.alert.clear(),
+                            _ => {}
+                        }
+                    }
+                    true
+                }
+                Err(error) => {
+                    s.error(error.to_string());
+                    false
+                }
+            }
+        });
+        if worked == Some(true) {
+            // The emulator saves an online player's changes itself; give it a moment before reading them back.
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            self.load_player(id).await;
+        }
+    }
+}
+
+fn server_id(server: &Arc<dyn Server>) -> usize {
+    Arc::as_ptr(server) as *const () as usize
+}
+
+impl PlayersView {
+    pub fn new(_shared: &Shared) -> Self {
+        Self { state: Arc::new(Mutex::new(State::default())) }
+    }
+
+    fn ctl(&self, shared: &Shared) -> Ctl {
+        Ctl { state: self.state.clone(), shared: shared.clone() }
+    }
+
+    fn connect_if_needed(&mut self, shared: &Shared) {
+        let Some(server) = shared.session() else { return };
+        let id = server_id(&server);
+        {
+            let mut state = self.state.lock().unwrap();
+            if state.session_for == Some(id) {
+                return;
+            }
+            state.close(shared);
+            state.session_for = Some(id);
+        }
+        self.ctl(shared).spawn(|ctl| ctl.open(false));
+    }
+}
+
+enum Action {
+    Login,
+    Refresh,
+    Search(i64, bool),
+    Open(i64),
+    Rcon(i64, String, bool, Rcon),
+}
+
+fn frame(palette: &Palette) -> egui::Frame {
+    widgets::card_frame(palette).inner_margin(10).corner_radius(10)
+}
+
+fn small(text: &str) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text.to_string()).size(12.5)).corner_radius(8).min_size(egui::vec2(0.0, 28.0))
+}
+
+fn field(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32) -> bool {
+    let response = ui.add_sized([width, FIELD_HEIGHT], egui::TextEdit::singleline(value).hint_text(hint));
+    response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
+}
+
+impl View for PlayersView {
+    fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        self.connect_if_needed(shared);
+        let ctx = ui.ctx().clone();
+        let mut actions = Vec::new();
+        {
+            let mut guard = self.state.lock().unwrap();
+            let s = &mut *guard;
+            if let Some(prompt) = s.prompt.as_mut() {
+                if prompt.show(&ctx, palette) {
+                    s.prompt = None;
+                }
+            }
+            egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 0, bottom: 18 }).show(ui, |ui| {
+                ui.set_min_size(ui.available_size());
+                header(ui, palette, s, shared, &mut actions);
+                ui.add_space(10.0);
+                body(ui, palette, s, &mut actions);
+            });
+        }
+        let ctl = self.ctl(shared);
+        for action in actions {
+            match action {
+                Action::Login => ctl.spawn(|c| c.open(true)),
+                Action::Refresh => ctl.spawn(|c| async move {
+                    c.load_ranks().await;
+                    let (page, chosen) = {
+                        let s = c.lock();
+                        (s.page_number, s.chosen)
+                    };
+                    c.search(page, false).await;
+                    if let Some(id) = chosen {
+                        c.load_player(id).await;
+                    }
+                }),
+                Action::Search(page, fresh) => ctl.spawn(move |c| async move { c.search(page, fresh).await }),
+                Action::Open(id) => ctl.spawn(move |c| async move { c.load_player(id).await }),
+                Action::Rcon(id, name, online, action) => ctl.spawn(move |c| c.act(id, name, online, action)),
+            }
+        }
+    }
+
+    fn busy(&self) -> bool {
+        self.state.lock().unwrap().busy
+    }
+
+    fn session_changed(&mut self, shared: &Shared) {
+        self.state.lock().unwrap().close(shared);
+    }
+}
+
+fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, actions: &mut Vec<Action>) {
+    ui.horizontal(|ui| {
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(widgets::secondary_button(t("Back"))).clicked() {
+                shared.request(Request::Go(AppPage::Dashboard));
+            }
+            if ui.add_enabled(s.session.is_some() && !s.busy, small(t("Refresh"))).clicked() {
+                actions.push(Action::Refresh);
+            }
+            if s.login_visible && ui.add(widgets::primary_button(t("Log in to MariaDB"))).clicked() {
+                actions.push(Action::Login);
+            }
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.label(RichText::new(t("Players")).size(13.0).strong());
+                ui.add(egui::Label::new(RichText::new(&s.subtitle).size(12.0).color(palette.muted)).wrap());
+            });
+        });
+    });
+    if !s.status.text.is_empty() {
+        ui.add_space(4.0);
+        let color = if s.status.error { palette.error_text } else { palette.muted };
+        ui.add(egui::Label::new(RichText::new(&s.status.text).size(12.0).color(color)).wrap());
+    }
+}
+
+fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    egui::SidePanel::left("players-list")
+        .resizable(true)
+        .default_width(330.0)
+        .width_range(260.0..=520.0)
+        .frame(frame(palette).outer_margin(egui::Margin { left: 0, right: 6, top: 0, bottom: 0 }))
+        .show_inside(ui, |ui| list(ui, palette, s, actions));
+    egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
+        if s.player.is_none() {
+            widgets::muted(ui, palette, t("Choose a player on the left."), 12.5);
+            return;
+        }
+        egui::ScrollArea::vertical().id_salt("players-detail").auto_shrink([false, false]).show(ui, |ui| detail(ui, palette, s, actions));
+    });
+}
+
+fn list(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let ready = s.session.is_some() && !s.busy;
+    let mut enter = false;
+    ui.horizontal(|ui| {
+        enter |= field(ui, &mut s.query, t("Name or id"), (ui.available_width() - 80.0).max(120.0));
+        if ui.add_enabled(ready, small(t("Search"))).clicked() {
+            enter = true;
+        }
+    });
+    ui.horizontal(|ui| {
+        if ui.checkbox(&mut s.online_only, RichText::new(t("Online only")).size(12.5)).changed() {
+            enter = true;
+        }
+    });
+    if enter && ready {
+        actions.push(Action::Search(0, true));
+    }
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let number = s.page_number;
+        let more = s.page.as_ref().is_some_and(|p| p.more);
+        if ui.add_enabled(ready && number > 0 && s.page.is_some(), small(t("Previous"))).clicked() {
+            actions.push(Action::Search(number - 1, false));
+        }
+        ui.label(RichText::new(tf("Page {page}", &[("page", &(number + 1).to_string())])).size(12.5));
+        if ui.add_enabled(ready && more, small(t("Next"))).clicked() {
+            actions.push(Action::Search(number + 1, false));
+        }
+    });
+    ui.add_space(4.0);
+    let Some(page) = s.page.as_ref() else {
+        widgets::muted(ui, palette, t("Not loaded yet."), 12.5);
+        return;
+    };
+    if page.rows.is_empty() {
+        widgets::muted(ui, palette, t("No players found."), 12.5);
+        return;
+    }
+    let rows: &[PlayerRow] = &page.rows;
+    let chosen = s.chosen;
+    let mut clicked = None;
+    TableBuilder::new(ui)
+        .id_salt("players-rows")
+        .striped(true)
+        .sense(egui::Sense::click())
+        .auto_shrink([false, false])
+        .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+        .column(Column::exact(14.0))
+        .column(Column::auto().at_least(40.0))
+        .column(Column::remainder().at_least(100.0).clip(true))
+        .column(Column::auto().at_least(40.0))
+        .header(22.0, |mut header| {
+            for name in ["", t("Id"), t("Name"), t("Rank")] {
+                header.col(|ui| {
+                    ui.label(RichText::new(name).size(12.5).strong());
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(22.0, rows.len(), |mut row| {
+                let player = &rows[row.index()];
+                row.set_selected(chosen == Some(player.id));
+                let dot = if player.online { palette.success_text } else { palette.subtle };
+                let hover = if player.online { t("Online").to_string() } else { tf("Last online {time}", &[("time", &player.last_online)]) };
+                let mut response = row.col(|ui| {
+                    ui.label(RichText::new("●").size(11.0).color(dot)).on_hover_text(&hover);
+                }).1;
+                for value in [player.id.to_string(), player.name.clone(), player.rank.to_string()] {
+                    let (_, cell) = row.col(|ui| {
+                        ui.add(egui::Label::new(RichText::new(value.as_str()).size(12.5)).truncate().selectable(false)).on_hover_text(&player.motto);
+                    });
+                    response = response.union(cell);
+                }
+                if response.clicked() {
+                    clicked = Some(player.id);
+                }
+            });
+        });
+    if let Some(id) = clicked {
+        if ready {
+            actions.push(Action::Open(id));
+        }
+    }
+}
+
+fn section(ui: &mut egui::Ui, title: &str) {
+    ui.add_space(12.0);
+    ui.label(RichText::new(title).size(13.5).strong());
+    ui.add_space(4.0);
+}
+
+fn pair(ui: &mut egui::Ui, palette: &Palette, label: &str, value: &str) {
+    ui.label(RichText::new(label).size(12.5).color(palette.muted));
+    ui.add(egui::Label::new(RichText::new(value).size(12.5)).wrap());
+    ui.end_row();
+}
+
+fn detail(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let Some(p) = s.player.as_ref() else { return };
+    let rank = if p.rank_name.is_empty() { p.rank.to_string() } else { format!("{} ({})", p.rank_name, p.rank) };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&p.name).size(17.0).strong());
+        let (text, color) = if p.online { (t("Online"), palette.success_text) } else { (t("Offline"), palette.muted) };
+        ui.label(RichText::new(text).size(12.5).color(color));
+    });
+    if !p.motto.is_empty() {
+        widgets::muted(ui, palette, &p.motto, 12.5);
+    }
+    ui.add_space(6.0);
+    egui::Grid::new("players-overview").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+        pair(ui, palette, t("Id"), &p.id.to_string());
+        pair(ui, palette, t("Rank"), &rank);
+        pair(ui, palette, t("Mail"), if p.mail.is_empty() { "-" } else { &p.mail });
+        pair(ui, palette, t("Account created"), &p.created);
+        pair(ui, palette, t("Last online"), if p.last_online.is_empty() { "-" } else { &p.last_online });
+        let room = match (&p.room, p.online) {
+            (Some((id, name)), _) => format!("{name} ({id})"),
+            (None, true) => t("In no room").to_string(),
+            (None, false) => "-".to_string(),
+        };
+        pair(ui, palette, t("Current room"), &room);
+        pair(ui, palette, t("Home room"), &if p.home_room > 0 { p.home_room.to_string() } else { "-".into() });
+        pair(ui, palette, t("Look"), &format!("{} ({})", p.look, p.gender));
+    });
+
+    section(ui, t("Wallet"));
+    egui::Grid::new("players-wallet").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+        pair(ui, palette, t("Credits"), &p.credits.to_string());
+        for currency in &p.currencies {
+            pair(ui, palette, &currency_name(currency.kind), &currency.amount.to_string());
+        }
+        let club = p.subscriptions.iter().find(|s| s.active);
+        let text = match club {
+            Some(club) => tf("{type} until {end}", &[("type", &club.kind), ("end", &club.ends)]),
+            None => t("None").to_string(),
+        };
+        pair(ui, palette, t("Subscription"), &text);
+    });
+
+    section(ui, &tf("Badges ({count})", &[("count", &p.badges.len().to_string())]));
+    if p.badges.is_empty() {
+        widgets::muted(ui, palette, t("No badges."), 12.5);
+    } else {
+        ui.horizontal_wrapped(|ui| {
+            for badge in &p.badges {
+                let text = RichText::new(&badge.code).size(12.5);
+                if badge.slot > 0 {
+                    ui.label(text.strong().color(palette.accent_text)).on_hover_text(tf("Worn in slot {slot}", &[("slot", &badge.slot.to_string())]));
+                } else {
+                    ui.label(text);
+                }
+                ui.add_space(6.0);
+            }
+        });
+    }
+
+    section(ui, t("Possessions"));
+    egui::Grid::new("players-owned").num_columns(3).spacing([16.0, 4.0]).striped(true).show(ui, |ui| {
+        ui.label(RichText::new("").size(12.5));
+        ui.label(RichText::new(t("In the inventory")).size(12.5).strong());
+        ui.label(RichText::new(t("In a room")).size(12.5).strong());
+        ui.end_row();
+        for furni in &p.furni {
+            ui.label(RichText::new(furni_kind(&furni.kind)).size(12.5));
+            ui.label(RichText::new(furni.inventory.to_string()).size(12.5));
+            ui.label(RichText::new(furni.placed.to_string()).size(12.5));
+            ui.end_row();
+        }
+        for (label, (all, kept)) in [(t("Pets"), p.pets), (t("Bots"), p.bots)] {
+            ui.label(RichText::new(label).size(12.5));
+            ui.label(RichText::new(kept.to_string()).size(12.5));
+            ui.label(RichText::new((all - kept).to_string()).size(12.5));
+            ui.end_row();
+        }
+        ui.label(RichText::new(t("Rooms owned")).size(12.5));
+        ui.label(RichText::new(p.rooms.to_string()).size(12.5));
+        ui.end_row();
+    });
+
+    section(ui, t("Recent room visits"));
+    if p.visits.is_empty() {
+        widgets::muted(ui, palette, t("No room visits logged."), 12.5);
+    } else {
+        egui::Grid::new("players-visits").num_columns(3).spacing([16.0, 3.0]).striped(true).show(ui, |ui| {
+            for name in [t("Entered"), t("Left"), t("Room")] {
+                ui.label(RichText::new(name).size(12.5).strong());
+            }
+            ui.end_row();
+            for visit in &p.visits {
+                ui.label(RichText::new(&visit.entered).size(12.5));
+                ui.label(RichText::new(if visit.left.is_empty() { "-" } else { &visit.left }).size(12.5));
+                let room = if visit.room.is_empty() { visit.room_id.to_string() } else { format!("{} ({})", visit.room, visit.room_id) };
+                ui.label(RichText::new(room).size(12.5));
+                ui.end_row();
+            }
+        });
+    }
+
+    section(ui, t("Bans and mutes"));
+    match &p.muted_until {
+        Some(until) => {
+            ui.label(RichText::new(tf("Muted until {time}", &[("time", until)])).size(12.5).color(palette.warning_text));
+        }
+        None => widgets::muted(ui, palette, t("Not muted."), 12.5),
+    }
+    if p.bans.is_empty() {
+        widgets::muted(ui, palette, t("No bans."), 12.5);
+    } else {
+        egui::Grid::new("players-bans").num_columns(5).spacing([16.0, 3.0]).striped(true).show(ui, |ui| {
+            for name in [t("Given"), t("Ends"), t("Type"), t("By"), t("Reason")] {
+                ui.label(RichText::new(name).size(12.5).strong());
+            }
+            ui.end_row();
+            for ban in &p.bans {
+                let color = if ban.active { palette.error_text } else { palette.muted };
+                ui.label(RichText::new(&ban.given).size(12.5).color(color));
+                ui.label(RichText::new(if ban.expires.is_empty() { t("Never") } else { &ban.expires }).size(12.5).color(color));
+                ui.label(RichText::new(&ban.kind).size(12.5));
+                ui.label(RichText::new(&ban.by).size(12.5));
+                ui.add(egui::Label::new(RichText::new(&ban.reason).size(12.5)).wrap());
+                ui.end_row();
+            }
+        });
+    }
+    if !p.missing.is_empty() {
+        ui.add_space(8.0);
+        widgets::muted(ui, palette, &tf("Not in this database: {tables}.", &[("tables", &p.missing.join(", "))]), 12.0);
+    }
+
+    controls(ui, palette, s, actions);
+}
+
+fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let Some(p) = s.player.as_ref() else { return };
+    let (id, name, online) = (p.id, p.name.clone(), p.online);
+    let mut kinds: Vec<i64> = p.currencies.iter().map(|c| c.kind).collect();
+    for kind in [0, 5] {
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    kinds.sort();
+    let ready = s.session.is_some() && !s.busy;
+    let mut send = |action: Rcon| actions.push(Action::Rcon(id, name.clone(), online, action));
+    let number = |text: &str| text.trim().parse::<i64>().unwrap_or(0);
+    let inputs = &mut s.inputs;
+
+    section(ui, t("Actions (RCON)"));
+    widgets::muted(ui, palette, t("Sent to the running emulator. Each one asks first and shows the emulator's answer."), 12.0);
+    ui.add_space(4.0);
+    egui::Grid::new("players-actions").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+        ui.label(RichText::new(t("Credits")).size(12.5));
+        ui.horizontal(|ui| {
+            let enter = field(ui, &mut inputs.credits, t("Amount"), 110.0);
+            if (ui.add_enabled(ready, small(t("Give"))).clicked() || enter) && ready {
+                send(Rcon::GiveCredits(number(&inputs.credits)));
+            }
+        });
+        ui.end_row();
+
+        ui.label(RichText::new(t("Points")).size(12.5));
+        ui.horizontal(|ui| {
+            let kind = inputs.points_type.trim().parse::<i64>().unwrap_or(5);
+            egui::ComboBox::from_id_salt("players-points-type").selected_text(currency_name(kind)).width(140.0).show_ui(ui, |ui| {
+                for k in &kinds {
+                    if ui.selectable_label(kind == *k, currency_name(*k)).clicked() {
+                        inputs.points_type = k.to_string();
+                    }
+                }
+            });
+            ui.label(RichText::new(t("Type")).size(12.5));
+            field(ui, &mut inputs.points_type, "5", 50.0);
+            let enter = field(ui, &mut inputs.points, t("Amount"), 110.0);
+            if (ui.add_enabled(ready, small(t("Give"))).clicked() || enter) && ready {
+                let kind = inputs.points_type.trim().parse::<i64>().unwrap_or(5);
+                send(Rcon::GivePoints(kind, number(&inputs.points)));
+            }
+        });
+        ui.end_row();
+
+        ui.label(RichText::new(t("Badge")).size(12.5));
+        ui.horizontal(|ui| {
+            let enter = field(ui, &mut inputs.badge, t("Badge code"), 160.0);
+            if (ui.add_enabled(ready, small(t("Give"))).clicked() || enter) && ready {
+                send(Rcon::GiveBadge(inputs.badge.trim().to_string()));
+            }
+        });
+        ui.end_row();
+
+        ui.label(RichText::new(t("Rank")).size(12.5));
+        ui.horizontal(|ui| {
+            let chosen = inputs.rank.unwrap_or(0);
+            let text = s.ranks.iter().find(|r| r.id == chosen).map(|r| format!("{} ({})", r.name, r.id)).unwrap_or_else(|| chosen.to_string());
+            egui::ComboBox::from_id_salt("players-rank").selected_text(text).width(200.0).show_ui(ui, |ui| {
+                for rank in &s.ranks {
+                    if ui.selectable_label(chosen == rank.id, format!("{} ({})", rank.name, rank.id)).clicked() {
+                        inputs.rank = Some(rank.id);
+                    }
+                }
+            });
+            if ui.add_enabled(ready && !s.ranks.is_empty(), small(t("Set rank"))).clicked() {
+                send(Rcon::SetRank(chosen));
+            }
+        });
+        ui.end_row();
+
+        ui.label(RichText::new(t("Alert")).size(12.5));
+        ui.vertical(|ui| {
+            ui.add_sized([360.0, 60.0], egui::TextEdit::multiline(&mut inputs.alert).hint_text(t("The message the player sees")));
+            ui.horizontal(|ui| {
+                let hint = if online { "" } else { t("Only to a player who is online.") };
+                if ui.add_enabled(ready && online, small(t("Send alert"))).on_disabled_hover_text(hint).clicked() {
+                    send(Rcon::Alert(inputs.alert.trim().to_string()));
+                }
+                if ui.add_enabled(ready && online, small(t("Disconnect"))).on_disabled_hover_text(hint).clicked() {
+                    send(Rcon::Disconnect);
+                }
+                if !online {
+                    widgets::muted(ui, palette, hint, 12.0);
+                }
+            });
+        });
+        ui.end_row();
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn answers_read_as_words() {
+        let ok = Answer { status: 0, message: "offline".into() };
+        let (text, error) = answer_text(&Rcon::GiveCredits(5), "bob", &ok);
+        assert!(!error && text.contains("offline"), "{text}");
+        let (_, error) = answer_text(&Rcon::Disconnect, "bob", &Answer { status: rcon::USER_NOT_FOUND, message: String::new() });
+        assert!(error);
+        let (text, error) = answer_text(&Rcon::SetRank(99), "bob", &Answer { status: 1, message: "rank exceeds rcon ceiling".into() });
+        assert!(error && text.contains("ceiling"), "{text}");
+    }
+}

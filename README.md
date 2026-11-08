@@ -1315,6 +1315,224 @@ port; **Log in to MariaDB** asks again.
 `NULL` is shown as `(NULL)`, binary values as hex. Changes are made at once (autocommit), so make a backup first with
 **Tools → Create full database backup** before bigger changes. Big dumps go through **Tools → Import full database**.
 
+### Catalogue
+
+**HOTEL → Catalogue** edits the hotel catalogue in the database the emulator uses (`db.database` in its `config.ini`),
+through the same SSH tunnel and MariaDB login as the SQL Editor.
+
+- **Left:** every catalogue page as a tree, with a search on the name, the internal name or the id. Hidden or switched
+  off pages are grey.
+- **Page:** name, internal name, layout, catalogue (normal, Builders Club or both), parent page (never under itself),
+  order, icon, minimum rank, visible, enabled and club only. **Save page** writes it; **Undo changes** goes back.
+- **Offers:** the offers of the page with their furni, prices, limited series (sold / size) and order. Click one to
+  edit its name, furni ids (one id, or a bundle `100;200`; under the form the offer's furni are listed by name with a
+  button to take one out, and **Search** finds furni in `items_base` by name, class name or id to **Add**), credits, points and their type, amount, limited size (never
+  below what is sold), order, offer id, page, extra data, club only and bulk buying.
+- **New page** makes a page under the page shown (or at the top level), after its sisters and hidden until you tick
+  Visible; **New offer** adds one to the page (fill in its furni ids). **Delete page** removes a page with its offers
+  and **Delete offer** one offer, after asking. A page with sub-pages, or an offer with sold limited numbers, is
+  never deleted: move the sub-pages first, and the record of who has which number stays.
+- **Front page** (the second tab) edits the promo tiles of the catalogue front page (`catalog_featured_pages`): the
+  slot number, caption, image (a path under the catalogue images, `catalogue/...`), what it opens (a page by internal
+  name or id, or a product) and when it stops showing (`YYYY-MM-DD HH:MM` in this computer's time zone; empty never).
+  **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails halfway is not rolled
+  back: save again.
+- **Limited** (the third tab) lists every limited series: its offer and page, and how many are sold of how many,
+  with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
+  the catalogue); a series never gets smaller, as its numbers already exist. **No longer limited** ends a series of
+  which nothing is sold; **Remove with its sales** ends one that sold, after asking, and deletes its numbers and the
+  record of who has which one for good (the furni players have keeps its number).
+- **Vouchers** (the fourth tab): the codes players type in the catalogue, with what each gives (credits, points of a
+  type, an offer), how often it was used of how many uses (0: without end) and how often one player may use it (-1:
+  without end), and a search. **New voucher**, **Save voucher**, **Delete voucher** (with the record of its uses, after
+  asking); a code is 1 to 10 letters, digits, `-` or `_` and is never used twice, as the emulator matches it exactly.
+  **Make codes** adds up to 500 vouchers with random codes (an optional prefix, then at least 4 easy-to-read letters and
+  digits) that each give what the form shows. A voucher's **Used by** lists who used it and when.
+- **Checks** (the fifth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
+  of them) and **offers that sell the same furni** (the same furni ids in any order, with the same extra data; for `wallpaper_single`, `floor_single` and
+  `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Click
+  a page to open it in the Pages tab; tick copies (or **Tick all but the first of each**) and **Delete ticked** removes
+  them after asking. Offers with sold limited numbers are never ticked or deleted.
+- **Unoffered** (the sixth tab) lists the floor and wall furni of `items_base` that no offer sells (an id in no
+  offer's furni ids), with a search. Tick some (or **Tick all shown**), choose a page and a price, and **Add N offers**
+  adds one offer per furni, named after its class name, after the page's other offers.
+- **Backups** (the seventh tab): copies of the catalogue on the server, in `<backups>/catalogue` (Settings → server
+  folders). **Make backup** dumps `catalog_pages`, `catalog_items`, `catalog_featured_pages`, `vouchers` and the
+  Builders Club `catalog_pages_bc` / `catalog_items_bc` (those that exist) with `mariadb-dump` to a `.sql.gz`, with an
+  optional name. **Roll back** first makes a `before-rollback` backup of the catalogue as it is, then puts the chosen
+  one back; publish afterwards. Sold limited numbers (`catalog_items_limited`) and voucher uses (`voucher_history`) are
+  never in a backup, so a rollback never takes back what players own or used. **Delete** removes a backup file.
+- **Build page** (above the tree) makes a new page with an offer for every floor and wall furni whose class name
+  starts with a prefix (a furni line, like `rare_dragonlamp`), optionally only furni no offer sells yet: name, internal
+  name, parent, layout and price, **Find furni** to see them, then **Build page**. The page starts hidden.
+- In **Checks**, **Merge into #id** moves the offers, sub-pages and front page tiles of pages that share an internal
+  name to the first one, then deletes the others, after asking.
+- **Sort by name** (above a page's offers) numbers its offers 1, 2, ... in the order of their names.
+- **Publish** asks the running emulator over its RCON port (`rcon.port` in `config.ini`, on 127.0.0.1 of the server) to
+  load the catalogue again (`updatecatalog`); the players online are told to refresh it. Saved changes show in the hotel
+  after a publish.
+
+Every change is one statement with its values sent separately, in a transaction; nothing typed in becomes SQL text.
+
+### Content
+
+**HOTEL → Content** edits the hotel's plain content tables in the same database, through the same SSH tunnel and
+MariaDB login as the Catalogue. Each tab has a list on the left (with a search and **New**) and the row's form on the
+right; a changed form says *Not saved yet* until **Save** (or **Add**), **Undo changes** goes back, and **Delete**
+asks first. Values are checked before saving (number ranges, text lengths, the table's unique key).
+
+- **Achievements** (`achievements`): name (without `ACH_`: the badge is `ACH_` + name + level, `ACH_RoomEntry1`),
+  category, level (each level of a name once), progress needed, reward amount and currency type, score, state
+  (0 off, 1 on, 2 archived, 3 off-season, 4 by wired), display method and subcategory. The hotel loads them with
+  `:update_achievements` (or a restart of the emulator).
+- **Daily tasks** (`daily_tasks`) and **Quests** (`quests`): code (and campaign for quests, unique together), goal
+  (pick one of the emulator's goals, or type its enum name), goal data and count, reward, images, order, enabled. The
+  emulator reads these only when it starts: **restart the emulator** to load the changes.
+- **Polls** (`polls`): title, thank-you message and reward badge, with the poll's **questions** (`polls_questions`)
+  under it: order, question, type (1 one answer, 2 several, 3 written), least answers and the options
+  `value:label;value:label` (checked, as the emulator fails on an option without `:`). Deleting a poll deletes its
+  questions and the answers given (`polls_answers`). The hotel loads them with `:update_polls`.
+- **Currencies**: the emulator settings that name the currency types (`seasonal.types`, `seasonal.primary.type`,
+  `seasonal.currency.*`, `hotel.marketplace.currency` in `emulator_settings`), each saved on its own, and how many
+  players hold each type and how much in all (`users_currency`). The hotel loads them with `:update_config`.
+- **Public rooms** (`navigator_publiccats`): the navigator's public categories (name, shown as pictures, visible,
+  order: the navigator lists them from the highest order down), with the category's **rooms** (`navigator_publics`)
+  under it: room id and visible, each room once per category. Deleting a category removes its room list (the rooms
+  stay). **Room categories** (`navigator_flatcats`): caption (the text, or a `${navigator...}` text key), saved
+  caption, lowest rank, most users in a room, trading, official, list type (0 list, 1 pictures) and order. A room
+  category that rooms still use is not deleted: the page says how many rooms to move first. Both load with
+  `:update_navigator`.
+- **Pets** (`pet_actions`): pet type, name, offspring type (-1 none) and the happy, tired and random actions, with the
+  pet's **breeds** (`pet_breeds`: colours, which colours it uses, club only), **sounds** (`pet_vocals`: when and the
+  message; sounds of pet type 0 are said by every pet) and **commands** (`pet_commands`) under it. **Pet commands**
+  (`pet_commands_data`): the commands pets can learn, with the level needed, experience and costs. Deleting a pet
+  removes its breeds and commands; deleting a command takes it from every pet type. Both load with `:update_pet_data`.
+- **Group badges** (`guilds_elements`): the parts of the group badge editor: type (base, symbol, or the base, symbol
+  or background colour), number (each type has its own; **New** takes the next free one), image or colour (six hex
+  digits for the colours), second image (a symbol in two layers) and enabled. Loaded with `:update_guildparts`, which
+  also reloads the badge images.
+- **Chat bubbles** (`chat_bubbles`): the hotel's own styles (46 and up): name, permission needed (empty for
+  everyone), whether others may override it, whether talking furni react, and the catalogue item that sells it (0 not
+  sold). Deleting a style takes it from the players who bought it (`users_chat_styles`). Loaded with
+  `:update_chat_bubbles`.
+- **Calendar** (`calendar_campaigns`): name, image, start (Unix time), days, lock missed days and enabled, with the
+  campaign's **rewards** (`calendar_rewards`) under it: the day (empty: the random pool for the days without their own
+  reward; several on one day are picked at random), and what it gives: a furni, credits, duckets, points of a
+  currency type, a badge, an item or a subscription (at least one). Deleting a campaign removes its rewards and the
+  record of the days opened. Loaded with `:update_calendar`.
+
+Tables that have no id column (`navigator_publics`, `pet_breeds`, `pet_vocals`, `pet_commands`, `pet_commands_data`,
+`pet_actions`, `guilds_elements`, `chat_bubbles`) are found by their key values as they were loaded, one row at a time
+(`... LIMIT 1`). The reward tracks are not on this page: the hotel edits them itself in the Reward Track window (the
+gear tab, permission `acc_rewardtrack`), which reloads them for everyone.
+
+### Logs
+
+**HOTEL → Logs** reads the logs the emulator writes, through the same SSH tunnel and MariaDB login as the Catalogue.
+It is read-only: nothing is changed or deleted. Every list shows 200 rows a page, newest first, with **Previous** and
+**Next**; player names come from `users` (a removed player shows as `#id`), and times are shown in the time zone of
+this computer. A filter can name a player (the exact name: it is looked up first, then the log is searched on the
+player's id), a room id where the log has rooms, words (anywhere in the text; `%` and `_` are matched as themselves)
+and a date range (**From** and **Until**, `YYYY-MM-DD` with an optional `HH:MM`; a date alone includes that whole
+day). Enter in a field or **Search** applies it, **Clear** empties it.
+
+- **Commands** (`commandlogs`): the player, the command, its parameters and whether it worked. Words look in the
+  command and the parameters.
+- **Room chat** (`chatlogs_room`): the player, who a whisper went to, the room and the message. Click a line to see
+  the 10 lines before and after it in the same room, the chosen one marked.
+- **Private chat** (`chatlogs_private`): sender, receiver and message; a player filter finds both sides.
+- **Currencies** (`logs_economy`): every change of a player's currency: operation, currency type, amount, the balance
+  before and after, the item and the context.
+- **Purchases** (`logs_shop_purchases`): the catalogue offer bought, how many and what it cost.
+- **Permissions** (`permission_audit`): rank and permission changes: who, the action, the target (a player or a
+  rank), the subject, the old and new value and how (command or housekeeping). A player filter finds the changes the
+  player made and the changes made to them.
+- **Staff actions** (`housekeeping_log`): the housekeeping actions of the staff (bans, kicks, room actions) with the
+  detail and whether they worked.
+- **Room visits** (`room_enter_log`): who entered which room, and when they left (empty while still inside).
+- **Name changes** (`namechange_log`) and **Trades** (`room_trade_log`: both players and how many items each gave).
+
+A log table that is not in the database (an older emulator without `logs_economy`, `housekeeping_log` or
+`permission_audit`) shows a greyed tab that says so.
+
+### Players
+
+**HOTEL → Players** finds a player and acts on them. It reads through the same SSH tunnel and MariaDB login as the
+Catalogue; the changes go to the running emulator over RCON, the way the catalogue is published.
+
+- **Search**: the start of a name (`%` and `_` count as themselves) or an id, 100 players a page, online players
+  first and then the ones seen last; **Online only** shows the players in the hotel now.
+- **The player**: id, name, rank and its name (`permission_ranks`, or the older `permissions`), motto, look, mail,
+  when the account was made and the player was last online, online or not and the room they are in (the room visit
+  without a leave time), the home room. The **wallet**: credits, every `users_currency` balance (0 duckets, 5
+  diamonds, other types by number) and the club subscription (`users_subscriptions`). The **badges**, the worn ones
+  first. The **possessions**: furni by kind (floor, wall, effect, ...) in the inventory and placed in a room, pets and
+  bots the same way, and the rooms owned. The last 15 **room visits**, and the **bans** (the active ones in red; an end
+  of 0 never ends) and a mute (`users_settings.mute_end_timestamp`). The password hash, the SSO ticket, the remember-me
+  token, the secret key and the pincode are never read.
+- **Actions (RCON)**: give credits (`givecredits`), give points of a currency type (`givepoints`), give a badge
+  (`givebadge`), set the rank (`setrank`), send an alert (`alertuser`) and disconnect (`disconnect`). Each asks first,
+  shows the emulator's answer and reads the player again. Credits, points, badges and the rank also work for an
+  offline player: the emulator writes them to the database. An alert and a disconnect only reach a player who is
+  online. The emulator keeps its own limits: `rcon.grant.max_amount` (default 1,000,000 a grant) and
+  `rcon.setrank.max_rank` (default 12) in its config, and it logs a rank change.
+
+### Hotel view
+
+**HOTEL → Hotel view** edits the landing page players see before they enter a room, through the same SSH tunnel and
+MariaDB login as the Catalogue. Four tabs:
+
+- **Widgets**: the five slots of `hotelview_landing_slots` (a missing row is shown as a hidden promotion and added when
+  saved). Per slot: shown or not, the type (the 23 types the emulator accepts: promotion, bonus rare, catalogue
+  promotion, expiring catalogue page, community goal, daily quest, next limited rare countdown, ...), title, text,
+  image, button text and link, progress (0 to 100) and its text. **Options of this type** are the keys of
+  `config_json` the client reads for that type (position x/y, second button, catalogue page, featured slot, end date,
+  badge and goal code, the "use the emulator's LTD / bonus rare / community goal / daily quest" switches); an empty field
+  removes its key. Everything else in `config_json` (such as `voteOptions`) is edited as JSON below them. The JSON must
+  be an object of at most 3000 characters (the emulator replaces anything else by `{}`); keys you do not touch are kept
+  as they were, and the runtime keys `userVote` and `voteCounts` are never saved. A vote slot shows how many votes are
+  cast and can **reset** them (`hotelview_landing_votes`).
+- **Scene and Hall of Fame** (`hotelview_landing_settings`, row 1): the background, left, right and drape images and
+  their positions (-1 is the client's default place), and the Hall of Fame box: shown or not, its place and what it
+  lists (newest players, most time online, highest achievement score, or most of one currency type).
+- **News** (`hotelview_news`): add, edit and delete articles (title, text, button text, whether the button opens a page
+  in the client or a web page, its link, the image). The hotel shows the ten with the highest ids.
+- **Bonus rare and goals**: the `emulator_settings` the widgets read: the bonus rare's furni id and class name, the
+  points it costs and their currency type, the concurrent users goal and its badge, and how many players the community
+  goal Hall of Fame lists. A setting that is not in the table yet is added.
+
+Saving writes the database; the hotel shows it after a reload. **Reload in the hotel as** sends `:update_hotel_view`
+over RCON (`executecommand`) as the online staff player you name: the emulator loads the widgets, scene, news and Hall
+of Fame again and refreshes the hotel view of everyone online. The player must be online and may use the command
+(`cmd_update_hotel_view`); you can also type the command in the hotel yourself. The settings tab is read by the emulator
+at start or with `:update_config`.
+
+### Gamedata
+
+**HOTEL → Gamedata** edits two files in the server's `gamedata/config` over the SSH login (no MariaDB password needed):
+
+- **Furnidata** (`FurnitureData.json`): search floor and wall furni by id, classname or name, and edit the plain fields
+  of one (name, description, dimensions, offer id, `canstandon`, ...). Each value keeps its type (a number stays a
+  number, true/false stays true/false); lists and objects such as `partcolors`, and fields this editor does not know,
+  are kept as they are. An id or classname another furni already uses is refused. **Check items_base** looks the
+  classname and sprite id up in the hotel's `items_base` (read only, through the root login's MariaDB socket) and says
+  whether they match (otherwise run Fix items_base). **Add copy** adds a new furni as a copy of the one shown, with its
+  own id and classname and offer id -1 (Fix offer IDs gives it one); it still needs a furni bundle and an `items_base`
+  row of that name.
+- **Texts** (`ExternalTexts.json`): search a key or a text, edit a text, add a key, delete a key (after a confirm).
+
+Changes go into an edited copy first; **Save** writes the file. Saving checks first that the file on the server is
+still the one that was loaded (its SHA-256: an edit by the emulator or the in-hotel furni editor in the meantime is
+never overwritten, load it again instead), copies it to `<file>.bak-<time>` next to it, then writes the new file under
+a temporary name in the same folder and renames it over the old one, keeping its owner, group and mode. The JSON is
+written back in the file's own layout (one line or its indent, a BOM, a closing newline).
+
+There is no reload command: the emulator watches its furnidata (`items.furnidata.watch.enabled`, on by default) and
+sends the changed furni to everyone online by itself. Texts are read by the client when it loads, so players see them
+after reloading the hotel page. Octane's `UITexts.jsonc` is not edited here, because it has comments that saving as
+JSON would drop; FigureData is not edited either, because its set, part and palette ids depend on each other and a
+plain field edit easily breaks avatars.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;

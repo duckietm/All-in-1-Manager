@@ -3,8 +3,8 @@
 //! MariaDB is reached through the SSH session.
 
 mod grid;
-mod login;
-mod text;
+pub(crate) mod login;
+pub(crate) mod text;
 
 use std::sync::{Arc, Mutex};
 

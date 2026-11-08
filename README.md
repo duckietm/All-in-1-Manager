@@ -1394,6 +1394,14 @@ Furni are dragged like files in the Asset Explorer:
 - onto **another furni**: they go in before it, also on the same page (to change the order);
 - with **Ctrl** held: a copy goes there, the original stays.
 
+**Pages** are dragged in the tree like folders: onto the middle of a page to put it under that page, onto its top or
+bottom edge to put it before or after it (also to change the order), or onto a tab to put it under that root page.
+A page never goes under itself or one of its own pages, and nothing goes into a front page.
+
+The **Without offer** tab (after the root pages) lists the furni no offer sells yet (search on the name, class name or
+id): drag them onto a page in the other window, or a page in its tree, and each gets an offer there (named after its
+class name, 3 credits; the price is set on the Catalogue page).
+
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
 catalogue again, as on the Catalogue page.

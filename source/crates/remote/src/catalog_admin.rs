@@ -1507,6 +1507,74 @@ pub async fn undo_place(session: &SqlSession, database: &str, undo: &PlaceUndo) 
     Ok(session.execute(&undo_statements(database, undo)).await?.0)
 }
 
+/// Gives `furni` (no offer sells them yet) an offer each on `page_id`, before the offer `before` (None: at the end):
+/// named after the class name, 3 credits, as a new offer starts. Returns what undoes it (the new offers removed).
+pub async fn place_new_furni(session: &SqlSession, database: &str, furni: &[Furni], page_id: i64, before: Option<i64>) -> Result<PlaceUndo> {
+    let mut inserted = Vec::new();
+    for offer in offers_for(furni, page_id, &[], 3, 0, 0) {
+        match save_offer(session, database, &offer).await {
+            Ok(id) => inserted.push(id),
+            Err(error) => {
+                let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+                return Err(error);
+            }
+        }
+    }
+    match place_offers(session, database, &inserted, page_id, before, false).await {
+        Ok(mut undo) => {
+            undo.before.retain(|(id, _, _)| !inserted.contains(id));
+            undo.inserted = inserted;
+            Ok(undo)
+        }
+        Err(error) => {
+            let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+            Err(error)
+        }
+    }
+}
+
+/// What a page move changed, to put it back: each page's parent and order before.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PageUndo {
+    pub before: Vec<(i64, i64, i64)>,
+}
+
+/// Why `page` cannot go under `parent`, or None: never under itself or one of its own pages.
+pub fn page_move_problem(pages: &[Page], page: i64, parent: i64) -> Option<String> {
+    if page == parent || is_ancestor(pages, page, parent) {
+        return Some("A page cannot go under itself or one of its own pages.".into());
+    }
+    None
+}
+
+/// Puts the pages of `order` under `parent`, numbered 1, 2, 3 ... in that order.
+pub fn page_order_statements(database: &str, parent: i64, order: &[i64]) -> Vec<(String, Vec<SqlValue>)> {
+    let sql = format!("UPDATE {}.catalog_pages SET parent_id = ?, order_num = ? WHERE id = ?", quote(database));
+    order.iter().enumerate().map(|(i, id)| (sql.clone(), vec![SqlValue::Int(parent), SqlValue::Int(i as i64 + 1), SqlValue::Int(*id)])).collect()
+}
+
+/// Moves `page` under `parent`, before the page `before` (None: last), and numbers the pages under `parent` again, in
+/// one transaction. The pages are read again first. Returns what undoes it.
+pub async fn move_page(session: &SqlSession, database: &str, page: i64, parent: i64, before: Option<i64>) -> Result<PageUndo> {
+    let pages = load_pages(session, database).await?;
+    if let Some(problem) = page_move_problem(&pages, page, parent) {
+        return Err(ServerError(problem).into());
+    }
+    let mut siblings: Vec<&Page> = pages.iter().filter(|p| p.parent_id == parent && p.id != parent).collect();
+    siblings.sort_by_key(|p| (p.order_num, p.id));
+    let order = arranged(&siblings.iter().map(|p| p.id).collect::<Vec<_>>(), &[page], before);
+    let before: Vec<(i64, i64, i64)> = order.iter().filter_map(|id| pages.iter().find(|p| p.id == *id)).map(|p| (p.id, p.parent_id, p.order_num)).collect();
+    session.execute(&page_order_statements(database, parent, &order)).await?;
+    Ok(PageUndo { before })
+}
+
+/// Puts a page move back, in one transaction.
+pub async fn undo_page_move(session: &SqlSession, database: &str, undo: &PageUndo) -> Result<u64> {
+    let sql = format!("UPDATE {}.catalog_pages SET parent_id = ?, order_num = ? WHERE id = ?", quote(database));
+    let statements: Vec<_> = undo.before.iter().map(|(id, parent, order)| (sql.clone(), vec![SqlValue::Int(*parent), SqlValue::Int(*order), SqlValue::Int(*id)])).collect();
+    Ok(session.execute(&statements).await?.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1522,6 +1590,17 @@ mod tests {
         assert_eq!(arranged(&[1, 2, 3, 4], &[1, 2], Some(2)), [1, 2, 3, 4]);
         assert_eq!(arranged(&[1, 2, 3, 4], &[4, 4], Some(2)), [1, 4, 2, 3], "every id once");
         assert_eq!(arranged(&[], &[5, 6], Some(1)), [5, 6]);
+    }
+
+    #[test]
+    fn pages_move_but_never_under_themselves() {
+        let pages = vec![page(1, -1, "Furni", 1), page(2, 1, "Area", 1), page(3, 2, "Area Blue", 1), page(4, 1, "Mode", 2)];
+        assert!(page_move_problem(&pages, 2, 3).is_some(), "under its own page");
+        assert!(page_move_problem(&pages, 2, 2).is_some(), "under itself");
+        assert_eq!(page_move_problem(&pages, 3, 4), None);
+        let statements = page_order_statements("hotel", 1, &[4, 2]);
+        assert_eq!(statements[0].0, "UPDATE `hotel`.catalog_pages SET parent_id = ?, order_num = ? WHERE id = ?");
+        assert_eq!(statements[1].1, vec![SqlValue::Int(1), SqlValue::Int(2), SqlValue::Int(2)]);
     }
 
     #[test]

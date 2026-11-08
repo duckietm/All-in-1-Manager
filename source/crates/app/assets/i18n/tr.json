@@ -3250,5 +3250,15 @@
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} mobilya {page} sayfasına kopyalandı. Otelde göstermek için yayınlayın.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} mobilya {page} sayfasına taşındı. Otelde göstermek için yayınlayın.",
   "{count} selected": "{count} seçili",
-  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "Ön sayfa mobilya değil, HOTEL → Katalog (Ön sayfa sekmesi) tanıtımlarını gösterir: burada kilitlidir. Mobilya sürüklemek için ağaçta bir sayfa açın."
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "Ön sayfa mobilya değil, HOTEL → Katalog (Ön sayfa sekmesi) tanıtımlarını gösterir: burada kilitlidir. Mobilya sürüklemek için ağaçta bir sayfa açın.",
+  "Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer of 3 credits there.": "Henüz hiçbir teklifin satmadığı mobilyalar. Onları diğer penceredeki bir sayfaya (ya da ağacındaki bir sayfaya) sürükleyin: her biri orada 3 kredilik bir teklif alır.",
+  "New offer: {count} furni": "Yeni teklif: {count} mobilya",
+  "Page {page}: onto a page to put it under it, onto its edge to put it before or after it": "Sayfa {page}: altına koymak için bir sayfanın üstüne, önüne ya da arkasına koymak için kenarına",
+  "Reading the furni and the offers ...": "Mobilyalar ve teklifler okunuyor ...",
+  "Search furni": "Mobilya ara",
+  "Without offer": "Teklifsiz",
+  "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} mobilya {page} sayfasında teklif aldı (3 kredi: fiyatı Katalog sayfasında ayarlayın). Otelde göstermek için yayınlayın.",
+  "{count} furni without an offer.": "Teklifsiz {count} mobilya.",
+  "{count} furni without an offer; the first {shown} shown, search to narrow it.": "Teklifsiz {count} mobilya; ilk {shown} gösteriliyor, daraltmak için arayın.",
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} artık {parent} altında. Otelde göstermek için yayınlayın."
 }

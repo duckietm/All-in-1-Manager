@@ -3250,5 +3250,15 @@
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} kalustetta kopioitu sivulle {page}. Julkaise näyttääksesi sen hotellissa.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} kalustetta siirretty sivulle {page}. Julkaise näyttääksesi sen hotellissa.",
   "{count} selected": "{count} valittu",
-  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "Etusivu näyttää kohdan HOTEL → Luettelo (Etusivu-välilehti) mainokset, ei kalusteita: se on tässä lukittu. Avaa puusta sivu vetääksesi kalusteita."
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "Etusivu näyttää kohdan HOTEL → Luettelo (Etusivu-välilehti) mainokset, ei kalusteita: se on tässä lukittu. Avaa puusta sivu vetääksesi kalusteita.",
+  "Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer of 3 credits there.": "Kalusteet, joita mikään tarjous ei vielä myy. Vedä ne toisen ikkunan sivulle (tai sen puun sivulle): kukin saa siellä 3 krediitin tarjouksen.",
+  "New offer: {count} furni": "Uusi tarjous: {count} kalustetta",
+  "Page {page}: onto a page to put it under it, onto its edge to put it before or after it": "Sivu {page}: sivun päälle laittaaksesi sen alle, reunaan laittaaksesi sen ennen tai jälkeen",
+  "Reading the furni and the offers ...": "Luetaan kalusteita ja tarjouksia ...",
+  "Search furni": "Etsi kalusteita",
+  "Without offer": "Ilman tarjousta",
+  "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} kalustetta sai tarjouksen sivulla {page} (3 krediittiä: aseta hinta Luettelo-sivulla). Julkaise näyttääksesi sen hotellissa.",
+  "{count} furni without an offer.": "{count} kalustetta ilman tarjousta.",
+  "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} kalustetta ilman tarjousta; ensimmäiset {shown} näytetään, rajaa haulla.",
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} on nyt sivun {parent} alla. Julkaise näyttääksesi sen hotellissa."
 }

@@ -3250,5 +3250,15 @@
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} meubels gekopieerd naar {page}. Publiceer om het in het hotel te tonen.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} meubels verplaatst naar {page}. Publiceer om het in het hotel te tonen.",
   "{count} selected": "{count} geselecteerd",
-  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "De voorpagina toont de promoties van HOTEL → Catalogus (tabblad Voorpagina), geen meubels: hier is hij vergrendeld. Open een pagina in de boom om meubels te slepen."
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "De voorpagina toont de promoties van HOTEL → Catalogus (tabblad Voorpagina), geen meubels: hier is hij vergrendeld. Open een pagina in de boom om meubels te slepen.",
+  "Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer of 3 credits there.": "Meubels die nog geen aanbieding hebben. Sleep ze naar een pagina in het andere venster (of een pagina in de boom): elk krijgt daar een aanbieding van 3 credits.",
+  "New offer: {count} furni": "Nieuwe aanbieding: {count} meubels",
+  "Page {page}: onto a page to put it under it, onto its edge to put it before or after it": "Pagina {page}: op een pagina om hem eronder te zetten, op de rand om hem ervoor of erna te zetten",
+  "Reading the furni and the offers ...": "De meubels en aanbiedingen lezen ...",
+  "Search furni": "Zoek meubels",
+  "Without offer": "Zonder aanbieding",
+  "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} meubels kregen een aanbieding op {page} (3 credits: zet de prijs op de pagina Catalogus). Publiceer om het in het hotel te tonen.",
+  "{count} furni without an offer.": "{count} meubels zonder aanbieding.",
+  "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} meubels zonder aanbieding; de eerste {shown} getoond, zoek om het te beperken.",
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} staat nu onder {parent}. Publiceer om het in het hotel te tonen."
 }

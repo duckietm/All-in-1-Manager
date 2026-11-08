@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use aio_remote::catalog_admin::{self, Furni, Offer, Page, PlaceUndo};
+use aio_remote::catalog_admin::{self, Furni, Offer, Page, PageUndo, PlaceUndo};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
@@ -44,6 +44,10 @@ mod game {
 }
 
 const TILE: f32 = 58.0;
+/// The window's tab of the furni no offer sells (not a page id: those are positive).
+const UNOFFERED: i64 = i64::MIN;
+/// The most unoffered furni shown at once (the search narrows it).
+const UNOFFERED_SHOWN: usize = 400;
 const NAV_WIDTH: f32 = 200.0;
 const ROW: f32 = 24.0;
 
@@ -64,6 +68,9 @@ struct Pane {
     selected: Vec<i64>,
     anchor: Option<i64>,
     search: String,
+    /// The Without offer tab: the furni selected (items_base ids) and the search.
+    furni_selected: Vec<i64>,
+    furni_search: String,
 }
 
 #[derive(Default)]
@@ -87,7 +94,10 @@ struct State {
     two: bool,
     busy: bool,
     unpublished: bool,
-    undo: Option<PlaceUndo>,
+    undo: Option<Undo>,
+    /// The furni no offer sells (None until the Without offer tab is opened), and whether they are being read.
+    unoffered: Option<Vec<Furni>>,
+    unoffered_loading: bool,
     status: Status,
     sample: bool,
 }
@@ -147,6 +157,20 @@ impl State {
     }
 }
 
+/// What the last change did, to put it back.
+enum Undo {
+    Offers(PlaceUndo),
+    Page(PageUndo),
+}
+
+/// Furni without an offer being dragged (items_base ids).
+#[derive(Clone)]
+struct DragFurni(Vec<i64>);
+
+/// A page being dragged in a tree.
+#[derive(Clone)]
+struct DragPage(i64);
+
 /// The offers being dragged, from which window.
 #[derive(Clone)]
 struct DragOffers {
@@ -160,6 +184,9 @@ enum Action {
     LoadOffers(i64),
     FurniNames(Vec<i64>),
     Place { ids: Vec<i64>, page: i64, before: Option<i64>, copy: bool },
+    PlaceFurni { ids: Vec<i64>, page: i64, before: Option<i64> },
+    MovePage { id: i64, parent: i64, before: Option<i64> },
+    LoadUnoffered,
     Undo,
     Publish,
 }
@@ -360,7 +387,7 @@ impl Ctl {
                     s.loading.clear();
                     let roots: Vec<i64> = s.roots().iter().map(|p| p.id).collect();
                     for (i, pane) in s.panes.iter_mut().enumerate() {
-                        if pane.root.is_none_or(|r| !roots.contains(&r)) {
+                        if pane.root.is_none_or(|r| r != UNOFFERED && !roots.contains(&r)) {
                             pane.root = roots.get(i.min(roots.len().saturating_sub(1))).copied();
                             pane.page = pane.root;
                         }
@@ -419,7 +446,7 @@ impl Ctl {
                         },
                         error: false,
                     };
-                    s.undo = Some(undo);
+                    s.undo = Some(Undo::Offers(undo));
                     s.unpublished = true;
                     for pane in s.panes.iter_mut() {
                         pane.selected.clear();
@@ -437,7 +464,10 @@ impl Ctl {
         let Some((generation, session, database)) = self.session() else { return };
         let Some(undo) = self.lock().undo.take() else { return };
         self.with(generation, |s| s.busy = true);
-        let result = catalog_admin::undo_place(&session, &database, &undo).await;
+        let result = match &undo {
+            Undo::Offers(undo) => catalog_admin::undo_place(&session, &database, undo).await,
+            Undo::Page(undo) => catalog_admin::undo_page_move(&session, &database, undo).await,
+        };
         self.with(generation, |s| {
             s.busy = false;
             s.status = match result {
@@ -445,9 +475,93 @@ impl Ctl {
                 Err(error) => Status { text: error.to_string(), error: true },
             };
         });
-        for page in undo.pages {
-            self.load_offers(page).await;
+        match undo {
+            Undo::Offers(undo) => {
+                if !undo.inserted.is_empty() {
+                    self.with(generation, |s| s.unoffered = None);
+                }
+                for page in undo.pages {
+                    self.load_offers(page).await;
+                }
+            }
+            Undo::Page(_) => self.load_pages().await,
         }
+    }
+
+    /// Furni without an offer dropped on a page: an offer each.
+    async fn place_furni(self, ids: Vec<i64>, page: i64, before: Option<i64>) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let (furni, caption) = {
+            let s = self.lock();
+            let furni: Vec<Furni> = ids.iter().filter_map(|id| s.unoffered.iter().flatten().find(|f| f.id == *id).cloned()).collect();
+            (furni, s.page(page).map(|p| p.caption.clone()).unwrap_or_default())
+        };
+        if furni.is_empty() {
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let result = catalog_admin::place_new_furni(&session, &database, &furni, page, before).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match result {
+                Ok(undo) => {
+                    s.status = Status {
+                        text: tf("{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.", &[("count", &furni.len().to_string()), ("page", &caption)]),
+                        error: false,
+                    };
+                    s.undo = Some(Undo::Offers(undo));
+                    s.unpublished = true;
+                    if let Some(list) = s.unoffered.as_mut() {
+                        list.retain(|f| !ids.contains(&f.id));
+                    }
+                    for pane in s.panes.iter_mut() {
+                        pane.furni_selected.clear();
+                    }
+                }
+                Err(error) => s.status = Status { text: error.to_string(), error: true },
+            }
+        });
+        self.load_offers(page).await;
+    }
+
+    async fn move_page(self, id: i64, parent: i64, before: Option<i64>) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let (caption, under) = {
+            let s = self.lock();
+            (s.page(id).map(|p| p.caption.clone()).unwrap_or_default(), s.page(parent).map(|p| p.caption.clone()).unwrap_or_default())
+        };
+        self.with(generation, |s| s.busy = true);
+        let result = catalog_admin::move_page(&session, &database, id, parent, before).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match result {
+                Ok(undo) => {
+                    s.status = Status { text: tf("{page} is now under {parent}. Publish to show it in the hotel.", &[("page", &caption), ("parent", &under)]), error: false };
+                    s.undo = Some(Undo::Page(undo));
+                    s.unpublished = true;
+                }
+                Err(error) => s.status = Status { text: error.to_string(), error: true },
+            }
+        });
+        // The windows stay where they were: load_pages only resets a tab that is gone.
+        self.load_pages().await;
+    }
+
+    async fn load_unoffered(&self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let furni = catalog_admin::load_sellable_furni(&session, &database).await;
+        let offers = catalog_admin::load_all_offers(&session, &database).await;
+        self.with(generation, |s| {
+            s.unoffered_loading = false;
+            match (furni, offers) {
+                (Ok(furni), Ok(offers)) => {
+                    let mut list = catalog_admin::unoffered_furni(&furni, &offers);
+                    list.sort_by(|a, b| a.item_name.to_lowercase().cmp(&b.item_name.to_lowercase()));
+                    s.unoffered = Some(list);
+                }
+                (Err(error), _) | (_, Err(error)) => s.status = Status { text: error.to_string(), error: true },
+            }
+        });
     }
 
     async fn publish(self) {
@@ -575,6 +689,9 @@ impl View for CatalogExplorerView {
                         ctl.spawn(move |c| c.place(ids, page, before, copy));
                     }
                 }
+                Action::PlaceFurni { ids, page, before } => ctl.spawn(move |c| c.place_furni(ids, page, before)),
+                Action::MovePage { id, parent, before } => ctl.spawn(move |c| c.move_page(id, parent, before)),
+                Action::LoadUnoffered => ctl.spawn(|c| async move { c.load_unoffered().await }),
                 Action::Undo => ctl.spawn(|c| c.undo()),
                 Action::Publish => ctl.spawn(|c| c.publish()),
             }
@@ -651,7 +768,7 @@ fn window(ui: &mut egui::Ui, s: &mut State, images: &mut Images, index: usize, w
             ui.set_height(height - 2.0);
             ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
             title_bar(ui, s, index, width - 2.0);
-            tabs(ui, &ctx, s, images, index);
+            tabs(ui, &ctx, s, images, index, actions);
             ui.horizontal_top(|ui| {
                 let body_height = ui.available_height();
                 ui.allocate_ui_with_layout(egui::vec2(NAV_WIDTH, body_height), egui::Layout::top_down(egui::Align::Min), |ui| {
@@ -677,8 +794,9 @@ fn title_bar(ui: &mut egui::Ui, s: &mut State, index: usize, width: f32) {
 }
 
 /// The root pages as tabs.
-fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize) {
-    let roots: Vec<(i64, String, i64, bool)> = s.roots().iter().map(|p| (p.id, p.caption.clone(), p.icon_image, p.visible)).collect();
+fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize, actions: &mut Vec<Action>) {
+    let mut roots: Vec<(i64, String, i64, bool)> = s.roots().iter().map(|p| (p.id, p.caption.clone(), p.icon_image, p.visible)).collect();
+    roots.push((UNOFFERED, t("Without offer").to_string(), -1, true));
     let mut chosen = None;
     egui::Frame::new().fill(game::TAB).inner_margin(egui::Margin { left: 6, right: 6, top: 6, bottom: 0 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -689,16 +807,29 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                     let active = s.panes[index].root == Some(*id);
                     let font = egui::FontId::proportional(12.0);
                     let text_width = ui.painter().layout_no_wrap(caption.clone(), font.clone(), game::TEXT).size().x;
-                    let size = egui::vec2(text_width + 34.0, 26.0);
+                    let size = egui::vec2(text_width + if *id == UNOFFERED { 18.0 } else { 34.0 }, 26.0);
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
-                    let fill = if active { game::BODY } else if response.hovered() { game::TAB_HOVER } else { game::TAB };
+                    // A page dropped on a tab goes under that root page.
+                    let page_drop = *id != UNOFFERED && response.dnd_hover_payload::<DragPage>().is_some();
+                    let fill = if active || page_drop { game::BODY } else if response.hovered() { game::TAB_HOVER } else { game::TAB };
                     ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, fill);
-                    if let Some(texture) = images.page(ctx, *icon) {
-                        sharp_image(ui.painter(), &texture, rect.left_center() + egui::vec2(14.0, 0.0), egui::vec2(22.0, 22.0), 1);
+                    if page_drop {
+                        ui.painter().rect_stroke(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
                     }
-                    let color = if *visible { game::TEXT } else { game::HIDDEN };
-                    ui.painter().text(rect.left_center() + egui::vec2(26.0, 0.0), egui::Align2::LEFT_CENTER, caption, font, color);
-                    if response.clicked() {
+                    let mut x = rect.left() + 9.0;
+                    if *id != UNOFFERED {
+                        if let Some(texture) = images.page(ctx, *icon) {
+                            sharp_image(ui.painter(), &texture, rect.left_center() + egui::vec2(14.0, 0.0), egui::vec2(22.0, 22.0), 1);
+                        }
+                        x = rect.left() + 26.0;
+                    }
+                    let color = if *id == UNOFFERED { game::TITLE } else if *visible { game::TEXT } else { game::HIDDEN };
+                    ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, caption, font, color);
+                    if let Some(page) = response.dnd_release_payload::<DragPage>() {
+                        if *id != UNOFFERED {
+                            actions.push(Action::MovePage { id: page.0, parent: *id, before: None });
+                        }
+                    } else if response.clicked() {
                         chosen = Some(*id);
                     }
                 }
@@ -708,9 +839,13 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
     if let Some(id) = chosen {
         let pane = &mut s.panes[index];
         pane.root = Some(id);
-        pane.page = Some(id);
+        pane.page = (id != UNOFFERED).then_some(id);
         pane.selected.clear();
         pane.search.clear();
+        if id == UNOFFERED && s.unoffered.is_none() && !s.unoffered_loading && !s.sample {
+            s.unoffered_loading = true;
+            actions.push(Action::LoadUnoffered);
+        }
     }
 }
 
@@ -743,13 +878,29 @@ fn uv() -> egui::Rect {
     egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0))
 }
 
-/// The page tree of the open tab (or, with a search, every page that matches), each a drop target.
+/// Where a page dragged over a tree row lands.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Zone {
+    Before,
+    Into,
+    After,
+}
+
+/// The page tree of the open tab (or, with a search, every page that matches). Each row takes dropped furni, and
+/// rows are dragged like folders: onto the middle of a page to go under it, onto its top or bottom edge to go before
+/// or after it.
 fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize, height: f32, actions: &mut Vec<Action>) {
     egui::Frame::new().fill(game::NAV).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
         ui.set_width(NAV_WIDTH - 12.0);
         ui.set_height(height - 12.0);
         ui.spacing_mut().item_spacing.y = 4.0;
         light_fields(ui);
+        if s.panes[index].root == Some(UNOFFERED) {
+            ui.add(egui::TextEdit::singleline(&mut s.panes[index].furni_search).hint_text(RichText::new(t("Search furni")).italics()).desired_width(NAV_WIDTH - 12.0));
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(RichText::new(t("Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer of 3 credits there.")).size(11.5).color(game::MUTED)).wrap());
+            return;
+        }
         ui.add(egui::TextEdit::singleline(&mut s.panes[index].search).hint_text(RichText::new(t("Search pages")).italics()).desired_width(NAV_WIDTH - 12.0));
         let search = s.panes[index].search.trim().to_lowercase();
         let mut rows: Vec<(i64, usize, bool)> = Vec::new();
@@ -772,11 +923,26 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
             ui.spacing_mut().item_spacing.y = 1.0;
             for (id, depth, has_children) in rows {
                 let Some(page) = s.page(id).cloned() else { continue };
-                let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), Sense::click());
+                let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), Sense::click_and_drag());
                 let active = s.panes[index].page == Some(id);
                 let locked = is_front_page(&page);
-                let dropping = !locked && response.dnd_hover_payload::<DragOffers>().is_some();
-                let fill = if dropping {
+                let furni_over = !locked && (response.dnd_hover_payload::<DragOffers>().is_some() || response.dnd_hover_payload::<DragFurni>().is_some());
+                // A page dragged over this row: before, into or after it (never into itself or its own pages).
+                let page_zone = response.dnd_hover_payload::<DragPage>().and_then(|dragged| {
+                    let y = ctx.pointer_latest_pos()?.y;
+                    let zone = if y < rect.top() + rect.height() * 0.28 {
+                        Zone::Before
+                    } else if y > rect.bottom() - rect.height() * 0.28 {
+                        Zone::After
+                    } else {
+                        Zone::Into
+                    };
+                    let parent = if zone == Zone::Into { id } else { page.parent_id };
+                    let allowed = dragged.0 != id && catalog_admin::page_move_problem(&s.pages, dragged.0, parent).is_none() && !(zone == Zone::Into && locked);
+                    allowed.then_some(zone)
+                });
+                let highlight = furni_over || page_zone == Some(Zone::Into);
+                let fill = if highlight {
                     game::TILE_SELECTED
                 } else if active {
                     game::TITLE
@@ -786,11 +952,20 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                     game::NAV
                 };
                 ui.painter().rect_filled(rect, CornerRadius::same(4), fill);
-                if dropping {
+                if highlight {
                     ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
                 }
+                match page_zone {
+                    Some(Zone::Before) => {
+                        ui.painter().line_segment([rect.left_top() + egui::vec2(depth as f32 * 12.0, 0.0), rect.right_top()], Stroke::new(3.0_f32, game::DROP));
+                    }
+                    Some(Zone::After) => {
+                        ui.painter().line_segment([rect.left_bottom() + egui::vec2(depth as f32 * 12.0, 0.0), rect.right_bottom()], Stroke::new(3.0_f32, game::DROP));
+                    }
+                    _ => {}
+                }
                 let mut x = rect.left() + 4.0 + depth as f32 * 12.0;
-                let text_color = if active && !dropping { Color32::WHITE } else if page.visible { game::TEXT } else { game::HIDDEN };
+                let text_color = if active && !highlight { Color32::WHITE } else if page.visible { game::TEXT } else { game::HIDDEN };
                 if has_children {
                     let open = s.panes[index].expanded.contains(&id);
                     ui.painter().text(egui::pos2(x + 4.0, rect.center().y), egui::Align2::CENTER_CENTER, if open { "▾" } else { "▸" }, egui::FontId::proportional(12.0), text_color);
@@ -803,10 +978,27 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 let caption = if page.enabled { page.caption.clone() } else { format!("{} ({})", page.caption, t("off")) };
                 let galley = ui.painter().layout(caption, egui::FontId::proportional(12.0), text_color, (rect.right() - x - 4.0).max(10.0));
                 ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, text_color);
-                let released = response.dnd_release_payload::<DragOffers>();
-                if let (Some(payload), false) = (released, locked) {
+                if let (Some(payload), false) = (response.dnd_release_payload::<DragOffers>(), locked) {
                     let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
                     actions.push(Action::Place { ids: payload.ids.clone(), page: id, before: None, copy });
+                } else if let (Some(payload), false) = (response.dnd_release_payload::<DragFurni>(), locked) {
+                    actions.push(Action::PlaceFurni { ids: payload.0.clone(), page: id, before: None });
+                } else if let (Some(dragged), Some(zone)) = (response.dnd_release_payload::<DragPage>(), page_zone) {
+                    let (parent, before) = match zone {
+                        Zone::Into => (id, None),
+                        Zone::Before => (page.parent_id, Some(id)),
+                        Zone::After => {
+                            let siblings: Vec<i64> = s.children(page.parent_id).iter().map(|p| p.id).filter(|p| *p != dragged.0).collect();
+                            let next = siblings.iter().position(|p| *p == id).and_then(|i| siblings.get(i + 1)).copied();
+                            (page.parent_id, next)
+                        }
+                    };
+                    if zone == Zone::Into {
+                        s.panes[index].expanded.insert(id);
+                    }
+                    actions.push(Action::MovePage { id: dragged.0, parent, before });
+                } else if response.drag_started() && !s.sample {
+                    egui::DragAndDrop::set_payload(ctx, DragPage(id));
                 } else if response.clicked() {
                     let root = s.root_of(id);
                     let pane = &mut s.panes[index];
@@ -828,6 +1020,10 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
 
 /// The open page: its title, the furni grid (drop targets) and the info box of the selected furni.
 fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize, actions: &mut Vec<Action>) {
+    if s.panes[index].root == Some(UNOFFERED) {
+        unoffered(ui, ctx, s, images, index);
+        return;
+    }
     let Some(page_id) = s.panes[index].page else { return };
     let Some(page) = s.page(page_id).cloned() else { return };
     let offers = s.offers.get(&page_id).cloned();
@@ -896,8 +1092,11 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                             painter.text(rect.left_top() + egui::vec2(4.0, 3.0), egui::Align2::LEFT_TOP, "+", egui::FontId::proportional(11.0), game::TITLE);
                         }
                         let response = response.on_hover_text(furni.as_ref().map(|f| f.public_name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| offer.catalog_name.clone()));
-                        if response.dnd_hover_payload::<DragOffers>().is_some() {
+                        if response.dnd_hover_payload::<DragOffers>().is_some() || response.dnd_hover_payload::<DragFurni>().is_some() {
                             hovered_before = Some((offer.id, rect));
+                        }
+                        if let Some(payload) = response.dnd_release_payload::<DragFurni>() {
+                            actions.push(Action::PlaceFurni { ids: payload.0.clone(), page: page_id, before: Some(offer.id) });
                         }
                         if let Some(payload) = response.dnd_release_payload::<DragOffers>() {
                             let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
@@ -925,7 +1124,7 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
         // Where it lands: before the furni under the pointer, or at the end of the page.
         if let Some((_, rect)) = hovered_before {
             ui.painter().line_segment([rect.left_top() + egui::vec2(-3.5, 2.0), rect.left_bottom() + egui::vec2(-3.5, -2.0)], Stroke::new(3.0_f32, game::DROP));
-        } else if area_response.dnd_hover_payload::<DragOffers>().is_some() {
+        } else if area_response.dnd_hover_payload::<DragOffers>().is_some() || area_response.dnd_hover_payload::<DragFurni>().is_some() {
             ui.painter().rect_stroke(area, CornerRadius::same(6), Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
         }
         if hovered_before.is_none() {
@@ -933,9 +1132,80 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                 let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
                 actions.push(Action::Place { ids: payload.ids.clone(), page: page_id, before: None, copy });
             }
+            if let Some(payload) = area_response.dnd_release_payload::<DragFurni>() {
+                actions.push(Action::PlaceFurni { ids: payload.0.clone(), page: page_id, before: None });
+            }
         }
         ui.add_space(8.0);
         info_box(ui, ctx, s, images, index, &offers, info_height);
+    });
+}
+
+/// The Without offer tab: the furni no offer sells, as tiles to drag onto a page.
+fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Images, index: usize) {
+    egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::hover());
+        ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
+        ui.painter().text(bar.left_center() + egui::vec2(12.0, -7.0), egui::Align2::LEFT_CENTER, t("Without offer"), egui::FontId::proportional(15.0), game::TEXT);
+        let Some(list) = s.unoffered.clone() else {
+            ui.painter().text(bar.left_center() + egui::vec2(12.0, 9.0), egui::Align2::LEFT_CENTER, t("Reading the furni and the offers ..."), egui::FontId::proportional(11.0), game::MUTED);
+            return;
+        };
+        let search = s.panes[index].furni_search.trim().to_lowercase();
+        let shown: Vec<Furni> = list
+            .iter()
+            .filter(|f| search.is_empty() || f.item_name.to_lowercase().contains(&search) || f.public_name.to_lowercase().contains(&search) || f.id.to_string() == search)
+            .take(UNOFFERED_SHOWN)
+            .cloned()
+            .collect();
+        let facts = if shown.len() == UNOFFERED_SHOWN {
+            tf("{count} furni without an offer; the first {shown} shown, search to narrow it.", &[("count", &list.len().to_string()), ("shown", &UNOFFERED_SHOWN.to_string())])
+        } else {
+            tf("{count} furni without an offer.", &[("count", &list.len().to_string())])
+        };
+        ui.painter().text(bar.left_center() + egui::vec2(12.0, 9.0), egui::Align2::LEFT_CENTER, facts, egui::FontId::proportional(11.0), game::MUTED);
+        ui.add_space(8.0);
+        let width = ui.available_width();
+        egui::ScrollArea::vertical().id_salt(("catalog-unoffered", index)).auto_shrink([false, false]).show(ui, |ui| {
+            let columns = ((width - 4.0) / (TILE + 6.0)).floor().max(1.0) as usize;
+            for row in shown.chunks(columns) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for furni in row {
+                        let (rect, response) = ui.allocate_exact_size(egui::vec2(TILE, TILE), Sense::click_and_drag());
+                        let selected = s.panes[index].furni_selected.contains(&furni.id);
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::TILE_SELECTED } else { game::TILE });
+                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::TITLE } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
+                        let offer = Offer { catalog_name: furni.item_name.clone(), ..Offer::default() };
+                        draw_furni(painter, ctx, images, Some(furni), &offer, rect.shrink(4.0), 1);
+                        let name = if furni.public_name.is_empty() { furni.item_name.clone() } else { format!("{} ({})", furni.public_name, furni.item_name) };
+                        let response = response.on_hover_text(name);
+                        let pane = &mut s.panes[index];
+                        if response.drag_started() {
+                            if !pane.furni_selected.contains(&furni.id) {
+                                pane.furni_selected = vec![furni.id];
+                            }
+                            let ids: Vec<i64> = shown.iter().map(|f| f.id).filter(|id| pane.furni_selected.contains(id)).collect();
+                            egui::DragAndDrop::set_payload(ctx, DragFurni(ids));
+                        } else if response.clicked() {
+                            let modifiers = ctx.input(|i| i.modifiers);
+                            if modifiers.command || modifiers.ctrl || modifiers.shift {
+                                if let Some(i) = pane.furni_selected.iter().position(|x| *x == furni.id) {
+                                    pane.furni_selected.remove(i);
+                                } else {
+                                    pane.furni_selected.push(furni.id);
+                                }
+                            } else {
+                                pane.furni_selected = vec![furni.id];
+                            }
+                        }
+                    }
+                });
+                ui.add_space(6.0);
+            }
+        });
     });
 }
 
@@ -1031,8 +1301,24 @@ fn info_box(ui: &mut egui::Ui, ctx: &egui::Context, s: &State, images: &mut Imag
 
 /// While dragging: the furni and how many, at the pointer, and whether a drop copies.
 fn drag_label(ctx: &egui::Context, s: &State, images: &mut Images) {
-    let Some(payload) = egui::DragAndDrop::payload::<DragOffers>(ctx) else { return };
     let Some(pointer) = ctx.pointer_latest_pos() else { return };
+    let small = |text: String| {
+        egui::Area::new(egui::Id::new("catalog-drag")).order(egui::Order::Tooltip).fixed_pos(pointer + egui::vec2(14.0, 10.0)).interactable(false).show(ctx, |ui| {
+            egui::Frame::new().fill(Color32::WHITE).stroke(Stroke::new(1.0_f32, game::FRAME)).corner_radius(CornerRadius::same(6)).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+                ui.label(RichText::new(text).color(game::TEXT).size(12.0));
+            });
+        });
+    };
+    if let Some(page) = egui::DragAndDrop::payload::<DragPage>(ctx) {
+        let caption = s.page(page.0).map(|p| p.caption.clone()).unwrap_or_default();
+        small(tf("Page {page}: onto a page to put it under it, onto its edge to put it before or after it", &[("page", &caption)]));
+        return;
+    }
+    if let Some(furni) = egui::DragAndDrop::payload::<DragFurni>(ctx) {
+        small(tf("New offer: {count} furni", &[("count", &furni.0.len().to_string())]));
+        return;
+    }
+    let Some(payload) = egui::DragAndDrop::payload::<DragOffers>(ctx) else { return };
     let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
     let first = payload.ids.first().and_then(|id| s.offers.values().flatten().find(|o| o.id == *id)).cloned();
     egui::Area::new(egui::Id::new("catalog-drag")).order(egui::Order::Tooltip).fixed_pos(pointer + egui::vec2(14.0, 10.0)).interactable(false).show(ctx, |ui| {
@@ -1117,7 +1403,14 @@ fn sample(s: &mut State) {
         s.offers.entry(page_id).or_default();
     }
     s.panes[0] = Pane { root: Some(2), page: Some(10), expanded: [11].into_iter().collect(), selected: vec![102], anchor: Some(102), ..Pane::default() };
-    s.panes[1] = Pane { root: Some(2), page: Some(13), ..Pane::default() };
+    s.panes[1] = Pane { root: Some(UNOFFERED), page: None, furni_selected: vec![902], ..Pane::default() };
+    s.unoffered = Some(
+        [("hc_crtn", "Curtain"), ("pillow*2", "Silk Pillow"), ("rare_fountain", "Fountain"), ("rare_parasol*0", "Parasol"), ("throne", "Throne")]
+            .iter()
+            .enumerate()
+            .map(|(i, (item, name))| Furni { id: 900 + i as i64, item_name: item.to_string(), public_name: name.to_string(), kind: "s".into(), sprite_id: 900 + i as i64 })
+            .collect(),
+    );
     s.two = true;
     s.sample = true;
     s.database = "habbo".into();

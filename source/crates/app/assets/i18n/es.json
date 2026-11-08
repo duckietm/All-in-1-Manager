@@ -3250,5 +3250,15 @@
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} furnis copiados a {page}. Publica para mostrarlo en el hotel.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} furnis movidos a {page}. Publica para mostrarlo en el hotel.",
   "{count} selected": "{count} seleccionados",
-  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "La portada muestra las promociones de HOTEL → Catálogo (pestaña Portada), no furnis: aquí está bloqueada. Abre una página del árbol para arrastrar furnis."
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "La portada muestra las promociones de HOTEL → Catálogo (pestaña Portada), no furnis: aquí está bloqueada. Abre una página del árbol para arrastrar furnis.",
+  "Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer of 3 credits there.": "Furnis que ninguna oferta vende todavía. Arrástralos a una página de la otra ventana (o una página de su árbol): cada uno recibe allí una oferta de 3 créditos.",
+  "New offer: {count} furni": "Nueva oferta: {count} furnis",
+  "Page {page}: onto a page to put it under it, onto its edge to put it before or after it": "Página {page}: sobre una página para ponerla debajo, sobre su borde para ponerla antes o después",
+  "Reading the furni and the offers ...": "Leyendo los furnis y las ofertas ...",
+  "Search furni": "Buscar furnis",
+  "Without offer": "Sin oferta",
+  "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} furnis recibieron una oferta en {page} (3 créditos: pon el precio en la página Catálogo). Publica para mostrarlo en el hotel.",
+  "{count} furni without an offer.": "{count} furnis sin oferta.",
+  "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} furnis sin oferta; se muestran los primeros {shown}, busca para acotar.",
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} está ahora bajo {parent}. Publica para mostrarlo en el hotel."
 }

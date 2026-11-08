@@ -3250,5 +3250,15 @@
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} mobis copiés vers {page}. Publiez pour l'afficher dans l'hôtel.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} mobis déplacés vers {page}. Publiez pour l'afficher dans l'hôtel.",
   "{count} selected": "{count} sélectionnés",
-  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "La page d'accueil montre les promotions de HOTEL → Catalogue (onglet Page d'accueil), pas de mobis : elle est verrouillée ici. Ouvrez une page dans l'arbre pour glisser des mobis."
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "La page d'accueil montre les promotions de HOTEL → Catalogue (onglet Page d'accueil), pas de mobis : elle est verrouillée ici. Ouvrez une page dans l'arbre pour glisser des mobis.",
+  "Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer of 3 credits there.": "Mobis qu'aucune offre ne vend encore. Glissez-les sur une page de l'autre fenêtre (ou une page de son arbre) : chacun y reçoit une offre à 3 crédits.",
+  "New offer: {count} furni": "Nouvelle offre : {count} mobis",
+  "Page {page}: onto a page to put it under it, onto its edge to put it before or after it": "Page {page} : sur une page pour la mettre dessous, sur son bord pour la mettre avant ou après",
+  "Reading the furni and the offers ...": "Lecture des mobis et des offres ...",
+  "Search furni": "Chercher des mobis",
+  "Without offer": "Sans offre",
+  "{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.": "{count} mobis ont reçu une offre sur {page} (3 crédits : réglez le prix sur la page Catalogue). Publiez pour l'afficher dans l'hôtel.",
+  "{count} furni without an offer.": "{count} mobis sans offre.",
+  "{count} furni without an offer; the first {shown} shown, search to narrow it.": "{count} mobis sans offre ; les {shown} premiers affichés, cherchez pour affiner.",
+  "{page} is now under {parent}. Publish to show it in the hotel.": "{page} est maintenant sous {parent}. Publiez pour l'afficher dans l'hôtel."
 }

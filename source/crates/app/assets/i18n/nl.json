@@ -3294,11 +3294,13 @@
   "Italic": "Cursief",
   "Line break": "Regeleinde",
   "Link (opens in a new tab)": "Link (opent in een nieuw tabblad)",
-  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Alleen wat Octane en de gameserver allebei tonen blijft: b, i, u, strong, em, br, p, div, span, a (http, https, mailto of #, opent in een nieuw tabblad) en img (http of https); stijlen alleen color, background-color, font-weight, font-style, font-size, text-decoration en text-align.",
   "Paragraph": "Alinea",
   "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Een deel van deze HTML toont de client niet (of is niet toegestaan): het wordt eruit gehaald bij gebruik.",
   "Preview": "Voorbeeld",
   "Text colour {color}": "Tekstkleur {color}",
   "Underline": "Onderstrepen",
-  "Use": "Gebruiken"
+  "Use": "Gebruiken",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab; or event: for a hotel link) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Alleen wat Octane en de gameserver allebei tonen blijft: b, i, u, strong, em, br, p, div, span, a (http, https, mailto of #, opent in een nieuw tabblad, of event: voor een hotellink) en img (http of https); stijlen alleen color, background-color, font-weight, font-style, font-size, text-decoration en text-align.",
+  "Hotel link (event:, opens in the client: catalog/open/<page>, habbopages/<page> ...)": "Hotellink (event:, opent in de client: catalog/open/<pagina>, habbopages/<pagina> ...)",
+  "Hotel links (event:) open in the client on the layouts single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy; on the others only their text shows.": "Hotellinks (event:) openen in de client op de indelingen single_bundle, info_loyalty, de infopagina's, guild_frontpage, info_illustration, trophies en builders_club_buy; op de andere staat alleen hun tekst."
 }

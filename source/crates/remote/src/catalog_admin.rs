@@ -1742,8 +1742,8 @@ fn fragment_only(url: &str) -> Option<std::borrow::Cow<'_, str>> {
 }
 
 /// The page text with only what Octane and the gameserver both let through: their 11 tags; href, target, class and
-/// style on links, src, alt, class and style on images, class and style elsewhere; links to http(s), mailto or #...
-/// (always in a new tab); images from http(s) only (Octane drops data:); styles with text properties only. Scripts,
+/// style on links, src, alt, class and style on images, class and style elsewhere; links to http(s), mailto, #... or
+/// event:... (a hotel link; the others always in a new tab); images from http(s) only (Octane drops data:); styles with text properties only. Scripts,
 /// event handlers (onclick ...), forms, frames and every other tag or attribute are taken out; their text stays.
 pub fn safe_page_html(html: &str) -> String {
     use std::borrow::Cow;
@@ -1756,7 +1756,9 @@ pub fn safe_page_html(html: &str) -> String {
         .tags(tags)
         .tag_attributes(tag_attributes)
         .generic_attributes(["class", "style"].into_iter().collect())
-        .url_schemes(["http", "https", "mailto"].into_iter().collect())
+        // event: is a hotel link (event:catalog/open/rares, event:habbopages/...): Octane opens it in the client on
+        // the layouts that use SanitizeHtmlWithInternalLinks (single bundle, info pages, trophies ...).
+        .url_schemes(["http", "https", "mailto", "event"].into_iter().collect())
         // The gameserver keeps no relative link but a #fragment.
         .url_relative(ammonia::UrlRelative::Custom(Box::new(fragment_only)))
         .link_rel(None)
@@ -1833,6 +1835,8 @@ mod tests {
         assert_eq!(safe_page_html("<a href=\"javascript:alert(1)\">x</a>"), "<a>x</a>");
         assert_eq!(safe_page_html("<a href=\"https://hotel.nl\" target=\"_top\">x</a>"), "<a href=\"https://hotel.nl\" target=\"_blank\">x</a>");
         assert_eq!(safe_page_html("<a href=\"#top\">up</a> <a href=\"/page\">rel</a>"), "<a href=\"#top\">up</a> <a>rel</a>");
+        assert_eq!(safe_page_html("<a href=\"event:catalog/open/rares\">Rares</a>"), "<a href=\"event:catalog/open/rares\">Rares</a>", "a hotel link stays");
+        assert_eq!(safe_page_html("<img src=\"event:x\">"), "<img>", "an image never comes from event:");
         assert_eq!(
             safe_page_html("<span style=\"color: red; position: fixed; inset: 0; background-color: url(x)\">t</span>"),
             "<span style=\"color: red\">t</span>",

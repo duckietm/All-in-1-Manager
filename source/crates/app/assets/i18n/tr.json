@@ -3294,11 +3294,13 @@
   "Italic": "İtalik",
   "Line break": "Satır sonu",
   "Link (opens in a new tab)": "Bağlantı (yeni sekmede açılır)",
-  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Yalnızca Octane ve oyun sunucusunun ikisinin de gösterdiği kalır: b, i, u, strong, em, br, p, div, span, a (http, https, mailto veya #, yeni sekmede açılır) ve img (http veya https); stiller yalnızca color, background-color, font-weight, font-style, font-size, text-decoration ve text-align.",
   "Paragraph": "Paragraf",
   "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Bu HTML'in bir kısmını istemci göstermez (ya da izin verilmez): kullanılırken çıkarılır.",
   "Preview": "Önizleme",
   "Text colour {color}": "Metin rengi {color}",
   "Underline": "Altı çizili",
-  "Use": "Kullan"
+  "Use": "Kullan",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab; or event: for a hotel link) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Yalnızca Octane ve oyun sunucusunun ikisinin de gösterdiği kalır: b, i, u, strong, em, br, p, div, span, a (http, https, mailto veya #, yeni sekmede açılır; ya da otel bağlantısı için event:) ve img (http veya https); stiller yalnızca color, background-color, font-weight, font-style, font-size, text-decoration ve text-align.",
+  "Hotel link (event:, opens in the client: catalog/open/<page>, habbopages/<page> ...)": "Otel bağlantısı (event:, istemcide açılır: catalog/open/<sayfa>, habbopages/<sayfa> ...)",
+  "Hotel links (event:) open in the client on the layouts single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy; on the others only their text shows.": "Otel bağlantıları (event:) istemcide single_bundle, info_loyalty, bilgi sayfaları, guild_frontpage, info_illustration, trophies ve builders_club_buy düzenlerinde açılır; diğerlerinde yalnızca metinleri görünür."
 }

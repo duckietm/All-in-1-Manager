@@ -3294,11 +3294,13 @@
   "Italic": "Kursiivi",
   "Line break": "Rivinvaihto",
   "Link (opens in a new tab)": "Linkki (avautuu uuteen välilehteen)",
-  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Vain se, minkä sekä Octane että pelipalvelin näyttävät, säilyy: b, i, u, strong, em, br, p, div, span, a (http, https, mailto tai #, avautuu uuteen välilehteen) ja img (http tai https); tyylit vain color, background-color, font-weight, font-style, font-size, text-decoration ja text-align.",
   "Paragraph": "Kappale",
   "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Osaa tästä HTML:stä asiakas ei näytä (tai sitä ei sallita): se poistetaan käytettäessä.",
   "Preview": "Esikatselu",
   "Text colour {color}": "Tekstin väri {color}",
   "Underline": "Alleviivaus",
-  "Use": "Käytä"
+  "Use": "Käytä",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab; or event: for a hotel link) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Vain se, minkä sekä Octane että pelipalvelin näyttävät, säilyy: b, i, u, strong, em, br, p, div, span, a (http, https, mailto tai #, avautuu uuteen välilehteen; tai event: hotellin linkille) ja img (http tai https); tyylit vain color, background-color, font-weight, font-style, font-size, text-decoration ja text-align.",
+  "Hotel link (event:, opens in the client: catalog/open/<page>, habbopages/<page> ...)": "Hotellin linkki (event:, avautuu asiakkaassa: catalog/open/<sivu>, habbopages/<sivu> ...)",
+  "Hotel links (event:) open in the client on the layouts single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy; on the others only their text shows.": "Hotellin linkit (event:) avautuvat asiakkaassa asetteluissa single_bundle, info_loyalty, infosivut, guild_frontpage, info_illustration, trophies ja builders_club_buy; muissa näkyy vain niiden teksti."
 }

@@ -1917,7 +1917,7 @@ fn html_window(ctx: &egui::Context, palette: &Palette, s: &mut State) {
         ui.set_width(760.0);
         ui.label(RichText::new(tf("HTML of {column}", &[("column", &name)])).size(16.0).strong());
         ui.label(
-            RichText::new(t("Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align."))
+            RichText::new(t("Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab; or event: for a hotel link) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align."))
                 .size(11.5)
                 .color(palette.muted),
         );
@@ -1943,6 +1943,9 @@ fn html_window(ctx: &egui::Context, palette: &Palette, s: &mut State) {
             }
             if tool(ui, RichText::new("🔗"), t("Link (opens in a new tab)")) {
                 wrap = Some(("<a href=\"https://\" target=\"_blank\">".into(), "</a>".into()));
+            }
+            if tool(ui, RichText::new("🏨"), t("Hotel link (event:, opens in the client: catalog/open/<page>, habbopages/<page> ...)")) {
+                wrap = Some(("<a href=\"event:catalog/open/\">".into(), "</a>".into()));
             }
             if tool(ui, RichText::new("🖼"), t("Image (http or https)")) {
                 wrap = Some(("<img src=\"https://\" alt=\"\">".into(), String::new()));
@@ -1981,6 +1984,14 @@ fn html_window(ctx: &egui::Context, palette: &Palette, s: &mut State) {
                 ui.label(html_preview(&safe));
             });
         });
+        if safe.contains("href=\"event:") {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(t("Hotel links (event:) open in the client on the layouts single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy; on the others only their text shows."))
+                    .size(11.5)
+                    .color(palette.muted),
+            );
+        }
         if safe != html.text {
             ui.add_space(6.0);
             ui.horizontal(|ui| {

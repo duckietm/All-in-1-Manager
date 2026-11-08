@@ -3294,11 +3294,13 @@
   "Italic": "Kursiv",
   "Line break": "Zeilenumbruch",
   "Link (opens in a new tab)": "Link (öffnet in einem neuen Tab)",
-  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Nur was Octane und der Gameserver beide zeigen, bleibt: b, i, u, strong, em, br, p, div, span, a (http, https, mailto oder #, öffnet in einem neuen Tab) und img (http oder https); Stile nur color, background-color, font-weight, font-style, font-size, text-decoration und text-align.",
   "Paragraph": "Absatz",
   "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Ein Teil dieses HTML wird vom Client nicht gezeigt (oder ist nicht erlaubt): er wird beim Übernehmen entfernt.",
   "Preview": "Vorschau",
   "Text colour {color}": "Textfarbe {color}",
   "Underline": "Unterstreichen",
-  "Use": "Übernehmen"
+  "Use": "Übernehmen",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab; or event: for a hotel link) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Nur was Octane und der Gameserver beide zeigen, bleibt: b, i, u, strong, em, br, p, div, span, a (http, https, mailto oder #, öffnet in einem neuen Tab; oder event: für einen Hotel-Link) und img (http oder https); Stile nur color, background-color, font-weight, font-style, font-size, text-decoration und text-align.",
+  "Hotel link (event:, opens in the client: catalog/open/<page>, habbopages/<page> ...)": "Hotel-Link (event:, öffnet im Client: catalog/open/<Seite>, habbopages/<Seite> ...)",
+  "Hotel links (event:) open in the client on the layouts single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy; on the others only their text shows.": "Hotel-Links (event:) öffnen im Client auf den Layouts single_bundle, info_loyalty, den Infoseiten, guild_frontpage, info_illustration, trophies und builders_club_buy; auf den anderen erscheint nur ihr Text."
 }

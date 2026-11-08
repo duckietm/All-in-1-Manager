@@ -1428,7 +1428,10 @@ The page texts (`page_text1`, `page_text2`, `page_text_details`, `page_text_teas
 editor with a toolbar (bold, italic, underline, line break, paragraph, link, image, text colours; it wraps the
 selection), the HTML, and a preview of what the client shows. Only the HTML both Octane (`SanitizeHtml`, DOMPurify)
 and the gameserver's catalogue admin (Jsoup safelist) show is kept: `b i u strong em br p div span a img`; `href`
-to http(s), mailto or `#...` (links open in a new tab), images from http(s) only, `class` and `style` with text
+to http(s), mailto or `#...` (links open in a new tab), or `event:...` for a hotel link (the **hotel link**
+button: `event:catalog/open/<page>`, `event:habbopages/<page>`; Octane opens it in the client on the layouts
+single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy, the
+others show only its text), images from http(s) only, `class` and `style` with text
 properties only (color, background-color, font-weight, font-style, font-size, text-decoration, text-align; no `url()`
 or `expression()`). Scripts, event handlers, forms, frames and other tags are taken out, their text stays. The editor
 says when something would go and offers **Clean up**; **Use**, and every save of a page, keeps only the safe HTML.

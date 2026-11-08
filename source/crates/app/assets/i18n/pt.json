@@ -3294,11 +3294,13 @@
   "Italic": "Itálico",
   "Line break": "Quebra de linha",
   "Link (opens in a new tab)": "Ligação (abre num novo separador)",
-  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Só fica o que o Octane e o servidor de jogo mostram ambos: b, i, u, strong, em, br, p, div, span, a (http, https, mailto ou #, abre num novo separador) e img (http ou https); estilos só color, background-color, font-weight, font-style, font-size, text-decoration e text-align.",
   "Paragraph": "Parágrafo",
   "Part of this HTML is not shown by the client (or not allowed): it is taken out when used.": "Parte deste HTML não é mostrada pelo cliente (ou não é permitida): é retirada ao usar.",
   "Preview": "Pré-visualização",
   "Text colour {color}": "Cor do texto {color}",
   "Underline": "Sublinhado",
-  "Use": "Usar"
+  "Use": "Usar",
+  "Only what Octane and the gameserver both show is kept: b, i, u, strong, em, br, p, div, span, a (http, https, mailto or #, opens in a new tab; or event: for a hotel link) and img (http or https); styles only color, background-color, font-weight, font-style, font-size, text-decoration and text-align.": "Só fica o que o Octane e o servidor de jogo mostram ambos: b, i, u, strong, em, br, p, div, span, a (http, https, mailto ou #, abre num novo separador; ou event: para uma ligação do hotel) e img (http ou https); estilos só color, background-color, font-weight, font-style, font-size, text-decoration e text-align.",
+  "Hotel link (event:, opens in the client: catalog/open/<page>, habbopages/<page> ...)": "Ligação do hotel (event:, abre no cliente: catalog/open/<página>, habbopages/<página> ...)",
+  "Hotel links (event:) open in the client on the layouts single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy; on the others only their text shows.": "As ligações do hotel (event:) abrem no cliente nos layouts single_bundle, info_loyalty, as páginas de informação, guild_frontpage, info_illustration, trophies e builders_club_buy; nos outros só aparece o texto."
 }

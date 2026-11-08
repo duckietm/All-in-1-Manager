@@ -1403,9 +1403,138 @@ pub async fn reload_catalog(server: &dyn Server) -> Result<()> {
     Err(ServerError(format!("The emulator did not reload the catalogue: {}", if answer.message.is_empty() { format!("status {}", answer.status) } else { answer.message })).into())
 }
 
+// ---- Catalogue explorer: offers dragged onto a page --------------------------------------------------------
+
+/// A page's offer ids after `dragged` are put before `before` (None, or an id not on the page: at the end). An id
+/// already on the page moves; the others are added. Every id once.
+pub fn arranged(current: &[i64], dragged: &[i64], before: Option<i64>) -> Vec<i64> {
+    let mut moving = Vec::new();
+    for id in dragged {
+        if !moving.contains(id) {
+            moving.push(*id);
+        }
+    }
+    // Dropped before one of the dragged offers themselves: before the first offer after it that stays.
+    let anchor = before.and_then(|b| {
+        let from = current.iter().position(|id| *id == b)?;
+        current[from..].iter().copied().find(|id| !moving.contains(id))
+    });
+    let mut order: Vec<i64> = current.iter().copied().filter(|id| !moving.contains(id)).collect();
+    let at = anchor.and_then(|a| order.iter().position(|id| *id == a)).unwrap_or(order.len());
+    order.splice(at..at, moving);
+    order
+}
+
+/// Puts the offers of `order` on `page_id`, numbered 1, 2, 3 ... in that order.
+pub fn arrange_statements(database: &str, page_id: i64, order: &[i64]) -> Vec<(String, Vec<SqlValue>)> {
+    let sql = format!("UPDATE {}.catalog_items SET page_id = ?, order_number = ? WHERE id = ?", quote(database));
+    order.iter().enumerate().map(|(i, id)| (sql.clone(), vec![SqlValue::Int(page_id), SqlValue::Int(i as i64 + 1), SqlValue::Int(*id)])).collect()
+}
+
+/// What a drop changed, to put it back: each offer's page and number before, and the copies it added.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlaceUndo {
+    pub before: Vec<(i64, i64, i64)>,
+    pub inserted: Vec<i64>,
+    /// The pages whose offers changed.
+    pub pages: Vec<i64>,
+}
+
+/// The statements that undo a drop: the copies removed, every offer back on its page with its number.
+pub fn undo_statements(database: &str, undo: &PlaceUndo) -> Vec<(String, Vec<SqlValue>)> {
+    let db = quote(database);
+    let mut statements: Vec<(String, Vec<SqlValue>)> =
+        undo.inserted.iter().map(|id| (format!("DELETE FROM {db}.catalog_items WHERE id = ?"), vec![SqlValue::Int(*id)])).collect();
+    statements.extend(undo.before.iter().map(|(id, page, number)| {
+        (format!("UPDATE {db}.catalog_items SET page_id = ?, order_number = ? WHERE id = ?"), vec![SqlValue::Int(*page), SqlValue::Int(*number), SqlValue::Int(*id)])
+    }));
+    statements
+}
+
+/// The offers of these ids.
+pub fn offers_by_ids_sql(database: &str, count: usize) -> String {
+    let marks = vec!["?"; count.max(1)].join(", ");
+    format!("SELECT {OFFER_COLUMNS} FROM {}.catalog_items WHERE id IN ({marks}) ORDER BY id", quote(database))
+}
+
+/// Moves `ids` (or, with `copy`, copies of them) onto `page_id` before the offer `before` (None: at the end), and
+/// numbers the page's offers again, in one transaction. The page and the offers are read again first, so what
+/// others changed meanwhile counts. Returns what undoes it.
+pub async fn place_offers(session: &SqlSession, database: &str, ids: &[i64], page_id: i64, before: Option<i64>, copy: bool) -> Result<PlaceUndo> {
+    if ids.is_empty() {
+        return Ok(PlaceUndo::default());
+    }
+    let target = load_offers(session, database, page_id).await?;
+    let rows = session.select(&offers_by_ids_sql(database, ids.len()), ids.iter().map(|id| SqlValue::Int(*id)).collect()).await?;
+    let dragged: Vec<Offer> = rows.iter().map(|row| offer_from_row(row)).collect();
+    // In the order they were dragged.
+    let dragged: Vec<Offer> = ids.iter().filter_map(|id| dragged.iter().find(|o| o.id == *id).cloned()).collect();
+    let mut inserted = Vec::new();
+    let placed: Vec<i64> = if copy {
+        for offer in &dragged {
+            let copy = Offer { id: 0, page_id, ..offer.clone() };
+            match save_offer(session, database, &copy).await {
+                Ok(id) => inserted.push(id),
+                Err(error) => {
+                    let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+                    return Err(error);
+                }
+            }
+        }
+        inserted.clone()
+    } else {
+        dragged.iter().map(|o| o.id).collect()
+    };
+    let order = arranged(&target.iter().map(|o| o.id).collect::<Vec<_>>(), &placed, before);
+    let mut undo = PlaceUndo { inserted: inserted.clone(), pages: vec![page_id], ..PlaceUndo::default() };
+    for offer in target.iter().chain(dragged.iter().filter(|_| !copy)) {
+        if !undo.before.iter().any(|(id, _, _)| *id == offer.id) {
+            undo.before.push((offer.id, offer.page_id, offer.order_number));
+        }
+        if !undo.pages.contains(&offer.page_id) {
+            undo.pages.push(offer.page_id);
+        }
+    }
+    if let Err(error) = session.execute(&arrange_statements(database, page_id, &order)).await {
+        let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+        return Err(error);
+    }
+    Ok(undo)
+}
+
+/// Puts a drop back (see [`place_offers`]), in one transaction.
+pub async fn undo_place(session: &SqlSession, database: &str, undo: &PlaceUndo) -> Result<u64> {
+    Ok(session.execute(&undo_statements(database, undo)).await?.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offers_are_arranged_like_a_drop() {
+        // Onto another page: before an offer, or at the end.
+        assert_eq!(arranged(&[1, 2, 3], &[9, 8], Some(2)), [1, 9, 8, 2, 3]);
+        assert_eq!(arranged(&[1, 2, 3], &[9], None), [1, 2, 3, 9]);
+        assert_eq!(arranged(&[1, 2, 3], &[9], Some(77)), [1, 2, 3, 9], "not on the page: at the end");
+        // Within the page: 3 moves before 1; 1 and 2 dropped before 2 itself land before 3.
+        assert_eq!(arranged(&[1, 2, 3], &[3], Some(1)), [3, 1, 2]);
+        assert_eq!(arranged(&[1, 2, 3, 4], &[1, 2], Some(2)), [1, 2, 3, 4]);
+        assert_eq!(arranged(&[1, 2, 3, 4], &[4, 4], Some(2)), [1, 4, 2, 3], "every id once");
+        assert_eq!(arranged(&[], &[5, 6], Some(1)), [5, 6]);
+    }
+
+    #[test]
+    fn a_drop_is_written_and_undone() {
+        let statements = arrange_statements("hotel", 7, &[3, 1]);
+        assert_eq!(statements.len(), 2);
+        assert_eq!(statements[0].0, "UPDATE `hotel`.catalog_items SET page_id = ?, order_number = ? WHERE id = ?");
+        assert_eq!(statements[1].1, vec![SqlValue::Int(7), SqlValue::Int(2), SqlValue::Int(1)]);
+        let undo = PlaceUndo { before: vec![(3, 5, 4)], inserted: vec![40], pages: vec![7, 5] };
+        let back = undo_statements("hotel", &undo);
+        assert_eq!(back[0].0, "DELETE FROM `hotel`.catalog_items WHERE id = ?");
+        assert_eq!(back[1].1, vec![SqlValue::Int(5), SqlValue::Int(4), SqlValue::Int(3)]);
+    }
 
     fn page(id: i64, parent_id: i64, caption: &str, order_num: i64) -> Page {
         Page {

@@ -1374,6 +1374,26 @@ through the same SSH tunnel and MariaDB login as the SQL Editor.
 
 Every change is one statement with its values sent separately, in a transaction; nothing typed in becomes SQL text.
 
+
+### Catalogue explorer
+
+**HOTEL → Catalogue explorer** shows the same catalogue as the game does, in **two windows side by side** (or one:
+**One window**): the root pages as tabs, the page tree with its icons on the left (hidden pages grey, switched-off
+ones marked *off*), and the page's furni as a grid with an info box for the one selected: a large icon, its name,
+class name and offer, and the price in credits, duckets or diamonds (*LTD* marks a limited series, *+* a bundle).
+The icons come from the downloaded assets (**Habbo assets** and the Nitro retro profiles), the furni names from
+`items_base`.
+
+Furni are dragged like files in the Asset Explorer:
+
+- onto the **other window**, or onto a **page in either tree**: they move to that page, at the end;
+- onto **another furni**: they go in before it, also on the same page (to change the order);
+- with **Ctrl** held: a copy goes there, the original stays.
+
+Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
+numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
+catalogue again, as on the Catalogue page.
+
 ### Content
 
 **HOTEL → Content** edits the hotel's plain content tables in the same database, through the same SSH tunnel and

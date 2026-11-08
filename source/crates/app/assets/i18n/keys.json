@@ -2295,6 +2295,7 @@
   "The firewall starts from a clean rule set; ufw keeps the old rules as /etc/ufw/*.rules.<date>. Afterwards the installer logs in again to check SSH still works.",
   "The first start creates all database tables, which can take a minute.",
   "The first {count} are shown: search to narrow them down.",
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.",
   "The full hotel stack on {host}: an SSH key for root first, then every part of the hotel.",
   "The furnidata of {domain}",
   "The furnidata, productdata, texts and the furniture come from this hotel, in its language. Badges come from all nine hotels.",

@@ -3249,5 +3249,6 @@
   "{count} catalogue pages.": "{count} cataloguspagina's.",
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} meubels gekopieerd naar {page}. Publiceer om het in het hotel te tonen.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} meubels verplaatst naar {page}. Publiceer om het in het hotel te tonen.",
-  "{count} selected": "{count} geselecteerd"
+  "{count} selected": "{count} geselecteerd",
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "De voorpagina toont de promoties van HOTEL → Catalogus (tabblad Voorpagina), geen meubels: hier is hij vergrendeld. Open een pagina in de boom om meubels te slepen."
 }

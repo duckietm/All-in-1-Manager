@@ -590,6 +590,12 @@ impl View for CatalogExplorerView {
     }
 }
 
+/// A front page (layout frontpage, frontpage4, frontpage_featured ...): it shows promotions, never furni, so
+/// nothing can be dropped on it.
+fn is_front_page(page: &Page) -> bool {
+    page.layout.trim().to_lowercase().starts_with("frontpage")
+}
+
 /// The furni an offer shows: its first items_base id.
 fn first_furni(offer: &Offer) -> Option<i64> {
     catalog_admin::item_ids(&offer.item_ids).and_then(|ids| ids.first().copied())
@@ -688,7 +694,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                     let fill = if active { game::BODY } else if response.hovered() { game::TAB_HOVER } else { game::TAB };
                     ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, fill);
                     if let Some(texture) = images.page(ctx, *icon) {
-                        ui.painter().image(texture.id(), egui::Rect::from_center_size(rect.left_center() + egui::vec2(14.0, 0.0), egui::vec2(18.0, 18.0)), uv(), Color32::WHITE);
+                        sharp_image(ui.painter(), &texture, rect.left_center() + egui::vec2(14.0, 0.0), egui::vec2(22.0, 22.0), 1);
                     }
                     let color = if *visible { game::TEXT } else { game::HIDDEN };
                     ui.painter().text(rect.left_center() + egui::vec2(26.0, 0.0), egui::Align2::LEFT_CENTER, caption, font, color);
@@ -717,6 +723,20 @@ fn light_fields(ui: &mut egui::Ui) {
     visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, game::TITLE);
     visuals.selection.stroke = Stroke::new(1.0_f32, game::TITLE);
     visuals.text_cursor.stroke = Stroke::new(1.5_f32, game::TEXT);
+}
+
+/// Draws `texture` as the game does: each of its pixels on whole screen pixels (1:1, or `zoom` times when that fits),
+/// on the screen's pixel grid, so the icons stay sharp at every display scale (125 %, 150 %, ...). An image larger
+/// than `room` is made smaller to fit.
+fn sharp_image(painter: &egui::Painter, texture: &egui::TextureHandle, center: egui::Pos2, room: egui::Vec2, zoom: u32) {
+    let ppp = painter.ctx().pixels_per_point();
+    let [w, h] = texture.size().map(|v| v.max(1) as f32);
+    let fits = ((room.x * ppp) / w).min((room.y * ppp) / h);
+    let factor = if fits >= 1.0 { fits.floor().clamp(1.0, zoom.max(1) as f32) } else { fits };
+    let size = egui::vec2(w * factor / ppp, h * factor / ppp);
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let min = egui::pos2(snap(center.x - size.x / 2.0), snap(center.y - size.y / 2.0));
+    painter.image(texture.id(), egui::Rect::from_min_size(min, size), uv(), Color32::WHITE);
 }
 
 fn uv() -> egui::Rect {
@@ -754,7 +774,8 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 let Some(page) = s.page(id).cloned() else { continue };
                 let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW), Sense::click());
                 let active = s.panes[index].page == Some(id);
-                let dropping = response.dnd_hover_payload::<DragOffers>().is_some();
+                let locked = is_front_page(&page);
+                let dropping = !locked && response.dnd_hover_payload::<DragOffers>().is_some();
                 let fill = if dropping {
                     game::TILE_SELECTED
                 } else if active {
@@ -776,13 +797,14 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 }
                 x += 12.0;
                 if let Some(texture) = images.page(ctx, page.icon_image) {
-                    ui.painter().image(texture.id(), egui::Rect::from_min_size(egui::pos2(x, rect.center().y - 9.0), egui::vec2(18.0, 18.0)), uv(), Color32::WHITE);
+                    sharp_image(ui.painter(), &texture, egui::pos2(x + 9.0, rect.center().y), egui::vec2(22.0, ROW), 1);
                 }
-                x += 22.0;
+                x += 24.0;
                 let caption = if page.enabled { page.caption.clone() } else { format!("{} ({})", page.caption, t("off")) };
                 let galley = ui.painter().layout(caption, egui::FontId::proportional(12.0), text_color, (rect.right() - x - 4.0).max(10.0));
                 ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, text_color);
-                if let Some(payload) = response.dnd_release_payload::<DragOffers>() {
+                let released = response.dnd_release_payload::<DragOffers>();
+                if let (Some(payload), false) = (released, locked) {
                     let copy = ctx.input(|i| i.modifiers.command || i.modifiers.ctrl);
                     actions.push(Action::Place { ids: payload.ids.clone(), page: id, before: None, copy });
                 } else if response.clicked() {
@@ -815,7 +837,7 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
         let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::hover());
         ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
         if let Some(texture) = images.page(ctx, page.icon_image) {
-            ui.painter().image(texture.id(), egui::Rect::from_center_size(bar.left_center() + egui::vec2(22.0, 0.0), egui::vec2(28.0, 28.0)), uv(), Color32::WHITE);
+            sharp_image(ui.painter(), &texture, bar.left_center() + egui::vec2(22.0, 0.0), egui::vec2(34.0, 34.0), 1);
         }
         ui.painter().text(bar.left_center() + egui::vec2(44.0, -7.0), egui::Align2::LEFT_CENTER, &page.caption, egui::FontId::proportional(15.0), game::TEXT);
         let mut facts = vec![page.layout.clone(), format!("id {}", page.id)];
@@ -830,6 +852,16 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
         }
         ui.painter().text(bar.left_center() + egui::vec2(44.0, 9.0), egui::Align2::LEFT_CENTER, facts.join(" · "), egui::FontId::proportional(11.0), game::MUTED);
         ui.add_space(8.0);
+
+        if is_front_page(&page) {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 70.0), Sense::hover());
+            ui.painter().rect_filled(rect, CornerRadius::same(6), Color32::WHITE);
+            ui.painter().rect_stroke(rect, CornerRadius::same(6), Stroke::new(1.0_f32, game::TILE_EDGE), egui::StrokeKind::Inside);
+            let text = t("The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.");
+            let galley = ui.painter().layout(text.to_string(), egui::FontId::proportional(12.5), game::MUTED, rect.width() - 24.0);
+            ui.painter().galley(egui::pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0), galley, game::MUTED);
+            return;
+        }
 
         let Some(offers) = offers else {
             ui.label(RichText::new(t("Loading ...")).color(game::MUTED));
@@ -856,7 +888,7 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                         painter.rect_filled(rect, CornerRadius::same(6), if selected { game::TILE_SELECTED } else { game::TILE });
                         painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::TITLE } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
                         let furni = first_furni(offer).and_then(|id| s.furni.get(&id)).cloned();
-                        draw_furni(painter, ctx, images, furni.as_ref(), offer, rect.shrink(6.0));
+                        draw_furni(painter, ctx, images, furni.as_ref(), offer, rect.shrink(4.0), 1);
                         if offer.limited_stack > 0 {
                             painter.text(rect.right_top() + egui::vec2(-4.0, 3.0), egui::Align2::RIGHT_TOP, "LTD", egui::FontId::proportional(9.0), game::DROP);
                         }
@@ -931,12 +963,10 @@ fn select(pane: &mut Pane, offers: &[Offer], id: i64, ctx: &egui::Context) {
 }
 
 /// The furni's icon centred in `rect` (at its own size, or smaller to fit), or its initials while there is none.
-fn draw_furni(painter: &egui::Painter, ctx: &egui::Context, images: &mut Images, furni: Option<&Furni>, offer: &Offer, rect: egui::Rect) {
+fn draw_furni(painter: &egui::Painter, ctx: &egui::Context, images: &mut Images, furni: Option<&Furni>, offer: &Offer, rect: egui::Rect, zoom: u32) {
     let name = furni.map(|f| f.item_name.as_str()).unwrap_or(offer.catalog_name.as_str());
     if let Some(texture) = images.furni(ctx, name) {
-        let size = texture.size_vec2();
-        let scale = (rect.width() / size.x).min(rect.height() / size.y).min(if size.x <= rect.width() / 2.0 { 2.0 } else { 1.0 });
-        painter.image(texture.id(), egui::Rect::from_center_size(rect.center(), size * scale), uv(), Color32::WHITE);
+        sharp_image(painter, &texture, rect.center(), rect.size(), zoom);
     } else {
         let initials: String = name.split(['_', '*', ' ']).filter(|p| !p.is_empty()).take(2).filter_map(|p| p.chars().next()).collect::<String>().to_uppercase();
         painter.text(rect.center(), egui::Align2::CENTER_CENTER, initials, egui::FontId::proportional(15.0), game::MUTED);
@@ -957,7 +987,7 @@ fn info_box(ui: &mut egui::Ui, ctx: &egui::Context, s: &State, images: &mut Imag
     let furni = first_furni(offer).and_then(|id| s.furni.get(&id));
     let preview = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 8.0), egui::vec2(height - 16.0, height - 16.0));
     painter.rect_filled(preview, CornerRadius::same(6), game::PAGE_BAR);
-    draw_furni(painter, ctx, images, furni, offer, preview.shrink(8.0));
+    draw_furni(painter, ctx, images, furni, offer, preview.shrink(6.0), 2);
     let x = preview.right() + 12.0;
     let name = furni.map(|f| f.public_name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| offer.catalog_name.clone());
     painter.text(egui::pos2(x, rect.top() + 12.0), egui::Align2::LEFT_TOP, name, egui::FontId::proportional(15.0), game::TEXT);
@@ -1012,7 +1042,7 @@ fn drag_label(ctx: &egui::Context, s: &State, images: &mut Images) {
                 ui.painter().rect_filled(rect, CornerRadius::same(4), game::TILE);
                 if let Some(offer) = &first {
                     let furni = first_furni(offer).and_then(|id| s.furni.get(&id));
-                    draw_furni(ui.painter(), ctx, images, furni, offer, rect.shrink(3.0));
+                    draw_furni(ui.painter(), ctx, images, furni, offer, rect.shrink(3.0), 1);
                 }
                 let what = if copy { t("Copy") } else { t("Move") };
                 ui.label(RichText::new(format!("{what}: {}", tf("{count} furni", &[("count", &payload.ids.len().to_string())]))).color(game::TEXT).size(12.0));
@@ -1039,7 +1069,7 @@ fn sample(s: &mut State) {
         ..Page::default()
     };
     s.pages = vec![
-        page(1, -1, "Front page", 1, 1),
+        Page { layout: "frontpage4".into(), ..page(1, -1, "Front page", 1, 1) },
         page(2, -1, "Furni", 2, 2),
         page(3, -1, "Clothes", 3, 3),
         page(4, -1, "Pets", 4, 4),

@@ -1384,6 +1384,10 @@ class name and offer, and the price in credits, duckets or diamonds (*LTD* marks
 The icons come from the downloaded assets (**Habbo assets** and the Nitro retro profiles), the furni names from
 `items_base`.
 
+A **front page** (layout `frontpage`, `frontpage4`, ...) holds promotions, not furni: it is locked here (no drops;
+its promotions are edited on the Catalogue page). The icons are drawn as the game does, each image pixel on whole
+screen pixels at any display scale, so they stay sharp (twice their size in the info box).
+
 Furni are dragged like files in the Asset Explorer:
 
 - onto the **other window**, or onto a **page in either tree**: they move to that page, at the end;

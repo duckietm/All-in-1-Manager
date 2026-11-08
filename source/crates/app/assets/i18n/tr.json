@@ -3249,5 +3249,6 @@
   "{count} catalogue pages.": "{count} katalog sayfası.",
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} mobilya {page} sayfasına kopyalandı. Otelde göstermek için yayınlayın.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} mobilya {page} sayfasına taşındı. Otelde göstermek için yayınlayın.",
-  "{count} selected": "{count} seçili"
+  "{count} selected": "{count} seçili",
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "Ön sayfa mobilya değil, HOTEL → Katalog (Ön sayfa sekmesi) tanıtımlarını gösterir: burada kilitlidir. Mobilya sürüklemek için ağaçta bir sayfa açın."
 }

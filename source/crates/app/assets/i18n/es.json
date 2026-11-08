@@ -3249,5 +3249,6 @@
   "{count} catalogue pages.": "{count} páginas del catálogo.",
   "{count} furni copied to {page}. Publish to show it in the hotel.": "{count} furnis copiados a {page}. Publica para mostrarlo en el hotel.",
   "{count} furni moved to {page}. Publish to show it in the hotel.": "{count} furnis movidos a {page}. Publica para mostrarlo en el hotel.",
-  "{count} selected": "{count} seleccionados"
+  "{count} selected": "{count} seleccionados",
+  "The front page shows the promotions of HOTEL → Catalogue (Front page tab), not furni: it is locked here. Open a page in the tree to drag furni.": "La portada muestra las promociones de HOTEL → Catálogo (pestaña Portada), no furnis: aquí está bloqueada. Abre una página del árbol para arrastrar furnis."
 }

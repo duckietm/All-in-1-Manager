@@ -539,9 +539,9 @@ impl App {
             Page::CatalogManager => (
                 t("Catalogue").into(),
                 if session.is_none() {
-                    t("The hotel catalogue: pages and offers, edited in the database through the SSH login.").into()
+                    t("The catalogue's front page, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.").into()
                 } else {
-                    tf("The catalogue of {host}: pages and offers, published to the hotel at once.", &[("host", &host)])
+                    tf("The catalogue of {host}: front page, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.", &[("host", &host)])
                 },
             ),
             Page::Logs => (

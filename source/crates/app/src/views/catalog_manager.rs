@@ -1,11 +1,12 @@
-//! The catalogue manager: the hotel catalogue's pages as a tree, a page's settings and offers, and an offer's
-//! settings, edited in the hotel database through the SSH session (the SQL Editor's tunnel and MariaDB login).
+//! The catalogue manager: what the Catalogue explorer does not do - the front page slots, limited series, vouchers,
+//! checks (duplicate offers, merging pages) and catalogue backups - in the hotel database through the SSH session (the
+//! SQL Editor's tunnel and MariaDB login). Pages and offers are edited in the Catalogue explorer.
 //! **Publish** makes the running emulator load the catalogue again (RCON `updatecatalog`), which tells the players
 //! online to refresh it. The data and its rules live in `aio_remote::catalog_admin`.
 
 use std::sync::{Arc, Mutex};
 
-use aio_remote::catalog_admin::{self, CatalogBackup, Featured, Furni, LimitedAction, LimitedSeries, Offer, Page, TreeRow, Voucher, VoucherUse, CATALOG_MODES, FEATURED_TYPES, LAYOUTS};
+use aio_remote::catalog_admin::{self, CatalogBackup, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse, FEATURED_TYPES};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
@@ -13,8 +14,7 @@ use eframe::egui::{self, RichText};
 use super::sql_editor::login::{Login, Prompt};
 use super::sql_editor::text;
 use crate::gui::dialogs::Choice;
-use crate::gui::icons::{self, Icon};
-use crate::gui::theme::{Fixed, Palette};
+use crate::gui::theme::Palette;
 use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
 use crate::i18n::{t, tf};
 
@@ -37,12 +37,10 @@ impl Status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
     #[default]
-    Pages,
     FrontPage,
     Limited,
     Vouchers,
     Checks,
-    Unoffered,
     Backups,
 }
 
@@ -60,23 +58,8 @@ impl FeaturedRow {
     }
 }
 
-/// The page builder: a new page filled with an offer per furni whose class name starts with a prefix.
-#[derive(Clone)]
-struct Builder {
-    page: Page,
-    prefix: String,
-    /// Only furni no offer sells yet.
-    only_new: bool,
-    credits: i64,
-    points: i64,
-    points_type: i64,
-    /// The furni found for the prefix (None until Find furni).
-    found: Option<Vec<Furni>>,
-}
-
 #[derive(Default)]
 struct State {
-    builder: Option<Builder>,
     tab: Tab,
     /// The front page slots as loaded, and as edited (None until the tab is opened).
     featured: Option<Vec<FeaturedRow>>,
@@ -95,24 +78,9 @@ struct State {
     generate_prefix: String,
     generate_length: usize,
     generate_count: usize,
-    /// The furni picker of the offer form: the search, its results, the names of furni ids seen, and the ids asked
-    /// for already (so a missing id is not asked for every frame).
-    furni_search: String,
-    furni_results: Vec<Furni>,
-    furni_names: std::collections::HashMap<i64, Furni>,
-    furni_asked: std::collections::HashSet<i64>,
     /// The Checks tab: every offer (None until it is run) and the duplicate offers ticked for deleting.
     all_offers: Option<Vec<Offer>>,
     duplicates_ticked: std::collections::HashSet<i64>,
-    /// The Unoffered tab: the furni no offer sells (None until it is run), the ones ticked, the search, and the page
-    /// and price the new offers get.
-    unoffered: Option<Vec<Furni>>,
-    unoffered_ticked: std::collections::HashSet<i64>,
-    unoffered_search: String,
-    unoffered_page: i64,
-    unoffered_credits: i64,
-    unoffered_points: i64,
-    unoffered_points_type: i64,
     /// The Backups tab: the backups on the server (None until it is opened) and the label for a new one.
     backups: Option<Vec<CatalogBackup>>,
     backup_label: String,
@@ -126,14 +94,6 @@ struct State {
     database: String,
     subtitle: String,
     pages: Vec<Page>,
-    rows: Vec<TreeRow>,
-    search: String,
-    /// The page shown, as loaded, and as edited.
-    page: Option<Page>,
-    page_edit: Option<Page>,
-    offers: Vec<Offer>,
-    offer: Option<Offer>,
-    offer_edit: Option<Offer>,
     busy: bool,
     /// Saved since the last publish: the hotel still shows the old catalogue.
     unpublished: bool,
@@ -154,10 +114,6 @@ impl State {
         *self = State { generation, ..State::default() };
     }
 
-    fn set_pages(&mut self, pages: Vec<Page>) {
-        self.rows = catalog_admin::tree(&pages);
-        self.pages = pages;
-    }
 }
 
 pub struct CatalogManagerView {
@@ -281,193 +237,31 @@ impl Ctl {
             return;
         }
         drop(session);
-        self.load_pages(None).await;
+        self.load_pages().await;
         let tab = self.lock().tab;
         match tab {
             Tab::FrontPage => self.load_featured().await,
             Tab::Limited => self.load_limited().await,
             Tab::Vouchers => self.load_vouchers(None).await,
             Tab::Checks => self.load_checks().await,
-            Tab::Unoffered => self.load_unoffered().await,
             Tab::Backups => self.load_backups().await,
-            Tab::Pages => {}
         }
     }
 
-    async fn load_pages(&self, select: Option<i64>) {
+    async fn load_pages(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
         let loaded = catalog_admin::load_pages(&session, &database).await;
-        let selected = self.with(generation, |s| {
+        self.with(generation, |s| {
             s.busy = false;
             match loaded {
                 Ok(pages) => {
                     s.status = Status::ok(tf("{count} pages.", &[("count", &pages.len().to_string())]));
-                    s.set_pages(pages);
-                    select.or(s.page.as_ref().map(|p| p.id))
-                }
-                Err(error) => {
-                    s.status = Status::error(error.to_string());
-                    None
-                }
-            }
-        });
-        if let Some(Some(id)) = selected {
-            self.select_page(id).await;
-        }
-    }
-
-    async fn select_page(&self, id: i64) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let page = {
-            let s = self.lock();
-            s.pages.iter().find(|p| p.id == id).cloned()
-        };
-        let Some(page) = page else { return };
-        self.with(generation, |s| {
-            s.builder = None;
-            s.page = Some(page.clone());
-            s.page_edit = Some(page.clone());
-            s.offers.clear();
-            s.offer = None;
-            s.offer_edit = None;
-            s.busy = true;
-        });
-        let offers = catalog_admin::load_offers(&session, &database, id).await;
-        self.with(generation, |s| {
-            s.busy = false;
-            if s.page.as_ref().map(|p| p.id) != Some(id) {
-                return;
-            }
-            match offers {
-                Ok(offers) => s.offers = offers,
-                Err(error) => s.status = Status::error(error.to_string()),
-            }
-        });
-    }
-
-    async fn save_page(self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let Some(page) = self.lock().page_edit.clone() else { return };
-        self.with(generation, |s| s.busy = true);
-        let saved = catalog_admin::save_page(&session, &database, &page).await;
-        let id = self.with(generation, |s| {
-            s.busy = false;
-            match saved {
-                Ok(id) => {
-                    s.unpublished = true;
-                    s.status = Status::ok(tf("Page {name} saved. Publish to show it in the hotel.", &[("name", &page.caption)]));
-                    Some(id)
-                }
-                Err(error) => {
-                    s.status = Status::error(error.to_string());
-                    None
-                }
-            }
-        });
-        if let Some(Some(id)) = id {
-            self.with(generation, |s| s.page = None);
-            self.load_pages(Some(id)).await;
-        }
-    }
-
-    async fn save_offer(self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let Some(offer) = self.lock().offer_edit.clone() else { return };
-        self.with(generation, |s| s.busy = true);
-        let saved = catalog_admin::save_offer(&session, &database, &offer).await;
-        let result = self.with(generation, |s| {
-            s.busy = false;
-            let id = match saved {
-                Ok(id) => {
-                    s.unpublished = true;
-                    s.status = Status::ok(tf("Offer {name} saved. Publish to show it in the hotel.", &[("name", &offer.catalog_name)]));
-                    Some(id)
-                }
-                Err(error) => {
-                    s.status = Status::error(error.to_string());
-                    None
-                }
-            };
-            (id, s.page.as_ref().map(|p| p.id))
-        });
-        if let Some((Some(offer_id), Some(page_id))) = result {
-            self.select_page(page_id).await;
-            self.with(generation, |s| {
-                if let Some(found) = s.offers.iter().find(|o| o.id == offer_id).cloned() {
-                    s.offer = Some(found.clone());
-                    s.offer_edit = Some(found);
-                }
-            });
-        }
-    }
-
-    /// Asks first, then deletes the page shown with its offers.
-    async fn delete_page(self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let (page, problem, offers) = {
-            let s = self.lock();
-            let Some(page) = s.page.clone().filter(|p| p.id > 0) else { return };
-            (page.clone(), catalog_admin::page_delete_problem(&s.pages, &s.offers, page.id), s.offers.len())
-        };
-        if let Some(problem) = problem {
-            self.with(generation, |s| s.status = Status::error(problem));
-            return;
-        }
-        let message = tf("The page {name} and its {count} offers are deleted from the database. This cannot be undone.", &[("name", &page.caption), ("count", &offers.to_string())]);
-        let options = vec![Choice::new(t("Delete the page"), t("Delete it and its offers."), true).primary(), Choice::new(t("Cancel"), t("Keep the page."), false)];
-        if !self.shared.dialogs.choose(t("Are you sure?"), &tf("Delete {name}?", &[("name", &page.caption)]), &message, false, options).await {
-            return;
-        }
-        self.with(generation, |s| s.busy = true);
-        let deleted = catalog_admin::delete_page(&session, &database, page.id).await;
-        self.with(generation, |s| {
-            s.busy = false;
-            match deleted {
-                Ok(_) => {
-                    s.unpublished = true;
-                    s.page = None;
-                    s.page_edit = None;
-                    s.offers.clear();
-                    s.offer = None;
-                    s.offer_edit = None;
-                    s.status = Status::ok(tf("Page {name} deleted. Publish to take it out of the hotel.", &[("name", &page.caption)]));
+                    s.pages = pages;
                 }
                 Err(error) => s.status = Status::error(error.to_string()),
             }
         });
-        self.load_pages(None).await;
-    }
-
-    /// Asks first, then deletes the offer shown.
-    async fn delete_offer(self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let Some(offer) = self.lock().offer.clone().filter(|o| o.id > 0) else { return };
-        if let Some(problem) = catalog_admin::offer_delete_problem(&offer) {
-            self.with(generation, |s| s.status = Status::error(problem));
-            return;
-        }
-        let options = vec![Choice::new(t("Delete the offer"), t("Take it off the page for good."), true).primary(), Choice::new(t("Cancel"), t("Keep the offer."), false)];
-        let message = t("The offer is deleted from the database. Furni players already bought stays theirs. This cannot be undone.");
-        if !self.shared.dialogs.choose(t("Are you sure?"), &tf("Delete {name}?", &[("name", &offer.catalog_name)]), message, false, options).await {
-            return;
-        }
-        self.with(generation, |s| s.busy = true);
-        let deleted = catalog_admin::delete_offer(&session, &database, offer.id).await;
-        let page_id = self.with(generation, |s| {
-            s.busy = false;
-            match deleted {
-                Ok(_) => {
-                    s.unpublished = true;
-                    s.status = Status::ok(tf("Offer {name} deleted. Publish to take it out of the hotel.", &[("name", &offer.catalog_name)]));
-                }
-                Err(error) => s.status = Status::error(error.to_string()),
-            }
-            s.page.as_ref().map(|p| p.id)
-        });
-        if let Some(Some(page_id)) = page_id {
-            self.select_page(page_id).await;
-        }
     }
 
     async fn load_featured(&self) {
@@ -674,37 +468,6 @@ impl Ctl {
         self.load_vouchers(None).await;
     }
 
-    async fn search_furni(&self, text: String) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let found = catalog_admin::search_furni(&session, &database, &text).await;
-        self.with(generation, |s| {
-            if s.furni_search.trim() != text.trim() {
-                return;
-            }
-            match found {
-                Ok(list) => {
-                    for furni in &list {
-                        s.furni_names.insert(furni.id, furni.clone());
-                    }
-                    s.furni_results = list;
-                }
-                Err(error) => s.status = Status::error(error.to_string()),
-            }
-        });
-    }
-
-    async fn furni_names(&self, ids: Vec<i64>) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let found = catalog_admin::furni_by_ids(&session, &database, &ids).await;
-        self.with(generation, |s| {
-            if let Ok(list) = found {
-                for furni in list {
-                    s.furni_names.insert(furni.id, furni);
-                }
-            }
-        });
-    }
-
     async fn load_checks(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
@@ -714,7 +477,7 @@ impl Ctl {
             s.busy = false;
             match (offers, pages) {
                 (Ok(offers), Ok(pages)) => {
-                    s.set_pages(pages);
+                    s.pages = pages;
                     s.all_offers = Some(offers);
                     s.duplicates_ticked.clear();
                 }
@@ -752,78 +515,6 @@ impl Ctl {
             }
         });
         self.load_checks().await;
-    }
-
-    /// Numbers the offers of the page shown 1, 2, ... by name.
-    async fn sort_offers(self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let (page_id, order) = {
-            let s = self.lock();
-            let Some(page) = s.page.as_ref().filter(|p| p.id > 0) else { return };
-            (page.id, catalog_admin::sorted_by_name(&s.offers))
-        };
-        self.with(generation, |s| s.busy = true);
-        let sorted = catalog_admin::set_offer_order(&session, &database, &order).await;
-        self.with(generation, |s| {
-            s.busy = false;
-            match sorted {
-                Ok(_) => {
-                    s.unpublished = true;
-                    s.status = Status::ok(t("Offers sorted by name. Publish to show the new order in the hotel.").into());
-                }
-                Err(error) => s.status = Status::error(error.to_string()),
-            }
-        });
-        self.select_page(page_id).await;
-    }
-
-    async fn load_unoffered(&self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        self.with(generation, |s| s.busy = true);
-        let furni = catalog_admin::load_sellable_furni(&session, &database).await;
-        let offers = catalog_admin::load_all_offers(&session, &database).await;
-        self.with(generation, |s| {
-            s.busy = false;
-            match (furni, offers) {
-                (Ok(furni), Ok(offers)) => {
-                    s.unoffered = Some(catalog_admin::unoffered_furni(&furni, &offers));
-                    s.all_offers = Some(offers);
-                    s.unoffered_ticked.clear();
-                    if s.unoffered_credits == 0 && s.unoffered_points == 0 {
-                        s.unoffered_credits = 3;
-                    }
-                }
-                (Err(error), _) | (_, Err(error)) => s.status = Status::error(error.to_string()),
-            }
-        });
-    }
-
-    /// Adds an offer for each ticked furni to the chosen page.
-    async fn add_unoffered(self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let (offers, page_name) = {
-            let s = self.lock();
-            let ticked: Vec<Furni> = s.unoffered.iter().flatten().filter(|f| s.unoffered_ticked.contains(&f.id)).cloned().collect();
-            let Some(page) = s.pages.iter().find(|p| p.id == s.unoffered_page) else { return };
-            let offers = catalog_admin::offers_for(&ticked, page.id, s.all_offers.as_deref().unwrap_or(&[]), s.unoffered_credits, s.unoffered_points, s.unoffered_points_type);
-            (offers, page.caption.clone())
-        };
-        if offers.is_empty() {
-            return;
-        }
-        self.with(generation, |s| s.busy = true);
-        let added = catalog_admin::add_offers(&session, &database, &offers).await;
-        self.with(generation, |s| {
-            s.busy = false;
-            match added {
-                Ok(count) => {
-                    s.unpublished = true;
-                    s.status = Status::ok(tf("{count} offers added to {page}. Publish to show them in the hotel.", &[("count", &count.to_string()), ("page", &page_name)]));
-                }
-                Err(error) => s.status = Status::error(error.to_string()),
-            }
-        });
-        self.load_unoffered().await;
     }
 
     async fn load_backups(&self) {
@@ -886,14 +577,13 @@ impl Ctl {
                     s.limited = None;
                     s.vouchers = None;
                     s.all_offers = None;
-                    s.unoffered = None;
                     s.status = Status::ok(tf("Rolled back to {file} (the catalogue before is in {safety}). Publish to show it in the hotel.", &[("file", &file), ("safety", &safety)]));
                 }
                 Err(error) => s.status = Status::error(error.to_string()),
             }
         });
         self.load_backups().await;
-        self.load_pages(None).await;
+        self.load_pages().await;
     }
 
     async fn delete_backup(self, file: String) {
@@ -910,61 +600,6 @@ impl Ctl {
             }
         });
         self.load_backups().await;
-    }
-
-    async fn builder_find(&self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let Some((prefix, only_new)) = self.lock().builder.as_ref().map(|b| (b.prefix.clone(), b.only_new)) else { return };
-        self.with(generation, |s| s.busy = true);
-        let furni = catalog_admin::furni_by_prefix(&session, &database, &prefix).await;
-        let offers = if only_new { catalog_admin::load_all_offers(&session, &database).await.map(Some) } else { Ok(None) };
-        self.with(generation, |s| {
-            s.busy = false;
-            match (furni, offers) {
-                (Ok(furni), Ok(offers)) => {
-                    let found = match offers {
-                        Some(offers) => catalog_admin::unoffered_furni(&furni, &offers),
-                        None => furni,
-                    };
-                    if let Some(builder) = s.builder.as_mut() {
-                        builder.found = Some(found);
-                    }
-                }
-                (Err(error), _) | (_, Err(error)) => s.status = Status::error(error.to_string()),
-            }
-        });
-    }
-
-    /// Adds the page, then an offer for each furni found on it.
-    async fn builder_build(self) {
-        let Some((generation, session, database)) = self.session() else { return };
-        let Some(builder) = self.lock().builder.clone() else { return };
-        let Some(found) = builder.found.clone().filter(|f| !f.is_empty()) else { return };
-        self.with(generation, |s| s.busy = true);
-        let page_id = match catalog_admin::save_page(&session, &database, &builder.page).await {
-            Ok(id) => id,
-            Err(error) => {
-                self.with(generation, |s| {
-                    s.busy = false;
-                    s.status = Status::error(error.to_string());
-                });
-                return;
-            }
-        };
-        let offers = catalog_admin::offers_for(&found, page_id, &[], builder.credits, builder.points, builder.points_type);
-        let added = catalog_admin::add_offers(&session, &database, &offers).await;
-        self.with(generation, |s| {
-            s.busy = false;
-            s.unpublished = true;
-            match added {
-                Ok(count) => {
-                    s.builder = None;
-                    s.status = Status::ok(tf("Page {page} made with {count} offers. It is hidden until you tick Visible; publish to put it in the hotel.", &[("page", &builder.page.caption), ("count", &count.to_string())]));
-                }
-                Err(error) => s.status = Status::error(tf("The page was made, but its offers were not: {error}", &[("error", &error.to_string())])),
-            }
-        });
-        self.load_pages(Some(page_id)).await;
     }
 
     /// Asks first, then merges the pages into the first one.
@@ -1050,11 +685,6 @@ impl CatalogManagerView {
 enum Action {
     Login,
     Refresh,
-    SelectPage(i64),
-    SavePage,
-    SaveOffer,
-    DeletePage,
-    DeleteOffer,
     LoadFeatured,
     SaveFeatured,
     LoadLimited,
@@ -1064,19 +694,12 @@ enum Action {
     SaveVoucher,
     DeleteVoucher,
     GenerateVouchers,
-    SearchFurni(String),
-    FurniNames(Vec<i64>),
     LoadChecks,
     DeleteDuplicates,
-    SortOffers,
-    LoadUnoffered,
-    AddUnoffered,
     LoadBackups,
     MakeBackup,
     RestoreBackup(String),
     DeleteBackup(String),
-    BuilderFind,
-    BuilderBuild,
     MergePages(i64, Vec<i64>),
     Publish,
 }
@@ -1113,12 +736,7 @@ impl View for CatalogManagerView {
         for action in actions {
             match action {
                 Action::Login => ctl.spawn(|c| c.open(true)),
-                Action::Refresh => ctl.spawn(|c| async move { c.load_pages(None).await }),
-                Action::SelectPage(id) => ctl.spawn(|c| async move { c.select_page(id).await }),
-                Action::SavePage => ctl.spawn(|c| c.save_page()),
-                Action::SaveOffer => ctl.spawn(|c| c.save_offer()),
-                Action::DeletePage => ctl.spawn(|c| c.delete_page()),
-                Action::DeleteOffer => ctl.spawn(|c| c.delete_offer()),
+                Action::Refresh => ctl.spawn(|c| async move { c.load_pages().await }),
                 Action::LoadFeatured => ctl.spawn(|c| async move { c.load_featured().await }),
                 Action::SaveFeatured => ctl.spawn(|c| c.save_featured()),
                 Action::LoadLimited => ctl.spawn(|c| async move { c.load_limited().await }),
@@ -1128,19 +746,12 @@ impl View for CatalogManagerView {
                 Action::SaveVoucher => ctl.spawn(|c| c.save_voucher()),
                 Action::DeleteVoucher => ctl.spawn(|c| c.delete_voucher()),
                 Action::GenerateVouchers => ctl.spawn(|c| c.generate_vouchers()),
-                Action::SearchFurni(text) => ctl.spawn(move |c| async move { c.search_furni(text).await }),
-                Action::FurniNames(ids) => ctl.spawn(move |c| async move { c.furni_names(ids).await }),
                 Action::LoadChecks => ctl.spawn(|c| async move { c.load_checks().await }),
                 Action::DeleteDuplicates => ctl.spawn(|c| c.delete_duplicates()),
-                Action::SortOffers => ctl.spawn(|c| c.sort_offers()),
-                Action::LoadUnoffered => ctl.spawn(|c| async move { c.load_unoffered().await }),
-                Action::AddUnoffered => ctl.spawn(|c| c.add_unoffered()),
                 Action::LoadBackups => ctl.spawn(|c| async move { c.load_backups().await }),
                 Action::MakeBackup => ctl.spawn(|c| c.make_backup()),
                 Action::RestoreBackup(file) => ctl.spawn(move |c| c.restore_backup(file)),
                 Action::DeleteBackup(file) => ctl.spawn(move |c| c.delete_backup(file)),
-                Action::BuilderFind => ctl.spawn(|c| async move { c.builder_find().await }),
-                Action::BuilderBuild => ctl.spawn(|c| c.builder_build()),
                 Action::MergePages(target, sources) => ctl.spawn(move |c| c.merge_pages(target, sources)),
                 Action::Publish => ctl.spawn(|c| c.publish()),
             }
@@ -1161,6 +772,9 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui.add(widgets::secondary_button(t("Back"))).clicked() {
                 shared.request(Request::Go(AppPage::Dashboard));
+            }
+            if ui.add(widgets::secondary_button(t("Pages and offers →"))).on_hover_text(t("Pages and offers are edited in the Catalogue explorer: as the game shows them, with drag and drop.")).clicked() {
+                shared.request(Request::Go(AppPage::CatalogExplorer));
             }
             let ready = s.session.is_some() && !s.busy;
             let publish = if s.unpublished { t("Publish changes") } else { t("Publish") };
@@ -1188,7 +802,7 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
 
 fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        for (tab, label) in [(Tab::Pages, t("Pages")), (Tab::FrontPage, t("Front page")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::Unoffered, t("Unoffered")), (Tab::Backups, t("Backups"))] {
+        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::Backups, t("Backups"))] {
             if ui.selectable_label(s.tab == tab, RichText::new(label).size(15.0)).clicked() && s.tab != tab {
                 s.tab = tab;
                 if tab == Tab::FrontPage && s.featured.is_none() && s.session.is_some() {
@@ -1203,9 +817,6 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<A
                 if tab == Tab::Checks && s.all_offers.is_none() && s.session.is_some() {
                     actions.push(Action::LoadChecks);
                 }
-                if tab == Tab::Unoffered && s.unoffered.is_none() && s.session.is_some() {
-                    actions.push(Action::LoadUnoffered);
-                }
                 if tab == Tab::Backups && s.backups.is_none() {
                     actions.push(Action::LoadBackups);
                 }
@@ -1216,12 +827,6 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<A
     if s.tab == Tab::Backups {
         egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("catalog-backups").auto_shrink([false, false]).show(ui, |ui| backups(ui, palette, s, actions));
-        });
-        return;
-    }
-    if s.tab == Tab::Unoffered {
-        egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("catalog-unoffered").auto_shrink([false, false]).show(ui, |ui| unoffered(ui, palette, s, actions));
         });
         return;
     }
@@ -1243,80 +848,10 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<A
         });
         return;
     }
-    if s.tab == Tab::FrontPage {
-        egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
-            egui::ScrollArea::vertical().id_salt("catalog-front-page").auto_shrink([false, false]).show(ui, |ui| front_page(ui, palette, s, actions));
-        });
-        return;
-    }
-    egui::SidePanel::left("catalog-tree")
-        .resizable(true)
-        .default_width(300.0)
-        .width_range(200.0..=600.0)
-        .frame(frame(palette).outer_margin(egui::Margin { left: 0, right: 6, top: 0, bottom: 0 }))
-        .show_inside(ui, |ui| tree(ui, palette, s, actions));
+    // The front page slots (the first tab). Pages and offers are edited in the Catalogue explorer.
     egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt("catalog-editor").auto_shrink([false, false]).show(ui, |ui| editors(ui, palette, s, actions));
+        egui::ScrollArea::vertical().id_salt("catalog-front-page").auto_shrink([false, false]).show(ui, |ui| front_page(ui, palette, s, actions));
     });
-}
-
-fn tree(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
-    ui.horizontal(|ui| {
-        let ready = s.session.is_some() && !s.busy;
-        if ui.add_enabled(ready, small(t("New page"))).on_hover_text(t("A new page under the page shown, or at the top level.")).clicked() {
-            let parent = s.page.as_ref().filter(|p| p.id > 0).map_or(-1, |p| p.id);
-            let draft = catalog_admin::new_page(&s.pages, parent);
-            s.page = Some(draft.clone());
-            s.page_edit = Some(draft);
-            s.offers.clear();
-            s.offer = None;
-            s.offer_edit = None;
-            s.builder = None;
-        }
-        if ui.add_enabled(ready, small(t("Build page"))).on_hover_text(t("A new page with an offer for every furni of a furni line (class name prefix).")).clicked() {
-            let parent = s.page.as_ref().filter(|p| p.id > 0).map_or(-1, |p| p.id);
-            let page = catalog_admin::new_page(&s.pages, parent);
-            s.builder = Some(Builder { page, prefix: String::new(), only_new: true, credits: 3, points: 0, points_type: 0, found: None });
-        }
-    });
-    ui.add_space(4.0);
-    ui.add(egui::TextEdit::singleline(&mut s.search).hint_text(t("Search pages")).desired_width(f32::INFINITY));
-    ui.add_space(6.0);
-    let query = s.search.trim().to_lowercase();
-    let selected = s.page.as_ref().map(|p| p.id);
-    let mut select = None;
-    egui::ScrollArea::both().id_salt("catalog-tree-scroll").auto_shrink([false, false]).show(ui, |ui| {
-        for row in &s.rows {
-            let page = &s.pages[row.index];
-            let matches = query.is_empty() || page.caption.to_lowercase().contains(&query) || page.caption_save.to_lowercase().contains(&query) || page.id.to_string() == query;
-            if !matches {
-                continue;
-            }
-            let indent = if query.is_empty() { row.depth as f32 * 14.0 } else { 0.0 };
-            let inner = ui.horizontal(|ui| {
-                ui.add_space(indent);
-                ui.spacing_mut().item_spacing.x = 6.0;
-                icons::show(ui, if row.depth == 0 { Icon::Folder } else { Icon::File }, 13.0, Fixed::brand());
-                let color = if page.visible && page.enabled { palette.text } else { palette.subtle };
-                ui.add(egui::Label::new(RichText::new(&page.caption).size(12.5).color(color)).selectable(false));
-                ui.add(egui::Label::new(RichText::new(format!("#{}", page.id)).size(10.5).color(palette.subtle)).selectable(false));
-            });
-            let rect = inner.response.rect.expand(2.0);
-            let response = ui.interact(rect, ui.id().with(("catalog-page", page.id)), egui::Sense::click());
-            if selected == Some(page.id) || response.hovered() {
-                let color = if selected == Some(page.id) { palette.selected } else { palette.hover };
-                ui.painter().rect_filled(rect, 4.0, crate::gui::theme::with_alpha(color, 0x90));
-            }
-            if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                select = Some(page.id);
-            }
-        }
-    });
-    if let Some(id) = select {
-        if selected != Some(id) {
-            actions.push(Action::SelectPage(id));
-        }
-    }
 }
 
 /// A text field keeps its own width: in a grid, `desired_width` is capped at the column's width of the frame before, so
@@ -1329,243 +864,6 @@ fn labelled(ui: &mut egui::Ui, palette: &Palette, label: &str) {
 
 fn number(ui: &mut egui::Ui, value: &mut i64, range: std::ops::RangeInclusive<i64>) {
     ui.add(egui::DragValue::new(value).range(range).speed(1));
-}
-
-fn editors(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
-    if s.builder.is_some() {
-        builder(ui, palette, s, actions);
-        return;
-    }
-    if s.page_edit.is_none() {
-        ui.add_space(20.0);
-        widgets::muted(ui, palette, t("Choose a page on the left."), 13.0);
-        return;
-    }
-    let pages = s.pages.clone();
-    let busy = s.busy;
-    let is_new_page = s.page_edit.as_ref().is_some_and(|p| p.id <= 0);
-    let page_changed = s.page_edit != s.page || is_new_page;
-    let page_problem = s.page_edit.as_ref().and_then(|p| catalog_admin::page_problem(p, &pages));
-
-    ui.label(widgets::title_text(if is_new_page { t("New page") } else { t("Page") }, 17.0));
-    ui.add_space(4.0);
-    if let Some(page) = s.page_edit.as_mut() {
-        egui::Grid::new("catalog-page-form").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-            labelled(ui, palette, t("Name"));
-            ui.add_sized([220.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut page.caption));
-            labelled(ui, palette, t("Internal name"));
-            ui.add_sized([160.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut page.caption_save));
-            ui.end_row();
-
-            labelled(ui, palette, t("Layout"));
-            egui::ComboBox::from_id_salt("catalog-layout").selected_text(&page.layout).width(220.0).show_ui(ui, |ui| {
-                for layout in LAYOUTS {
-                    ui.selectable_value(&mut page.layout, layout.to_string(), *layout);
-                }
-            });
-            labelled(ui, palette, t("Catalogue"));
-            egui::ComboBox::from_id_salt("catalog-mode").selected_text(&page.catalog_mode).show_ui(ui, |ui| {
-                for mode in CATALOG_MODES {
-                    ui.selectable_value(&mut page.catalog_mode, mode.to_string(), *mode);
-                }
-            });
-            ui.end_row();
-
-            labelled(ui, palette, t("Parent page"));
-            let parent_name = pages.iter().find(|p| p.id == page.parent_id).map(|p| format!("{} #{}", p.caption, p.id)).unwrap_or_else(|| t("(top level)").to_string());
-            egui::ComboBox::from_id_salt("catalog-parent").selected_text(parent_name).width(220.0).show_ui(ui, |ui| {
-                ui.selectable_value(&mut page.parent_id, -1, t("(top level)"));
-                for other in pages.iter().filter(|p| p.id != page.id && !catalog_admin::is_ancestor(&pages, page.id, p.id)) {
-                    ui.selectable_value(&mut page.parent_id, other.id, format!("{} #{}", other.caption, other.id));
-                }
-            });
-            labelled(ui, palette, t("Order"));
-            number(ui, &mut page.order_num, -1000..=100_000);
-            ui.end_row();
-
-            labelled(ui, palette, t("Icon"));
-            number(ui, &mut page.icon_image, 0..=100_000);
-            labelled(ui, palette, t("Minimum rank"));
-            number(ui, &mut page.min_rank, 0..=100);
-            ui.end_row();
-
-            labelled(ui, palette, t("Shown"));
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut page.visible, t("Visible"));
-                ui.checkbox(&mut page.enabled, t("Enabled"));
-                ui.checkbox(&mut page.club_only, t("Club only"));
-            });
-            ui.end_row();
-        });
-    }
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui.add_enabled(page_changed && page_problem.is_none() && !busy, widgets::primary_button(t("Save page"))).clicked() {
-            actions.push(Action::SavePage);
-        }
-        if ui.add_enabled(page_changed && !busy, small(t("Undo changes"))).clicked() {
-            if is_new_page {
-                s.page = None;
-                s.page_edit = None;
-            } else {
-                s.page_edit = s.page.clone();
-            }
-        }
-        if !is_new_page && ui.add_enabled(!busy, small(t("Delete page"))).clicked() {
-            actions.push(Action::DeletePage);
-        }
-        if let Some(problem) = &page_problem {
-            ui.label(RichText::new(problem).size(12.0).color(palette.error_text));
-        } else if page_changed {
-            ui.label(RichText::new(t("Not saved yet.")).size(12.0).color(palette.muted));
-        }
-    });
-
-    if is_new_page || s.page_edit.is_none() {
-        return;
-    }
-    ui.add_space(14.0);
-    ui.horizontal(|ui| {
-        ui.label(widgets::title_text(&tf("Offers ({count})", &[("count", &s.offers.len().to_string())]), 17.0));
-        if ui.add_enabled(!busy && s.offers.len() > 1, small(t("Sort by name"))).on_hover_text(t("Numbers the offers of this page 1, 2, ... in the order of their names.")).clicked() {
-            actions.push(Action::SortOffers);
-        }
-        if ui.add_enabled(!busy, small(t("New offer"))).clicked() {
-            if let Some(page) = s.page.as_ref() {
-                let draft = catalog_admin::new_offer(&s.offers, page.id);
-                s.offer = Some(draft.clone());
-                s.offer_edit = Some(draft);
-            }
-        }
-    });
-    ui.add_space(4.0);
-    offers_table(ui, palette, s);
-
-    if s.offer_edit.is_some() {
-        ui.add_space(14.0);
-        offer_form(ui, palette, s, actions);
-    }
-}
-
-fn offers_table(ui: &mut egui::Ui, palette: &Palette, s: &mut State) {
-    if s.offers.is_empty() {
-        widgets::muted(ui, palette, t("No offers on this page."), 12.5);
-        return;
-    }
-    let selected = s.offer.as_ref().map(|o| o.id);
-    let mut select = None;
-    egui::Grid::new("catalog-offers").striped(true).num_columns(6).spacing([14.0, 4.0]).show(ui, |ui| {
-        for heading in [t("Name"), t("Furni"), t("Credits"), t("Points"), t("Limited"), t("Order")] {
-            ui.label(RichText::new(heading).size(11.5).color(palette.muted).strong());
-        }
-        ui.end_row();
-        for offer in &s.offers {
-            let name = if selected == Some(offer.id) { RichText::new(&offer.catalog_name).strong() } else { RichText::new(&offer.catalog_name) };
-            if ui.add(egui::Label::new(name.size(12.5)).sense(egui::Sense::click())).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                select = Some(offer.id);
-            }
-            ui.label(RichText::new(&offer.item_ids).size(12.0));
-            ui.label(RichText::new(offer.cost_credits.to_string()).size(12.0));
-            ui.label(RichText::new(if offer.cost_points > 0 { format!("{} ({})", offer.cost_points, offer.points_type) } else { "0".into() }).size(12.0));
-            ui.label(RichText::new(if offer.limited_stack > 0 { format!("{} / {}", offer.limited_sells, offer.limited_stack) } else { "-".into() }).size(12.0));
-            ui.label(RichText::new(offer.order_number.to_string()).size(12.0));
-            ui.end_row();
-        }
-    });
-    if let Some(id) = select {
-        if let Some(offer) = s.offers.iter().find(|o| o.id == id).cloned() {
-            s.offer = Some(offer.clone());
-            s.offer_edit = Some(offer);
-        }
-    }
-}
-
-fn offer_form(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
-    let busy = s.busy;
-    let is_new = s.offer_edit.as_ref().is_some_and(|o| o.id <= 0);
-    let changed = s.offer_edit != s.offer || is_new;
-    let problem = s.offer_edit.as_ref().and_then(catalog_admin::offer_problem);
-    let pages = s.pages.clone();
-    let Some(offer) = s.offer_edit.as_mut() else { return };
-
-    let title = if is_new { t("New offer").to_string() } else { tf("Offer #{id}", &[("id", &offer.id.to_string())]) };
-    ui.label(widgets::title_text(&title, 15.0));
-    ui.add_space(4.0);
-    egui::Grid::new("catalog-offer-form").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        labelled(ui, palette, t("Name"));
-        ui.add_sized([220.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut offer.catalog_name));
-        labelled(ui, palette, t("Furni ids"));
-        ui.add_sized([160.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut offer.item_ids)).on_hover_text(t("items_base ids: one id, or several as a bundle (100;200)."));
-        ui.end_row();
-
-        labelled(ui, palette, t("Credits"));
-        number(ui, &mut offer.cost_credits, 0..=1_000_000_000);
-        labelled(ui, palette, t("Points"));
-        ui.horizontal(|ui| {
-            number(ui, &mut offer.cost_points, 0..=1_000_000_000);
-            ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
-            number(ui, &mut offer.points_type, 0..=1000);
-        });
-        ui.end_row();
-
-        labelled(ui, palette, t("Amount"));
-        number(ui, &mut offer.amount, 1..=100_000);
-        labelled(ui, palette, t("Limited size"));
-        ui.horizontal(|ui| {
-            number(ui, &mut offer.limited_stack, 0..=1_000_000);
-            if offer.limited_stack > 0 {
-                ui.label(RichText::new(tf("{sold} sold", &[("sold", &offer.limited_sells.to_string())])).size(12.0).color(palette.muted));
-            }
-        });
-        ui.end_row();
-
-        labelled(ui, palette, t("Order"));
-        number(ui, &mut offer.order_number, -1000..=1_000_000);
-        labelled(ui, palette, t("Offer id"));
-        number(ui, &mut offer.offer_id, -1..=i32::MAX as i64);
-        ui.end_row();
-
-        labelled(ui, palette, t("Page"));
-        let page_name = pages.iter().find(|p| p.id == offer.page_id).map(|p| format!("{} #{}", p.caption, p.id)).unwrap_or_else(|| format!("#{}", offer.page_id));
-        egui::ComboBox::from_id_salt("catalog-offer-page").selected_text(page_name).width(220.0).show_ui(ui, |ui| {
-            for page in &pages {
-                ui.selectable_value(&mut offer.page_id, page.id, format!("{} #{}", page.caption, page.id));
-            }
-        });
-        labelled(ui, palette, t("Extra data"));
-        ui.add_sized([160.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut offer.extradata));
-        ui.end_row();
-
-        labelled(ui, palette, t("Options"));
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut offer.club_only, t("Club only"));
-            ui.checkbox(&mut offer.have_offer, t("Can be bought in bulk"));
-        });
-        ui.end_row();
-    });
-    furni_picker(ui, palette, &mut offer.item_ids, &mut s.furni_search, &s.furni_results, &s.furni_names, &mut s.furni_asked, busy, actions);
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
-        if ui.add_enabled(changed && problem.is_none() && !busy, widgets::primary_button(t("Save offer"))).clicked() {
-            actions.push(Action::SaveOffer);
-        }
-        if ui.add_enabled(changed && !busy, small(t("Undo changes"))).clicked() {
-            if is_new {
-                s.offer = None;
-                s.offer_edit = None;
-            } else {
-                s.offer_edit = s.offer.clone();
-            }
-        }
-        if !is_new && ui.add_enabled(!busy, small(t("Delete offer"))).clicked() {
-            actions.push(Action::DeleteOffer);
-        }
-        if let Some(problem) = &problem {
-            ui.label(RichText::new(problem).size(12.0).color(palette.error_text));
-        } else if changed {
-            ui.label(RichText::new(t("Not saved yet.")).size(12.0).color(palette.muted));
-        }
-    });
 }
 
 fn front_page(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
@@ -1883,74 +1181,6 @@ fn voucher_form(ui: &mut egui::Ui, palette: &Palette, s: &mut State, list: &[Vou
     });
 }
 
-/// The offer's furni by name, each with a remove button, and a search of items_base to add more.
-#[allow(clippy::too_many_arguments)]
-fn furni_picker(
-    ui: &mut egui::Ui,
-    palette: &Palette,
-    item_ids: &mut String,
-    search: &mut String,
-    results: &[Furni],
-    names: &std::collections::HashMap<i64, Furni>,
-    asked: &mut std::collections::HashSet<i64>,
-    busy: bool,
-    actions: &mut Vec<Action>,
-) {
-    let ids: Vec<i64> = item_ids.split(';').filter_map(|p| p.split(':').next()?.trim().parse::<i64>().ok()).collect();
-    let missing: Vec<i64> = ids.iter().copied().filter(|id| !names.contains_key(id) && !asked.contains(id)).collect();
-    if !missing.is_empty() {
-        asked.extend(missing.iter().copied());
-        actions.push(Action::FurniNames(missing));
-    }
-    let describe = |furni: &Furni| {
-        if furni.public_name.is_empty() { format!("{} #{}", furni.item_name, furni.id) } else { format!("{} ({}) #{}", furni.public_name, furni.item_name, furni.id) }
-    };
-
-    ui.add_space(6.0);
-    labelled(ui, palette, t("Furni in this offer"));
-    let mut remove = None;
-    if ids.is_empty() {
-        widgets::muted(ui, palette, t("None yet: search below and add one."), 12.0);
-    }
-    for id in &ids {
-        ui.horizontal(|ui| {
-            let text = names.get(id).map(describe).unwrap_or_else(|| tf("#{id} (not in items_base?)", &[("id", &id.to_string())]));
-            ui.label(RichText::new(text).size(12.0));
-            if ui.add_enabled(!busy, egui::Button::new(RichText::new("✕").size(11.0)).small()).on_hover_text(t("Take it out of the offer")).clicked() {
-                remove = Some(*id);
-            }
-        });
-    }
-    if let Some(id) = remove {
-        *item_ids = catalog_admin::remove_furni_id(item_ids, id);
-    }
-
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let response = ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(search).hint_text(t("Search furni by name, class name or id")));
-        let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (ui.add_enabled(!busy, small(t("Search"))).clicked() || enter) && !search.trim().is_empty() {
-            actions.push(Action::SearchFurni(search.clone()));
-        }
-    });
-    let mut add = None;
-    egui::ScrollArea::vertical().id_salt("catalog-furni-results").max_height(180.0).show(ui, |ui| {
-        for furni in results {
-            ui.horizontal(|ui| {
-                let already = ids.contains(&furni.id);
-                if ui.add_enabled(!busy && !already, egui::Button::new(RichText::new(t("Add")).size(11.5)).small()).clicked() {
-                    add = Some(furni.id);
-                }
-                ui.label(RichText::new(describe(furni)).size(12.0));
-                ui.label(RichText::new(&furni.kind).size(11.0).color(palette.subtle));
-            });
-        }
-    });
-    if let Some(id) = add {
-        *item_ids = catalog_admin::add_furni_id(item_ids, id);
-    }
-}
-
 fn checks(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
     let busy = s.busy;
     ui.horizontal(|ui| {
@@ -2031,9 +1261,8 @@ fn checks(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
                     }
                     ui.label(RichText::new(format!("{}  #{}", offer.catalog_name, offer.id)).size(12.5));
                     ui.label(RichText::new(format!("[{}]", offer.item_ids)).size(11.5).color(palette.subtle));
-                    if ui.link(page_name(offer.page_id)).clicked() {
-                        open = Some(offer.page_id);
-                    }
+                    // Open it in the Catalogue explorer (its tree has a search on the name or id).
+                    ui.label(RichText::new(page_name(offer.page_id)).size(11.5));
                     ui.label(RichText::new(tf("{n} credits", &[("n", &offer.cost_credits.to_string())])).size(11.5).color(palette.muted));
                     if !can {
                         ui.label(RichText::new(t("limited, sold")).size(11.5).color(palette.subtle));
@@ -2045,91 +1274,6 @@ fn checks(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
             widgets::muted(ui, palette, t("Only the first 300 groups are shown."), 12.0);
         }
         ui.add_space(4.0);
-    }
-    if let Some(id) = open {
-        s.tab = Tab::Pages;
-        actions.push(Action::SelectPage(id));
-    }
-}
-
-const UNOFFERED_SHOWN: usize = 500;
-
-fn unoffered(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
-    let busy = s.busy;
-    ui.horizontal(|ui| {
-        ui.label(widgets::title_text(t("Unoffered furni"), 17.0));
-        if ui.add_enabled(s.session.is_some() && !busy, small(t("Check again"))).clicked() {
-            actions.push(Action::LoadUnoffered);
-        }
-    });
-    widgets::muted(ui, palette, t("Floor and wall furni in items_base that no offer sells. Tick them and add an offer for each to a page."), 12.5);
-    let Some(list) = s.unoffered.clone() else {
-        widgets::muted(ui, palette, t("Loading ..."), 12.5);
-        return;
-    };
-    ui.add_space(6.0);
-
-    let query = s.unoffered_search.trim().to_lowercase();
-    let shown: Vec<&Furni> = list
-        .iter()
-        .filter(|f| query.is_empty() || f.item_name.to_lowercase().contains(&query) || f.public_name.to_lowercase().contains(&query) || f.id.to_string() == query)
-        .collect();
-    let ticked = list.iter().filter(|f| s.unoffered_ticked.contains(&f.id)).count();
-
-    egui::Grid::new("catalog-unoffered-form").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        labelled(ui, palette, t("Add to page"));
-        let page_name = s.pages.iter().find(|p| p.id == s.unoffered_page).map(|p| format!("{} #{}", p.caption, p.id)).unwrap_or_else(|| t("(choose a page)").to_string());
-        egui::ComboBox::from_id_salt("catalog-unoffered-page").selected_text(page_name).width(260.0).show_ui(ui, |ui| {
-            for page in &s.pages {
-                ui.selectable_value(&mut s.unoffered_page, page.id, format!("{} #{}", page.caption, page.id));
-            }
-        });
-        labelled(ui, palette, t("Credits"));
-        number(ui, &mut s.unoffered_credits, 0..=1_000_000_000);
-        ui.end_row();
-        labelled(ui, palette, t("Points"));
-        ui.horizontal(|ui| {
-            number(ui, &mut s.unoffered_points, 0..=1_000_000_000);
-            ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
-            number(ui, &mut s.unoffered_points_type, 0..=1000);
-        });
-        ui.end_row();
-    });
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        let page_ok = s.pages.iter().any(|p| p.id == s.unoffered_page);
-        if ui.add_enabled(!busy && ticked > 0 && page_ok, widgets::primary_button(&tf("Add {count} offers", &[("count", &ticked.to_string())]))).clicked() {
-            actions.push(Action::AddUnoffered);
-        }
-        if ui.add_enabled(!busy && !shown.is_empty(), small(t("Tick all shown"))).clicked() {
-            s.unoffered_ticked.extend(shown.iter().take(UNOFFERED_SHOWN).map(|f| f.id));
-        }
-        if ui.add_enabled(!busy && ticked > 0, small(t("Untick all"))).clicked() {
-            s.unoffered_ticked.clear();
-        }
-        ui.add_sized([240.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut s.unoffered_search).hint_text(t("Search by name, class name or id")));
-    });
-    ui.add_space(4.0);
-    ui.label(RichText::new(tf("{count} furni without an offer", &[("count", &list.len().to_string())])).size(12.5).strong());
-    if shown.len() > UNOFFERED_SHOWN {
-        widgets::muted(ui, palette, &tf("The first {count} are shown: search to narrow them down.", &[("count", &UNOFFERED_SHOWN.to_string())]), 12.0);
-    }
-    for furni in shown.iter().take(UNOFFERED_SHOWN) {
-        ui.horizontal(|ui| {
-            let mut on = s.unoffered_ticked.contains(&furni.id);
-            if ui.add_enabled(!busy, egui::Checkbox::without_text(&mut on)).changed() {
-                if on {
-                    s.unoffered_ticked.insert(furni.id);
-                } else {
-                    s.unoffered_ticked.remove(&furni.id);
-                }
-            }
-            ui.label(RichText::new(&furni.item_name).size(12.5));
-            if !furni.public_name.is_empty() {
-                ui.label(RichText::new(&furni.public_name).size(12.0).color(palette.muted));
-            }
-            ui.label(RichText::new(format!("#{} · {}", furni.id, furni.kind)).size(11.0).color(palette.subtle));
-        });
     }
 }
 
@@ -2183,84 +1327,4 @@ fn backups(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Ve
             ui.end_row();
         }
     });
-}
-
-fn builder(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
-    let busy = s.busy;
-    let pages = s.pages.clone();
-    let Some(builder) = s.builder.as_mut() else { return };
-    ui.label(widgets::title_text(t("Build page"), 17.0));
-    widgets::muted(ui, palette, t("A new page with an offer for every floor and wall furni whose class name starts with the prefix (a furni line, like rare_dragonlamp)."), 12.5);
-    ui.add_space(6.0);
-    egui::Grid::new("catalog-builder").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-        labelled(ui, palette, t("Name"));
-        ui.add_sized([220.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut builder.page.caption));
-        labelled(ui, palette, t("Internal name"));
-        ui.add_sized([160.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut builder.page.caption_save));
-        ui.end_row();
-
-        labelled(ui, palette, t("Parent page"));
-        let parent_name = pages.iter().find(|p| p.id == builder.page.parent_id).map(|p| format!("{} #{}", p.caption, p.id)).unwrap_or_else(|| t("(top level)").to_string());
-        egui::ComboBox::from_id_salt("catalog-builder-parent").selected_text(parent_name).width(220.0).show_ui(ui, |ui| {
-            ui.selectable_value(&mut builder.page.parent_id, -1, t("(top level)"));
-            for page in &pages {
-                ui.selectable_value(&mut builder.page.parent_id, page.id, format!("{} #{}", page.caption, page.id));
-            }
-        });
-        labelled(ui, palette, t("Layout"));
-        egui::ComboBox::from_id_salt("catalog-builder-layout").selected_text(&builder.page.layout).width(160.0).show_ui(ui, |ui| {
-            for layout in LAYOUTS {
-                ui.selectable_value(&mut builder.page.layout, layout.to_string(), *layout);
-            }
-        });
-        ui.end_row();
-
-        labelled(ui, palette, t("Class name starts with"));
-        ui.horizontal(|ui| {
-            let response = ui.add_sized([220.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut builder.prefix).hint_text("rare_dragonlamp"));
-            let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if (ui.add_enabled(!busy && builder.prefix.trim().chars().count() >= 3, small(t("Find furni"))).clicked() || enter) && builder.prefix.trim().chars().count() >= 3 {
-                actions.push(Action::BuilderFind);
-            }
-        });
-        ui.checkbox(&mut builder.only_new, t("Only furni no offer sells yet"));
-        ui.end_row();
-
-        labelled(ui, palette, t("Credits"));
-        number(ui, &mut builder.credits, 0..=1_000_000_000);
-        labelled(ui, palette, t("Points"));
-        ui.horizontal(|ui| {
-            number(ui, &mut builder.points, 0..=1_000_000_000);
-            ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
-            number(ui, &mut builder.points_type, 0..=1000);
-        });
-        ui.end_row();
-    });
-    ui.add_space(6.0);
-    let problem = catalog_admin::page_problem(&builder.page, &pages);
-    let count = builder.found.as_ref().map_or(0, Vec::len);
-    ui.horizontal(|ui| {
-        if ui.add_enabled(!busy && problem.is_none() && count > 0, widgets::primary_button(&tf("Build page with {count} offers", &[("count", &count.to_string())]))).clicked() {
-            actions.push(Action::BuilderBuild);
-        }
-        if ui.add_enabled(!busy, small(t("Cancel"))).clicked() {
-            s.builder = None;
-        }
-        if let Some(problem) = &problem {
-            ui.label(RichText::new(problem).size(12.0).color(palette.error_text));
-        }
-    });
-    let Some(builder) = s.builder.as_ref() else { return };
-    if let Some(found) = &builder.found {
-        ui.add_space(6.0);
-        if found.is_empty() {
-            widgets::muted(ui, palette, t("No furni found for this prefix."), 12.5);
-        }
-        for furni in found.iter().take(300) {
-            ui.label(RichText::new(format!("{}  #{}  {}", furni.item_name, furni.id, furni.public_name)).size(12.0));
-        }
-        if found.len() > 300 {
-            widgets::muted(ui, palette, &tf("and {count} more", &[("count", &(found.len() - 300).to_string())]), 12.0);
-        }
-    }
 }

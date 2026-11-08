@@ -1508,10 +1508,21 @@ pub async fn undo_place(session: &SqlSession, database: &str, undo: &PlaceUndo) 
 }
 
 /// Gives `furni` (no offer sells them yet) an offer each on `page_id`, before the offer `before` (None: at the end):
-/// named after the class name, 3 credits, as a new offer starts. Returns what undoes it (the new offers removed).
-pub async fn place_new_furni(session: &SqlSession, database: &str, furni: &[Furni], page_id: i64, before: Option<i64>) -> Result<PlaceUndo> {
+/// named after the class name, at this price (credits, and points of `points_type`). Returns what undoes it (the new
+/// offers removed).
+#[allow(clippy::too_many_arguments)]
+pub async fn place_new_furni(
+    session: &SqlSession,
+    database: &str,
+    furni: &[Furni],
+    page_id: i64,
+    before: Option<i64>,
+    credits: i64,
+    points: i64,
+    points_type: i64,
+) -> Result<PlaceUndo> {
     let mut inserted = Vec::new();
-    for offer in offers_for(furni, page_id, &[], 3, 0, 0) {
+    for offer in offers_for(furni, page_id, &[], credits, points, points_type) {
         match save_offer(session, database, &offer).await {
             Ok(id) => inserted.push(id),
             Err(error) => {

@@ -1320,54 +1320,38 @@ port; **Log in to MariaDB** asks again.
 **HOTEL → Catalogue** edits the hotel catalogue in the database the emulator uses (`db.database` in its `config.ini`),
 through the same SSH tunnel and MariaDB login as the SQL Editor.
 
-- **Left:** every catalogue page as a tree, with a search on the name, the internal name or the id. Hidden or switched
-  off pages are grey.
-- **Page:** name, internal name, layout, catalogue (normal, Builders Club or both), parent page (never under itself),
-  order, icon, minimum rank, visible, enabled and club only. **Save page** writes it; **Undo changes** goes back.
-- **Offers:** the offers of the page with their furni, prices, limited series (sold / size) and order. Click one to
-  edit its name, furni ids (one id, or a bundle `100;200`; under the form the offer's furni are listed by name with a
-  button to take one out, and **Search** finds furni in `items_base` by name, class name or id to **Add**), credits, points and their type, amount, limited size (never
-  below what is sold), order, offer id, page, extra data, club only and bulk buying.
-- **New page** makes a page under the page shown (or at the top level), after its sisters and hidden until you tick
-  Visible; **New offer** adds one to the page (fill in its furni ids). **Delete page** removes a page with its offers
-  and **Delete offer** one offer, after asking. A page with sub-pages, or an offer with sold limited numbers, is
-  never deleted: move the sub-pages first, and the record of who has which number stays.
-- **Front page** (the second tab) edits the promo tiles of the catalogue front page (`catalog_featured_pages`): the
+The pages and their offers are edited in the **Catalogue explorer** (below; **Pages and offers →** goes there). This
+page has the rest:
+
+- **Front page** (the first tab) edits the promo tiles of the catalogue front page (`catalog_featured_pages`): the
   slot number, caption, image (a path under the catalogue images, `catalogue/...`), what it opens (a page by internal
   name or id, or a product) and when it stops showing (`YYYY-MM-DD HH:MM` in this computer's time zone; empty never).
   **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails halfway is not rolled
   back: save again.
-- **Limited** (the third tab) lists every limited series: its offer and page, and how many are sold of how many,
+- **Limited** (the second tab) lists every limited series: its offer and page, and how many are sold of how many,
   with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
   the catalogue); a series never gets smaller, as its numbers already exist. **No longer limited** ends a series of
   which nothing is sold; **Remove with its sales** ends one that sold, after asking, and deletes its numbers and the
   record of who has which one for good (the furni players have keeps its number).
-- **Vouchers** (the fourth tab): the codes players type in the catalogue, with what each gives (credits, points of a
+- **Vouchers** (the third tab): the codes players type in the catalogue, with what each gives (credits, points of a
   type, an offer), how often it was used of how many uses (0: without end) and how often one player may use it (-1:
   without end), and a search. **New voucher**, **Save voucher**, **Delete voucher** (with the record of its uses, after
   asking); a code is 1 to 10 letters, digits, `-` or `_` and is never used twice, as the emulator matches it exactly.
   **Make codes** adds up to 500 vouchers with random codes (an optional prefix, then at least 4 easy-to-read letters and
   digits) that each give what the form shows. A voucher's **Used by** lists who used it and when.
-- **Checks** (the fifth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
+- **Checks** (the fourth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
   of them) and **offers that sell the same furni** (the same furni ids in any order, with the same extra data; for `wallpaper_single`, `floor_single` and
-  `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Click
-  a page to open it in the Pages tab; tick copies (or **Tick all but the first of each**) and **Delete ticked** removes
+  `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Tick
+  copies (or **Tick all but the first of each**) and **Delete ticked** removes
   them after asking. Offers with sold limited numbers are never ticked or deleted.
-- **Unoffered** (the sixth tab) lists the floor and wall furni of `items_base` that no offer sells (an id in no
-  offer's furni ids), with a search. Tick some (or **Tick all shown**), choose a page and a price, and **Add N offers**
-  adds one offer per furni, named after its class name, after the page's other offers.
-- **Backups** (the seventh tab): copies of the catalogue on the server, in `<backups>/catalogue` (Settings → server
+- **Backups** (the fifth tab): copies of the catalogue on the server, in `<backups>/catalogue` (Settings → server
   folders). **Make backup** dumps `catalog_pages`, `catalog_items`, `catalog_featured_pages`, `vouchers` and the
   Builders Club `catalog_pages_bc` / `catalog_items_bc` (those that exist) with `mariadb-dump` to a `.sql.gz`, with an
   optional name. **Roll back** first makes a `before-rollback` backup of the catalogue as it is, then puts the chosen
   one back; publish afterwards. Sold limited numbers (`catalog_items_limited`) and voucher uses (`voucher_history`) are
   never in a backup, so a rollback never takes back what players own or used. **Delete** removes a backup file.
-- **Build page** (above the tree) makes a new page with an offer for every floor and wall furni whose class name
-  starts with a prefix (a furni line, like `rare_dragonlamp`), optionally only furni no offer sells yet: name, internal
-  name, parent, layout and price, **Find furni** to see them, then **Build page**. The page starts hidden.
 - In **Checks**, **Merge into #id** moves the offers, sub-pages and front page tiles of pages that share an internal
   name to the first one, then deletes the others, after asking.
-- **Sort by name** (above a page's offers) numbers its offers 1, 2, ... in the order of their names.
 - **Publish** asks the running emulator over its RCON port (`rcon.port` in `config.ini`, on 127.0.0.1 of the server) to
   load the catalogue again (`updatecatalog`); the players online are told to refresh it. Saved changes show in the hotel
   after a publish.
@@ -1400,7 +1384,7 @@ A page never goes under itself or one of its own pages, and nothing goes into a 
 
 The **Without offer** tab (after the root pages) lists the furni no offer sells yet (search on the name, class name or
 id): drag them onto a page in the other window, or a page in its tree, and each gets an offer there (named after its
-class name, 3 credits; the price is set on the Catalogue page).
+class name, at the price set under the list: credits, points and the points type, 3 credits to start with).
 
 **Right-click** a furni (in a page or on the Without offer tab) and **Edit furni** opens its `items_base` row: every
 column of the table as this emulator has it, read from the database (so other columns work too). The `enum('0','1')`
@@ -1435,6 +1419,19 @@ others show only its text), images from http(s) only, `class` and `style` with t
 properties only (color, background-color, font-weight, font-style, font-size, text-decoration, text-align; no `url()`
 or `expression()`). Scripts, event handlers, forms, frames and other tags are taken out, their text stays. The editor
 says when something would go and offers **Clean up**; **Use**, and every save of a page, keeps only the safe HTML.
+
+The page menu (right-click a page) also has **New page here** (a page under it, after its sisters, hidden until
+you tick visible; its editor opens to name it), **Build page from a furni line ...** (a new page under it with an
+offer for every floor and wall furni whose class name starts with a prefix, like `rare_dragonlamp`, optionally only
+furni no offer sells yet, at a price you choose: **Find furni** first, then **Build page**), **Sort the furni by name**
+(on the page bar: the page's offers in the order of their names; **Undo** puts the old order back) and **Delete page
+...** (with its offers, after asking). A page with sub-pages, or with offers with sold limited numbers, is never
+deleted: move the sub-pages first, and the record of who has which number stays.
+
+The furni menu has **Delete offer ...** (or **Delete N offers ...** with several selected; the **Delete** key does the
+same), after asking; an offer with sold limited numbers is never deleted. The offer editor lists the **furni of the
+offer** by name, with **Remove** for one of a bundle, and a search on the name, class name or id of `items_base` to
+**Add** furni.
 
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the

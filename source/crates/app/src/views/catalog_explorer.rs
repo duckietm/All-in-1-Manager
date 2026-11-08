@@ -15,6 +15,7 @@ use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
 
 use super::sql_editor::login::{Login, Prompt};
 use super::sql_editor::text;
+use crate::gui::dialogs::Choice;
 use crate::gui::theme::Palette;
 use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
 use crate::i18n::{t, tf};
@@ -87,6 +88,13 @@ struct State {
     picker: Option<Picker>,
     /// The HTML editor of a page text (page_text1 ...).
     html: Option<HtmlEditor>,
+    /// The page builder (a new page with an offer per furni of a furni line).
+    builder: Option<Builder>,
+    /// The price a furni dragged from Without offer gets: credits, points, points type.
+    new_price: (i64, i64, i64),
+    /// The furni search of the offer editor (to add furni to a bundle): the text and what it found.
+    furni_search: String,
+    furni_results: Vec<Furni>,
     catalogue_files: Option<Vec<String>>,
     listing: bool,
     fetched: HashMap<String, Option<Arc<Vec<u8>>>>,
@@ -125,7 +133,7 @@ impl State {
                 }
             });
         }
-        *self = State { generation: self.generation, two: true, ..State::default() };
+        *self = State { generation: self.generation, two: true, new_price: NEW_PRICE, ..State::default() };
     }
 
     fn page(&self, id: i64) -> Option<&Page> {
@@ -210,6 +218,20 @@ struct Picker {
     search: String,
 }
 
+/// What a new offer costs at first: 3 credits, as on the Catalogue page.
+const NEW_PRICE: (i64, i64, i64) = (3, 0, 0);
+
+/// The page builder: under which page, its name, the class name prefix, only furni without an offer, the price, and
+/// the furni found (None until Find furni).
+struct Builder {
+    parent: i64,
+    caption: String,
+    prefix: String,
+    only_new: bool,
+    price: (i64, i64, i64),
+    found: Option<Vec<Furni>>,
+}
+
 /// The HTML editor of one page text: the text as typed and the selection (characters) the toolbar wraps.
 struct HtmlEditor {
     column: usize,
@@ -288,6 +310,14 @@ enum Action {
     EditRow { table: &'static str, id: i64, furni: Option<i64>, page: Option<i64> },
     SaveRow,
     ListCatalogueFiles,
+    NewPage(i64),
+    DeletePage(i64),
+    DeleteOffers { ids: Vec<i64>, page: i64 },
+    SortByName(i64),
+    OpenBuilder(i64),
+    BuilderFind,
+    BuilderBuild,
+    SearchFurni(String),
     FetchFiles(Vec<String>),
     Undo,
     Publish,
@@ -647,7 +677,8 @@ impl Ctl {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let result = catalog_admin::place_new_furni(&session, &database, &furni, page, before).await;
+        let (credits, points, points_type) = self.lock().new_price;
+        let result = catalog_admin::place_new_furni(&session, &database, &furni, page, before, credits, points, points_type).await;
         self.with(generation, |s| {
             s.busy = false;
             match result {
@@ -882,6 +913,219 @@ impl Ctl {
         }
     }
 
+    /// A new page under `parent` (hidden until Visible is ticked), then its editor to name it.
+    async fn new_page(self, parent: i64) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let page = catalog_admin::new_page(&self.lock().pages, parent);
+        self.with(generation, |s| s.busy = true);
+        let saved = catalog_admin::save_page(&session, &database, &page).await;
+        self.with(generation, |s| s.busy = false);
+        match saved {
+            Ok(id) => {
+                self.with(generation, |s| {
+                    s.unpublished = true;
+                    s.status = Status { text: t("New page made, hidden until you tick visible: give it a name in the editor.").into(), error: false };
+                    for pane in s.panes.iter_mut() {
+                        pane.expanded.insert(parent);
+                    }
+                });
+                self.load_pages().await;
+                self.edit_row("catalog_pages", id, None, None).await;
+            }
+            Err(error) => {
+                self.with(generation, |s| s.status = Status { text: error.to_string(), error: true });
+            }
+        }
+    }
+
+    /// Asks first, then deletes the page with its offers (never one with pages under it or sold limited offers).
+    async fn delete_page(self, id: i64) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let offers = match catalog_admin::load_offers(&session, &database, id).await {
+            Ok(offers) => offers,
+            Err(error) => {
+                self.with(generation, |s| s.status = Status { text: error.to_string(), error: true });
+                return;
+            }
+        };
+        let (problem, page) = {
+            let s = self.lock();
+            (catalog_admin::page_delete_problem(&s.pages, &offers, id), s.page(id).cloned())
+        };
+        let Some(page) = page else { return };
+        if let Some(problem) = problem {
+            self.with(generation, |s| s.status = Status { text: problem, error: true });
+            return;
+        }
+        let message = tf("The page {name} and its {count} offers are deleted from the database. This cannot be undone.", &[("name", &page.caption), ("count", &offers.len().to_string())]);
+        let options = vec![Choice::new(t("Delete the page"), t("Delete it and its offers."), true).primary(), Choice::new(t("Cancel"), t("Keep the page."), false)];
+        if !self.shared.dialogs.choose(t("Are you sure?"), &tf("Delete {name}?", &[("name", &page.caption)]), &message, false, options).await {
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let deleted = catalog_admin::delete_page(&session, &database, id).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match deleted {
+                Ok(_) => {
+                    s.unpublished = true;
+                    s.undo = None;
+                    s.status = Status { text: tf("Page {name} deleted. Publish to take it out of the hotel.", &[("name", &page.caption)]), error: false };
+                    // A window on the page goes to the page above it.
+                    for pane in s.panes.iter_mut() {
+                        if pane.page == Some(id) {
+                            pane.page = Some(page.parent_id).filter(|p| *p > 0).or(pane.root);
+                            pane.selected.clear();
+                        }
+                    }
+                }
+                Err(error) => s.status = Status { text: error.to_string(), error: true },
+            }
+        });
+        self.load_pages().await;
+    }
+
+    /// Asks first, then deletes these offers of `page` (never one with limited sales: its record of who has which
+    /// number stays).
+    async fn delete_offers(self, ids: Vec<i64>, page: i64) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let offers: Vec<Offer> = self.lock().offers.get(&page).map(|o| o.iter().filter(|o| ids.contains(&o.id)).cloned().collect()).unwrap_or_default();
+        if offers.is_empty() {
+            return;
+        }
+        if let Some(problem) = offers.iter().find_map(catalog_admin::offer_delete_problem) {
+            self.with(generation, |s| s.status = Status { text: problem, error: true });
+            return;
+        }
+        let heading = if offers.len() == 1 { tf("Delete {name}?", &[("name", &offers[0].catalog_name)]) } else { tf("Delete {count} offers?", &[("count", &offers.len().to_string())]) };
+        let options = vec![Choice::new(t("Delete"), t("Take them off the page for good."), true).primary(), Choice::new(t("Cancel"), t("Keep them."), false)];
+        let message = t("The offers are deleted from the database. Furni players already bought stays theirs. This cannot be undone.");
+        if !self.shared.dialogs.choose(t("Are you sure?"), &heading, message, false, options).await {
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let ids: Vec<i64> = offers.iter().map(|o| o.id).collect();
+        let deleted = catalog_admin::delete_offers(&session, &database, &ids).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match deleted {
+                Ok(_) => {
+                    s.unpublished = true;
+                    s.undo = None;
+                    s.unoffered = None;
+                    for pane in s.panes.iter_mut() {
+                        pane.selected.retain(|id| !ids.contains(id));
+                    }
+                    s.status = Status { text: tf("{count} offers deleted. Publish to take them out of the hotel.", &[("count", &ids.len().to_string())]), error: false };
+                }
+                Err(error) => s.status = Status { text: error.to_string(), error: true },
+            }
+        });
+        self.load_offers(page).await;
+    }
+
+    /// Puts the page's furni in the order of their names (Undo puts the old order back).
+    async fn sort_by_name(self, page: i64) {
+        let Some(offers) = self.lock().offers.get(&page).cloned() else { return };
+        let order: Vec<i64> = catalog_admin::sorted_by_name(&offers).into_iter().map(|(id, _)| id).collect();
+        if order.len() > 1 {
+            let ctl = self.clone();
+            self.place(order, page, None, false).await;
+            let generation = ctl.lock().generation;
+            ctl.with(generation, |s| s.status = Status { text: t("The furni of the page are in the order of their names. Publish to show it in the hotel.").into(), error: false });
+        }
+    }
+
+    async fn builder_find(&self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let Some((prefix, only_new)) = self.lock().builder.as_ref().map(|b| (b.prefix.trim().to_string(), b.only_new)) else { return };
+        self.with(generation, |s| s.busy = true);
+        let furni = catalog_admin::furni_by_prefix(&session, &database, &prefix).await;
+        let offers = if only_new { catalog_admin::load_all_offers(&session, &database).await.map(Some) } else { Ok(None) };
+        self.with(generation, |s| {
+            s.busy = false;
+            match (furni, offers) {
+                (Ok(furni), Ok(offers)) => {
+                    let found = match offers {
+                        Some(offers) => catalog_admin::unoffered_furni(&furni, &offers),
+                        None => furni,
+                    };
+                    if let Some(builder) = s.builder.as_mut() {
+                        builder.found = Some(found);
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => s.status = Status { text: error.to_string(), error: true },
+            }
+        });
+    }
+
+    /// Adds the page, then an offer for each furni found on it, and opens it in the first window.
+    async fn builder_build(self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let (page, found, price) = {
+            let s = self.lock();
+            let Some(builder) = s.builder.as_ref() else { return };
+            let Some(found) = builder.found.clone().filter(|f| !f.is_empty()) else { return };
+            let mut page = catalog_admin::new_page(&s.pages, builder.parent);
+            page.caption = builder.caption.trim().to_string();
+            (page, found, builder.price)
+        };
+        if let Some(problem) = catalog_admin::page_problem(&page, &self.lock().pages) {
+            self.with(generation, |s| s.status = Status { text: problem, error: true });
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let page_id = match catalog_admin::save_page(&session, &database, &page).await {
+            Ok(id) => id,
+            Err(error) => {
+                self.with(generation, |s| {
+                    s.busy = false;
+                    s.status = Status { text: error.to_string(), error: true };
+                });
+                return;
+            }
+        };
+        let offers = catalog_admin::offers_for(&found, page_id, &[], price.0, price.1, price.2);
+        let added = catalog_admin::add_offers(&session, &database, &offers).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            s.unpublished = true;
+            s.unoffered = None;
+            match added {
+                Ok(count) => {
+                    s.builder = None;
+                    s.status = Status {
+                        text: tf("Page {page} made with {count} offers. It is hidden until you tick Visible; publish to put it in the hotel.", &[("page", &page.caption), ("count", &count.to_string())]),
+                        error: false,
+                    };
+                    s.panes[0].page = Some(page_id);
+                    s.panes[0].expanded.insert(page.parent_id);
+                }
+                Err(error) => s.status = Status { text: tf("The page was made, but its offers were not: {error}", &[("error", &error.to_string())]), error: true },
+            }
+        });
+        self.load_pages().await;
+        let root = self.lock().root_of(page_id);
+        self.with(generation, |s| s.panes[0].root = Some(root));
+    }
+
+    async fn search_furni(&self, text: String) {
+        let Some((generation, session, database)) = self.session() else { return };
+        match catalog_admin::search_furni(&session, &database, &text).await {
+            Ok(found) => {
+                self.with(generation, |s| {
+                    for furni in &found {
+                        s.furni.insert(furni.id, furni.clone());
+                    }
+                    s.furni_results = found;
+                });
+            }
+            Err(error) => {
+                self.with(generation, |s| s.status = Status { text: error.to_string(), error: true });
+            }
+        }
+    }
+
     async fn publish(self) {
         let Some(server) = self.shared.session() else { return };
         let generation = self.lock().generation;
@@ -905,7 +1149,7 @@ impl Ctl {
 
 impl CatalogExplorerView {
     pub fn new(_shared: &Shared) -> Self {
-        Self { state: Arc::new(Mutex::new(State { two: true, ..State::default() })), images: Images::new() }
+        Self { state: Arc::new(Mutex::new(State { two: true, new_price: NEW_PRICE, ..State::default() })), images: Images::new() }
     }
 
     fn ctl(&self, shared: &Shared) -> Ctl {
@@ -944,6 +1188,15 @@ impl View for CatalogExplorerView {
             editor_window(&ctx, palette, s, &mut self.images, &mut actions);
             picker_window(&ctx, palette, s, &mut self.images, &mut actions);
             html_window(&ctx, palette, s);
+            builder_window(&ctx, palette, s, &mut actions);
+            // The Delete key deletes the furni selected in a window (asks first).
+            if s.editor.is_none() && s.builder.is_none() && !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
+                let count = if s.two { 2 } else { 1 };
+                if let Some(pane) = s.panes.iter().take(count).find(|p| !p.selected.is_empty() && p.page.is_some()) {
+                    let page = pane.page.unwrap_or_default();
+                    actions.push(Action::DeleteOffers { ids: pane.selected.clone(), page });
+                }
+            }
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
                     s.prompt = None;
@@ -1017,6 +1270,17 @@ impl View for CatalogExplorerView {
                 Action::EditRow { table, id, furni, page } => ctl.spawn(move |c| c.edit_row(table, id, furni, page)),
                 Action::SaveRow => ctl.spawn(|c| c.save_row()),
                 Action::ListCatalogueFiles => ctl.spawn(|c| c.list_catalogue_files()),
+                Action::NewPage(parent) => ctl.spawn(move |c| c.new_page(parent)),
+                Action::DeletePage(id) => ctl.spawn(move |c| c.delete_page(id)),
+                Action::DeleteOffers { ids, page } => ctl.spawn(move |c| c.delete_offers(ids, page)),
+                Action::SortByName(page) => ctl.spawn(move |c| c.sort_by_name(page)),
+                Action::OpenBuilder(parent) => {
+                    let mut s = self.state.lock().unwrap();
+                    s.builder = Some(Builder { parent, caption: String::new(), prefix: String::new(), only_new: true, price: s.new_price, found: None });
+                }
+                Action::BuilderFind => ctl.spawn(|c| async move { c.builder_find().await }),
+                Action::BuilderBuild => ctl.spawn(|c| c.builder_build()),
+                Action::SearchFurni(text) => ctl.spawn(move |c| async move { c.search_furni(text).await }),
                 Action::FetchFiles(files) => ctl.spawn(move |c| c.fetch_files(files)),
                 Action::Undo => ctl.spawn(|c| c.undo()),
                 Action::Publish => ctl.spawn(|c| c.publish()),
@@ -1162,12 +1426,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                     let color = if *id == UNOFFERED { game::TITLE } else if *visible { game::TEXT } else { game::HIDDEN };
                     ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, caption, font, color);
                     if *id != UNOFFERED {
-                        response.context_menu(|ui| {
-                            if ui.button(t("Edit page (catalog_pages) ...")).clicked() {
-                                actions.push(Action::EditRow { table: "catalog_pages", id: *id, furni: None, page: None });
-                                ui.close_menu();
-                            }
-                        });
+                        response.context_menu(|ui| page_menu(ui, s, *id, false, actions));
                     }
                     if let Some(page) = released::<DragPage>(&response) {
                         if *id != UNOFFERED {
@@ -1242,7 +1501,21 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
         if s.panes[index].root == Some(UNOFFERED) {
             ui.add(egui::TextEdit::singleline(&mut s.panes[index].furni_search).hint_text(RichText::new(t("Search furni")).italics()).desired_width(NAV_WIDTH - 12.0));
             ui.add_space(6.0);
-            ui.add(egui::Label::new(RichText::new(t("Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer of 3 credits there.")).size(11.5).color(game::MUTED)).wrap());
+            ui.add(egui::Label::new(RichText::new(t("Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer at the price below there.")).size(11.5).color(game::MUTED)).wrap());
+            ui.add_space(8.0);
+            ui.label(RichText::new(t("Price of the new offers")).size(12.0).strong().color(game::TEXT));
+            let price = &mut s.new_price;
+            egui::Grid::new(("catalog-new-price", index)).num_columns(2).spacing([6.0, 4.0]).show(ui, |ui| {
+                ui.label(RichText::new(t("Credits")).size(11.5).color(game::TEXT));
+                ui.add(egui::DragValue::new(&mut price.0).range(0..=1_000_000_000));
+                ui.end_row();
+                ui.label(RichText::new(t("Points")).size(11.5).color(game::TEXT));
+                ui.add(egui::DragValue::new(&mut price.1).range(0..=1_000_000_000));
+                ui.end_row();
+                ui.label(RichText::new(t("Points type")).size(11.5).color(game::TEXT)).on_hover_text(t("0 duckets, 5 diamonds; other numbers are the hotel's own points."));
+                ui.add(egui::DragValue::new(&mut price.2).range(0..=1000));
+                ui.end_row();
+            });
             return;
         }
         ui.add(egui::TextEdit::singleline(&mut s.panes[index].search).hint_text(RichText::new(t("Search pages")).italics()).desired_width(NAV_WIDTH - 12.0));
@@ -1299,12 +1572,7 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 if highlight {
                     ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
                 }
-                response.context_menu(|ui| {
-                    if ui.button(t("Edit page (catalog_pages) ...")).clicked() {
-                        actions.push(Action::EditRow { table: "catalog_pages", id, furni: None, page: None });
-                        ui.close_menu();
-                    }
-                });
+                response.context_menu(|ui| page_menu(ui, s, id, false, actions));
                 match page_zone {
                     Some(Zone::Before) => {
                         ui.painter().line_segment([rect.left_top() + egui::vec2(depth as f32 * 12.0, 0.0), rect.right_top()], Stroke::new(3.0_f32, game::DROP));
@@ -1381,12 +1649,7 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
         ui.set_width(ui.available_width());
         // The page bar: icon, caption, what it holds; right-click edits the page.
         let (bar, bar_response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click());
-        bar_response.on_hover_text(t("Right-click: edit the page")).context_menu(|ui| {
-            if ui.button(t("Edit page (catalog_pages) ...")).clicked() {
-                actions.push(Action::EditRow { table: "catalog_pages", id: page_id, furni: None, page: None });
-                ui.close_menu();
-            }
-        });
+        bar_response.on_hover_text(t("Right-click: edit the page")).context_menu(|ui| page_menu(ui, s, page_id, true, actions));
         ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
         if let Some(texture) = images.page(ctx, page.icon_image) {
             sharp_image(ui.painter(), &texture, bar.left_center() + egui::vec2(22.0, 0.0), egui::vec2(34.0, 34.0), 1);
@@ -1462,6 +1725,15 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                                     actions.push(Action::EditRow { table: "items_base", id: *id, furni: Some(*id), page: None });
                                     ui.close_menu();
                                 }
+                            }
+                            ui.separator();
+                            // The selection when this furni is in it, else this one.
+                            let selected = &s.panes[index].selected;
+                            let ids: Vec<i64> = if selected.contains(&offer.id) { offers.iter().map(|o| o.id).filter(|id| selected.contains(id)).collect() } else { vec![offer.id] };
+                            let label = if ids.len() > 1 { tf("Delete {count} offers ...", &[("count", &ids.len().to_string())]) } else { t("Delete offer ...").to_string() };
+                            if ui.button(label).clicked() {
+                                actions.push(Action::DeleteOffers { ids, page: page_id });
+                                ui.close_menu();
                             }
                         });
                         if response.dnd_hover_payload::<DragOffers>().is_some() || response.dnd_hover_payload::<DragFurni>().is_some() {
@@ -1594,6 +1866,10 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     let mut want: Vec<String> = Vec::new();
     let mut open_picker: Option<(usize, bool)> = None;
     let mut open_html: Option<usize> = None;
+    let mut want_names: Vec<i64> = Vec::new();
+    let furni_names = &s.furni;
+    let furni_search = &mut s.furni_search;
+    let furni_results = &s.furni_results;
     let Some(editor) = s.editor.as_mut() else { return };
     let columns = s.columns.get(editor.table).cloned().unwrap_or_default();
     let furni = editor.furni.and_then(|id| s.furni.get(&id).cloned().or_else(|| s.unoffered.iter().flatten().find(|f| f.id == id).cloned()));
@@ -1747,6 +2023,44 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                     ui.end_row();
                 }
             });
+            // An offer's furni by name, to take one out of a bundle or add one found by name.
+            if let (true, Some(col)) = (editor.table == "catalog_items", columns.iter().position(|c| c.name == "item_ids")) {
+                ui.add_space(10.0);
+                ui.label(RichText::new(t("Furni of this offer")).size(13.0).strong());
+                let ids = catalog_admin::item_ids(&editor.values[col]).unwrap_or_default();
+                for id in &ids {
+                    ui.horizontal(|ui| {
+                        let name = match furni_names.get(id) {
+                            Some(f) => format!("{} ({})", if f.public_name.is_empty() { &f.item_name } else { &f.public_name }, f.item_name),
+                            None => {
+                                want_names.push(*id);
+                                id.to_string()
+                            }
+                        };
+                        ui.label(RichText::new(format!("{id}  ·  {name}")).size(12.5));
+                        if ids.len() > 1 && ui.add(widgets::secondary_button(t("Remove"))).clicked() {
+                            editor.values[col] = catalog_admin::remove_furni_id(&editor.values[col], *id);
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    let response = ui.add(egui::TextEdit::singleline(furni_search).hint_text(RichText::new(t("Find furni by name, class name or id")).italics()).desired_width(260.0));
+                    let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if ui.add(widgets::secondary_button(t("Search"))).clicked() || enter {
+                        actions.push(Action::SearchFurni(furni_search.trim().to_string()));
+                    }
+                });
+                for furni in furni_results.iter().take(20) {
+                    ui.horizontal(|ui| {
+                        let name = if furni.public_name.is_empty() { furni.item_name.clone() } else { format!("{} ({})", furni.public_name, furni.item_name) };
+                        ui.label(RichText::new(format!("{}  ·  {name}", furni.id)).size(12.0).color(palette.muted));
+                        if !ids.contains(&furni.id) && ui.add(widgets::secondary_button(t("Add"))).clicked() {
+                            editor.values[col] = catalog_admin::add_furni_id(&editor.values[col], furni.id);
+                            editor.nulls[col] = false;
+                        }
+                    });
+                }
+            }
         });
         ui.add_space(10.0);
         if !editor.status.text.is_empty() {
@@ -1772,6 +2086,12 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     if !want.is_empty() && !s.sample {
         s.fetching.extend(want.iter().cloned());
         actions.push(Action::FetchFiles(want));
+    }
+    want_names.retain(|id| !s.furni_asked.contains(id));
+    want_names.dedup();
+    if !want_names.is_empty() && !s.sample {
+        s.furni_asked.extend(want_names.iter().copied());
+        actions.push(Action::FurniNames(want_names));
     }
     if let Some(column) = open_html {
         let text = s.editor.as_ref().and_then(|e| e.values.get(column).cloned()).unwrap_or_default();
@@ -2132,6 +2452,95 @@ fn hover(column: &FurniColumn) -> String {
         column.column_type.clone()
     } else {
         format!("{}\n{}", column.column_type, column.comment)
+    }
+}
+
+/// The right-click menu of a page (in a tree, on its tab, on its page bar).
+fn page_menu(ui: &mut egui::Ui, s: &State, id: i64, on_bar: bool, actions: &mut Vec<Action>) {
+    let mut pick = |ui: &mut egui::Ui, label: &str, action: Action| {
+        if ui.button(label).clicked() {
+            actions.push(action);
+            ui.close_menu();
+        }
+    };
+    pick(ui, t("Edit page (catalog_pages) ..."), Action::EditRow { table: "catalog_pages", id, furni: None, page: None });
+    ui.separator();
+    pick(ui, t("New page here"), Action::NewPage(id));
+    pick(ui, t("Build page from a furni line ..."), Action::OpenBuilder(id));
+    if on_bar && s.offers.get(&id).is_some_and(|o| o.len() > 1) {
+        pick(ui, t("Sort the furni by name"), Action::SortByName(id));
+    }
+    ui.separator();
+    pick(ui, t("Delete page ..."), Action::DeletePage(id));
+}
+
+/// The page builder: a new page under the chosen one with an offer for every floor and wall furni of a furni line
+/// (class names that start with the prefix), at one price.
+fn builder_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let busy = s.busy;
+    let parent = s.builder.as_ref().map(|b| b.parent).and_then(|p| s.page(p)).map(|p| p.caption.clone()).unwrap_or_default();
+    let Some(builder) = s.builder.as_mut() else { return };
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("catalog-page-builder")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(22, 18))).show(ctx, |ui| {
+        ui.set_width(560.0);
+        ui.label(RichText::new(t("Build page")).size(17.0).strong());
+        ui.label(RichText::new(tf("A new page under {page} with an offer for every floor and wall furni whose class name starts with the prefix (a furni line, like rare_dragonlamp).", &[("page", &parent)])).size(12.0).color(palette.muted));
+        ui.add_space(10.0);
+        egui::Grid::new("catalog-builder").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+            ui.label(t("Name"));
+            ui.add(egui::TextEdit::singleline(&mut builder.caption).desired_width(260.0));
+            ui.end_row();
+            ui.label(t("Class name starts with"));
+            ui.horizontal(|ui| {
+                let response = ui.add(egui::TextEdit::singleline(&mut builder.prefix).hint_text("rare_dragonlamp").desired_width(200.0));
+                let enter = response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let ready = builder.prefix.trim().chars().count() >= 3 && !busy;
+                if (ui.add_enabled(ready, widgets::secondary_button(t("Find furni"))).clicked() || enter) && ready {
+                    actions.push(Action::BuilderFind);
+                }
+            });
+            ui.end_row();
+            ui.label("");
+            ui.checkbox(&mut builder.only_new, t("Only furni no offer sells yet"));
+            ui.end_row();
+            ui.label(t("Credits"));
+            ui.add(egui::DragValue::new(&mut builder.price.0).range(0..=1_000_000_000));
+            ui.end_row();
+            ui.label(t("Points"));
+            ui.horizontal(|ui| {
+                ui.add(egui::DragValue::new(&mut builder.price.1).range(0..=1_000_000_000));
+                ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
+                ui.add(egui::DragValue::new(&mut builder.price.2).range(0..=1000));
+            });
+            ui.end_row();
+        });
+        ui.add_space(8.0);
+        match &builder.found {
+            None => {
+                ui.label(RichText::new(t("Find furni first: the page gets an offer for each one found.")).size(12.0).color(palette.muted));
+            }
+            Some(found) => {
+                ui.label(RichText::new(tf("{count} furni found.", &[("count", &found.len().to_string())])).size(12.5).strong());
+                egui::ScrollArea::vertical().max_height(160.0).auto_shrink([false, true]).show(ui, |ui| {
+                    for furni in found {
+                        ui.label(RichText::new(format!("{}  ·  {}", furni.item_name, furni.public_name)).size(12.0).color(palette.muted));
+                    }
+                });
+            }
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let ready = !busy && !builder.caption.trim().is_empty() && builder.found.as_ref().is_some_and(|f| !f.is_empty());
+            if ui.add_enabled(ready, widgets::primary_button(t("Build page"))).clicked() {
+                actions.push(Action::BuilderBuild);
+            }
+            if ui.add(widgets::secondary_button(t("Cancel"))).clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        s.builder = None;
     }
 }
 

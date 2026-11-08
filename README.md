@@ -1418,6 +1418,11 @@ the page is read again (also the new page when `page_id` changed); **Publish** s
 `catalog_pages` row in the same editor (caption and internal name, `page_layout` from the layouts the table allows,
 icon, parent, order, minimum rank, visible / enabled / club / VIP as ticks, headline and teaser images, the page texts
 in fields of several lines ...). After a save the tree is read again; **Publish** shows it in the hotel.
+`icon_image`, `page_headline`, `page_teaser` and `page_special` show their image next to the field and have
+**Choose ...**: a picker with every page icon (`c_images/catalogue/icon_<n>.png`, by number) or every catalogue image
+(the headlines and teasers), from this computer and the server's `gamedata/c_images/catalogue`, with a search. The
+server's images are fetched over the SSH connection as they come into view. A click writes the icon's number, or the
+image's name without `.gif` (the client adds it).
 
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the

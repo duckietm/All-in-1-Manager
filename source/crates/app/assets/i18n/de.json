@@ -3276,5 +3276,12 @@
   "Edit page (catalog_pages) ...": "Seite bearbeiten (catalog_pages) ...",
   "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Jede Spalte der catalog_pages-Zeile der Seite: Titel, Layout, Symbol, übergeordnete Seite, Reihenfolge, Rang, sichtbar, Texte und Bilder ... Geänderte Werte sind markiert; Speichern schreibt nur diese.",
   "Right-click: edit the page": "Rechtsklick: Seite bearbeiten",
-  "Saved {count} values of the page. Publish to show it in the hotel.": "{count} Werte der Seite gespeichert. Veröffentliche, um es im Hotel zu zeigen."
+  "Saved {count} values of the page. Publish to show it in the hotel.": "{count} Werte der Seite gespeichert. Veröffentliche, um es im Hotel zu zeigen.",
+  "Choose the image": "Bild wählen",
+  "Choose the page icon": "Seitensymbol wählen",
+  "No images found.": "Keine Bilder gefunden.",
+  "Reading the server's catalogue images ...": "Die Katalogbilder des Servers werden gelesen ...",
+  "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Die Bilder in c_images/catalogue dieses Computers und des Servers: ein Klick schreibt den Namen (ohne .gif, der Client fügt es an).",
+  "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Die Seitensymbole (c_images/catalogue/icon_<n>.png) dieses Computers und des Servers: ein Klick schreibt die Nummer in icon_image.",
+  "{count} shown": "{count} angezeigt"
 }

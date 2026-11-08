@@ -82,6 +82,13 @@ struct State {
     prompt: Option<Prompt>,
     /// The furni editor (right-click on a furni), and the items_base columns once read.
     editor: Option<Editor>,
+    /// The image picker over the editor (icon_image, page_headline ...), the files of the server's
+    /// c_images/catalogue (None until read), and the files fetched from it for their preview (None: could not be).
+    picker: Option<Picker>,
+    catalogue_files: Option<Vec<String>>,
+    listing: bool,
+    fetched: HashMap<String, Option<Arc<Vec<u8>>>>,
+    fetching: HashSet<String>,
     /// The columns of each table edited so far (items_base, catalog_items).
     columns: HashMap<&'static str, Vec<FurniColumn>>,
     login_visible: bool,
@@ -193,6 +200,52 @@ impl Editor {
     }
 }
 
+/// The picker of one editor field: a page icon (icon_image: its number) or a catalogue image (page_headline ...: its
+/// name without .gif, as the client adds that).
+struct Picker {
+    column: usize,
+    icon: bool,
+    search: String,
+}
+
+/// The catalog_pages columns that hold a catalogue image, and whether it is the page icon.
+fn image_column(name: &str) -> Option<bool> {
+    match name {
+        "icon_image" => Some(true),
+        "page_headline" | "page_teaser" | "page_special" => Some(false),
+        _ => None,
+    }
+}
+
+/// The number of a page icon file (icon_12.png -> 12).
+fn icon_number(file: &str) -> Option<i64> {
+    file.strip_prefix("icon_")?.strip_suffix(".png")?.parse().ok()
+}
+
+/// What a picked file writes in the field: the icon's number, or the image's name (without .gif: the client adds it).
+fn picked_value(file: &str, icon: bool) -> String {
+    if icon {
+        return icon_number(file).map(|n| n.to_string()).unwrap_or_default();
+    }
+    file.strip_suffix(".gif").unwrap_or(file).to_string()
+}
+
+/// The files a field's value can mean, in the order the client tries them.
+fn value_files(value: &str, icon: bool) -> Vec<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Vec::new();
+    }
+    if icon {
+        return vec![format!("icon_{value}.png")];
+    }
+    if value.contains('.') {
+        vec![value.to_string()]
+    } else {
+        vec![format!("{value}.gif"), format!("{value}.png")]
+    }
+}
+
 /// What the last change did, to put it back.
 enum Undo {
     Offers(PlaceUndo),
@@ -225,6 +278,8 @@ enum Action {
     LoadUnoffered,
     EditRow { table: &'static str, id: i64, furni: Option<i64>, page: Option<i64> },
     SaveRow,
+    ListCatalogueFiles,
+    FetchFiles(Vec<String>),
     Undo,
     Publish,
 }
@@ -237,6 +292,8 @@ struct Images {
     catalogue_folders: Vec<PathBuf>,
     loaded: HashMap<String, Option<egui::TextureHandle>>,
     read_this_frame: usize,
+    /// The files of the local c_images/catalogue folders (read once, for the picker).
+    local_catalogue: Option<Vec<String>>,
 }
 
 impl Images {
@@ -278,6 +335,49 @@ impl Images {
         let file = format!("{}_icon.png", item_name.trim().replace('*', "_"));
         let paths = self.icon_folders.iter().flat_map(|f| [f.join(&file), f.join(file.to_lowercase())]).collect();
         self.read(ctx, format!("furni:{file}"), paths)
+    }
+
+    /// The image files of the local c_images/catalogue folders.
+    fn local_catalogue(&mut self) -> Vec<String> {
+        if self.local_catalogue.is_none() {
+            let mut files: Vec<String> = self
+                .catalogue_folders
+                .iter()
+                .filter_map(|f| std::fs::read_dir(f).ok())
+                .flat_map(|entries| entries.flatten().filter_map(|e| e.file_name().into_string().ok()))
+                .filter(|n| n.to_lowercase().ends_with(".png") || n.to_lowercase().ends_with(".gif"))
+                .collect();
+            files.sort();
+            files.dedup();
+            self.local_catalogue = Some(files);
+        }
+        self.local_catalogue.clone().unwrap_or_default()
+    }
+
+    /// A file of c_images/catalogue: from this computer, else from what was fetched from the server. The second value
+    /// is true when it still has to be fetched.
+    fn catalogue_file(&mut self, ctx: &egui::Context, file: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
+        let paths: Vec<PathBuf> = self.catalogue_folders.iter().map(|f| f.join(file)).collect();
+        if paths.iter().any(|p| p.is_file()) {
+            return (self.read(ctx, format!("page:{file}"), paths), false);
+        }
+        match fetched.get(file) {
+            None => (None, true),
+            Some(None) => (None, false),
+            Some(Some(bytes)) => {
+                let key = format!("server:{file}");
+                if let Some(found) = self.loaded.get(&key) {
+                    return (found.clone(), false);
+                }
+                let texture = image::load_from_memory(bytes).ok().map(|image| {
+                    let image = image.to_rgba8();
+                    let color = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
+                    ctx.load_texture(&key, color, egui::TextureOptions::NEAREST)
+                });
+                self.loaded.insert(key, texture.clone());
+                (texture, false)
+            }
+        }
     }
 
     /// A page icon by its number (icon_image).
@@ -707,6 +807,55 @@ impl Ctl {
         }
     }
 
+    /// The image files of the server's gamedata/c_images/catalogue, for the picker.
+    async fn list_catalogue_files(self) {
+        let Some(server) = self.shared.session() else { return };
+        let generation = self.lock().generation;
+        let folder = format!("{}/c_images/catalogue", aio_remote::octane::gamedata());
+        let command = format!(
+            "find {} -maxdepth 1 -type f \\( -iname '*.gif' -o -iname '*.png' \\) -printf '%f\\n' 2>/dev/null | sort; true",
+            aio_remote::server::shell_quote(&folder)
+        );
+        let result = server.run_as_root(&command).await;
+        self.with(generation, |s| {
+            s.listing = false;
+            s.catalogue_files = Some(match result {
+                Ok(result) => result.output.lines().map(str::trim).filter(|l| !l.is_empty() && !l.contains('/')).map(str::to_string).collect(),
+                Err(error) => {
+                    if let Some(editor) = s.editor.as_mut() {
+                        editor.status = Status { text: error.to_string(), error: true };
+                    }
+                    Vec::new()
+                }
+            });
+        });
+    }
+
+    /// Fetches these files of the server's c_images/catalogue for their preview, one after the other.
+    async fn fetch_files(self, files: Vec<String>) {
+        let Some(server) = self.shared.session() else { return };
+        let generation = self.lock().generation;
+        let folder = format!("{}/c_images/catalogue", aio_remote::octane::gamedata());
+        let temp = std::env::temp_dir().join(format!("all-in-1-catalogue-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp);
+        for file in files {
+            let local = temp.join(&file);
+            let bytes = match server.download(&format!("{folder}/{file}"), &local, &|_| {}).await {
+                Ok(()) => std::fs::read(&local).ok().map(Arc::new),
+                Err(_) => None,
+            };
+            let _ = std::fs::remove_file(&local);
+            if self.with(generation, |s| {
+                s.fetching.remove(&file);
+                s.fetched.insert(file.clone(), bytes);
+            })
+            .is_none()
+            {
+                return;
+            }
+        }
+    }
+
     async fn publish(self) {
         let Some(server) = self.shared.session() else { return };
         let generation = self.lock().generation;
@@ -767,6 +916,7 @@ impl View for CatalogExplorerView {
             let mut guard = self.state.lock().unwrap();
             let s = &mut *guard;
             editor_window(&ctx, palette, s, &mut self.images, &mut actions);
+            picker_window(&ctx, palette, s, &mut self.images, &mut actions);
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
                     s.prompt = None;
@@ -839,6 +989,8 @@ impl View for CatalogExplorerView {
                 Action::EditRow { table, id, furni, .. } if self.state.lock().unwrap().sample => sample_editor(&mut self.state.lock().unwrap(), table, id, furni),
                 Action::EditRow { table, id, furni, page } => ctl.spawn(move |c| c.edit_row(table, id, furni, page)),
                 Action::SaveRow => ctl.spawn(|c| c.save_row()),
+                Action::ListCatalogueFiles => ctl.spawn(|c| c.list_catalogue_files()),
+                Action::FetchFiles(files) => ctl.spawn(move |c| c.fetch_files(files)),
                 Action::Undo => ctl.spawn(|c| c.undo()),
                 Action::Publish => ctl.spawn(|c| c.publish()),
             }
@@ -1410,6 +1562,10 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
 
 /// The furni editor: every items_base column of one furni, the flags as ticks, the rest in the table's order.
 fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images, actions: &mut Vec<Action>) {
+    let fetched = &s.fetched;
+    let fetching = &s.fetching;
+    let mut want: Vec<String> = Vec::new();
+    let mut open_picker: Option<(usize, bool)> = None;
     let Some(editor) = s.editor.as_mut() else { return };
     let columns = s.columns.get(editor.table).cloned().unwrap_or_default();
     let furni = editor.furni.and_then(|id| s.furni.get(&id).cloned().or_else(|| s.unoffered.iter().flatten().find(|f| f.id == id).cloned()));
@@ -1518,6 +1674,29 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                                 ui.add(egui::TextEdit::singleline(&mut editor.values[i]).desired_width(width));
                             }
                         });
+                        if let (true, Some(icon)) = (editor.table == "catalog_pages", image_column(&column.name)) {
+                            // The image the value means, small, and the picker.
+                            let files = value_files(&editor.values[i], icon);
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(if icon { 26.0 } else { 90.0 }, 22.0), Sense::hover());
+                            ui.painter().rect_filled(rect, CornerRadius::same(3), game::PAGE_BAR);
+                            let mut texture = None;
+                            for file in &files {
+                                let (found, fetch) = images.catalogue_file(ctx, file, fetched);
+                                if fetch && !fetching.contains(file) {
+                                    want.push(file.clone());
+                                }
+                                if found.is_some() {
+                                    texture = found;
+                                    break;
+                                }
+                            }
+                            if let Some(texture) = texture {
+                                sharp_image(ui.painter(), &texture, rect.center(), rect.size(), 1);
+                            }
+                            if ui.add_enabled(!editor.nulls[i], widgets::secondary_button(t("Choose ..."))).clicked() {
+                                open_picker = Some((i, icon));
+                            }
+                        }
                         if column.nullable && column.name != "id" {
                             ui.checkbox(&mut editor.nulls[i], "NULL");
                         }
@@ -1557,8 +1736,131 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
             }
         });
     });
+    if !want.is_empty() && !s.sample {
+        s.fetching.extend(want.iter().cloned());
+        actions.push(Action::FetchFiles(want));
+    }
+    if let Some((column, icon)) = open_picker {
+        s.picker = Some(Picker { column, icon, search: String::new() });
+        if s.catalogue_files.is_none() && !s.listing && !s.sample {
+            s.listing = true;
+            actions.push(Action::ListCatalogueFiles);
+        }
+    }
     if close {
         s.editor = None;
+        s.picker = None;
+    }
+}
+
+/// The image picker over the editor: the page icons (icon_image) or the catalogue images (page_headline ...) of this
+/// computer and the server, with a search; a click writes the choice in the field.
+fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images, actions: &mut Vec<Action>) {
+    let Some(picker) = s.picker.as_mut() else { return };
+    let Some(editor) = s.editor.as_mut() else {
+        s.picker = None;
+        return;
+    };
+    let icon = picker.icon;
+    // Every file of this computer and the server, once; icons for the icon, the other images for the rest.
+    let mut files = images.local_catalogue();
+    files.extend(s.catalogue_files.iter().flatten().cloned());
+    files.sort();
+    files.dedup();
+    let search = picker.search.trim().to_lowercase();
+    let mut shown: Vec<String> = files.into_iter().filter(|f| icon_number(f).is_some() == icon).filter(|f| search.is_empty() || f.to_lowercase().contains(&search)).collect();
+    if icon {
+        shown.sort_by_key(|f| icon_number(f).unwrap_or(0));
+    }
+    let current = editor.values.get(picker.column).cloned().unwrap_or_default();
+    let mut chosen: Option<String> = None;
+    let mut close = false;
+    let mut want: Vec<String> = Vec::new();
+    egui::Modal::new(egui::Id::new("catalog-image-picker")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(20, 16))).show(ctx, |ui| {
+        ui.set_width(if icon { 560.0 } else { 720.0 });
+        ui.label(RichText::new(if icon { t("Choose the page icon") } else { t("Choose the image") }).size(16.0).strong());
+        ui.label(
+            RichText::new(if icon {
+                t("The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.")
+            } else {
+                t("The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).")
+            })
+            .size(11.5)
+            .color(palette.muted),
+        );
+        ui.add_space(6.0);
+        ui.add(egui::TextEdit::singleline(&mut picker.search).hint_text(RichText::new(t("Search")).italics()).desired_width(260.0));
+        ui.add_space(6.0);
+        if s.listing {
+            ui.label(RichText::new(t("Reading the server's catalogue images ...")).size(12.0).color(palette.muted));
+        }
+        let (cell, label_height) = if icon { (egui::vec2(60.0, 44.0), 14.0) } else { (egui::vec2(228.0, 84.0), 16.0) };
+        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.55).auto_shrink([false, true]).show(ui, |ui| {
+            if shown.is_empty() && !s.listing {
+                ui.label(RichText::new(t("No images found.")).color(palette.muted));
+            }
+            let columns = ((ui.available_width() + 6.0) / (cell.x + 6.0)).floor().max(1.0) as usize;
+            for row in shown.chunks(columns) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    for file in row {
+                        let (rect, response) = ui.allocate_exact_size(cell + egui::vec2(0.0, label_height), Sense::click());
+                        let selected = picked_value(file, icon) == current.trim();
+                        let image_rect = egui::Rect::from_min_size(rect.min, cell);
+                        ui.painter().rect_filled(image_rect, CornerRadius::same(5), if selected { game::TILE_SELECTED } else { game::PAGE_BAR });
+                        ui.painter().rect_stroke(
+                            image_rect,
+                            CornerRadius::same(5),
+                            Stroke::new(if selected { 2.0_f32 } else if response.hovered() { 1.5 } else { 1.0 }, if selected || response.hovered() { game::TITLE } else { game::TILE_EDGE }),
+                            egui::StrokeKind::Inside,
+                        );
+                        // Previews only of what is on screen: the rest is fetched when scrolled to.
+                        if ui.is_rect_visible(rect) {
+                            let (texture, fetch) = images.catalogue_file(ctx, file, &s.fetched);
+                            if fetch && !s.fetching.contains(file) && want.len() < 24 {
+                                want.push(file.clone());
+                            }
+                            match texture {
+                                Some(texture) => sharp_image(ui.painter(), &texture, image_rect.center(), image_rect.size() - egui::vec2(6.0, 6.0), 1),
+                                None => {
+                                    ui.painter().text(image_rect.center(), egui::Align2::CENTER_CENTER, "…", egui::FontId::proportional(14.0), game::MUTED);
+                                }
+                            }
+                        }
+                        let label = if icon { icon_number(file).map(|n| n.to_string()).unwrap_or_default() } else { picked_value(file, false) };
+                        let galley = ui.painter().layout(label, egui::FontId::proportional(10.5), palette.muted, rect.width());
+                        ui.painter().galley(egui::pos2(rect.center().x - galley.size().x / 2.0, image_rect.bottom() + 1.0), galley, palette.muted);
+                        if response.on_hover_text(file).clicked() {
+                            chosen = Some(picked_value(file, icon));
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+            }
+        });
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.add(widgets::secondary_button(t("Cancel"))).clicked() {
+                close = true;
+            }
+            ui.label(RichText::new(tf("{count} shown", &[("count", &shown.len().to_string())])).size(11.5).color(palette.muted));
+        });
+    });
+    if let Some(value) = chosen {
+        if let Some(slot) = editor.values.get_mut(picker.column) {
+            *slot = value;
+        }
+        if let Some(null) = editor.nulls.get_mut(picker.column) {
+            *null = false;
+        }
+        close = true;
+    }
+    if !want.is_empty() && !s.sample {
+        s.fetching.extend(want.iter().cloned());
+        actions.push(Action::FetchFiles(want));
+    }
+    if close {
+        s.picker = None;
     }
 }
 
@@ -1784,6 +2086,12 @@ fn sample(s: &mut State) {
             _ => "items_base",
         };
         sample_editor(s, table, 102, Some(102));
+        if let (Some(kind), Some(editor)) = (std::env::var("AIO_SCREENSHOT_PICKER").ok(), s.editor.as_ref()) {
+            let name = if kind == "icon" { "icon_image" } else { "page_headline" };
+            if let Some(column) = s.columns.get(editor.table).and_then(|c| c.iter().position(|c| c.name == name)) {
+                s.picker = Some(Picker { column, icon: kind == "icon", search: String::new() });
+            }
+        }
     }
 }
 
@@ -1929,6 +2237,22 @@ mod tests {
             });
         });
         got
+    }
+
+    #[test]
+    fn picked_images_become_the_values_the_client_reads() {
+        assert_eq!(icon_number("icon_12.png"), Some(12));
+        assert_eq!(icon_number("icon_x.png"), None);
+        assert_eq!(picked_value("icon_12.png", true), "12");
+        assert_eq!(picked_value("catalog_rares_headline1.gif", false), "catalog_rares_headline1");
+        assert_eq!(picked_value("teaser.png", false), "teaser.png", "the client adds .gif: a png keeps its ending");
+        assert_eq!(value_files("12", true), ["icon_12.png"]);
+        assert_eq!(value_files("catalog_rares_headline1", false), ["catalog_rares_headline1.gif", "catalog_rares_headline1.png"]);
+        assert_eq!(value_files("teaser.png", false), ["teaser.png"]);
+        assert!(value_files(" ", false).is_empty());
+        assert_eq!(image_column("icon_image"), Some(true));
+        assert_eq!(image_column("page_headline"), Some(false));
+        assert_eq!(image_column("caption"), None);
     }
 
     #[test]

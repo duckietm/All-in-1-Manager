@@ -3276,5 +3276,12 @@
   "Edit page (catalog_pages) ...": "Muokkaa sivua (catalog_pages) ...",
   "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Sivun catalog_pages-rivin jokainen sarake: otsikko, asettelu, kuvake, yläsivu, järjestys, arvo, näkyvyys, tekstit ja kuvat ... Muutetut arvot on merkitty; Tallenna kirjoittaa vain ne.",
   "Right-click: edit the page": "Oikea napsautus: muokkaa sivua",
-  "Saved {count} values of the page. Publish to show it in the hotel.": "Sivun {count} arvoa tallennettu. Julkaise näyttääksesi sen hotellissa."
+  "Saved {count} values of the page. Publish to show it in the hotel.": "Sivun {count} arvoa tallennettu. Julkaise näyttääksesi sen hotellissa.",
+  "Choose the image": "Valitse kuva",
+  "Choose the page icon": "Valitse sivun kuvake",
+  "No images found.": "Kuvia ei löytynyt.",
+  "Reading the server's catalogue images ...": "Luetaan palvelimen luettelokuvia ...",
+  "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Tämän tietokoneen ja palvelimen c_images/catalogue-kansion kuvat: napsautus kirjoittaa nimen (ilman .gif-päätettä, asiakas lisää sen).",
+  "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Tämän tietokoneen ja palvelimen sivukuvakkeet (c_images/catalogue/icon_<n>.png): napsautus kirjoittaa numeron kenttään icon_image.",
+  "{count} shown": "{count} näytetty"
 }

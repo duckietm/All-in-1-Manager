@@ -3276,5 +3276,12 @@
   "Edit page (catalog_pages) ...": "Pagina bewerken (catalog_pages) ...",
   "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Elke kolom van de catalog_pages-rij van de pagina: titel, indeling, icoon, bovenliggende pagina, volgorde, rang, zichtbaar, teksten en afbeeldingen ... Gewijzigde waarden zijn gemarkeerd; Opslaan schrijft alleen die.",
   "Right-click: edit the page": "Rechtsklik: pagina bewerken",
-  "Saved {count} values of the page. Publish to show it in the hotel.": "{count} waarden van de pagina opgeslagen. Publiceer om het in het hotel te tonen."
+  "Saved {count} values of the page. Publish to show it in the hotel.": "{count} waarden van de pagina opgeslagen. Publiceer om het in het hotel te tonen.",
+  "Choose the image": "Kies de afbeelding",
+  "Choose the page icon": "Kies het pagina-icoon",
+  "No images found.": "Geen afbeeldingen gevonden.",
+  "Reading the server's catalogue images ...": "De catalogusafbeeldingen van de server lezen ...",
+  "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "De afbeeldingen in c_images/catalogue van deze computer en de server: een klik schrijft de naam (zonder .gif, de client voegt dat toe).",
+  "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "De pagina-iconen (c_images/catalogue/icon_<n>.png) van deze computer en de server: een klik schrijft het nummer in icon_image.",
+  "{count} shown": "{count} getoond"
 }

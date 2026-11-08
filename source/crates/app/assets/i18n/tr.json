@@ -3276,5 +3276,12 @@
   "Edit page (catalog_pages) ...": "Sayfayı düzenle (catalog_pages) ...",
   "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Sayfanın catalog_pages satırının her sütunu: başlık, düzen, simge, üst sayfa, sıra, rütbe, görünür, metinler ve görseller ... Değişen değerler işaretlidir; Kaydet yalnızca onları yazar.",
   "Right-click: edit the page": "Sağ tık: sayfayı düzenle",
-  "Saved {count} values of the page. Publish to show it in the hotel.": "Sayfanın {count} değeri kaydedildi. Otelde göstermek için yayınlayın."
+  "Saved {count} values of the page. Publish to show it in the hotel.": "Sayfanın {count} değeri kaydedildi. Otelde göstermek için yayınlayın.",
+  "Choose the image": "Görseli seç",
+  "Choose the page icon": "Sayfa simgesini seç",
+  "No images found.": "Görsel bulunamadı.",
+  "Reading the server's catalogue images ...": "Sunucunun katalog görselleri okunuyor ...",
+  "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "Bu bilgisayarın ve sunucunun c_images/catalogue içindeki görselleri: bir tıklama adı yazar (.gif olmadan, istemci ekler).",
+  "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Bu bilgisayarın ve sunucunun sayfa simgeleri (c_images/catalogue/icon_<n>.png): bir tıklama numarayı icon_image'a yazar.",
+  "{count} shown": "{count} gösteriliyor"
 }

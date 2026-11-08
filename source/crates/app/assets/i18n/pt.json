@@ -3276,5 +3276,12 @@
   "Edit page (catalog_pages) ...": "Editar página (catalog_pages) ...",
   "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Cada coluna da linha catalog_pages da página: título, layout, ícone, página pai, ordem, cargo, visível, textos e imagens ... Os valores alterados estão marcados; Guardar escreve só esses.",
   "Right-click: edit the page": "Clique direito: editar a página",
-  "Saved {count} values of the page. Publish to show it in the hotel.": "{count} valores da página guardados. Publique para o mostrar no hotel."
+  "Saved {count} values of the page. Publish to show it in the hotel.": "{count} valores da página guardados. Publique para o mostrar no hotel.",
+  "Choose the image": "Escolher a imagem",
+  "Choose the page icon": "Escolher o ícone da página",
+  "No images found.": "Nenhuma imagem encontrada.",
+  "Reading the server's catalogue images ...": "A ler as imagens do catálogo do servidor ...",
+  "The images in c_images/catalogue of this computer and the server: a click writes the name (without .gif, the client adds it).": "As imagens em c_images/catalogue deste computador e do servidor: um clique escreve o nome (sem .gif, o cliente acrescenta-o).",
+  "The page icons (c_images/catalogue/icon_<n>.png) of this computer and the server: a click writes the number in icon_image.": "Os ícones de página (c_images/catalogue/icon_<n>.png) deste computador e do servidor: um clique escreve o número em icon_image.",
+  "{count} shown": "{count} mostradas"
 }

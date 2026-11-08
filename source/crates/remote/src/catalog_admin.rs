@@ -1659,36 +1659,56 @@ fn furni_column_from_row(row: &[SqlValue]) -> FurniColumn {
     }
 }
 
-/// The columns of items_base, in the table's order.
-pub async fn furni_columns(session: &SqlSession, database: &str) -> Result<Vec<FurniColumn>> {
-    let result = session.columns(database, "items_base").await?;
+/// The columns of `table` (items_base, catalog_items ...), in the table's order.
+pub async fn table_columns(session: &SqlSession, database: &str, table: &str) -> Result<Vec<FurniColumn>> {
+    let result = session.columns(database, table).await?;
     Ok(result.rows.iter().map(|row| furni_column_from_row(row)).collect())
 }
 
-/// One furni's row: each column's value as text (None: NULL), by column name.
-pub async fn load_furni_row(session: &SqlSession, database: &str, id: i64) -> Result<Vec<(String, Option<String>)>> {
-    let result = session.table_data(database, "items_base", &format!("`id` = {id}"), None, false, 0, 1).await?;
+/// The columns of items_base.
+pub async fn furni_columns(session: &SqlSession, database: &str) -> Result<Vec<FurniColumn>> {
+    table_columns(session, database, "items_base").await
+}
+
+/// The row of `table` with this id: each column's value as text (None: NULL), by column name.
+pub async fn load_row(session: &SqlSession, database: &str, table: &str, id: i64) -> Result<Vec<(String, Option<String>)>> {
+    let result = session.table_data(database, table, &format!("`id` = {id}"), None, false, 0, 1).await?;
     let columns = result.columns.unwrap_or_default();
     let Some(row) = result.rows.first() else {
-        return Err(ServerError(format!("items_base has no furni with id {id}.")).into());
+        return Err(ServerError(format!("{table} has no row with id {id}.")).into());
     };
     Ok(columns.iter().zip(row).map(|(c, v)| (c.name.clone(), crate::sql_session::display(v, Some(c), usize::MAX))).collect())
 }
 
-/// The UPDATE of the changed columns of furni `id` (None: NULL).
-pub fn furni_update_statement(database: &str, id: i64, changes: &[(String, Option<String>)]) -> (String, Vec<SqlValue>) {
+/// One furni's items_base row.
+pub async fn load_furni_row(session: &SqlSession, database: &str, id: i64) -> Result<Vec<(String, Option<String>)>> {
+    load_row(session, database, "items_base", id).await
+}
+
+/// The UPDATE of the changed columns of row `id` of `table` (None: NULL).
+pub fn update_statement(database: &str, table: &str, id: i64, changes: &[(String, Option<String>)]) -> (String, Vec<SqlValue>) {
     let set: Vec<String> = changes.iter().map(|(column, _)| format!("{} = ?", quote(column))).collect();
     let mut params: Vec<SqlValue> = changes.iter().map(|(_, value)| value.clone().map(SqlValue::Text).unwrap_or(SqlValue::Null)).collect();
     params.push(SqlValue::Int(id));
-    (format!("UPDATE {}.items_base SET {} WHERE id = ?", quote(database), set.join(", ")), params)
+    (format!("UPDATE {}.{table} SET {} WHERE id = ?", quote(database), set.join(", ")), params)
 }
 
-/// Saves the changed columns of furni `id` in one statement.
-pub async fn save_furni(session: &SqlSession, database: &str, id: i64, changes: &[(String, Option<String>)]) -> Result<u64> {
+/// The UPDATE of the changed columns of furni `id`.
+pub fn furni_update_statement(database: &str, id: i64, changes: &[(String, Option<String>)]) -> (String, Vec<SqlValue>) {
+    update_statement(database, "items_base", id, changes)
+}
+
+/// Saves the changed columns of row `id` of `table` in one statement.
+pub async fn save_row(session: &SqlSession, database: &str, table: &str, id: i64, changes: &[(String, Option<String>)]) -> Result<u64> {
     if changes.is_empty() {
         return Ok(0);
     }
-    Ok(session.execute(&[furni_update_statement(database, id, changes)]).await?.0)
+    Ok(session.execute(&[update_statement(database, table, id, changes)]).await?.0)
+}
+
+/// Saves the changed columns of furni `id`.
+pub async fn save_furni(session: &SqlSession, database: &str, id: i64, changes: &[(String, Option<String>)]) -> Result<u64> {
+    save_row(session, database, "items_base", id, changes).await
 }
 
 #[cfg(test)]
@@ -1738,6 +1758,8 @@ mod tests {
         let (sql, params) = furni_update_statement("hotel", 7, &[("allow_sit".into(), Some("1".into())), ("vending_ids".into(), None)]);
         assert_eq!(sql, "UPDATE `hotel`.items_base SET `allow_sit` = ?, `vending_ids` = ? WHERE id = ?");
         assert_eq!(params, vec![SqlValue::Text("1".into()), SqlValue::Null, SqlValue::Int(7)]);
+        let (sql, _) = update_statement("hotel", "catalog_items", 9, &[("cost_credits".into(), Some("25".into()))]);
+        assert_eq!(sql, "UPDATE `hotel`.catalog_items SET `cost_credits` = ? WHERE id = ?");
     }
 
     #[test]

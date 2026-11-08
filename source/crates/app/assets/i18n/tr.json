@@ -3269,5 +3269,8 @@
   "Reading the furni ...": "Mobilya okunuyor ...",
   "Save changes ({count})": "Değişiklikleri kaydet ({count})",
   "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} değer kaydedildi. Emülatör items_base'i başlarken okur: yeniden başlatın (Araçlar) ya da otelde :update_items.",
-  "Values": "Değerler"
+  "Values": "Değerler",
+  "Edit offer (catalog_items) ...": "Teklifi düzenle (catalog_items) ...",
+  "Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.": "Teklifin catalog_items satırının her sütunu: fiyat, miktar, sayfa, sıra, sınırlı seri ... Değişen değerler işaretlidir; Kaydet yalnızca onları yazar.",
+  "Saved {count} values of the offer. Publish to show it in the hotel.": "Teklifin {count} değeri kaydedildi. Otelde göstermek için yayınlayın."
 }

@@ -3269,5 +3269,8 @@
   "Reading the furni ...": "Het meubel lezen ...",
   "Save changes ({count})": "Wijzigingen opslaan ({count})",
   "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} waarden opgeslagen. De emulator leest items_base bij het starten: herstart hem (Tools), of :update_items in het hotel.",
-  "Values": "Waarden"
+  "Values": "Waarden",
+  "Edit offer (catalog_items) ...": "Aanbieding bewerken (catalog_items) ...",
+  "Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.": "Elke kolom van de catalog_items-rij van de aanbieding: prijs, aantal, pagina, volgorde, limited-serie ... Gewijzigde waarden zijn gemarkeerd; Opslaan schrijft alleen die.",
+  "Saved {count} values of the offer. Publish to show it in the hotel.": "{count} waarden van de aanbieding opgeslagen. Publiceer om het in het hotel te tonen."
 }

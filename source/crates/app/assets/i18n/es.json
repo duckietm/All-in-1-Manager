@@ -3269,5 +3269,8 @@
   "Reading the furni ...": "Leyendo el furni ...",
   "Save changes ({count})": "Guardar cambios ({count})",
   "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} valores guardados. El emulador lee items_base al arrancar: reinícialo (Herramientas), o :update_items en el hotel.",
-  "Values": "Valores"
+  "Values": "Valores",
+  "Edit offer (catalog_items) ...": "Editar oferta (catalog_items) ...",
+  "Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.": "Cada columna de la fila catalog_items de la oferta: precio, cantidad, página, orden, serie limitada ... Los valores cambiados están marcados; Guardar escribe solo esos.",
+  "Saved {count} values of the offer. Publish to show it in the hotel.": "{count} valores de la oferta guardados. Publica para mostrarlo en el hotel."
 }

@@ -1410,6 +1410,10 @@ is. Changed values are marked and checked (whole numbers, decimals, the text len
 those, in one statement. A bundle offers an entry per furni. The emulator reads `items_base` when it starts: restart
 it (Tools) or use `:update_items` in the hotel.
 
+The same menu has **Edit offer**: the offer's `catalog_items` row in the same editor (price in credits and points
+with their type, amount, page, order, limited series, offer id, extra data, the flags as ticks ...). After a save
+the page is read again (also the new page when `page_id` changed); **Publish** shows it in the hotel.
+
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
 catalogue again, as on the Catalogue page.

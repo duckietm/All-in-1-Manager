@@ -3269,5 +3269,8 @@
   "Reading the furni ...": "Luetaan kalustetta ...",
   "Save changes ({count})": "Tallenna muutokset ({count})",
   "Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.": "{count} arvoa tallennettu. Emulaattori lukee items_base-taulun käynnistyessään: käynnistä se uudelleen (Työkalut) tai :update_items hotellissa.",
-  "Values": "Arvot"
+  "Values": "Arvot",
+  "Edit offer (catalog_items) ...": "Muokkaa tarjousta (catalog_items) ...",
+  "Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.": "Tarjouksen catalog_items-rivin jokainen sarake: hinta, määrä, sivu, järjestys, rajoitettu sarja ... Muutetut arvot on merkitty; Tallenna kirjoittaa vain ne.",
+  "Saved {count} values of the offer. Publish to show it in the hotel.": "Tarjouksen {count} arvoa tallennettu. Julkaise näyttääksesi sen hotellissa."
 }

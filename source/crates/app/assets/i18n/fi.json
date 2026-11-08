@@ -3272,5 +3272,9 @@
   "Values": "Arvot",
   "Edit offer (catalog_items) ...": "Muokkaa tarjousta (catalog_items) ...",
   "Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.": "Tarjouksen catalog_items-rivin jokainen sarake: hinta, määrä, sivu, järjestys, rajoitettu sarja ... Muutetut arvot on merkitty; Tallenna kirjoittaa vain ne.",
-  "Saved {count} values of the offer. Publish to show it in the hotel.": "Tarjouksen {count} arvoa tallennettu. Julkaise näyttääksesi sen hotellissa."
+  "Saved {count} values of the offer. Publish to show it in the hotel.": "Tarjouksen {count} arvoa tallennettu. Julkaise näyttääksesi sen hotellissa.",
+  "Edit page (catalog_pages) ...": "Muokkaa sivua (catalog_pages) ...",
+  "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Sivun catalog_pages-rivin jokainen sarake: otsikko, asettelu, kuvake, yläsivu, järjestys, arvo, näkyvyys, tekstit ja kuvat ... Muutetut arvot on merkitty; Tallenna kirjoittaa vain ne.",
+  "Right-click: edit the page": "Oikea napsautus: muokkaa sivua",
+  "Saved {count} values of the page. Publish to show it in the hotel.": "Sivun {count} arvoa tallennettu. Julkaise näyttääksesi sen hotellissa."
 }

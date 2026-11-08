@@ -654,7 +654,7 @@ impl Ctl {
         let result = catalog_admin::save_row(&session, &database, table, id, &changes).await;
         let ok = result.is_ok();
         self.with(generation, |s| {
-            if result.is_ok() && table == "catalog_items" {
+            if result.is_ok() && table != "items_base" {
                 s.unpublished = true;
             }
             let Some(editor) = s.editor.as_mut() else { return };
@@ -662,6 +662,9 @@ impl Ctl {
             editor.status = match result {
                 Ok(_) if table == "catalog_items" => {
                     Status { text: tf("Saved {count} values of the offer. Publish to show it in the hotel.", &[("count", &changes.len().to_string())]), error: false }
+                }
+                Ok(_) if table == "catalog_pages" => {
+                    Status { text: tf("Saved {count} values of the page. Publish to show it in the hotel.", &[("count", &changes.len().to_string())]), error: false }
                 }
                 Ok(_) => Status {
                     text: tf("Saved {count} values. The emulator reads items_base when it starts: restart it (Tools), or :update_items in the hotel.", &[("count", &changes.len().to_string())]),
@@ -696,6 +699,10 @@ impl Ctl {
                 for page in [page, moved_to].into_iter().flatten().collect::<HashSet<i64>>() {
                     self.load_offers(page).await;
                 }
+            }
+            if table == "catalog_pages" {
+                // The tree: its caption, icon, parent, order, visible ... (the windows stay where they were).
+                self.load_pages().await;
             }
         }
     }
@@ -975,6 +982,14 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                     }
                     let color = if *id == UNOFFERED { game::TITLE } else if *visible { game::TEXT } else { game::HIDDEN };
                     ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, caption, font, color);
+                    if *id != UNOFFERED {
+                        response.context_menu(|ui| {
+                            if ui.button(t("Edit page (catalog_pages) ...")).clicked() {
+                                actions.push(Action::EditRow { table: "catalog_pages", id: *id, furni: None, page: None });
+                                ui.close_menu();
+                            }
+                        });
+                    }
                     if let Some(page) = released::<DragPage>(&response) {
                         if *id != UNOFFERED {
                             actions.push(Action::MovePage { id: page.0, parent: *id, before: None });
@@ -1105,6 +1120,12 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 if highlight {
                     ui.painter().rect_stroke(rect, CornerRadius::same(4), Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
                 }
+                response.context_menu(|ui| {
+                    if ui.button(t("Edit page (catalog_pages) ...")).clicked() {
+                        actions.push(Action::EditRow { table: "catalog_pages", id, furni: None, page: None });
+                        ui.close_menu();
+                    }
+                });
                 match page_zone {
                     Some(Zone::Before) => {
                         ui.painter().line_segment([rect.left_top() + egui::vec2(depth as f32 * 12.0, 0.0), rect.right_top()], Stroke::new(3.0_f32, game::DROP));
@@ -1179,8 +1200,14 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
     let offers = s.offers.get(&page_id).cloned();
     egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        // The page bar: icon, caption, what it holds.
-        let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::hover());
+        // The page bar: icon, caption, what it holds; right-click edits the page.
+        let (bar, bar_response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click());
+        bar_response.on_hover_text(t("Right-click: edit the page")).context_menu(|ui| {
+            if ui.button(t("Edit page (catalog_pages) ...")).clicked() {
+                actions.push(Action::EditRow { table: "catalog_pages", id: page_id, furni: None, page: None });
+                ui.close_menu();
+            }
+        });
         ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
         if let Some(texture) = images.page(ctx, page.icon_image) {
             sharp_image(ui.painter(), &texture, bar.left_center() + egui::vec2(22.0, 0.0), egui::vec2(34.0, 34.0), 1);
@@ -1394,11 +1421,24 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 72.0), Sense::hover());
             ui.painter().rect_filled(rect, CornerRadius::same(6), game::PAGE_BAR);
-            let offer = Offer { catalog_name: furni.as_ref().map(|f| f.item_name.clone()).unwrap_or_default(), ..Offer::default() };
-            draw_furni(ui.painter(), ctx, images, furni.as_ref(), &offer, rect.shrink(4.0), 2);
+            let value = |name: &str| columns.iter().position(|c| c.name == name).and_then(|i| editor.values.get(i).cloned());
+            if editor.table == "catalog_pages" {
+                let icon = value("icon_image").and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(0);
+                if let Some(texture) = images.page(ctx, icon) {
+                    sharp_image(ui.painter(), &texture, rect.center(), rect.size() - egui::vec2(8.0, 8.0), 2);
+                }
+            } else {
+                let offer = Offer { catalog_name: furni.as_ref().map(|f| f.item_name.clone()).unwrap_or_default(), ..Offer::default() };
+                draw_furni(ui.painter(), ctx, images, furni.as_ref(), &offer, rect.shrink(4.0), 2);
+            }
             ui.vertical(|ui| {
                 let furni_name = furni.as_ref().map(|f| if f.public_name.is_empty() { f.item_name.clone() } else { f.public_name.clone() }).unwrap_or_default();
-                if editor.table == "catalog_items" {
+                if editor.table == "catalog_pages" {
+                    let caption = value("caption").unwrap_or_default();
+                    ui.label(RichText::new(caption).size(17.0).strong());
+                    ui.label(RichText::new(format!("catalog_pages id {}", editor.id)).size(12.0).color(palette.muted));
+                    ui.label(RichText::new(t("Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
+                } else if editor.table == "catalog_items" {
                     ui.label(RichText::new(offer_name.clone().filter(|n| !n.is_empty()).unwrap_or(furni_name)).size(17.0).strong());
                     ui.label(RichText::new(format!("catalog_items id {}", editor.id)).size(12.0).color(palette.muted));
                     ui.label(RichText::new(t("Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
@@ -1469,8 +1509,12 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                                     }
                                 });
                             }
+                            // A text column (page_text1 ...) can hold several lines.
+                            FieldKind::Text { max: None } => {
+                                ui.add(egui::TextEdit::multiline(&mut editor.values[i]).desired_rows(2).desired_width(300.0));
+                            }
                             _ => {
-                                let width = if matches!(kind, FieldKind::Text { max: None } | FieldKind::Text { max: Some(65..) }) { 380.0 } else { 140.0 };
+                                let width = if matches!(kind, FieldKind::Text { max: Some(65..) }) { 300.0 } else { 140.0 };
                                 ui.add(egui::TextEdit::singleline(&mut editor.values[i]).desired_width(width));
                             }
                         });
@@ -1482,7 +1526,11 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                     let problem = (!editor.nulls[i]).then(|| catalog_admin::field_problem(column, &editor.values[i])).flatten();
                     match problem {
                         Some(problem) => ui.label(RichText::new(problem).size(11.0).color(palette.error_text)),
-                        None => ui.label(RichText::new(&column.column_type).size(11.0).color(palette.muted)),
+                        // A long enum type would make the window wide: cut, the whole type on hover.
+                        None => {
+                            let shown = if column.column_type.chars().count() > 28 { format!("{}…", column.column_type.chars().take(26).collect::<String>()) } else { column.column_type.clone() };
+                            ui.label(RichText::new(shown).size(11.0).color(palette.muted)).on_hover_text(hover(column))
+                        }
                     };
                     ui.end_row();
                 }
@@ -1730,13 +1778,48 @@ fn sample(s: &mut State) {
     s.database = "habbo".into();
     s.subtitle = t("A sample catalogue: the dry run has no database.").into();
     if std::env::var_os("AIO_SCREENSHOT_EDITOR").is_some() {
-        let table = if std::env::var("AIO_SCREENSHOT_EDITOR").as_deref() == Ok("offer") { "catalog_items" } else { "items_base" };
+        let table = match std::env::var("AIO_SCREENSHOT_EDITOR").as_deref() {
+            Ok("offer") => "catalog_items",
+            Ok("page") => "catalog_pages",
+            _ => "items_base",
+        };
         sample_editor(s, table, 102, Some(102));
     }
 }
 
 /// The editor on a sample furni (the columns of Arcturus' items_base), for the screenshot.
 fn sample_editor(s: &mut State, table: &'static str, id: i64, furni: Option<i64>) {
+    if table == "catalog_pages" {
+        let columns: Vec<(&str, &str, &str)> = vec![
+            ("id", "int(11)", "10"),
+            ("parent_id", "int(11)", "2"),
+            ("caption_save", "varchar(25)", "rares"),
+            ("caption", "varchar(128)", "Rares"),
+            ("page_layout", "enum('default_3x3','frontpage','frontpage4','spaces','trophies','pets','info_loyalty','soundmachine')", "default_3x3"),
+            ("icon_color", "int(11)", "1"),
+            ("icon_image", "int(11)", "21"),
+            ("min_rank", "int(11)", "1"),
+            ("order_num", "int(11)", "1"),
+            ("visible", "enum('0','1')", "1"),
+            ("enabled", "enum('0','1')", "1"),
+            ("club_only", "enum('0','1')", "0"),
+            ("vip_only", "enum('0','1')", "0"),
+            ("page_headline", "varchar(1024)", "catalog_rares_headline1"),
+            ("page_teaser", "varchar(64)", ""),
+            ("page_special", "varchar(2048)", ""),
+            ("page_text1", "text", "The rarest furni of the hotel."),
+            ("page_text2", "text", ""),
+            ("page_text_details", "text", ""),
+            ("page_text_teaser", "text", ""),
+            ("room_id", "int(11)", "0"),
+            ("includes", "varchar(32)", ""),
+        ];
+        s.columns.insert(table, columns.iter().map(|(name, kind, _)| FurniColumn { name: name.to_string(), column_type: kind.to_string(), nullable: false, comment: String::new() }).collect());
+        let original: Vec<Option<String>> = columns.iter().map(|(_, _, v)| Some(v.to_string())).collect();
+        let values: Vec<String> = original.iter().map(|v| v.clone().unwrap_or_default()).collect();
+        s.editor = Some(Editor { table, id, furni, page: None, nulls: vec![false; values.len()], values, original: Some(original), saving: false, status: Status::default() });
+        return;
+    }
     if table == "catalog_items" {
         let columns: Vec<(&str, &str, &str)> = vec![
             ("id", "int(11)", "102"),

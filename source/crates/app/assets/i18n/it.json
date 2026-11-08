@@ -3272,5 +3272,9 @@
   "Values": "Valori",
   "Edit offer (catalog_items) ...": "Modifica offerta (catalog_items) ...",
   "Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.": "Ogni colonna della riga catalog_items dell'offerta: prezzo, quantità, pagina, ordine, serie limitata ... I valori modificati sono segnati; Salva scrive solo quelli.",
-  "Saved {count} values of the offer. Publish to show it in the hotel.": "{count} valori dell'offerta salvati. Pubblica per mostrarlo nell'hotel."
+  "Saved {count} values of the offer. Publish to show it in the hotel.": "{count} valori dell'offerta salvati. Pubblica per mostrarlo nell'hotel.",
+  "Edit page (catalog_pages) ...": "Modifica pagina (catalog_pages) ...",
+  "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Ogni colonna della riga catalog_pages della pagina: titolo, layout, icona, pagina padre, ordine, grado, visibile, testi e immagini ... I valori modificati sono segnati; Salva scrive solo quelli.",
+  "Right-click: edit the page": "Clic destro: modifica la pagina",
+  "Saved {count} values of the page. Publish to show it in the hotel.": "{count} valori della pagina salvati. Pubblica per mostrarlo nell'hotel."
 }

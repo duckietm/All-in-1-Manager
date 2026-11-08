@@ -1414,6 +1414,11 @@ The same menu has **Edit offer**: the offer's `catalog_items` row in the same ed
 with their type, amount, page, order, limited series, offer id, extra data, the flags as ticks ...). After a save
 the page is read again (also the new page when `page_id` changed); **Publish** shows it in the hotel.
 
+**Right-click a page** (in a tree, on its tab, or on the page bar above its furni) for **Edit page**: the page's
+`catalog_pages` row in the same editor (caption and internal name, `page_layout` from the layouts the table allows,
+icon, parent, order, minimum rank, visible / enabled / club / VIP as ticks, headline and teaser images, the page texts
+in fields of several lines ...). After a save the tree is read again; **Publish** shows it in the hotel.
+
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
 catalogue again, as on the Catalogue page.

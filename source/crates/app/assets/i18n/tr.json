@@ -3272,5 +3272,9 @@
   "Values": "Değerler",
   "Edit offer (catalog_items) ...": "Teklifi düzenle (catalog_items) ...",
   "Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.": "Teklifin catalog_items satırının her sütunu: fiyat, miktar, sayfa, sıra, sınırlı seri ... Değişen değerler işaretlidir; Kaydet yalnızca onları yazar.",
-  "Saved {count} values of the offer. Publish to show it in the hotel.": "Teklifin {count} değeri kaydedildi. Otelde göstermek için yayınlayın."
+  "Saved {count} values of the offer. Publish to show it in the hotel.": "Teklifin {count} değeri kaydedildi. Otelde göstermek için yayınlayın.",
+  "Edit page (catalog_pages) ...": "Sayfayı düzenle (catalog_pages) ...",
+  "Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.": "Sayfanın catalog_pages satırının her sütunu: başlık, düzen, simge, üst sayfa, sıra, rütbe, görünür, metinler ve görseller ... Değişen değerler işaretlidir; Kaydet yalnızca onları yazar.",
+  "Right-click: edit the page": "Sağ tık: sayfayı düzenle",
+  "Saved {count} values of the page. Publish to show it in the hotel.": "Sayfanın {count} değeri kaydedildi. Otelde göstermek için yayınlayın."
 }

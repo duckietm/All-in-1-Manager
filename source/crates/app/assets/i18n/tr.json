@@ -3447,5 +3447,7 @@
   "{count} texts translated: check them, then Save.": "{count} metin çevrildi: kontrol edin, sonra Kaydedin.",
   "{created} new, {changed} changed, {moved} moved, {deleted} deleted.": "{created} yeni, {changed} değişti, {moved} taşındı, {deleted} silindi.",
   "{file} cannot be imported: {error}": "{file} içe aktarılamıyor: {error}",
-  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} değişiklik. Kontrol edin, sonra Uygulayın."
+  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} değişiklik. Kontrol edin, sonra Uygulayın.",
+  "Kept encrypted in the configuration folder of this computer, readable by your account only, and filled in the next time you log in to this server as this user. Untick it and log in to forget it. SSH key logins never store a password.": "Bu bilgisayarın yapılandırma klasöründe şifreli olarak saklanır, yalnızca hesabınız okuyabilir ve bu sunucuya bu kullanıcıyla bir sonraki girişinizde doldurulur. Unutmak için işareti kaldırıp giriş yapın. SSH anahtarıyla girişler asla parola saklamaz.",
+  "Remember the password on this computer": "Parolayı bu bilgisayarda hatırla"
 }

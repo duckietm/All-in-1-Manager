@@ -3447,5 +3447,7 @@
   "{count} texts translated: check them, then Save.": "{count} tekstiä käännetty: tarkista ne ja tallenna sitten.",
   "{created} new, {changed} changed, {moved} moved, {deleted} deleted.": "{created} uutta, {changed} muutettu, {moved} siirretty, {deleted} poistettu.",
   "{file} cannot be imported: {error}": "Tiedostoa {file} ei voi tuoda: {error}",
-  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} muutosta. Tarkista ne ja käytä sitten."
+  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} muutosta. Tarkista ne ja käytä sitten.",
+  "Kept encrypted in the configuration folder of this computer, readable by your account only, and filled in the next time you log in to this server as this user. Untick it and log in to forget it. SSH key logins never store a password.": "Tallennetaan salattuna tämän tietokoneen asetuskansioon, vain tilisi luettavaksi, ja täytetään, kun seuraavan kerran kirjaudut tälle palvelimelle tällä käyttäjällä. Poista rasti ja kirjaudu unohtaaksesi sen. SSH-avainkirjautumiset eivät koskaan tallenna salasanaa.",
+  "Remember the password on this computer": "Muista salasana tällä tietokoneella"
 }

@@ -72,6 +72,10 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 1. Download `all-in-1-manager-windows-x64.exe` or `all-in-1-manager-linux-x64` from the
    [releases](https://github.com/duckietm/All-in-1-Manager/releases) and start it (on Linux: `chmod +x` first).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
+   The login remembers the last server and the user of each server. With a password, **Remember the password on
+   this computer** fills it in next time: it is kept encrypted (AES-256-GCM, with a random key next to it) in the
+   configuration folder, readable by your account only; untick it and log in to forget it. SSH key logins never store
+   a password.
 3. **Install New Server** and follow the steps. Each one explains what it does; **Skip** leaves it out.
 4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Habbo assets** and
    **Deploy Assets** (sidebar → ASSETS) for the game's files.

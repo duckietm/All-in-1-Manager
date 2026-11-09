@@ -3447,5 +3447,7 @@
   "{count} texts translated: check them, then Save.": "{count} Texte übersetzt: prüfe sie, dann Speichern.",
   "{created} new, {changed} changed, {moved} moved, {deleted} deleted.": "{created} neu, {changed} geändert, {moved} verschoben, {deleted} gelöscht.",
   "{file} cannot be imported: {error}": "{file} kann nicht importiert werden: {error}",
-  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} Änderungen. Prüfe sie, dann Anwenden."
+  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} Änderungen. Prüfe sie, dann Anwenden.",
+  "Kept encrypted in the configuration folder of this computer, readable by your account only, and filled in the next time you log in to this server as this user. Untick it and log in to forget it. SSH key logins never store a password.": "Verschlüsselt im Konfigurationsordner dieses Computers gespeichert, nur für dein Konto lesbar, und beim nächsten Login auf diesem Server als dieser Benutzer eingetragen. Entferne den Haken und melde dich an, um es zu vergessen. Logins mit SSH-Schlüssel speichern nie ein Passwort.",
+  "Remember the password on this computer": "Passwort auf diesem Computer merken"
 }

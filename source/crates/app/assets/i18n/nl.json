@@ -3447,5 +3447,7 @@
   "{count} texts translated: check them, then Save.": "{count} teksten vertaald: controleer ze en sla dan op.",
   "{created} new, {changed} changed, {moved} moved, {deleted} deleted.": "{created} nieuw, {changed} gewijzigd, {moved} verplaatst, {deleted} verwijderd.",
   "{file} cannot be imported: {error}": "{file} kan niet worden geïmporteerd: {error}",
-  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} wijzigingen. Controleer ze en pas ze dan toe."
+  "{file}: {count} changes. Check them, then Apply.": "{file}: {count} wijzigingen. Controleer ze en pas ze dan toe.",
+  "Kept encrypted in the configuration folder of this computer, readable by your account only, and filled in the next time you log in to this server as this user. Untick it and log in to forget it. SSH key logins never store a password.": "Versleuteld bewaard in de configuratiemap van deze computer, alleen leesbaar voor jouw account, en ingevuld de volgende keer dat je als deze gebruiker op deze server inlogt. Vink het uit en log in om het te vergeten. Inloggen met een SSH-sleutel bewaart nooit een wachtwoord.",
+  "Remember the password on this computer": "Wachtwoord onthouden op deze computer"
 }

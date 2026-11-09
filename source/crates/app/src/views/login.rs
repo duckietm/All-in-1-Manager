@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use aio_core::config_dir;
 use aio_core::keys::AuthorizedKey;
+use aio_core::saved_logins::SavedLogins;
 use aio_core::InstallerSettings;
 use aio_remote::server::ConnectStage;
 use aio_remote::ssh::{self, KeyReadError};
@@ -73,6 +74,13 @@ struct Form {
     password: String,
     key_password: String,
     use_key: bool,
+    /// Remember the password on this computer (password logins only).
+    remember_password: bool,
+    /// What this computer remembers: the last server, its user and maybe its password.
+    saved: SavedLogins,
+    /// The server, user and password (None for a key login, or when it is not to be remembered) of the login under
+    /// way, remembered once it succeeds.
+    pending: Option<(String, String, Option<String>, bool)>,
     browsed: Vec<PathBuf>,
     picked: Option<PathBuf>,
     keys: Vec<PathBuf>,
@@ -232,6 +240,15 @@ impl LoginDialog {
         drop(inbox);
         match outcome {
             Some(Ok(server)) => {
+                if let Some((host, user, password, key)) = form.pending.take() {
+                    if !shared.dry_run || std::env::var_os("AIO_SCREENSHOT").is_none() {
+                        if key {
+                            SavedLogins::remember_user(&host, &user);
+                        } else {
+                            SavedLogins::remember(&host, &user, password.as_deref());
+                        }
+                    }
+                }
                 let login = server.login();
                 self.last_login = Some(Prefill {
                     host: host_text(&login.host, login.port),
@@ -264,6 +281,7 @@ impl LoginDialog {
         form.error.clear();
         let (host, port) = ServerLogin::parse_host(&form.host);
         let account = form.user.trim().to_string();
+        form.pending = Some((form.host.trim().to_string(), account.clone(), (!form.use_key && form.remember_password).then(|| form.password.clone()), form.use_key));
         let login = if form.use_key {
             let key = form.keys[form.selected_key.unwrap_or(0)].to_string_lossy().into_owned();
             ServerLogin::key(&host, port, &account, vec![key], &form.key_password)
@@ -387,15 +405,30 @@ impl Form {
                 servers.insert(0, earlier.to_string());
             }
         }
-        let host = prefill.map(|p| p.host.clone()).or_else(|| settings.default_server.clone()).unwrap_or_default();
-        let use_key = prefill.map(|p| p.use_key).unwrap_or_else(|| settings.default_key_path().is_some() || !config_dir::all_private_keys().is_empty());
+        let saved = SavedLogins::load();
+        let host = prefill
+            .map(|p| p.host.clone())
+            .or_else(|| saved.last_server.clone().filter(|s| !s.is_empty()))
+            .or_else(|| settings.default_server.clone())
+            .unwrap_or_default();
+        if !host.is_empty() && !servers.iter().any(|s| s.eq_ignore_ascii_case(&host)) {
+            servers.insert(0, host.clone());
+        }
+        let user = prefill.map(|p| p.user.clone()).or_else(|| saved.user(&host)).unwrap_or_else(|| "root".into());
+        let remembered = saved.password(&host, &user);
+        let use_key = prefill
+            .map(|p| p.use_key)
+            .unwrap_or_else(|| remembered.is_none() && (settings.default_key_path().is_some() || !config_dir::all_private_keys().is_empty()));
         let mut form = Self {
             servers,
             host,
-            user: prefill.map(|p| p.user.clone()).unwrap_or_else(|| "root".into()),
-            password: String::new(),
+            user,
+            password: remembered.clone().unwrap_or_default(),
             key_password: String::new(),
             use_key,
+            remember_password: remembered.is_some(),
+            saved,
+            pending: None,
             browsed: Vec::new(),
             picked: prefill.and_then(|p| p.key_path.clone()),
             keys: Vec::new(),
@@ -421,6 +454,25 @@ impl Form {
         let picked = self.picked.clone().filter(|p| p.is_file());
         self.keys = key_paths(&self.browsed, &config_dir::all_private_keys(), preset.as_deref(), picked.as_deref());
         self.selected_key = choose_key(&self.keys, self.picked.as_deref(), preset.as_deref(), &server);
+    }
+
+    /// Another server was chosen or typed: its remembered user, and its password when one is remembered.
+    fn server_changed(&mut self) {
+        if let Some(user) = self.saved.user(&self.host) {
+            self.user = user;
+        }
+        match self.saved.password(&self.host, &self.user) {
+            Some(password) => {
+                self.password = password;
+                self.remember_password = true;
+            }
+            None => {
+                if self.remember_password {
+                    self.password.clear();
+                }
+                self.remember_password = false;
+            }
+        }
     }
 
     fn validate(&self) -> Option<String> {
@@ -470,8 +522,11 @@ impl Form {
                 if response.changed() {
                     self.error.clear();
                 }
-                if response.lost_focus() && self.picked.is_none() {
-                    self.refresh_keys();
+                if response.lost_focus() {
+                    self.server_changed();
+                    if self.picked.is_none() {
+                        self.refresh_keys();
+                    }
                 }
                 let mut chosen = None;
                 egui::ComboBox::from_id_salt("login-servers").selected_text("").width(28.0).show_ui(ui, |ui| {
@@ -487,6 +542,7 @@ impl Form {
                 if let Some(server) = chosen {
                     self.host = server;
                     self.error.clear();
+                    self.server_changed();
                     // Choosing another server from the list also picks its key.
                     if self.picked.is_none() && self.use_key {
                         self.refresh_keys();
@@ -518,6 +574,9 @@ impl Form {
                 if ui.add(field(palette, &mut self.password, t("Password of the account")).password(true).id(password_id).desired_width(f32::INFINITY)).changed() {
                     self.error.clear();
                 }
+                ui.checkbox(&mut self.remember_password, RichText::new(t("Remember the password on this computer")).size(12.5)).on_hover_text(t(
+                    "Kept encrypted in the configuration folder of this computer, readable by your account only, and filled in the next time you log in to this server as this user. Untick it and log in to forget it. SSH key logins never store a password.",
+                ));
             } else {
                 label(ui, palette, t("Private key"));
                 ui.horizontal(|ui| {

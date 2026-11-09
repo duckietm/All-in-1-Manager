@@ -1,11 +1,11 @@
 //! Players: search the hotel's players by name or id, see what the hotel stores about one (rank, currencies, club,
 //! badges, furni, pets, bots, rooms, room visits, bans and mutes) and act on them through the emulator's RCON: give
-//! credits, points or a badge, send an alert, disconnect, set the rank. Reading goes through the same MariaDB login
-//! as the SQL Editor; every action is confirmed first and the emulator's answer is shown.
+//! credits, points or a badge, send an alert, disconnect, set the rank, mute, ban and lift bans. Reading goes through
+//! the same MariaDB login as the SQL Editor; every action is confirmed first and the emulator's answer is shown.
 
 use std::sync::{Arc, Mutex};
 
-use aio_remote::players_admin::{self, Action as Rcon, Player, PlayerRow, Problem, Rank, SearchPage};
+use aio_remote::players_admin::{self, Action as Rcon, BanKind, Player, PlayerRow, Problem, Rank, SearchPage};
 use aio_remote::rcon::{self, Answer};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
@@ -43,6 +43,47 @@ fn furni_kind(kind: &str) -> &'static str {
     }
 }
 
+/// Mute lengths offered, in seconds; the emulator takes a week at most by default.
+const MUTE_LENGTHS: [i64; 5] = [5 * 60, 15 * 60, 60 * 60, 24 * 60 * 60, players_admin::MUTE_MAX_SECONDS];
+const MUTE_DEFAULT: usize = 1;
+
+/// Ban lengths offered, in seconds; the last is "permanent".
+const BAN_LENGTHS: [i64; 7] = [60 * 60, 24 * 60 * 60, 3 * 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60, 365 * 24 * 60 * 60, players_admin::BAN_MAX_SECONDS];
+const BAN_DEFAULT: usize = 1;
+
+fn length_name(seconds: i64) -> &'static str {
+    match seconds {
+        300 => t("5 minutes"),
+        900 => t("15 minutes"),
+        3600 => t("1 hour"),
+        86_400 => t("1 day"),
+        259_200 => t("3 days"),
+        604_800 => t("1 week"),
+        2_592_000 => t("30 days"),
+        31_536_000 => t("1 year"),
+        players_admin::BAN_MAX_SECONDS => t("Permanent"),
+        _ => t("Other length"),
+    }
+}
+
+fn ban_kind_name(kind: BanKind) -> &'static str {
+    match kind {
+        BanKind::Account => t("Account only"),
+        BanKind::Ip => t("Address (IP)"),
+        BanKind::Machine => t("Machine"),
+        BanKind::Super => t("Address and machine"),
+    }
+}
+
+fn ban_kind_hover(kind: BanKind) -> &'static str {
+    match kind {
+        BanKind::Account => t("Only this account is banned."),
+        BanKind::Ip => t("Every account that logs in from this player's last address is refused. Without a known address it becomes an account ban."),
+        BanKind::Machine => t("Every account on this player's computer is refused. Without a known machine it becomes an address ban."),
+        BanKind::Super => t("Both the address and the machine are banned."),
+    }
+}
+
 fn action_name(action: &Rcon) -> String {
     match action {
         Rcon::GiveCredits(amount) => tf("Give {amount} credits", &[("amount", &amount.to_string())]),
@@ -51,6 +92,11 @@ fn action_name(action: &Rcon) -> String {
         Rcon::Alert(_) => t("Send an alert").to_string(),
         Rcon::Disconnect => t("Disconnect").to_string(),
         Rcon::SetRank(rank) => tf("Set the rank to {rank}", &[("rank", &rank.to_string())]),
+        Rcon::Mute(seconds) => tf("Mute for {length}", &[("length", length_name(*seconds))]),
+        Rcon::Unmute => t("Unmute").to_string(),
+        Rcon::Ban(seconds, ..) if *seconds == players_admin::BAN_MAX_SECONDS => t("Ban permanently").to_string(),
+        Rcon::Ban(seconds, ..) => tf("Ban for {length}", &[("length", length_name(*seconds))]),
+        Rcon::Unban => t("Lift the bans").to_string(),
     }
 }
 
@@ -61,6 +107,8 @@ fn problem_text(problem: Problem) -> &'static str {
         Problem::Badge => t("A badge code is 1 to 32 letters, digits, _ or -."),
         Problem::Alert => t("The alert must have 1 to 4096 characters."),
         Problem::Rank => t("Choose a rank."),
+        Problem::Duration => t("Choose how long."),
+        Problem::Reason => t("The ban reason must have 1 to 200 characters."),
     }
 }
 
@@ -71,6 +119,11 @@ fn answer_text(action: &Rcon, name: &str, answer: &Answer) -> (String, bool) {
         rcon::STATUS_OK if answer.message == "offline" => (tf("{action} for {name}: done. {name} is offline, so it was written to the database.", &[("action", &done), ("name", name)]), false),
         rcon::STATUS_OK if answer.message.is_empty() => (tf("{action} for {name}: done.", &[("action", &done), ("name", name)]), false),
         rcon::STATUS_OK => (tf("{action} for {name}: done ({message}).", &[("action", &done), ("name", name), ("message", &answer.message)]), false),
+        _ if rcon::is_unknown_command(answer) => (
+            tf("{action} for {name}: this emulator does not know the command {command}. Update Polaris to use it from here.", &[("action", &done), ("name", name), ("command", action.key())]),
+            true,
+        ),
+        rcon::USER_NOT_FOUND if matches!(action, Rcon::Unban) => (tf("{name} has no active ban.", &[("name", name)]), true),
         rcon::USER_NOT_FOUND if action.online_only() => (tf("{action} for {name}: the emulator did not find {name} online.", &[("action", &done), ("name", name)]), true),
         _ => {
             let message = if answer.message.is_empty() { tf("status {status}", &[("status", &answer.status.to_string())]) } else { answer.message.clone() };
@@ -94,6 +147,11 @@ struct Inputs {
     badge: String,
     alert: String,
     rank: Option<i64>,
+    /// Indexes into [`MUTE_LENGTHS`] and [`BAN_LENGTHS`].
+    mute_length: Option<usize>,
+    ban_length: Option<usize>,
+    ban_reason: String,
+    ban_kind: Option<BanKind>,
 }
 
 #[derive(Default)]
@@ -346,6 +404,16 @@ impl Ctl {
                 let rank = self.lock().rank_name(*rank);
                 tf("{name} gets the rank {rank} and its permissions. The emulator logs the change.", &[("name", &name), ("rank", &rank)])
             }
+            Rcon::Mute(seconds) => tf("{name} cannot chat for {length}. The mute also holds after logging in again.", &[("name", &name), ("length", length_name(*seconds))]),
+            Rcon::Unmute => tf("{name} can chat again.", &[("name", &name)]),
+            Rcon::Ban(seconds, reason, kind) => {
+                let length = if *seconds == players_admin::BAN_MAX_SECONDS { t("for good").to_string() } else { tf("for {length}", &[("length", length_name(*seconds))]) };
+                tf(
+                    "{name} cannot log in {length}. Ban: {kind}. Reason: {reason}\n\nAn online player sees the ban and is disconnected. Staff can lift it in the hotel or here.",
+                    &[("name", &name), ("length", &length), ("kind", ban_kind_name(*kind)), ("reason", reason.trim())],
+                )
+            }
+            Rcon::Unban => tf("Every active ban of {name} ends now, so {name} can log in again.", &[("name", &name)]),
             _ => tf("The emulator gives this to {name} and logs it.", &[("name", &name)]),
         };
         if !online && !action.online_only() {
@@ -370,6 +438,7 @@ impl Ctl {
                             Rcon::GivePoints(..) => s.inputs.points.clear(),
                             Rcon::GiveBadge(_) => s.inputs.badge.clear(),
                             Rcon::Alert(_) => s.inputs.alert.clear(),
+                            Rcon::Ban(..) => s.inputs.ban_reason.clear(),
                             _ => {}
                         }
                     }
@@ -765,6 +834,7 @@ fn detail(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
 fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
     let Some(p) = s.player.as_ref() else { return };
     let (id, name, online) = (p.id, p.name.clone(), p.online);
+    let (muted, banned) = (p.muted_until.is_some(), p.bans.iter().any(|b| b.active));
     let mut kinds: Vec<i64> = p.currencies.iter().map(|c| c.kind).collect();
     for kind in [0, 5] {
         if !kinds.contains(&kind) {
@@ -836,6 +906,59 @@ fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut V
         });
         ui.end_row();
 
+        ui.label(RichText::new(t("Mute")).size(12.5));
+        ui.horizontal(|ui| {
+            let chosen = inputs.mute_length.unwrap_or(MUTE_DEFAULT).min(MUTE_LENGTHS.len() - 1);
+            egui::ComboBox::from_id_salt("players-mute-length").selected_text(length_name(MUTE_LENGTHS[chosen])).width(120.0).show_ui(ui, |ui| {
+                for (index, seconds) in MUTE_LENGTHS.iter().enumerate() {
+                    if ui.selectable_label(chosen == index, length_name(*seconds)).clicked() {
+                        inputs.mute_length = Some(index);
+                    }
+                }
+            });
+            if ui.add_enabled(ready, small(t("Mute"))).clicked() {
+                send(Rcon::Mute(MUTE_LENGTHS[chosen]));
+            }
+            if ui.add_enabled(ready && muted, small(t("Unmute"))).on_disabled_hover_text(t("The player is not muted.")).clicked() {
+                send(Rcon::Unmute);
+            }
+        });
+        ui.end_row();
+
+        ui.label(RichText::new(t("Ban")).size(12.5));
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                let chosen = inputs.ban_length.unwrap_or(BAN_DEFAULT).min(BAN_LENGTHS.len() - 1);
+                egui::ComboBox::from_id_salt("players-ban-length").selected_text(length_name(BAN_LENGTHS[chosen])).width(120.0).show_ui(ui, |ui| {
+                    for (index, seconds) in BAN_LENGTHS.iter().enumerate() {
+                        if ui.selectable_label(chosen == index, length_name(*seconds)).clicked() {
+                            inputs.ban_length = Some(index);
+                        }
+                    }
+                });
+                let kind = inputs.ban_kind.unwrap_or(BanKind::Account);
+                egui::ComboBox::from_id_salt("players-ban-kind").selected_text(ban_kind_name(kind)).width(170.0).show_ui(ui, |ui| {
+                    for k in BanKind::ALL {
+                        if ui.selectable_label(kind == k, ban_kind_name(k)).on_hover_text(ban_kind_hover(k)).clicked() {
+                            inputs.ban_kind = Some(k);
+                        }
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                let enter = field(ui, &mut inputs.ban_reason, t("Reason"), 260.0);
+                let chosen = inputs.ban_length.unwrap_or(BAN_DEFAULT).min(BAN_LENGTHS.len() - 1);
+                let kind = inputs.ban_kind.unwrap_or(BanKind::Account);
+                if (ui.add_enabled(ready, small(t("Ban"))).clicked() || enter) && ready {
+                    send(Rcon::Ban(BAN_LENGTHS[chosen], inputs.ban_reason.clone(), kind));
+                }
+                if ui.add_enabled(ready && banned, small(t("Lift the bans"))).on_disabled_hover_text(t("The player has no active ban.")).clicked() {
+                    send(Rcon::Unban);
+                }
+            });
+        });
+        ui.end_row();
+
         ui.label(RichText::new(t("Alert")).size(12.5));
         ui.vertical(|ui| {
             ui.add_sized([360.0, 60.0], egui::TextEdit::multiline(&mut inputs.alert).hint_text(t("The message the player sees")));
@@ -869,5 +992,18 @@ mod tests {
         assert!(error);
         let (text, error) = answer_text(&Rcon::SetRank(99), "bob", &Answer { status: 1, message: "rank exceeds rcon ceiling".into() });
         assert!(error && text.contains("ceiling"), "{text}");
+        let (text, error) = answer_text(&Rcon::Unban, "bob", &Answer { status: rcon::USER_NOT_FOUND, message: "no active ban".into() });
+        assert!(error && text.contains("no active ban"), "{text}");
+        let (text, error) = answer_text(&Rcon::Ban(60, "x".into(), BanKind::Account), "bob", &Answer { status: 1, message: rcon::UNKNOWN_COMMAND.into() });
+        assert!(error && text.contains("banuser"), "{text}");
+    }
+
+    #[test]
+    fn every_offered_length_has_a_name() {
+        for seconds in MUTE_LENGTHS.iter().chain(BAN_LENGTHS.iter()) {
+            assert_ne!(length_name(*seconds), t("Other length"), "{seconds}");
+        }
+        assert!(MUTE_LENGTHS.iter().all(|s| Rcon::Mute(*s).problem().is_none()));
+        assert!(BAN_LENGTHS.iter().all(|s| Rcon::Ban(*s, "x".into(), BanKind::Account).problem().is_none()));
     }
 }

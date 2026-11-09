@@ -30,6 +30,41 @@ pub const BADGE_MAX: usize = 32;
 /// The longest alert RCON takes.
 pub const ALERT_MAX: usize = 4096;
 
+/// The longest ban reason: the `bans.ban_reason` column is 200 characters.
+pub const BAN_REASON_MAX: usize = 200;
+
+/// The longest ban Polaris' `banuser` takes, 50 years in seconds; the manager's "permanent".
+pub const BAN_MAX_SECONDS: i64 = 50 * 365 * 24 * 60 * 60;
+
+/// The longest mute the emulator's `muteuser` takes by default (`rcon.mute.max_duration_seconds`), a week.
+pub const MUTE_MAX_SECONDS: i64 = 7 * 24 * 60 * 60;
+
+/// What a ban covers, as Polaris names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BanKind {
+    /// The account only.
+    Account,
+    /// Every account on the player's last address.
+    Ip,
+    /// Every account on the player's machine.
+    Machine,
+    /// Address and machine.
+    Super,
+}
+
+impl BanKind {
+    pub const ALL: [BanKind; 4] = [BanKind::Account, BanKind::Ip, BanKind::Machine, BanKind::Super];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            BanKind::Account => "account",
+            BanKind::Ip => "ip",
+            BanKind::Machine => "machine",
+            BanKind::Super => "super",
+        }
+    }
+}
+
 fn int(value: Option<&SqlValue>) -> i64 {
     match value {
         Some(SqlValue::Int(v)) => *v,
@@ -449,6 +484,10 @@ pub enum Problem {
     Alert,
     /// No rank is chosen.
     Rank,
+    /// The ban or mute is not 1 second up to its longest.
+    Duration,
+    /// The ban reason is empty or longer than [`BAN_REASON_MAX`].
+    Reason,
 }
 
 /// What can be done to a player through RCON.
@@ -461,6 +500,13 @@ pub enum Action {
     Alert(String),
     Disconnect,
     SetRank(i64),
+    /// Seconds; also for a player who is offline.
+    Mute(i64),
+    Unmute,
+    /// Seconds, reason and what the ban covers. Polaris' `banuser`.
+    Ban(i64, String, BanKind),
+    /// Lifts every active ban. Polaris' `unbanuser`.
+    Unban,
 }
 
 impl Action {
@@ -472,6 +518,9 @@ impl Action {
             Action::Alert(_) => "alertuser",
             Action::Disconnect => "disconnect",
             Action::SetRank(_) => "setrank",
+            Action::Mute(_) | Action::Unmute => "muteuser",
+            Action::Ban(..) => "banuser",
+            Action::Unban => "unbanuser",
         }
     }
 
@@ -490,6 +539,9 @@ impl Action {
             }
             Action::Alert(message) if message.trim().is_empty() || message.chars().count() > ALERT_MAX => Some(Problem::Alert),
             Action::SetRank(rank) if *rank <= 0 => Some(Problem::Rank),
+            Action::Mute(seconds) if *seconds <= 0 || *seconds > MUTE_MAX_SECONDS => Some(Problem::Duration),
+            Action::Ban(seconds, ..) if *seconds <= 0 || *seconds > BAN_MAX_SECONDS => Some(Problem::Duration),
+            Action::Ban(_, reason, _) if reason.trim().is_empty() || reason.trim().chars().count() > BAN_REASON_MAX => Some(Problem::Reason),
             _ => None,
         }
     }
@@ -503,6 +555,10 @@ impl Action {
             Action::Alert(message) => json!({ "user_id": user_id, "message": message }),
             Action::Disconnect => json!({ "user_id": user_id }),
             Action::SetRank(rank) => json!({ "user_id": user_id, "rank": rank }),
+            Action::Mute(seconds) => json!({ "user_id": user_id, "duration": seconds }),
+            Action::Unmute => json!({ "user_id": user_id, "duration": 0 }),
+            Action::Ban(seconds, reason, kind) => json!({ "user_id": user_id, "duration": seconds, "reason": reason.trim(), "type": kind.key() }),
+            Action::Unban => json!({ "user_id": user_id }),
         };
         rcon::request(self.key(), data)
     }
@@ -574,6 +630,17 @@ mod tests {
         assert_eq!((v["key"].as_str(), v["data"]["user_id"].as_i64()), (Some("disconnect"), Some(7)));
         let v = parse(Action::SetRank(3));
         assert_eq!((v["key"].as_str(), v["data"]["rank"].as_i64()), (Some("setrank"), Some(3)));
+        let v = parse(Action::Mute(900));
+        assert_eq!((v["key"].as_str(), v["data"]["duration"].as_i64()), (Some("muteuser"), Some(900)));
+        let v = parse(Action::Unmute);
+        assert_eq!((v["key"].as_str(), v["data"]["duration"].as_i64()), (Some("muteuser"), Some(0)));
+        let v = parse(Action::Ban(86400, " spam ".into(), BanKind::Ip));
+        assert_eq!(
+            (v["key"].as_str(), v["data"]["duration"].as_i64(), v["data"]["reason"].as_str(), v["data"]["type"].as_str()),
+            (Some("banuser"), Some(86400), Some("spam"), Some("ip"))
+        );
+        let v = parse(Action::Unban);
+        assert_eq!((v["key"].as_str(), v["data"]["user_id"].as_i64()), (Some("unbanuser"), Some(7)));
     }
 
     #[test]
@@ -588,5 +655,11 @@ mod tests {
         assert!(Action::SetRank(0).problem().is_some());
         assert!(Action::Disconnect.problem().is_none() && Action::Disconnect.online_only());
         assert!(!Action::GiveBadge("A".into()).online_only());
+        assert!(Action::Mute(0).problem().is_some() && Action::Mute(MUTE_MAX_SECONDS + 1).problem().is_some());
+        assert!(Action::Mute(60).problem().is_none() && !Action::Mute(60).online_only());
+        assert_eq!(Action::Ban(60, " ".into(), BanKind::Account).problem(), Some(Problem::Reason));
+        assert_eq!(Action::Ban(60, "x".repeat(201), BanKind::Account).problem(), Some(Problem::Reason));
+        assert_eq!(Action::Ban(BAN_MAX_SECONDS + 1, "x".into(), BanKind::Account).problem(), Some(Problem::Duration));
+        assert!(Action::Ban(BAN_MAX_SECONDS, "x".into(), BanKind::Super).problem().is_none());
     }
 }

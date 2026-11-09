@@ -145,6 +145,7 @@ pub fn statements(sql: &str) -> std::result::Result<Vec<String>, String> {
             }
         } else if quoted {
             current.push(c);
+            // A backslash escape or a doubled quote: both characters stay inside the string.
             if (c == '\\' && next != '\0') || (c == '\'' && next == '\'') {
                 current.push(next);
                 i += 1;

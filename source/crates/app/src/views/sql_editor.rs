@@ -6,11 +6,12 @@ mod grid;
 pub(crate) mod login;
 pub(crate) mod text;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::sql_session::{KeyPart, SqlResult, SqlRun, SqlSession, SqlTableInfo, MAX_QUERY_ROWS, PAGE_SIZE};
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::gui::dialogs::Choice;
@@ -65,7 +66,8 @@ struct TableRef {
 }
 
 enum ResultContent {
-    Grid(Grid),
+    /// Boxed: a Grid holds the whole result set, and every tab in `results` would otherwise be that big.
+    Grid(Box<Grid>),
     Messages(String),
 }
 
@@ -199,8 +201,8 @@ fn server_id(server: &Arc<dyn Server>) -> usize {
 }
 
 impl Ctl {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.state.lock()
     }
 
     /// Changes the state when the session is still the one the task started with.
@@ -614,7 +616,7 @@ impl Ctl {
             number += 1;
             let header = text::result_header(number, result.rows.len(), result.truncated);
             let grid = s.grid(result, false, false);
-            tabs.push(ResultTab { header, content: ResultContent::Grid(grid) });
+            tabs.push(ResultTab { header, content: ResultContent::Grid(Box::new(grid)) });
         }
         let first = messages.lines().next().unwrap_or_default().to_string();
         let header = if run.error.is_none() { t("Messages") } else { t("Messages ⚠") };
@@ -714,7 +716,7 @@ impl SqlEditorView {
         let Some(server) = shared.session() else { return };
         let id = server_id(&server);
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.session_for == Some(id) {
                 return;
             }
@@ -767,7 +769,7 @@ impl View for SqlEditorView {
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock();
             let s = &mut *guard;
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
@@ -793,7 +795,7 @@ impl View for SqlEditorView {
                 Action::Grid(_, GridAction::SortServer(column)) => {
                     // Sort the whole table on the server, not just this page.
                     {
-                        let mut s = self.state.lock().unwrap();
+                        let mut s = self.state.lock();
                         if s.data_busy {
                             continue;
                         }
@@ -807,7 +809,7 @@ impl View for SqlEditorView {
                 Action::Grid(_, GridAction::Delete) | Action::Delete => ctl.spawn(|c| c.delete_rows()),
                 Action::Run(script) => ctl.spawn(|c| c.run_query(script)),
                 Action::Stop => {
-                    if let Some(cancel) = self.state.lock().unwrap().query_cancel.as_ref() {
+                    if let Some(cancel) = self.state.lock().query_cancel.as_ref() {
                         cancel.cancel();
                     }
                 }
@@ -819,12 +821,12 @@ impl View for SqlEditorView {
     }
 
     fn busy(&self) -> bool {
-        let s = self.state.lock().unwrap();
+        let s = self.state.lock();
         s.query_cancel.is_some() || s.data_busy
     }
 
     fn session_changed(&mut self, shared: &Shared) {
-        self.state.lock().unwrap().close(shared);
+        self.state.lock().close(shared);
     }
 }
 

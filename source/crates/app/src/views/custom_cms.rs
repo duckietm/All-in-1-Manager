@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::DatabaseCredentials;
 use aio_remote::atom_cms::AtomCmsState;
@@ -12,6 +12,7 @@ use aio_remote::web_access::{self, WebAccessSettings};
 use aio_remote::{cms_site, custom_cms, fail, octane, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::atom_cms::{field_label, hint, move_aside, text_box};
 use crate::gui::icons::Icon;
@@ -69,12 +70,12 @@ impl CustomCmsStep {
     }
 
     pub fn result(&self) -> CustomCmsResult {
-        self.result.lock().unwrap().clone()
+        self.result.lock().clone()
     }
 
     fn choose_zip(&self) {
         let (form, ctx) = (self.form.clone(), self.ctx.clone());
-        form.lock().unwrap().picking = true;
+        form.lock().picking = true;
         self.runtime.spawn(async move {
             let file = rfd::AsyncFileDialog::new()
                 .set_title(t("Select the ZIP file with your CMS"))
@@ -82,7 +83,7 @@ impl CustomCmsStep {
                 .add_filter(t("All files"), &["*"])
                 .pick_file()
                 .await;
-            let mut form = form.lock().unwrap();
+            let mut form = form.lock();
             form.picking = false;
             if let Some(file) = file {
                 let path = file.path().to_path_buf();
@@ -219,7 +220,7 @@ impl InstallStep for CustomCmsStep {
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
         let mut choose = false;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             let form = &mut *form;
             ui.spacing_mut().item_spacing.y = 6.0;
             ui.add_space(2.0);
@@ -279,7 +280,7 @@ impl InstallStep for CustomCmsStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         form.name = form.name.trim().to_string();
         if form.from_git {
             form.git_url = form.git_url.trim().to_string();
@@ -302,7 +303,7 @@ impl InstallStep for CustomCmsStep {
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = custom_cms::inspect(server.as_ref(), None).await?;
         let php = {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             // What is set up already fills the form in, for an update.
             if let Some(current) = &state.current_name {
                 if form.name.trim().is_empty() {
@@ -351,7 +352,7 @@ impl InstallStep for CustomCmsStep {
 
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let (name, root, php, git, url, zip_path) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             (
                 form.name.trim().to_string(),
                 custom_cms::normalize_root(&form.root),
@@ -434,7 +435,7 @@ impl InstallStep for CustomCmsStep {
         custom_cms::test(server, &site, &log).await?;
         ui.done("OK");
 
-        *self.result.lock().unwrap() = CustomCmsResult { name: Some(name), root: Some(root), uses_php: php };
+        *self.result.lock() = CustomCmsResult { name: Some(name), root: Some(root), uses_php: php };
         let credentials = aio_core::config_dir::load_database_credentials(&host);
         for extra in database_login_extras(credentials.as_ref(), &host) {
             ui.add_extra(extra);

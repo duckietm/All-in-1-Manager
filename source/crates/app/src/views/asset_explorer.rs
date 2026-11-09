@@ -8,13 +8,14 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Instant;
 
 use aio_remote::gamedata_files;
 use aio_remote::Server;
 use chrono::{DateTime, Local};
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::{Mutex, MutexGuard};
 use tokio_util::sync::CancellationToken;
 
 use crate::gui::dialogs::Choice;
@@ -452,7 +453,7 @@ struct Ops {
 
 impl Ops {
     fn lock(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+        self.state.lock()
     }
 
     fn show_status(&self, text: String, error: bool) {
@@ -1521,7 +1522,7 @@ impl View for AssetExplorerView {
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         let state_arc = self.ops.state.clone();
-        let mut state = state_arc.lock().unwrap();
+        let mut state = state_arc.lock();
         let busy = state.busy;
         let active = state.active();
         self.keys(&ctx, shared, active, busy, &mut actions);

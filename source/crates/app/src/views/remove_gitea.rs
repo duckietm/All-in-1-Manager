@@ -1,10 +1,11 @@
 //! Removes Gitea: the container, its network and the Traefik route; the data only when asked. (RemoveGiteaStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::{gitea, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -28,11 +29,11 @@ pub struct RemoveGiteaStep {
 
 impl RemoveGiteaStep {
     pub fn removed_domain(&self) -> Option<String> {
-        self.output.lock().unwrap().removed_domain.clone()
+        self.output.lock().removed_domain.clone()
     }
 
     pub fn data_deleted(&self) -> bool {
-        self.output.lock().unwrap().data_deleted
+        self.output.lock().data_deleted
     }
 }
 
@@ -97,7 +98,7 @@ impl InstallStep for RemoveGiteaStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut delete = self.delete_data.lock().unwrap();
+        let mut delete = self.delete_data.lock();
         ui.add_space(8.0);
         ui.checkbox(
             &mut delete,
@@ -141,7 +142,7 @@ impl InstallStep for RemoveGiteaStep {
         let server = server.as_ref();
         log("> Checking the server ...");
         let state = gitea::inspect(server).await?;
-        let delete = *self.delete_data.lock().unwrap();
+        let delete = *self.delete_data.lock();
         match &state.domain {
             None => log("  Gitea is not set up: removing what may be left"),
             Some(domain) => log(&format!("  Gitea {} on {domain} (port {})", state.version.as_deref().unwrap_or(""), state.port)),
@@ -160,7 +161,7 @@ impl InstallStep for RemoveGiteaStep {
         ui.done(state.domain.as_deref().unwrap_or("-"));
 
         {
-            let mut output = self.output.lock().unwrap();
+            let mut output = self.output.lock();
             output.removed_domain = state.domain.clone();
             output.data_deleted = delete;
         }

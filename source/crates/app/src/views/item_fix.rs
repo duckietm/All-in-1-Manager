@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::furni_import::{self, Bundle};
 use aio_remote::habbo_assets::{self, retro};
@@ -12,6 +12,7 @@ use aio_remote::item_fix::{self, FixPlan, Fields, ItemRow};
 use aio_remote::{fail, server_tools, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::gui::icons::Icon;
@@ -290,7 +291,7 @@ impl InstallStep for ItemFixStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         if form.read.is_none() {
             return;
@@ -416,7 +417,7 @@ impl InstallStep for ItemFixStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         if form.reloading {
             return Some(t("Still reading the database: wait a moment.").into());
         }
@@ -426,7 +427,7 @@ impl InstallStep for ItemFixStep {
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.read = None;
             form.plan = None;
             form.rows = None;
@@ -435,7 +436,7 @@ impl InstallStep for ItemFixStep {
         }
         let (database_used, databases) = choose_database(server.as_ref(), &ui).await?;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.database = database_used;
             form.databases = databases;
             form.server = Some(server.clone());
@@ -449,7 +450,7 @@ impl InstallStep for ItemFixStep {
         let server_furnidata = super::offer_fix::download_furnidata(server.as_ref()).await.map(Arc::new).map_err(|e| format!("{}: {e}", aio_remote::offer_fix::furniture_data_path()));
         let folders = bundle_folders();
         let (fields, chosen_source) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             (form.fields, form.source)
         };
         let order = std::iter::once(chosen_source).chain(Source::ALL.into_iter().filter(|s| *s != chosen_source));
@@ -460,7 +461,7 @@ impl InstallStep for ItemFixStep {
                 None => server_furnidata.clone(),
                 Some(path) => {
                     let read = tokio::task::spawn_blocking(move || read_local_json(&path).map(Arc::new)).await?;
-                    self.form.lock().unwrap().local.insert(source, read.clone());
+                    self.form.lock().local.insert(source, read.clone());
                     read
                 }
             };
@@ -478,7 +479,7 @@ impl InstallStep for ItemFixStep {
         if source != chosen_source {
             ui.log(&tf("> FurnitureData.json: {chosen} cannot be used, {used} is", &[("chosen", chosen_source.label()), ("used", source.label())]));
         }
-        self.form.lock().unwrap().source = source;
+        self.form.lock().source = source;
         // Thousands of .hab files: not on the window's thread.
         let chosen = furnidata.clone();
         let (read, plan) = tokio::task::spawn_blocking(move || {
@@ -493,7 +494,7 @@ impl InstallStep for ItemFixStep {
         let all = Fields { sprite: true, kind: true, size: true, flags: true, modes: true, multiheight: true, extra_heights: true };
         let nothing_at_all = item_fix::plan(&read.rows, &furnidata, &read.bundles, all).updates.is_empty();
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.read = Some(Arc::new(read));
             form.plan = Some((fields, source, Arc::new(plan)));
         }
@@ -517,7 +518,7 @@ impl InstallStep for ItemFixStep {
         let log = ui.logger();
         let server = server.as_ref();
         let (read, fields, restart, source, furnidata, backup) = {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             let Some(read) = form.read.clone() else { fail!("Nothing to fix.") };
             let furnidata = match form.furnidata() {
                 Ok(furnidata) => furnidata,
@@ -557,7 +558,7 @@ impl InstallStep for ItemFixStep {
         let result = furni_import::import_with(server, &remote_sql, backup, &log).await?;
         ui.done(&tf("{count} furni", &[("count", &plan.rows().to_string())]));
         let safety_backup = Some(result.safety_backup).filter(|b| !b.is_empty());
-        *self.output.lock().unwrap() = Output { rows: plan.rows(), changes: plan.changes.len(), safety_backup };
+        *self.output.lock() = Output { rows: plan.rows(), changes: plan.changes.len(), safety_backup };
 
         if restart {
             let stopped = server_tools::stop_emulator(server, &log).await?;
@@ -580,7 +581,7 @@ impl InstallStep for ItemFixStep {
 /// among several. The choice holds for every tool until the installer closes and is saved in Settings.
 pub(super) async fn choose_database(server: &dyn Server, ui: &StepUi) -> anyhow::Result<(String, Vec<String>)> {
     let (configured, found) = item_fix::hotel_databases(server).await?;
-    if found.iter().any(|d| *d == configured) {
+    if found.contains(&configured) {
         return Ok((configured, found));
     }
     let chosen = match found.as_slice() {
@@ -628,7 +629,7 @@ fn reload(locked: &mut Form, form: Arc<Mutex<Form>>, database: String, ctx: egui
             anyhow::Ok(read)
         }
         .await;
-        let mut f = form.lock().unwrap();
+        let mut f = form.lock();
         f.reloading = false;
         match result {
             Ok((rows, bundles)) => {
@@ -655,7 +656,7 @@ pub fn wizard(shared: &Shared) -> Wizard {
         vec![step as Arc<dyn InstallStep>],
         false,
         Arc::new(move |info| {
-            let output = finish_step.output.lock().unwrap().clone();
+            let output = finish_step.output.lock().clone();
             super::finished::item_fix(output.rows, output.changes, output.safety_backup, info.steps)
         }),
         t("items_base fixed"),

@@ -1,8 +1,9 @@
 //! About: the version, the update check and the credits. (InstallerWindow.ShowAbout)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::theme::Palette;
 use crate::gui::{widgets, Shared, View};
@@ -39,10 +40,10 @@ impl View for AboutView {
             ui.label(RichText::new(tf("Version {version}", &[("version", update::CURRENT_VERSION)])).size(12.5).color(palette.subtle));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let checking = *self.checking.lock().unwrap();
+                let checking = *self.checking.lock();
                 if ui.add_enabled(!checking, widgets::secondary_button(t("Check for updates"))).clicked() {
-                    *self.checking.lock().unwrap() = true;
-                    *self.check.lock().unwrap() = Some(t("Checking GitHub ...").into());
+                    *self.checking.lock() = true;
+                    *self.check.lock() = Some(t("Checking GitHub ...").into());
                     let (check, busy) = (self.check.clone(), self.checking.clone());
                     shared.spawn(async move {
                         let text = match update::latest().await {
@@ -50,11 +51,11 @@ impl View for AboutView {
                             Ok(Some(release)) if update::is_newer(&release.version) => tf("Version {version} is available: {page}", &[("version", &release.version), ("page", &release.page_url)]),
                             Ok(_) => tf("You have the latest version ({version}).", &[("version", update::CURRENT_VERSION)]),
                         };
-                        *check.lock().unwrap() = Some(text);
-                        *busy.lock().unwrap() = false;
+                        *check.lock() = Some(text);
+                        *busy.lock() = false;
                     });
                 }
-                if let Some(text) = self.check.lock().unwrap().as_ref() {
+                if let Some(text) = self.check.lock().as_ref() {
                     ui.label(RichText::new(text).size(12.5).color(palette.muted));
                 }
             });

@@ -3,7 +3,7 @@
 //! and ends on exit, when the connection to the server is lost, or with a new login.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::server::{ShellChannel, ShellInput};
 use aio_remote::{Server, ServerLogin};
@@ -11,6 +11,7 @@ use aio_terminal::colors::{self, BACKGROUND, CURSOR, DEFAULT_FOREGROUND, DIM_ALP
 use aio_terminal::keys::{self, KeyAction, WheelAction};
 use aio_terminal::{CellFlags, TerminalCell, TerminalEmulator, TerminalLine};
 use eframe::egui::{self, Color32, FontId, Pos2, Rect, RichText};
+use parking_lot::Mutex;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::gui::theme::Palette;
@@ -62,7 +63,7 @@ impl Session {
             let ShellChannel { input: shell_input, mut output } = match server.open_shell(columns as u32, rows as u32).await {
                 Ok(channel) => channel,
                 Err(e) => {
-                    *reader.error.lock().unwrap() = Some(e.to_string());
+                    *reader.error.lock() = Some(e.to_string());
                     reader.closed.store(true, Ordering::SeqCst);
                     ctx.request_repaint();
                     return;
@@ -80,7 +81,7 @@ impl Session {
             });
             while let Some(data) = output.recv().await {
                 let replies = {
-                    let mut emulator = reader.emulator.lock().unwrap();
+                    let mut emulator = reader.emulator.lock();
                     emulator.feed(&data);
                     emulator.take_bells();
                     emulator.take_replies()
@@ -107,7 +108,7 @@ impl Session {
     }
 
     fn resize(&self, columns: usize, rows: usize) {
-        self.shell.emulator.lock().unwrap().resize(columns, rows);
+        self.shell.emulator.lock().resize(columns, rows);
         if !self.is_closed() {
             let _ = self.input.send(ShellInput::Resize { columns: columns as u32, rows: rows as u32 });
         }
@@ -208,7 +209,7 @@ impl TerminalView {
 
     fn selected_text(&self) -> String {
         let (Some(session), Some((a, b))) = (&self.session, self.selection) else { return String::new() };
-        session.shell.emulator.lock().unwrap().selection_text(a, b)
+        session.shell.emulator.lock().selection_text(a, b)
     }
 
     fn copy(&mut self, ctx: &egui::Context, now: f64) {
@@ -232,7 +233,7 @@ impl TerminalView {
 
     fn paste(&mut self, text: &str) {
         let Some(session) = &self.session else { return };
-        let bracketed = session.shell.emulator.lock().unwrap().bracketed_paste();
+        let bracketed = session.shell.emulator.lock().bracketed_paste();
         if let Some(data) = keys::paste_text(text, bracketed) {
             self.send_input(&data);
         }
@@ -250,20 +251,20 @@ impl TerminalView {
 
     fn scroll_view(&mut self, lines: i32) {
         let Some(session) = &self.session else { return };
-        let emulator = session.shell.emulator.lock().unwrap();
+        let emulator = session.shell.emulator.lock();
         let max = if emulator.alternate_screen() { 0 } else { emulator.scrollback().len() as i64 };
         self.scroll_offset = (self.scroll_offset as i64 + lines as i64).clamp(0, max) as usize;
     }
 
     fn select_all(&mut self) {
         if let Some(session) = &self.session {
-            self.selection = Some(session.shell.emulator.lock().unwrap().select_all());
+            self.selection = Some(session.shell.emulator.lock().select_all());
         }
     }
 
     fn clear_scrollback(&mut self) {
         if let Some(session) = &self.session {
-            session.shell.emulator.lock().unwrap().feed(b"\x1b[3J");
+            session.shell.emulator.lock().feed(b"\x1b[3J");
         }
         self.scroll_offset = 0;
         self.selection = None;
@@ -492,7 +493,7 @@ impl TerminalView {
             // FitToBounds: the shell follows the panel.
             if let Some(session) = &self.session {
                 let size = {
-                    let e = session.shell.emulator.lock().unwrap();
+                    let e = session.shell.emulator.lock();
                     (e.columns(), e.rows())
                 };
                 if size != (columns, rows) {
@@ -524,7 +525,7 @@ impl TerminalView {
         let Some(session) = &self.session else { return };
         let closed = session.is_closed();
         let shell = session.shell.clone();
-        let emulator = shell.emulator.lock().unwrap();
+        let emulator = shell.emulator.lock();
         let scrollback = emulator.scrollback().len();
         self.scroll_offset = self.scroll_offset.min(if emulator.alternate_screen() { 0 } else { scrollback });
         let first_line = scrollback as i64 - self.scroll_offset as i64;
@@ -617,7 +618,7 @@ impl TerminalView {
 
     fn position(&self, pointer: Pos2, rect: Rect, cell: egui::Vec2) -> Option<Position> {
         let session = self.session.as_ref()?;
-        let e = session.shell.emulator.lock().unwrap();
+        let e = session.shell.emulator.lock();
         Some(position_at(
             pointer - rect.min,
             cell,
@@ -656,7 +657,7 @@ impl TerminalView {
             if lines != 0.0 {
                 self.wheel -= lines / 3.0;
                 let (alternate, app) = {
-                    let e = self.session.as_ref().unwrap().shell.emulator.lock().unwrap();
+                    let e = self.session.as_ref().unwrap().shell.emulator.lock();
                     (e.alternate_screen(), e.application_cursor_keys())
                 };
                 match keys::wheel_action(lines / 3.0, alternate, app) {
@@ -715,7 +716,7 @@ impl TerminalView {
     fn select_word(&mut self, pointer: Pos2, rect: Rect, cell: egui::Vec2) {
         let Some((line, column)) = self.position(pointer, rect, cell) else { return };
         let Some(session) = &self.session else { return };
-        let e = session.shell.emulator.lock().unwrap();
+        let e = session.shell.emulator.lock();
         let index = line - e.scrollback_dropped() as i64;
         let row = if e.alternate_screen() {
             let row = index - e.scrollback().len() as i64;
@@ -734,7 +735,7 @@ impl TerminalView {
         let (events, mods) = ui.input(|i| (i.events.clone(), i.modifiers));
         let Some(session) = &self.session else { return };
         let (app, rows) = {
-            let e = session.shell.emulator.lock().unwrap();
+            let e = session.shell.emulator.lock();
             (e.application_cursor_keys(), e.rows())
         };
         let mut handled_key = false;
@@ -836,7 +837,7 @@ impl View for TerminalView {
         self.last_pass = Some(pass);
 
         if let Some(session) = &self.session {
-            let error = session.shell.error.lock().unwrap().take();
+            let error = session.shell.error.lock().take();
             if let Some(error) = error {
                 self.title = t("No shell").into();
                 self.state = tf("The server did not open a shell: {message}", &[("message", &error)]);
@@ -846,7 +847,7 @@ impl View for TerminalView {
                 self.state = t("The session has ended (exit, or the connection was closed). Click New session to start another.").into();
             } else {
                 // A window title set by the remote program (OSC 0/2) replaces user@host.
-                let title = session.shell.emulator.lock().unwrap().title().to_string();
+                let title = session.shell.emulator.lock().title().to_string();
                 if !title.is_empty() {
                     self.title = title;
                 }

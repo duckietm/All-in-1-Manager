@@ -99,9 +99,7 @@ fn check_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<()> {
 fn error_of(result: &CommandResult) -> String {
     let all = format!("{}\n{}", result.output, result.error);
     all.split('\n')
-        .map(str::trim)
-        .filter(|l| l.starts_with("ERROR: "))
-        .next_back()
+        .map(str::trim).rfind(|l| l.starts_with("ERROR: "))
         .map(|l| l[7..].to_string())
         .unwrap_or_else(|| format!("{}{}", result.output, result.error).trim().to_string())
 }

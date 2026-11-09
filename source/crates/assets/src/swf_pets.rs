@@ -813,7 +813,7 @@ fn palettes(swf: &Swf, assets_xml: &str) -> Result<Vec<(i32, Palette)>> {
         match binary {
             None => deferred.push(all.len()),
             Some(binary) => {
-                palette.rgb = binary.data.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect();
+                palette.rgb = binary.data.as_chunks::<3>().0.iter().map(|c| [c[0], c[1], c[2]]).collect();
                 if reference.is_none() || master {
                     reference = Some((palette.rgb.clone(), palette.color1.clone()));
                 }

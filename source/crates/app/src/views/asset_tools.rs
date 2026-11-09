@@ -3,11 +3,12 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_assets::workshop::{self, Outcome};
 use aio_assets::AssetKind;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::log_view::{self, LogLines};
 use crate::gui::theme::Palette;
@@ -96,7 +97,7 @@ impl AssetToolsView {
     fn start(&mut self, shared: &Shared, tool: Tool) {
         let stop = Arc::new(AtomicBool::new(false));
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.running {
                 return;
             }
@@ -118,7 +119,7 @@ impl AssetToolsView {
         shared.spawn(async move {
             let log_state = state.clone();
             let log = move |line: &str| {
-                log_state.lock().unwrap().log.push(line);
+                log_state.lock().log.push(line);
                 ctx.request_repaint();
             };
             let stopped = {
@@ -176,7 +177,7 @@ impl AssetToolsView {
             })
             .await;
             let stopped = stop.load(Ordering::Relaxed);
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock();
             s.result = Some(match outcome {
                 Ok((what, o)) => {
                     let mut message = o.summary(t(&what));
@@ -198,7 +199,7 @@ impl AssetToolsView {
 
 impl View for AssetToolsView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
-        let running = self.state.lock().unwrap().running;
+        let running = self.state.lock().running;
         let root = Self::root();
         let margin = egui::Margin::symmetric(24, 20);
         let mut start = None;
@@ -280,27 +281,27 @@ impl View for AssetToolsView {
         });
         ui.add_space(18.0);
 
-        let has_log = !self.state.lock().unwrap().log.is_empty();
+        let has_log = !self.state.lock().log.is_empty();
         if has_log || running {
             widgets::card(ui, palette, margin, |ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
-                let result = self.state.lock().unwrap().result.clone();
+                let result = self.state.lock().result.clone();
                 if let Some((kind, heading, message)) = result.filter(|_| !running) {
                     widgets::result_banner(ui, palette, kind, &heading, &message);
                 }
                 ui.horizontal(|ui| {
                     if running {
                         if ui.add(widgets::secondary_button(t("Stop"))).clicked() {
-                            self.state.lock().unwrap().stop.store(true, Ordering::Relaxed);
+                            self.state.lock().stop.store(true, Ordering::Relaxed);
                         }
                         ui.spinner();
                     } else if ui.add(widgets::secondary_button(t("Done"))).on_hover_text(t("Clears the result and the log, so you can start over.")).clicked() {
-                        let mut state = self.state.lock().unwrap();
+                        let mut state = self.state.lock();
                         state.log.clear();
                         state.result = None;
                     }
                 });
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock();
                 log_view::show(ui, "asset_tools_log", &mut state.log, Some(300.0), t("The log appears here."));
             });
         }
@@ -310,6 +311,6 @@ impl View for AssetToolsView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().running
+        self.state.lock().running
     }
 }

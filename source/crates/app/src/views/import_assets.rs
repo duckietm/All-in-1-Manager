@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::settings::RetroProfile;
 use aio_remote::furni_import::{self, DbState, ImportResult, NewFurni, Plan};
@@ -18,6 +18,7 @@ use aio_remote::habbo_assets::{self, retro};
 use aio_remote::{fail, server_tools, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::gui::icons::Icon;
@@ -347,12 +348,12 @@ impl ImportAssetsStep {
     }
 
     fn output(&self) -> Output {
-        self.output.lock().unwrap().clone()
+        self.output.lock().clone()
     }
 
     /// Merges and plans `profile` on a thread of its own; the form shows it when done.
     fn start_preparing(&self, profile: String, ctx: egui::Context) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let (Some(original), Some(db)) = (form.original.clone(), form.db.clone()) else { return };
         form.profile = Some(profile.clone());
         form.caption = format!("custom_{}_{}", RetroProfile { name: profile.clone(), ..RetroProfile::default() }.folder_name().to_lowercase().replace(' ', "_"), chrono::Local::now().format("%Y%m%d"));
@@ -372,7 +373,7 @@ impl ImportAssetsStep {
         std::thread::spawn(move || {
             let (_, _, assets) = sources();
             let result = prepare(&original, &profile, &db, &assets);
-            let mut form = shared.lock().unwrap();
+            let mut form = shared.lock();
             // Another profile was chosen meanwhile: that one counts.
             if form.profile.as_deref() == Some(profile.as_str()) {
                 match result {
@@ -480,7 +481,7 @@ impl ImportAssetsStep {
     /// The profile buttons and the merge's result (custom furniture).
     fn custom_options(&self, ui: &mut egui::Ui, palette: &Palette) {
         let (profiles, current, preparing, problem, prepared, merge_order) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             if form.db.is_none() {
                 return;
             }
@@ -567,7 +568,7 @@ impl InstallStep for ImportAssetsStep {
     }
 
     fn intro(&self) -> Intro {
-        let folder = self.form.lock().unwrap().assets.clone();
+        let folder = self.form.lock().assets.clone();
         let common = [
             t("catalog_items: 5 credits, amount 1, the offer id of FurnitureData.json.").to_string(),
             t("Everything goes on one new catalogue page (parent_id -1, or under a page you choose); move the page, or its furni, where you want afterwards.").into(),
@@ -615,7 +616,7 @@ impl InstallStep for ImportAssetsStep {
         if self.mode == Mode::Custom {
             self.custom_options(ui, palette);
         }
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         if form.plan.is_none() {
             return;
@@ -781,7 +782,7 @@ impl InstallStep for ImportAssetsStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let form = self.form.lock().unwrap();
+        let form = self.form.lock();
         if self.mode == Mode::Custom {
             if form.preparing {
                 return Some(t("Wait until the profile is merged.").into());
@@ -808,13 +809,13 @@ impl InstallStep for ImportAssetsStep {
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.set_plan(None);
             form.prepared = None;
             form.db = None;
         }
         let (furnidata_path, furniture, assets) = sources();
-        self.form.lock().unwrap().assets = assets.clone();
+        self.form.lock().assets = assets.clone();
         let furnidata = match read_json(&furnidata_path) {
             Ok(json) => json,
             Err(_) => {
@@ -835,7 +836,7 @@ impl InstallStep for ImportAssetsStep {
         if self.mode == Mode::Custom {
             let profiles: Vec<String> = aio_core::InstallerSettings::load().retro_profiles().into_iter().map(|p| p.name).collect();
             let chosen = {
-                let mut form = self.form.lock().unwrap();
+                let mut form = self.form.lock();
                 form.database = database.clone();
                 form.pages = pages;
                 form.original = Some(Arc::new(furnidata));
@@ -848,7 +849,7 @@ impl InstallStep for ImportAssetsStep {
             };
             match chosen {
                 Some(profile) => self.start_preparing(profile, ui_ctx(&ui)),
-                None => self.form.lock().unwrap().profile = None,
+                None => self.form.lock().profile = None,
             }
             ui.detected(ResultKind::Info, t("Choose the profile and check the list below"), &now);
             return Ok(false);
@@ -857,7 +858,7 @@ impl InstallStep for ImportAssetsStep {
         let plan = tokio::task::spawn_blocking(move || furni_import::plan(&furnidata, &furniture, &state)).await?;
         let (new, no_bundle, uncatalogued) = (plan.new.len(), plan.no_bundle.len(), plan.uncatalogued.len());
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.database = database.clone();
             form.pages = pages;
             form.set_plan(Some(plan));
@@ -877,7 +878,7 @@ impl InstallStep for ImportAssetsStep {
         let log = ui.logger();
         let server = server.as_ref();
         let (mut plan, caption, parent, visible, with_uncatalogued, restart, prepared, put_furnidata, typed_per_page) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             let Some(plan) = form.plan.clone() else { fail!("Nothing to import.") };
             (
                 plan,
@@ -995,7 +996,7 @@ impl InstallStep for ImportAssetsStep {
             }
             Err(e) => log(&format!("  ! {e}")),
         }
-        *self.output.lock().unwrap() = output;
+        *self.output.lock() = output;
 
         if restart {
             restart_emulator(server, &ui, &log).await?;
@@ -1093,18 +1094,18 @@ pub struct FileUpload {
 /// Uploads `files` to the server the window is logged in to, on the runtime; `state` shows how far it is.
 pub fn upload_missing(shared: &Shared, files: Vec<furni_import::ClientFile>, state: Arc<Mutex<FileUpload>>) {
     let Some(server) = shared.session() else {
-        state.lock().unwrap().result = Some(Err(t("Not connected to the server: log in again and run the import once more.").into()));
+        state.lock().result = Some(Err(t("Not connected to the server: log in again and run the import once more.").into()));
         return;
     };
-    *state.lock().unwrap() = FileUpload { running: true, ..FileUpload::default() };
+    *state.lock() = FileUpload { running: true, ..FileUpload::default() };
     let ctx = shared.ctx.clone();
     shared.spawn(async move {
         let progress = |bytes: u64| {
-            state.lock().unwrap().sent = bytes;
+            state.lock().sent = bytes;
             ctx.request_repaint();
         };
         let result = furni_import::upload_client_files(server.as_ref(), &files, &progress).await;
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         s.running = false;
         s.result = Some(match result {
             Ok(count) => Ok(tf("{count} files uploaded. Players see the furniture after they reload the hotel.", &[("count", &count.to_string())])),

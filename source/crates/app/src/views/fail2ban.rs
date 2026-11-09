@@ -1,11 +1,12 @@
 //! Fail2ban for SSH: too many failed logins ban the address; the whitelist is never banned. (Fail2BanStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::fail2ban::{self, Fail2BanSettings};
 use aio_remote::{fail, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -89,15 +90,15 @@ impl Fail2BanStep {
     }
 
     pub fn settings(&self) -> Option<Fail2BanSettings> {
-        self.output.lock().unwrap().settings.clone()
+        self.output.lock().settings.clone()
     }
 
     pub fn ssh_ports(&self) -> Vec<i64> {
-        self.output.lock().unwrap().ssh_ports.iter().map(|&p| i64::from(p)).collect()
+        self.output.lock().ssh_ports.iter().map(|&p| i64::from(p)).collect()
     }
 
     pub fn client_ip(&self) -> Option<String> {
-        self.output.lock().unwrap().client_ip.clone()
+        self.output.lock().client_ip.clone()
     }
 }
 
@@ -199,7 +200,7 @@ impl InstallStep for Fail2BanStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(8.0);
         ui.horizontal_top(|ui| {
@@ -220,18 +221,18 @@ impl InstallStep for Fail2BanStep {
     }
 
     fn validate(&self) -> Option<String> {
-        self.form.lock().unwrap().read().err()
+        self.form.lock().read().err()
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = fail2ban::inspect(server.as_ref()).await?;
         {
-            let mut output = self.output.lock().unwrap();
+            let mut output = self.output.lock();
             output.client_ip = state.client_ip.clone();
             output.ssh_ports = state.ssh_ports.clone();
         }
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             if !form.filled {
                 // The settings on the server, or the defaults with this computer's address on the whitelist.
                 let settings = state.settings.clone().unwrap_or_else(|| Fail2BanSettings {
@@ -247,7 +248,7 @@ impl InstallStep for Fail2BanStep {
         ui.wake();
         let ports = ports_text(&state.ssh_ports);
         if state.is_complete() {
-            self.output.lock().unwrap().settings = state.settings.clone();
+            self.output.lock().settings = state.settings.clone();
             ui.detected(
                 ResultKind::Success,
                 &tf(
@@ -280,7 +281,7 @@ impl InstallStep for Fail2BanStep {
         let log = ui.logger();
         let server = server.as_ref();
         log("> Checking the server ...");
-        let read = self.form.lock().unwrap().read();
+        let read = self.form.lock().read();
         let settings = match read {
             Ok(settings) => settings,
             Err(problem) => fail!("{problem}"),
@@ -288,7 +289,7 @@ impl InstallStep for Fail2BanStep {
         let state = fail2ban::inspect(server).await?;
         let ssh_ports = if state.ssh_ports.is_empty() { vec![i32::from(server.login().port)] } else { state.ssh_ports.clone() };
         {
-            let mut output = self.output.lock().unwrap();
+            let mut output = self.output.lock();
             output.ssh_ports = ssh_ports.clone();
             output.client_ip = state.client_ip.clone();
         }
@@ -315,7 +316,7 @@ impl InstallStep for Fail2BanStep {
         }
         ui.done(&tf("{count} banned", &[("count", &after.banned.len().to_string())]));
 
-        self.output.lock().unwrap().settings = Some(settings.clone());
+        self.output.lock().settings = Some(settings.clone());
         let count = settings.whitelist.len();
         Ok(ui.succeeded(
             &tf("Fail2Ban protects SSH (port {ports})", &[("ports", &ports)]),
@@ -382,7 +383,7 @@ mod tests {
     #[test]
     fn defaults_fill_the_form() {
         let step = Fail2BanStep::new();
-        let form = step.form.lock().unwrap();
+        let form = step.form.lock();
         assert_eq!((form.max_retry.as_str(), form.find_time.as_str(), form.ban_time.as_str()), ("5", "10", "60"));
         assert!(form.increment);
     }

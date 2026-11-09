@@ -1,12 +1,13 @@
 //! Removes the CMS (AtomCMS, EpicNext or your own): Octane is the site again, as after the server installation.
 //! (RemoveCmsStep.cs, InstallerWindow._removeCmsWizard)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::web_access::{self, WebAccessSettings};
 use aio_remote::{atom_cms, cms_site, custom_cms, epicnext, fail, hotel_site, octane, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -43,7 +44,7 @@ pub struct RemoveCmsStep {
 
 impl RemoveCmsStep {
     pub fn result(&self) -> RemoveCmsResult {
-        self.result.lock().unwrap().clone()
+        self.result.lock().clone()
     }
 }
 
@@ -113,7 +114,7 @@ impl InstallStep for RemoveCmsStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(2.0);
         ui.add_enabled(form.delete_enabled, egui::Checkbox::new(&mut form.delete_files, t("Also delete the CMS' folder and its NGINX site file (cannot be undone)")));
@@ -130,7 +131,7 @@ impl InstallStep for RemoveCmsStep {
         };
         if !site.has_cms() {
             {
-                let mut form = self.form.lock().unwrap();
+                let mut form = self.form.lock();
                 form.delete_what.clear();
                 form.delete_enabled = false;
             }
@@ -143,7 +144,7 @@ impl InstallStep for RemoveCmsStep {
             return Ok(false);
         }
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.delete_enabled = cms(&site).is_some();
             form.delete_what = delete_what(&site);
         }
@@ -170,7 +171,7 @@ impl InstallStep for RemoveCmsStep {
         }
         let cms = cms(&current);
         let delete = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             form.delete_files && form.delete_enabled
         } && cms.is_some();
         let site = WebAccessSettings { atom_cms: false, custom_cms: None, epic_next: false, cms_port: 0, ..current.clone() };
@@ -204,7 +205,7 @@ impl InstallStep for RemoveCmsStep {
         let result = web_access::test(server, &site, &log).await?;
         ui.done(if result.api_answered { "OK" } else { t("site OK, check /api") });
 
-        *self.result.lock().unwrap() = RemoveCmsResult { removed_name: current_name.clone(), files_deleted: delete };
+        *self.result.lock() = RemoveCmsResult { removed_name: current_name.clone(), files_deleted: delete };
         let files = match &cms {
             None => String::new(),
             Some((_, folder)) if delete => format!(" {}", tf("{folder} is deleted.", &[("folder", folder)])),

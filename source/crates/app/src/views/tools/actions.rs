@@ -48,12 +48,12 @@ impl Job {
         let run = StepUi::new(
             self.shared.ctx.clone(),
             self.shared.dialogs.clone(),
-            Arc::new(std::sync::Mutex::new(String::new())),
+            Arc::new(parking_lot::Mutex::new(String::new())),
             &self.title,
             checks.iter().map(|c| t(c).to_string()).collect(),
         );
         run.start();
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.host = Some(Host::Run { title: self.title.clone(), run: run.clone() });
         state.current_run = Some(run.clone());
         state.scroll_to_result = true;
@@ -62,7 +62,7 @@ impl Job {
 
     /// For a tool that was cancelled or refused before anything ran. (Show)
     pub fn show(&self, kind: ResultKind, heading: &str, message: &str) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.host = Some(Host::Banner { title: self.title.clone(), banner: Banner { kind, heading: heading.into(), message: message.into() } });
         state.scroll_to_result = true;
         drop(state);
@@ -571,7 +571,7 @@ async fn furniture_language_tool(job: &Job) -> Result<()> {
         .iter()
         .map(|l| {
             let name = crate::views::default_catalog::native_name(*l);
-            let choice = Choice::new(name, &tf("The furnidata of {domain}", &[("domain", l.domain)]), Some(l.code));
+            let choice = Choice::new(name, tf("The furnidata of {domain}", &[("domain", l.domain)]), Some(l.code));
             if current.as_deref() == Some(l.code) {
                 choice.primary()
             } else {
@@ -1218,7 +1218,7 @@ async fn update_atom_cms(job: &Job) -> Result<()> {
 }
 
 fn settings_banner(state: &SharedState, shared: &Shared, heading: &str, message: &str) {
-    state.lock().unwrap().settings_result = Some(Banner { kind: ResultKind::Success, heading: heading.into(), message: message.into() });
+    state.lock().settings_result = Some(Banner { kind: ResultKind::Success, heading: heading.into(), message: message.into() });
     shared.ctx.request_repaint();
 }
 

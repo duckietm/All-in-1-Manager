@@ -1,6 +1,6 @@
 //! Clones a GitHub repository on the server, or updates an existing clone. (GitCloneInstaller.cs)
 
-use crate::script::{self, ScriptValues};
+use crate::script::{self, fill, ScriptValues};
 use crate::server::{shell_quote, Log, Result, Server};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,28 +25,6 @@ pub struct CloneState {
 const QUIET_PROGRESS: &str =
     r#"tr '\r' '\n' | awk '/^Cloning|done\.|^Updating files: .*done|^(warning|fatal|error)|Already up to date|Fast-forward|files? changed/ {print; fflush()}'"#;
 
-/// Fills `{{name}}` placeholders in one pass, so an inserted value is never searched for placeholders itself (like
-/// a C# interpolation).
-fn fill_once(template: &str, values: &[(&str, &str)]) -> String {
-    let mut text = String::with_capacity(template.len());
-    let mut rest = template;
-    'outer: while let Some(start) = rest.find("{{") {
-        for (name, value) in values {
-            let placeholder = format!("{{{{{name}}}}}");
-            if rest[start..].starts_with(&placeholder) {
-                text.push_str(&rest[..start]);
-                text.push_str(value);
-                rest = &rest[start + placeholder.len()..];
-                continue 'outer;
-            }
-        }
-        text.push_str(&rest[..start + 2]);
-        rest = &rest[start + 2..];
-    }
-    text.push_str(rest);
-    text
-}
-
 const INSPECT: &str = r#"d={{dir}}
 if [ ! -d "$d" ] || [ -z "$(ls -A "$d" 2>/dev/null)" ]; then echo "kind=missing"; exit 0; fi
 # safe.directory because the folder may belong to another account. The emulator step gives it to "emulator".
@@ -61,7 +39,7 @@ timeout 30 git -c safe.directory="$d" -C "$d" fetch --quiet origin 2>/dev/null
 echo "behind=$(git -c safe.directory="$d" -C "$d" rev-list --count HEAD..@{u} 2>/dev/null || echo 0)""#;
 
 pub async fn inspect(server: &dyn Server, url: &str, target: &str) -> Result<CloneState> {
-    let script = fill_once(INSPECT, &[("dir", &shell_quote(target))]);
+    let script = fill(INSPECT, &[("dir", &shell_quote(target))]);
     let result = server.run_as_root(&script).await?;
     let values = ScriptValues::parse(&result.output);
     let kind = match values.get("kind") {
@@ -102,7 +80,7 @@ echo "BACKUP=$backup""#;
 
 /// Renames the folder to <folder>.bak-<time> and returns the new path.
 pub async fn move_aside(server: &dyn Server, target: &str, log: Log<'_>) -> Result<String> {
-    let body = fill_once(MOVE_ASIDE, &[("dir", &shell_quote(target))]);
+    let body = fill(MOVE_ASIDE, &[("dir", &shell_quote(target))]);
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Moving the folder aside failed", &["BACKUP"], None).await?;
     Ok(values.or_empty("BACKUP").to_string())
 }
@@ -117,7 +95,7 @@ branch=$({{listRefs}} | grep -ix "$want" | head -1 || true)
 fn resolve_branch(branch: Option<&str>, list_refs: &str) -> String {
     match branch {
         None => "branch=\n".to_string(),
-        Some(branch) => fill_once(RESOLVE_BRANCH, &[("want", &shell_quote(branch)), ("listRefs", list_refs)]),
+        Some(branch) => fill(RESOLVE_BRANCH, &[("want", &shell_quote(branch)), ("listRefs", list_refs)]),
     }
 }
 
@@ -138,7 +116,7 @@ echo "COMMIT=$(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD) $
 /// Installs git if needed, clones the branch (None: the repository's default), and returns the branch and commit.
 pub async fn clone(server: &dyn Server, url: &str, target: &str, branch: Option<&str>, log: Log<'_>) -> Result<String> {
     let resolve = resolve_branch(branch, r#"git ls-remote --heads "$u" | sed 's#.*refs/heads/##'"#);
-    let body = fill_once(
+    let body = fill(
         CLONE,
         &[
             ("dir", &shell_quote(target)),
@@ -191,7 +169,7 @@ echo "COMMIT=$(git -c safe.directory="$d" -C "$d" rev-parse --abbrev-ref HEAD) $
 /// another one (None: stay on the branch it is on). Returns the branch and commit.
 pub async fn update(server: &dyn Server, target: &str, branch: Option<&str>, log: Log<'_>) -> Result<String> {
     let resolve = resolve_branch(branch, r#"git -c safe.directory="$d" -C "$d" for-each-ref --format='%(refname:lstrip=3)' refs/remotes/origin"#);
-    let body = fill_once(UPDATE, &[("dir", &shell_quote(target)), ("resolve", &resolve), ("QuietProgress", QUIET_PROGRESS)]);
+    let body = fill(UPDATE, &[("dir", &shell_quote(target)), ("resolve", &resolve), ("QuietProgress", QUIET_PROGRESS)]);
     commit_after(server, &script::with_prelude(&body), log, "Updating failed").await
 }
 
@@ -222,6 +200,6 @@ mod tests {
             resolve_branch(Some("dev"), "list"),
             "want='dev'\nbranch=$(list | grep -ix \"$want\" | head -1 || true)\n[ -n \"$branch\" ] || fail \"Branch $want is not in this repository.\"\n"
         );
-        assert_eq!(fill_once("{{a}}{{b}}", &[("a", "{{b}}"), ("b", "1")]), "{{b}}1");
+        assert_eq!(fill("{{a}}{{b}}", &[("a", "{{b}}"), ("b", "1")]), "{{b}}1");
     }
 }

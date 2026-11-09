@@ -9,7 +9,7 @@ pub fn decode(data: &[u8]) -> String {
         return String::from_utf8_lossy(rest).into_owned();
     }
     let utf32 = |rest: &[u8], le: bool| -> String {
-        rest.chunks_exact(4)
+        rest.as_chunks::<4>().0.iter()
             .map(|c| {
                 let v = if le { u32::from_le_bytes([c[0], c[1], c[2], c[3]]) } else { u32::from_be_bytes([c[0], c[1], c[2], c[3]]) };
                 char::from_u32(v).unwrap_or('\u{FFFD}')
@@ -23,7 +23,7 @@ pub fn decode(data: &[u8]) -> String {
         return utf32(rest, false);
     }
     let utf16 = |rest: &[u8], le: bool| -> String {
-        let units: Vec<u16> = rest.chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        let units: Vec<u16> = rest.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
         String::from_utf16_lossy(&units)
     };
     if let Some(rest) = data.strip_prefix(&[0xFF, 0xFE]) {

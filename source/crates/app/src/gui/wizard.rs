@@ -3,11 +3,12 @@
 //! the dashboard and keeps both the login and where the wizard was.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::web_access::WebAccessSettings;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use tokio::sync::mpsc;
 
 use super::dialogs::Dialogs;
@@ -148,11 +149,11 @@ impl Wizard {
     }
 
     pub fn status(&self) -> String {
-        self.status.lock().unwrap().clone()
+        self.status.lock().clone()
     }
 
     fn set_status(&self, message: &str) {
-        *self.status.lock().unwrap() = message.to_string();
+        *self.status.lock() = message.to_string();
     }
 
     fn finish_index(&self) -> usize {
@@ -286,11 +287,11 @@ impl Wizard {
                     let keys = aio_core::config_dir::keys_directory(&host);
                     let putty_key = newest_ppk(&keys);
                     let info = FinishInfo { host, ssh_port: server.login().port, site: web.configured, putty_key, steps };
-                    *status.lock().unwrap() = t("Installation completed.").to_string();
+                    *status.lock() = t("Installation completed.").to_string();
                     (builder(info), site_url)
                 }
                 Err(error) => {
-                    *status.lock().unwrap() = t("Collecting the summary failed.").to_string();
+                    *status.lock() = t("Collecting the summary failed.").to_string();
                     (Box::new(TextPage(tf("Collecting the summary failed: {error}", &[("error", &step::error_message(&error))]))), None)
                 }
             };

@@ -3,7 +3,7 @@
 //! without a server. The update question at startup (update_dialog.rs) is drawn from here too, before the login.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::config_dir;
 use aio_core::keys::AuthorizedKey;
@@ -13,6 +13,7 @@ use aio_remote::server::ConnectStage;
 use aio_remote::ssh::{self, KeyReadError};
 use aio_remote::{Server, ServerError, ServerLogin};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::update_dialog::UpdatePrompt;
 use crate::gui::dialogs::Dialogs;
@@ -36,12 +37,12 @@ pub struct LoginOpener(Arc<Mutex<OpenerState>>);
 
 impl LoginOpener {
     pub fn open(&self) {
-        self.0.lock().unwrap().open = true;
+        self.0.lock().open = true;
     }
 
     /// Shows "A new version is available"; the login opens when it is answered with Later.
     pub(crate) fn offer_update(&self, prompt: UpdatePrompt) {
-        self.0.lock().unwrap().update = Some(prompt);
+        self.0.lock().update = Some(prompt);
     }
 }
 
@@ -122,7 +123,7 @@ impl LoginDialog {
 
     /// True once after a task asked for the login.
     pub fn take_open_request(&mut self) -> bool {
-        std::mem::take(&mut self.request.lock().unwrap().open)
+        std::mem::take(&mut self.request.lock().open)
     }
 
     pub fn is_open(&self) -> bool {
@@ -134,7 +135,7 @@ impl LoginDialog {
             return;
         }
         self.open = true;
-        *self.inbox.lock().unwrap() = Inbox::default();
+        *self.inbox.lock() = Inbox::default();
         let mut form = Form::new(self.last_login.as_ref());
         if let Some(notice) = notice {
             form.banner = Some((ResultKind::Warning, notice, t("Log in again to go on, or choose Not now.").into()));
@@ -155,24 +156,24 @@ impl LoginDialog {
     pub fn show(&mut self, ctx: &egui::Context, shared: &Shared) {
         // The update question comes first: when the installer replaces itself there is nothing to log in to.
         let update_closed = {
-            let mut state = self.request.lock().unwrap();
+            let mut state = self.request.lock();
             match state.update.as_mut() {
                 Some(prompt) => super::update_dialog::show(ctx, shared, prompt),
                 None => false,
             }
         };
         if update_closed {
-            let mut state = self.request.lock().unwrap();
+            let mut state = self.request.lock();
             state.update = None;
             state.open = true;
         }
-        if self.request.lock().unwrap().update.is_some() || !self.open {
+        if self.request.lock().update.is_some() || !self.open {
             return;
         }
         let palette = Palette::current(ctx);
         self.take_inbox(shared);
         let Some(form) = self.form.as_mut() else { return };
-        let picking = self.inbox.lock().unwrap().picking;
+        let picking = self.inbox.lock().picking;
         let mut action = None;
         egui::Modal::new(egui::Id::new("login-dialog"))
             .frame(widgets::card_frame(&palette).inner_margin(egui::Margin::symmetric(28, 24)))
@@ -209,7 +210,7 @@ impl LoginDialog {
     /// What the tasks finished since the last frame.
     fn take_inbox(&mut self, shared: &Shared) {
         let Some(form) = self.form.as_mut() else { return };
-        let mut inbox = self.inbox.lock().unwrap();
+        let mut inbox = self.inbox.lock();
         for line in inbox.log.drain(..) {
             form.log.push(line);
         }
@@ -295,7 +296,7 @@ impl LoginDialog {
         form.failed = false;
         form.log.clear();
         {
-            let mut inbox = self.inbox.lock().unwrap();
+            let mut inbox = self.inbox.lock();
             inbox.stage = 0;
             inbox.log.clear();
             inbox.outcome = None;
@@ -307,13 +308,13 @@ impl LoginDialog {
             let log_inbox = inbox.clone();
             let log_ctx = ctx.clone();
             let log = move |line: &str| {
-                log_inbox.lock().unwrap().log.push(line.to_string());
+                log_inbox.lock().log.push(line.to_string());
                 log_ctx.request_repaint();
             };
             let stage_inbox = inbox.clone();
             let stage_ctx = ctx.clone();
             let stage = move |reached: ConnectStage| {
-                let mut inbox = stage_inbox.lock().unwrap();
+                let mut inbox = stage_inbox.lock();
                 inbox.stage = inbox.stage.max(stage_index(reached));
                 stage_ctx.request_repaint();
             };
@@ -333,7 +334,7 @@ impl LoginDialog {
                     Err(error) => Err(error_text(&error)),
                 }
             };
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             if result.is_ok() {
                 inbox.stage = 3;
             }
@@ -342,11 +343,11 @@ impl LoginDialog {
     }
 
     fn browse(&mut self, shared: &Shared) {
-        self.inbox.lock().unwrap().picking = true;
+        self.inbox.lock().picking = true;
         let inbox = self.inbox.clone();
         shared.spawn(async move {
             let file = rfd::AsyncFileDialog::new().set_title(t("Select your private SSH key")).pick_file().await;
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             inbox.picking = false;
             if let Some(file) = file {
                 inbox.browsed = Some(file.path().to_path_buf());
@@ -362,7 +363,7 @@ impl LoginDialog {
             form.focus_pending = true;
             return;
         }
-        self.inbox.lock().unwrap().picking = true;
+        self.inbox.lock().picking = true;
         let inbox = self.inbox.clone();
         let dialogs = shared.dialogs.clone();
         shared.spawn(async move {
@@ -377,7 +378,7 @@ impl LoginDialog {
                 Ok(import_private_key(&dialogs, &text, &name, &server).await?.map(|(path, key)| (path, key.key_type)))
             }
             .await;
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             inbox.picking = false;
             match result {
                 Ok(Some(imported)) => inbox.imported = Some(Ok(imported)),
@@ -880,7 +881,7 @@ mod tests {
         let a = PathBuf::from("/c/keys/10.0.0.1/id_ed25519");
         let b = PathBuf::from("/c/keys/hotel.example.com/id_ed25519");
         let browsed = PathBuf::from("/home/me/.ssh/id_rsa");
-        let paths = key_paths(&[browsed.clone()], &[a.clone(), b.clone(), browsed.clone()], None, None);
+        let paths = key_paths(std::slice::from_ref(&browsed), &[a.clone(), b.clone(), browsed.clone()], None, None);
         assert_eq!(paths, vec![browsed.clone(), a.clone(), b.clone()]);
         assert_eq!(choose_key(&paths, None, None, "hotel.example.com"), Some(2));
         assert_eq!(choose_key(&paths, None, None, "example"), Some(2));
@@ -889,7 +890,7 @@ mod tests {
         assert_eq!(choose_key(&paths, None, None, ""), Some(0));
         assert_eq!(choose_key(&[], None, None, "x"), None);
         let preset = PathBuf::from("/c/keys/x/default");
-        assert_eq!(key_paths(&[], &[a.clone()], Some(&preset), None), vec![preset, a]);
+        assert_eq!(key_paths(&[], std::slice::from_ref(&a), Some(&preset), None), vec![preset, a]);
     }
 
     #[test]

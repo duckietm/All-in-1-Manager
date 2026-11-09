@@ -149,6 +149,9 @@ impl Grid {
                         let view = row.index();
                         let index = order[view];
                         row.set_selected(selected.contains(&index));
+                        // The number itself is carried into `clicked`, `double_clicked` and the edit test,
+                        // so iterating the cells instead would still need it.
+                        #[allow(clippy::needless_range_loop)]
                         for column in 0..columns.len() {
                             let (_, response) = row.col(|ui| {
                                 if let Some(e) = edit.as_mut().filter(|e| e.row == index && e.column == column) {

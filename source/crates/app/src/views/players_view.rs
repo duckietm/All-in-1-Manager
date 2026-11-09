@@ -3,7 +3,7 @@
 //! credits, points or a badge, send an alert, disconnect, set the rank, mute, ban and lift bans. Reading goes through
 //! the same MariaDB login as the SQL Editor; every action is confirmed first and the emulator's answer is shown.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::players_admin::{self, Action as Rcon, BanKind, Player, PlayerRow, Problem, Rank, SearchPage};
 use aio_remote::rcon::{self, Answer};
@@ -11,6 +11,7 @@ use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
+use parking_lot::Mutex;
 
 use super::sql_editor::login::{Login, Prompt};
 use super::sql_editor::text;
@@ -215,8 +216,8 @@ struct Ctl {
 }
 
 impl Ctl {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.state.lock()
     }
 
     fn with<R>(&self, generation: u64, change: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -475,7 +476,7 @@ impl PlayersView {
         let Some(server) = shared.session() else { return };
         let id = server_id(&server);
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.session_for == Some(id) {
                 return;
             }
@@ -521,7 +522,7 @@ impl View for PlayersView {
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock();
             let s = &mut *guard;
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
@@ -558,11 +559,11 @@ impl View for PlayersView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().busy
+        self.state.lock().busy
     }
 
     fn session_changed(&mut self, shared: &Shared) {
-        self.state.lock().unwrap().close(shared);
+        self.state.lock().close(shared);
     }
 }
 

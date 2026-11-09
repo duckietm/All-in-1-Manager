@@ -2,9 +2,10 @@
 //! ones are folded is kept in settings.json (`Collapsed`), so the window opens the way it was left.
 
 use std::collections::BTreeSet;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 use eframe::egui::{self, Color32};
+use parking_lot::Mutex;
 
 fn state() -> &'static Mutex<BTreeSet<String>> {
     static STATE: OnceLock<Mutex<BTreeSet<String>>> = OnceLock::new();
@@ -12,13 +13,13 @@ fn state() -> &'static Mutex<BTreeSet<String>> {
 }
 
 pub fn is_collapsed(key: &str) -> bool {
-    state().lock().unwrap().contains(key)
+    state().lock().contains(key)
 }
 
 /// Folds or unfolds the section and saves the choice.
 pub fn toggle(key: &str) {
     let collapsed: Vec<String> = {
-        let mut set = state().lock().unwrap();
+        let mut set = state().lock();
         if !set.remove(key) {
             set.insert(key.to_string());
         }

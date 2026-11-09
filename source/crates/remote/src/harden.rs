@@ -143,11 +143,11 @@ pub async fn inspect(server: &dyn Server) -> Result<HardenState> {
     let script = fill(
         INSPECT,
         &[
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
             ("sysctlCheck", &sysctl_check),
             ("UfwRsyslog", UFW_RSYSLOG),
             ("RealIpFile", hotel_site::REAL_IP_FILE),
-            ("HotelSiteFile", hotel_site::FILE),
+            ("HotelSiteFile", hotel_site::file()),
             ("EmulatorDirectory", &emulator_directory),
         ],
     );

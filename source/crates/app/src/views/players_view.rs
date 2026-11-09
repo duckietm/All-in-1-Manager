@@ -3,7 +3,7 @@
 //! credits, points or a badge, send an alert, disconnect, set the rank, mute, ban and lift bans. Reading goes through
 //! the same MariaDB login as the SQL Editor; every action is confirmed first and the emulator's answer is shown.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::players_admin::{self, Action as Rcon, BanKind, Player, PlayerRow, Problem, Rank, SearchPage};
 use aio_remote::rcon::{self, Answer};
@@ -11,6 +11,7 @@ use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
 use egui_extras::{Column, TableBuilder};
+use parking_lot::Mutex;
 
 use super::sql_editor::login::{Login, Prompt};
 use super::sql_editor::text;
@@ -19,7 +20,7 @@ use crate::gui::theme::Palette;
 use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
 use crate::i18n::{t, tf};
 
-const FIELD_HEIGHT: f32 = 26.0;
+const FIELD_HEIGHT: f32 = 28.0;
 
 fn currency_name(kind: i64) -> String {
     match kind {
@@ -216,8 +217,8 @@ struct Ctl {
 }
 
 impl Ctl {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.state.lock()
     }
 
     fn with<R>(&self, generation: u64, change: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -476,12 +477,20 @@ impl PlayersView {
         let Some(server) = shared.session() else { return };
         let id = server_id(&server);
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.session_for == Some(id) {
                 return;
             }
             state.close(shared);
             state.session_for = Some(id);
+            // The screenshot of the page shows a sample player: the dry run has no database.
+            if server.is_dry_run() && std::env::var_os("AIO_SCREENSHOT").is_some() {
+                state.ranks = vec![Rank { id: 1, name: "Member".into() }, Rank { id: 7, name: "Administrator".into() }];
+                state.chosen = Some(1);
+                state.inputs.rank = Some(1);
+                state.player = Some(Player { id: 1, name: "duckie".into(), rank: 1, rank_name: "Member".into(), online: true, credits: 2500, ..Player::default() });
+                return;
+            }
         }
         self.ctl(shared).spawn(|ctl| ctl.open(false));
     }
@@ -504,7 +513,7 @@ fn small(text: &str) -> egui::Button<'static> {
 }
 
 fn field(ui: &mut egui::Ui, value: &mut String, hint: &str, width: f32) -> bool {
-    let response = ui.add_sized([width, FIELD_HEIGHT], egui::TextEdit::singleline(value).hint_text(hint));
+    let response = ui.add_sized([width, FIELD_HEIGHT], egui::TextEdit::singleline(value).hint_text(hint).vertical_align(egui::Align::Center));
     response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))
 }
 
@@ -514,7 +523,7 @@ impl View for PlayersView {
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock();
             let s = &mut *guard;
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
@@ -551,11 +560,11 @@ impl View for PlayersView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().busy
+        self.state.lock().busy
     }
 
     fn session_changed(&mut self, shared: &Shared) {
-        self.state.lock().unwrap().close(shared);
+        self.state.lock().close(shared);
     }
 }
 
@@ -596,7 +605,9 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<A
             widgets::muted(ui, palette, t("Choose a player on the left."), 12.5);
             return;
         }
-        egui::ScrollArea::vertical().id_salt("players-detail").auto_shrink([false, false]).show(ui, |ui| detail(ui, palette, s, actions));
+        // AIO_SCREENSHOT_BOTTOM: the screenshot shows the end of the details (the actions).
+        let bottom = std::env::var_os("AIO_SCREENSHOT_BOTTOM").is_some();
+        egui::ScrollArea::vertical().id_salt("players-detail").auto_shrink([false, false]).stick_to_bottom(bottom).show(ui, |ui| detail(ui, palette, s, actions));
     });
 }
 
@@ -851,132 +862,184 @@ fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut V
     section(ui, t("Actions (RCON)"));
     widgets::muted(ui, palette, t("Sent to the running emulator. Each one asks first and shows the emulator's answer."), 12.0);
     ui.add_space(4.0);
-    egui::Grid::new("players-actions").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-        ui.label(RichText::new(t("Credits")).size(12.5));
-        ui.horizontal(|ui| {
-            let enter = field(ui, &mut inputs.credits, t("Amount"), 110.0);
-            if (ui.add_enabled(ready, small(t("Give"))).clicked() || enter) && ready {
-                send(Rcon::GiveCredits(number(&inputs.credits)));
-            }
-        });
-        ui.end_row();
-
-        ui.label(RichText::new(t("Points")).size(12.5));
-        ui.horizontal(|ui| {
-            let kind = inputs.points_type.trim().parse::<i64>().unwrap_or(5);
-            egui::ComboBox::from_id_salt("players-points-type").selected_text(currency_name(kind)).width(140.0).show_ui(ui, |ui| {
-                for k in &kinds {
-                    if ui.selectable_label(kind == *k, currency_name(*k)).clicked() {
-                        inputs.points_type = k.to_string();
-                    }
+    // Three columns: the label, the value (always CONTROL wide), the buttons; one row height.
+    let control = ACTION_CONTROL;
+    let button = |text: &str| small(text).min_size(egui::vec2(ACTION_BUTTON, ROW));
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 8.0;
+        // Every field, list and button one row high, so they line up.
+        ui.spacing_mut().interact_size.y = ROW;
+        ui.spacing_mut().button_padding.y = 4.0;
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Credits"));
+            let enter = field(ui, &mut inputs.credits, t("Amount"), control);
+            ui.horizontal(|ui| {
+                if (ui.add_enabled(ready, button(t("Give"))).clicked() || enter) && ready {
+                    send(Rcon::GiveCredits(number(&inputs.credits)));
                 }
             });
-            ui.label(RichText::new(t("Type")).size(12.5));
-            field(ui, &mut inputs.points_type, "5", 50.0);
-            let enter = field(ui, &mut inputs.points, t("Amount"), 110.0);
-            if (ui.add_enabled(ready, small(t("Give"))).clicked() || enter) && ready {
-                let kind = inputs.points_type.trim().parse::<i64>().unwrap_or(5);
-                send(Rcon::GivePoints(kind, number(&inputs.points)));
-            }
         });
-        ui.end_row();
 
-        ui.label(RichText::new(t("Badge")).size(12.5));
-        ui.horizontal(|ui| {
-            let enter = field(ui, &mut inputs.badge, t("Badge code"), 160.0);
-            if (ui.add_enabled(ready, small(t("Give"))).clicked() || enter) && ready {
-                send(Rcon::GiveBadge(inputs.badge.trim().to_string()));
-            }
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Points"));
+            let enter = ui
+                .vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    ui.horizontal(|ui| {
+                        let kind = inputs.points_type.trim().parse::<i64>().unwrap_or(5);
+                        let type_width = 56.0;
+                        let type_label = 40.0;
+                        let combo = control - type_width - type_label - 2.0 * ui.spacing().item_spacing.x;
+                        egui::ComboBox::from_id_salt("players-points-type").selected_text(currency_name(kind)).width(combo).height(300.0).show_ui(ui, |ui| {
+                            for k in &kinds {
+                                if ui.selectable_label(kind == *k, currency_name(*k)).clicked() {
+                                    inputs.points_type = k.to_string();
+                                }
+                            }
+                        });
+                        ui.add_sized([type_label, ROW], egui::Label::new(RichText::new(t("Type")).size(12.5)));
+                        field(ui, &mut inputs.points_type, "5", type_width);
+                    });
+                    field(ui, &mut inputs.points, t("Amount"), control)
+                })
+                .inner;
+            ui.vertical(|ui| {
+                // The button beside the amount, on the second line.
+                ui.add_space(ROW + 6.0);
+                if (ui.add_enabled(ready, button(t("Give"))).clicked() || enter) && ready {
+                    let kind = inputs.points_type.trim().parse::<i64>().unwrap_or(5);
+                    send(Rcon::GivePoints(kind, number(&inputs.points)));
+                }
+            });
         });
-        ui.end_row();
 
-        ui.label(RichText::new(t("Rank")).size(12.5));
-        ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Badge"));
+            let enter = field(ui, &mut inputs.badge, t("Badge code"), control);
+            ui.horizontal(|ui| {
+                if (ui.add_enabled(ready, button(t("Give"))).clicked() || enter) && ready {
+                    send(Rcon::GiveBadge(inputs.badge.trim().to_string()));
+                }
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Rank"));
             let chosen = inputs.rank.unwrap_or(0);
             let text = s.ranks.iter().find(|r| r.id == chosen).map(|r| format!("{} ({})", r.name, r.id)).unwrap_or_else(|| chosen.to_string());
-            egui::ComboBox::from_id_salt("players-rank").selected_text(text).width(200.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("players-rank").selected_text(text).width(control).height(300.0).show_ui(ui, |ui| {
                 for rank in &s.ranks {
                     if ui.selectable_label(chosen == rank.id, format!("{} ({})", rank.name, rank.id)).clicked() {
                         inputs.rank = Some(rank.id);
                     }
                 }
             });
-            if ui.add_enabled(ready && !s.ranks.is_empty(), small(t("Set rank"))).clicked() {
-                send(Rcon::SetRank(chosen));
-            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(ready && !s.ranks.is_empty(), button(t("Set rank"))).clicked() {
+                    send(Rcon::SetRank(chosen));
+                }
+            });
         });
-        ui.end_row();
 
-        ui.label(RichText::new(t("Mute")).size(12.5));
-        ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Mute"));
             let chosen = inputs.mute_length.unwrap_or(MUTE_DEFAULT).min(MUTE_LENGTHS.len() - 1);
-            egui::ComboBox::from_id_salt("players-mute-length").selected_text(length_name(MUTE_LENGTHS[chosen])).width(120.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("players-mute-length").selected_text(length_name(MUTE_LENGTHS[chosen])).width(control).show_ui(ui, |ui| {
                 for (index, seconds) in MUTE_LENGTHS.iter().enumerate() {
                     if ui.selectable_label(chosen == index, length_name(*seconds)).clicked() {
                         inputs.mute_length = Some(index);
                     }
                 }
             });
-            if ui.add_enabled(ready, small(t("Mute"))).clicked() {
-                send(Rcon::Mute(MUTE_LENGTHS[chosen]));
-            }
-            if ui.add_enabled(ready && muted, small(t("Unmute"))).on_disabled_hover_text(t("The player is not muted.")).clicked() {
-                send(Rcon::Unmute);
-            }
-        });
-        ui.end_row();
-
-        ui.label(RichText::new(t("Ban")).size(12.5));
-        ui.vertical(|ui| {
             ui.horizontal(|ui| {
-                let chosen = inputs.ban_length.unwrap_or(BAN_DEFAULT).min(BAN_LENGTHS.len() - 1);
-                egui::ComboBox::from_id_salt("players-ban-length").selected_text(length_name(BAN_LENGTHS[chosen])).width(120.0).show_ui(ui, |ui| {
-                    for (index, seconds) in BAN_LENGTHS.iter().enumerate() {
-                        if ui.selectable_label(chosen == index, length_name(*seconds)).clicked() {
-                            inputs.ban_length = Some(index);
-                        }
-                    }
-                });
-                let kind = inputs.ban_kind.unwrap_or(BanKind::Account);
-                egui::ComboBox::from_id_salt("players-ban-kind").selected_text(ban_kind_name(kind)).width(170.0).show_ui(ui, |ui| {
-                    for k in BanKind::ALL {
-                        if ui.selectable_label(kind == k, ban_kind_name(k)).on_hover_text(ban_kind_hover(k)).clicked() {
-                            inputs.ban_kind = Some(k);
-                        }
-                    }
-                });
-            });
-            ui.horizontal(|ui| {
-                let enter = field(ui, &mut inputs.ban_reason, t("Reason"), 260.0);
-                let chosen = inputs.ban_length.unwrap_or(BAN_DEFAULT).min(BAN_LENGTHS.len() - 1);
-                let kind = inputs.ban_kind.unwrap_or(BanKind::Account);
-                if (ui.add_enabled(ready, small(t("Ban"))).clicked() || enter) && ready {
-                    send(Rcon::Ban(BAN_LENGTHS[chosen], inputs.ban_reason.clone(), kind));
+                if ui.add_enabled(ready, button(t("Mute"))).clicked() {
+                    send(Rcon::Mute(MUTE_LENGTHS[chosen]));
                 }
-                if ui.add_enabled(ready && banned, small(t("Lift the bans"))).on_disabled_hover_text(t("The player has no active ban.")).clicked() {
-                    send(Rcon::Unban);
+                if ui.add_enabled(ready && muted, button(t("Unmute"))).on_disabled_hover_text(t("The player is not muted.")).clicked() {
+                    send(Rcon::Unmute);
                 }
             });
         });
-        ui.end_row();
 
-        ui.label(RichText::new(t("Alert")).size(12.5));
-        ui.vertical(|ui| {
-            ui.add_sized([360.0, 60.0], egui::TextEdit::multiline(&mut inputs.alert).hint_text(t("The message the player sees")));
-            ui.horizontal(|ui| {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Ban"));
+            let ban_length = inputs.ban_length.unwrap_or(BAN_DEFAULT).min(BAN_LENGTHS.len() - 1);
+            let ban_kind = inputs.ban_kind.unwrap_or(BanKind::Account);
+            let enter = ui
+                .vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 6.0;
+                    ui.horizontal(|ui| {
+                        let length_width = 120.0;
+                        egui::ComboBox::from_id_salt("players-ban-length").selected_text(length_name(BAN_LENGTHS[ban_length])).width(length_width).show_ui(ui, |ui| {
+                            for (index, seconds) in BAN_LENGTHS.iter().enumerate() {
+                                if ui.selectable_label(ban_length == index, length_name(*seconds)).clicked() {
+                                    inputs.ban_length = Some(index);
+                                }
+                            }
+                        });
+                        egui::ComboBox::from_id_salt("players-ban-kind").selected_text(ban_kind_name(ban_kind)).width(control - length_width - ui.spacing().item_spacing.x).show_ui(ui, |ui| {
+                            for k in BanKind::ALL {
+                                if ui.selectable_label(ban_kind == k, ban_kind_name(k)).on_hover_text(ban_kind_hover(k)).clicked() {
+                                    inputs.ban_kind = Some(k);
+                                }
+                            }
+                        });
+                    });
+                    field(ui, &mut inputs.ban_reason, t("Reason"), control)
+                })
+                .inner;
+            ui.vertical(|ui| {
+                ui.add_space(ROW + 6.0);
+                ui.horizontal(|ui| {
+                    if (ui.add_enabled(ready, button(t("Ban"))).clicked() || enter) && ready {
+                        send(Rcon::Ban(BAN_LENGTHS[ban_length], inputs.ban_reason.clone(), ban_kind));
+                    }
+                    if ui.add_enabled(ready && banned, button(t("Lift the bans"))).on_disabled_hover_text(t("The player has no active ban.")).clicked() {
+                        send(Rcon::Unban);
+                    }
+                });
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Alert"));
+            ui.add_sized([control, 64.0], egui::TextEdit::multiline(&mut inputs.alert).hint_text(t("The message the player sees")));
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
                 let hint = if online { "" } else { t("Only to a player who is online.") };
-                if ui.add_enabled(ready && online, small(t("Send alert"))).on_disabled_hover_text(hint).clicked() {
-                    send(Rcon::Alert(inputs.alert.trim().to_string()));
-                }
-                if ui.add_enabled(ready && online, small(t("Disconnect"))).on_disabled_hover_text(hint).clicked() {
-                    send(Rcon::Disconnect);
-                }
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(ready && online, button(t("Send alert"))).on_disabled_hover_text(hint).clicked() {
+                        send(Rcon::Alert(inputs.alert.trim().to_string()));
+                    }
+                    if ui.add_enabled(ready && online, button(t("Disconnect"))).on_disabled_hover_text(hint).clicked() {
+                        send(Rcon::Disconnect);
+                    }
+                });
                 if !online {
                     widgets::muted(ui, palette, hint, 12.0);
                 }
             });
         });
-        ui.end_row();
+    });
+}
+
+/// The height of a row of the actions, the width of their value column and the least width of a button.
+const ROW: f32 = 28.0;
+const ACTION_CONTROL: f32 = 300.0;
+const ACTION_BUTTON: f32 = 96.0;
+
+/// An action's name, in the label column, level with the first line of its row.
+fn action_label(ui: &mut egui::Ui, text: &str) {
+    ui.allocate_ui_with_layout(egui::vec2(72.0, ROW), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        ui.set_min_size(egui::vec2(72.0, ROW));
+        ui.label(RichText::new(text).size(12.5));
     });
 }
 

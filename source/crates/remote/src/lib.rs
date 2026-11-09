@@ -5,10 +5,15 @@
 pub mod recorder;
 pub mod script;
 pub mod server;
+pub mod known_hosts;
 pub mod ssh;
 
 pub mod asset_sync;
 pub mod catalog_admin;
+pub mod catalog_health;
+pub mod catalog_journal;
+pub mod catalog_transfer;
+pub mod page_translate;
 pub mod content_admin;
 pub mod hotel_view_admin;
 pub mod logs_admin;

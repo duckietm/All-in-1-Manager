@@ -11,11 +11,12 @@ mod actions;
 mod modals;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::server_status::{ImageStatus, RepositoryUpdate};
 use aio_remote::{Server, ServerError};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::dialogs::{Choice, Dialogs};
 use crate::gui::icons::{self, Icon};
@@ -228,7 +229,7 @@ impl ToolsView {
     pub fn refresh(&mut self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.running || state.checked_for == Some(session_id(&server)) {
                 return;
             }
@@ -264,19 +265,19 @@ impl ToolsView {
 
     /// The last update check for this login (None: not checked yet).
     pub fn last_updates(&self) -> Option<Vec<RepositoryUpdate>> {
-        self.state.lock().unwrap().last_updates.clone()
+        self.state.lock().last_updates.clone()
     }
 
     /// The last Docker image check for this login.
     pub fn last_images(&self) -> Option<Vec<ImageStatus>> {
-        self.state.lock().unwrap().last_images.clone()
+        self.state.lock().last_images.clone()
     }
 
     /// Fetches GitHub again (the dashboard's Check again), without a run panel.
     pub fn check_updates_again(&mut self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             if state.running || state.checking {
                 return;
             }
@@ -288,7 +289,7 @@ impl ToolsView {
     /// A tile was clicked (or an Update button of the dashboard). (RunToolAsync)
     fn start_tool(&mut self, tool: Tool, shared: &Shared) {
         let Some(server) = shared.session() else { return };
-        if self.state.lock().unwrap().running {
+        if self.state.lock().running {
             return;
         }
         match tool {
@@ -306,7 +307,7 @@ impl ToolsView {
         }
         let title = t(tool.title()).to_string();
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.running = true;
             state.current_run = None;
         }
@@ -315,7 +316,7 @@ impl ToolsView {
             // The recorded commands go to the run panel of the tool.
             let state = self.state.clone();
             crate::gui::dry_run::set_sink(move |line| {
-                let run = state.lock().unwrap().current_run.clone();
+                let run = state.lock().current_run.clone();
                 if let Some(run) = run {
                     run.log(line);
                 }
@@ -326,7 +327,7 @@ impl ToolsView {
         shared.spawn(async move {
             let result = actions::perform(tool, &job).await;
             let failed = result.is_err();
-            let run = job.state.lock().unwrap().current_run.clone();
+            let run = job.state.lock().current_run.clone();
             if let Err(error) = result {
                 let message = step::error_message(&error);
                 let heading = tf("{title} failed", &[("title", &title)]);
@@ -346,7 +347,7 @@ impl ToolsView {
                 step::save_history(run, job.server.as_ref(), "tool", &title, outcome, started);
             }
             {
-                let mut state = job.state.lock().unwrap();
+                let mut state = job.state.lock();
                 state.running = false;
                 state.current_run = None;
             }
@@ -357,7 +358,7 @@ impl ToolsView {
     /// The settings backup buttons: no server needed.
     fn start_settings(&mut self, action: SettingsAction, shared: &Shared) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.running {
                 return;
             }
@@ -371,7 +372,7 @@ impl ToolsView {
                 SettingsAction::Export => actions::export_settings(&task_shared, &state).await,
                 SettingsAction::Import => actions::import_settings(&task_shared, &state).await,
             };
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock();
             if let Err(error) = result {
                 s.settings_result =
                     Some(Banner { kind: ResultKind::Error, heading: tf("{title} failed", &[("title", &title)]), message: step::error_message(&error) });
@@ -386,7 +387,7 @@ impl ToolsView {
     pub fn settings_backup_card(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         modals::show(ui.ctx(), palette, &self.state);
         let (running, settings_result) = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             (state.running, state.settings_result.clone())
         };
         let mut clicked_settings = None;
@@ -426,7 +427,7 @@ impl ToolsView {
     fn show_tools(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         let connected = shared.session().is_some();
         let (running, host, captions, updates_text, updates_warning, scroll) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             let scroll = std::mem::take(&mut state.scroll_to_result);
             (
                 state.running,
@@ -589,13 +590,13 @@ impl View for ToolsView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().running
+        self.state.lock().running
     }
 
     fn session_changed(&mut self, shared: &Shared) {
         let id = shared.session().map(|s| session_id(&s));
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.last_for != id {
                 state.last_for = None;
                 state.last_updates = None;
@@ -677,7 +678,7 @@ async fn confirm(dialogs: &Dialogs, heading: &str, message: &str, go: &str) -> b
 /// The update check without a run panel: after logging in, the dashboard's Check again, and after an update.
 async fn check_quietly(shared: &Shared, state: &SharedState, server: &Arc<dyn Server>) {
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         s.updates_text = t("Checking for updates ...").into();
         s.updates_warning = false;
         s.checking = true;
@@ -691,12 +692,12 @@ async fn check_quietly(shared: &Shared, state: &SharedState, server: &Arc<dyn Se
     match result {
         Ok((updates, images)) => show_updates(shared, state, server, updates, images),
         Err(error) => {
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock();
             s.updates_text = tf("Could not check for updates: {message}", &[("message", &step::error_message(&error))]);
             s.updates_warning = false;
         }
     }
-    state.lock().unwrap().checking = false;
+    state.lock().checking = false;
     shared.ctx.request_repaint();
 }
 
@@ -719,7 +720,7 @@ fn show_updates(shared: &Shared, state: &SharedState, server: &Arc<dyn Server>, 
     let captions = update_captions(&updates, &images, &directories);
     let (text, warning) = updates_line(&updates);
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         s.captions = captions;
         s.updates_text = text;
         s.updates_warning = warning;

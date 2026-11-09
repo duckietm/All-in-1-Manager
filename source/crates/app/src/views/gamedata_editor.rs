@@ -5,11 +5,12 @@
 //! The emulator watches its furnidata and sends changed furni to everyone online by itself; texts are read by the
 //! client when it loads.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::gamedata_admin::{self as admin, Field, GamedataFile, Hit, ItemRow, Kind, Loaded};
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::gui::dialogs::Choice;
@@ -126,8 +127,8 @@ struct Ctl {
 }
 
 impl Ctl {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.state.lock()
     }
 
     fn with<R>(&self, generation: u64, change: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -281,7 +282,7 @@ impl GamedataEditor {
         let Some(server) = shared.session() else { return };
         let id = server_id(&server);
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.loaded_for == Some(id) {
                 return;
             }
@@ -312,7 +313,7 @@ impl View for GamedataEditor {
         self.load_if_needed(shared);
         let mut actions = Vec::new();
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock();
             let s = &mut *guard;
             egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 0, bottom: 18 }).show(ui, |ui| {
                 ui.set_min_size(ui.available_size());
@@ -336,11 +337,11 @@ impl View for GamedataEditor {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().busy
+        self.state.lock().busy
     }
 
     fn session_changed(&mut self, _shared: &Shared) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         state.reset();
     }
 }

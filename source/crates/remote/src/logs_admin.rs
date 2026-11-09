@@ -452,6 +452,8 @@ pub fn page_from(spec: &LogSpec, rows: &[Vec<SqlValue>]) -> LogPage {
 }
 
 /// The first unix time of a date (`2026-11-07`, or with a time).
+// Err(()) means only "that is not a date": the caller shows its own message, so an error type would carry nothing.
+#[allow(clippy::result_unit_err)]
 pub fn from_time(text: &str) -> std::result::Result<Option<i64>, ()> {
     match crate::catalog_admin::parse_expiry(text) {
         Some(-1) => Ok(None),
@@ -461,6 +463,7 @@ pub fn from_time(text: &str) -> std::result::Result<Option<i64>, ()> {
 }
 
 /// The end (exclusive) of a date range: the day after a date, or the minute after a date with a time.
+#[allow(clippy::result_unit_err)]
 pub fn until_time(text: &str) -> std::result::Result<Option<i64>, ()> {
     let has_time = text.contains(':');
     from_time(text).map(|time| time.map(|t| t + if has_time { 60 } else { 86_400 }))

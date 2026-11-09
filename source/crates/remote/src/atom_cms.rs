@@ -104,14 +104,14 @@ pub async fn inspect(server: &dyn Server) -> Result<AtomCmsState> {
         INSPECT,
         &[
             ("Environment", ENVIRONMENT),
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
             ("Dist", &octane::dist()),
             ("EmulatorDirectory", &emulator::directory()),
             ("Directory", &directory()),
             ("SiteName", SITE_NAME),
             ("Public", &public()),
             ("CmsSiteFile", &cms_site::file(SITE_NAME)),
-            ("HotelSiteFile", hotel_site::FILE),
+            ("HotelSiteFile", hotel_site::file()),
         ],
     );
     let result = server.run_as_root(&script).await?;

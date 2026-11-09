@@ -134,10 +134,15 @@ fn is_registrable_domain(name: &str) -> bool {
     labels.len() == if two_part { 3 } else { 2 }
 }
 
-pub const TRAEFIK_DIRECTORY: &str = "/opt/traefik";
+/// Traefik's folder (Settings → Server layout).
+pub fn traefik_directory() -> &'static str {
+    &aio_core::ServerLayout::current().traefik
+}
 pub const NGINX_PORT: &str = crate::hotel_site::PORT;
 pub const POLARIS_PORT: &str = "2096";
-pub const SITE_FILE: &str = crate::hotel_site::FILE;
+pub fn site_file() -> &'static str {
+    crate::hotel_site::file()
+}
 
 /// Waits until the traefik container runs and listens on port 80; fails with its log otherwise. (WaitForTraefikScript)
 pub fn wait_for_traefik_script() -> String {
@@ -163,7 +168,7 @@ pub fn static_config_script(settings: &WebAccessSettings) -> String {
 /// that sets X-Forwarded-For) and CrowdSec on 127.0.0.1. The access log folder and the plugin storage are for
 /// CrowdSec. (ComposeScript)
 pub fn compose_script() -> String {
-    fill(COMPOSE, &[("AccessLogDirectory", crate::crowdsec::ACCESS_LOG_DIRECTORY)])
+    fill(COMPOSE, &[("AccessLogDirectory", crate::crowdsec::access_log_directory())])
 }
 
 /// Polaris reads X-Forwarded-For from right to left and skips only the proxies it trusts. Behind Cloudflare the
@@ -246,8 +251,8 @@ pub async fn inspect(server: &dyn Server) -> Result<WebAccessState> {
         &[
             ("ConflictingPackages", CONFLICTING_PACKAGES),
             ("NginxPort", NGINX_PORT),
-            ("SiteFile", SITE_FILE),
-            ("TraefikDirectory", TRAEFIK_DIRECTORY),
+            ("SiteFile", site_file()),
+            ("TraefikDirectory", traefik_directory()),
             ("port80", &port_owner(80)),
             ("port443", &port_owner(443)),
             ("PolarisPort", POLARIS_PORT),
@@ -375,7 +380,7 @@ ufw_allow 80/tcp 443/tcp"#;
 
 /// With Cloudflare, X-Forwarded-For is trusted only from Cloudflare's published ranges.
 pub async fn configure_traefik(server: &dyn Server, settings: &WebAccessSettings, log: Log<'_>) -> Result<()> {
-    let text = fill(CONFIGURE_TRAEFIK, &[("TraefikDirectory", TRAEFIK_DIRECTORY)]);
+    let text = fill(CONFIGURE_TRAEFIK, &[("TraefikDirectory", traefik_directory())]);
     let body = fill(
         &text,
         &[
@@ -420,7 +425,7 @@ fn static_yaml(settings: &WebAccessSettings, crowdsec: bool) -> String {
     let extra = if crowdsec {
         format!(
             "\n# CrowdSec (Addons → CrowdSec): it reads this log; the plugin blocks the addresses it bans.\naccessLog:\n  filePath: {}\nexperimental:\n  plugins:\n    {}:\n      moduleName: {}\n      version: {}",
-            cs::ACCESS_LOG,
+            cs::access_log(),
             cs::PLUGIN,
             cs::PLUGIN_MODULE,
             cs::PLUGIN_VERSION
@@ -647,7 +652,8 @@ fn routes_script(settings: &WebAccessSettings) -> String {
 /// Rewrites only the routes, for the CMS addon. Traefik itself keeps running.
 pub async fn configure_routes(server: &dyn Server, settings: &WebAccessSettings, log: Log<'_>) -> Result<()> {
     let body = format!(
-        "t={TRAEFIK_DIRECTORY}\n[ -d \"$t/dynamic\" ] || fail \"Traefik is not set up in $t. Run the Web access step first.\"\n{}",
+        "t={}\n[ -d \"$t/dynamic\" ] || fail \"Traefik is not set up in $t. Run the Web access step first.\"\n{}",
+        traefik_directory(),
         routes_script(settings)
     );
     script::run(server, &script::with_prelude(&body), log, "Changing the Traefik routes failed", None).await
@@ -759,7 +765,7 @@ fn cloudflare_refresh_content() -> String {
         &[
             ("CloudflareRefreshCron", CLOUDFLARE_REFRESH_CRON),
             ("RealIpFile", crate::hotel_site::REAL_IP_FILE),
-            ("TraefikDirectory", TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", traefik_directory()),
             ("MiddlewareFile", &crate::crowdsec::middleware_file()),
             ("EmulatorDirectory", &crate::emulator::directory()),
             ("EmulatorLogDirectory", &crate::emulator::log_directory()),

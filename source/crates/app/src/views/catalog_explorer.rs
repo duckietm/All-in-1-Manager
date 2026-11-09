@@ -6,35 +6,86 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use aio_remote::catalog_admin::{self, FieldKind, Furni, FurniColumn, Offer, Page, PageUndo, PlaceUndo};
+use aio_remote::catalog_admin::{self, Catalogue, FieldKind, Furni, FurniColumn, Offer, Page, PageUndo, PlaceUndo};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
+use parking_lot::Mutex;
 
 use super::sql_editor::login::{Login, Prompt};
 use super::sql_editor::text;
 use crate::gui::dialogs::Choice;
+use crate::gui::image_loader::{ImageLoader, Source, State as LoadState};
 use crate::gui::theme::Palette;
 use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
 use crate::i18n::{t, tf};
 
 /// The game's catalogue colours: the same in the light and the dark theme, as in the client.
 mod game {
+    use std::cell::Cell;
+
     use eframe::egui::Color32;
-    pub const TITLE: Color32 = Color32::from_rgb(30, 114, 149);
-    pub const TITLE_DARK: Color32 = Color32::from_rgb(21, 85, 112);
+
+    thread_local! {
+        /// Drawing the Builders Club warehouse: its colours (orange and dark teal) instead of the catalogue's blue.
+        static WAREHOUSE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Which colours the explorer drawn next uses.
+    pub fn set_builders(on: bool) {
+        WAREHOUSE.with(|b| b.set(on));
+    }
+
+    fn pick(normal: Color32, builders: Color32) -> Color32 {
+        if WAREHOUSE.with(Cell::get) {
+            builders
+        } else {
+            normal
+        }
+    }
+
+    /// The window's title bar.
+    pub fn title() -> Color32 {
+        pick(Color32::from_rgb(30, 114, 149), Color32::from_rgb(28, 74, 96))
+    }
+    /// The line under the title bar: orange in the warehouse.
+    pub fn title_dark() -> Color32 {
+        pick(Color32::from_rgb(21, 85, 112), Color32::from_rgb(243, 156, 18))
+    }
+    /// Selection outlines, the Without offer tab, focus.
+    pub fn accent() -> Color32 {
+        pick(Color32::from_rgb(30, 114, 149), Color32::from_rgb(226, 132, 10))
+    }
+    /// The open page in the tree, and its text.
+    pub fn active() -> Color32 {
+        pick(Color32::from_rgb(30, 114, 149), Color32::from_rgb(245, 166, 35))
+    }
+    pub fn active_text() -> Color32 {
+        pick(Color32::WHITE, Color32::from_rgb(40, 24, 0))
+    }
+    pub fn tab() -> Color32 {
+        pick(Color32::from_rgb(200, 210, 218), Color32::from_rgb(226, 214, 192))
+    }
+    pub fn tab_hover() -> Color32 {
+        pick(Color32::from_rgb(218, 226, 232), Color32::from_rgb(240, 229, 208))
+    }
+    pub fn nav_hover() -> Color32 {
+        pick(Color32::from_rgb(222, 236, 245), Color32::from_rgb(253, 235, 200))
+    }
+    pub fn page_bar() -> Color32 {
+        pick(Color32::from_rgb(213, 226, 236), Color32::from_rgb(246, 231, 201))
+    }
+    pub fn tile_selected() -> Color32 {
+        pick(Color32::from_rgb(222, 238, 249), Color32::from_rgb(253, 236, 200))
+    }
+
     pub const FRAME: Color32 = Color32::from_rgb(40, 40, 40);
     pub const BODY: Color32 = Color32::from_rgb(234, 234, 234);
-    pub const TAB: Color32 = Color32::from_rgb(200, 210, 218);
-    pub const TAB_HOVER: Color32 = Color32::from_rgb(218, 226, 232);
     pub const NAV: Color32 = Color32::WHITE;
-    pub const NAV_HOVER: Color32 = Color32::from_rgb(222, 236, 245);
-    pub const PAGE_BAR: Color32 = Color32::from_rgb(213, 226, 236);
     pub const TILE: Color32 = Color32::from_rgb(205, 211, 217);
     pub const TILE_EDGE: Color32 = Color32::from_rgb(182, 190, 197);
-    pub const TILE_SELECTED: Color32 = Color32::from_rgb(222, 238, 249);
     pub const TEXT: Color32 = Color32::from_rgb(30, 30, 30);
     pub const MUTED: Color32 = Color32::from_rgb(110, 116, 122);
     pub const HIDDEN: Color32 = Color32::from_rgb(150, 150, 150);
@@ -42,6 +93,7 @@ mod game {
     pub const DUCKETS: Color32 = Color32::from_rgb(196, 112, 220);
     pub const DIAMONDS: Color32 = Color32::from_rgb(91, 192, 235);
     pub const DROP: Color32 = Color32::from_rgb(255, 140, 0);
+    pub const BUILDERS: Color32 = Color32::from_rgb(242, 160, 30);
 }
 
 const TILE: f32 = 58.0;
@@ -74,8 +126,20 @@ struct Pane {
     furni_search: String,
 }
 
+/// The page text translator: the language, which text columns, and whether it is busy.
+struct Translator {
+    language: String,
+    columns: Vec<(String, bool)>,
+    busy: bool,
+    error: Option<String>,
+}
+
 #[derive(Default)]
 struct State {
+    /// The normal catalogue or the Builders Club warehouse (`catalog_pages_bc`, `catalog_items_bc`).
+    cat: Catalogue,
+    /// The page text translator (Google Translate, as Octane's page editor).
+    translator: Option<Translator>,
     generation: u64,
     session: Option<Arc<SqlSession>>,
     session_for: Option<usize>,
@@ -98,7 +162,10 @@ struct State {
     catalogue_files: Option<Vec<String>>,
     listing: bool,
     fetched: HashMap<String, Option<Arc<Vec<u8>>>>,
-    fetching: HashSet<String>,
+    /// The server images on screen this frame that still have to be fetched (newest view first), and whether the
+    /// fetcher runs: it takes them from here, so what was scrolled past is never fetched.
+    fetch_wanted: Vec<String>,
+    fetch_running: bool,
     /// The columns of each table edited so far (items_base, catalog_items).
     columns: HashMap<&'static str, Vec<FurniColumn>>,
     login_visible: bool,
@@ -133,7 +200,7 @@ impl State {
                 }
             });
         }
-        *self = State { generation: self.generation, two: true, new_price: NEW_PRICE, ..State::default() };
+        *self = State { generation: self.generation, two: true, new_price: NEW_PRICE, cat: self.cat, ..State::default() };
     }
 
     fn page(&self, id: i64) -> Option<&Page> {
@@ -195,6 +262,21 @@ struct Editor {
 }
 
 impl Editor {
+    /// Every column with its value as typed (None: NULL), for the row's rules.
+    fn row(&self, columns: &[FurniColumn]) -> Vec<(String, Option<String>)> {
+        columns
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i < self.values.len())
+            .map(|(i, c)| (c.name.clone(), (!self.nulls[i]).then(|| self.values[i].trim().to_string())))
+            .collect()
+    }
+
+    /// The first rule of Octane's catalogue admin the row breaks, in words.
+    fn row_problem(&self, columns: &[FurniColumn], pages: &[Page]) -> Option<String> {
+        catalog_admin::row_problem(self.table, self.id, &self.row(columns), pages).map(|p| row_problem_text(&p))
+    }
+
     /// The columns whose value differs from what was loaded.
     fn changes(&self, columns: &[FurniColumn]) -> Vec<(String, Option<String>)> {
         let Some(original) = &self.original else { return Vec::new() };
@@ -207,6 +289,15 @@ impl Editor {
                 (now != original[i]).then(|| (c.name.clone(), now))
             })
             .collect()
+    }
+}
+
+/// The table behind the editor's name for it: the `_bc` tables in the Builders Club explorer.
+fn real_table(cat: Catalogue, table: &'static str) -> &'static str {
+    match table {
+        "catalog_pages" => cat.pages_table(),
+        "catalog_items" => cat.items_table(),
+        other => other,
     }
 }
 
@@ -318,19 +409,20 @@ enum Action {
     BuilderFind,
     BuilderBuild,
     SearchFurni(String),
-    FetchFiles(Vec<String>),
+    TranslateTexts,
+    FetchFiles,
     Undo,
     Publish,
 }
 
 /// The icons on this computer: the furni icons (`icons/<class>_icon.png`) of Habbo's download and the retro profiles,
-/// and the catalogue's page icons (`c_images/catalogue/icon_<n>.png`). Read when first shown, at most a few per frame.
+/// and the catalogue's page icons (`c_images/catalogue/icon_<n>.png`). Read and decoded in the background
+/// ([`ImageLoader`]) when first shown; until then a placeholder.
 #[derive(Default)]
 struct Images {
     icon_folders: Vec<PathBuf>,
     catalogue_folders: Vec<PathBuf>,
-    loaded: HashMap<String, Option<egui::TextureHandle>>,
-    read_this_frame: usize,
+    loader: ImageLoader,
     /// The files of the local c_images/catalogue folders (read once, for the picker).
     local_catalogue: Option<Vec<String>>,
 }
@@ -348,32 +440,11 @@ impl Images {
         }
     }
 
-    fn read(&mut self, ctx: &egui::Context, key: String, paths: Vec<PathBuf>) -> Option<egui::TextureHandle> {
-        if let Some(found) = self.loaded.get(&key) {
-            return found.clone();
-        }
-        if self.read_this_frame >= 24 {
-            ctx.request_repaint();
-            return None;
-        }
-        self.read_this_frame += 1;
-        let texture = paths.iter().find_map(|path| {
-            let bytes = std::fs::read(path).ok()?;
-            let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-            let size = [image.width() as usize, image.height() as usize];
-            let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-            // Pixel art: no smoothing when it is drawn larger.
-            Some(ctx.load_texture(&key, color, egui::TextureOptions::NEAREST))
-        });
-        self.loaded.insert(key, texture.clone());
-        texture
-    }
-
     /// A furni's icon by its items_base name ("rare_dragonlamp*4" -> rare_dragonlamp_4_icon.png).
-    fn furni(&mut self, ctx: &egui::Context, item_name: &str) -> Option<egui::TextureHandle> {
+    fn furni(&mut self, _ctx: &egui::Context, item_name: &str) -> Option<egui::TextureHandle> {
         let file = format!("{}_icon.png", item_name.trim().replace('*', "_"));
-        let paths = self.icon_folders.iter().flat_map(|f| [f.join(&file), f.join(file.to_lowercase())]).collect();
-        self.read(ctx, format!("furni:{file}"), paths)
+        let folders = &self.icon_folders;
+        self.loader.get(&format!("furni:{file}"), || Source::Files(folders.iter().flat_map(|f| [f.join(&file), f.join(file.to_lowercase())]).collect()))
     }
 
     /// The image files of the local c_images/catalogue folders.
@@ -394,36 +465,35 @@ impl Images {
     }
 
     /// A file of c_images/catalogue: from this computer, else from what was fetched from the server. The second value
-    /// is true when it still has to be fetched.
-    fn catalogue_file(&mut self, ctx: &egui::Context, file: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
-        let paths: Vec<PathBuf> = self.catalogue_folders.iter().map(|f| f.join(file)).collect();
-        if paths.iter().any(|p| p.is_file()) {
-            return (self.read(ctx, format!("page:{file}"), paths), false);
+    /// is true when it still has to be fetched (it is not on this computer).
+    fn catalogue_file(&mut self, _ctx: &egui::Context, file: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
+        let local = format!("page:{file}");
+        match self.loader.state(&local) {
+            LoadState::Ready(texture) => return (Some(texture), false),
+            LoadState::Pending => return (None, false),
+            LoadState::Unknown => {
+                let folders = &self.catalogue_folders;
+                self.loader.get(&local, || Source::Files(folders.iter().map(|f| f.join(file)).collect()));
+                return (None, false);
+            }
+            // Not on this computer: the server's copy.
+            LoadState::Missing => {}
         }
         match fetched.get(file) {
             None => (None, true),
             Some(None) => (None, false),
             Some(Some(bytes)) => {
-                let key = format!("server:{file}");
-                if let Some(found) = self.loaded.get(&key) {
-                    return (found.clone(), false);
-                }
-                let texture = image::load_from_memory(bytes).ok().map(|image| {
-                    let image = image.to_rgba8();
-                    let color = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
-                    ctx.load_texture(&key, color, egui::TextureOptions::NEAREST)
-                });
-                self.loaded.insert(key, texture.clone());
-                (texture, false)
+                let bytes = bytes.clone();
+                (self.loader.get(&format!("server:{file}"), || Source::Bytes(bytes)), false)
             }
         }
     }
 
     /// A page icon by its number (icon_image).
-    fn page(&mut self, ctx: &egui::Context, number: i64) -> Option<egui::TextureHandle> {
+    fn page(&mut self, _ctx: &egui::Context, number: i64) -> Option<egui::TextureHandle> {
         let file = format!("icon_{number}.png");
-        let paths = self.catalogue_folders.iter().map(|f| f.join(&file)).collect();
-        self.read(ctx, format!("page:{file}"), paths)
+        let folders = &self.catalogue_folders;
+        self.loader.get(&format!("page:{file}"), || Source::Files(folders.iter().map(|f| f.join(&file)).collect()))
     }
 }
 
@@ -443,8 +513,8 @@ fn server_id(server: &Arc<dyn Server>) -> usize {
 }
 
 impl Ctl {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.state.lock()
     }
 
     fn with<R>(&self, generation: u64, change: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -454,6 +524,17 @@ impl Ctl {
         };
         self.shared.ctx.request_repaint();
         result
+    }
+
+    /// Which catalogue this explorer shows: the normal one or the Builders Club warehouse.
+    fn cat(&self) -> Catalogue {
+        self.lock().cat
+    }
+
+    /// The table of the editor's name for it: `catalog_pages` and `catalog_items` are the `_bc` tables in the
+    /// Builders Club explorer.
+    fn table(&self, table: &'static str) -> &'static str {
+        real_table(self.cat(), table)
     }
 
     fn session(&self) -> Option<(u64, Arc<SqlSession>, String)> {
@@ -554,7 +635,7 @@ impl Ctl {
     async fn load_pages(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
-        let loaded = catalog_admin::load_pages(&session, &database).await;
+        let loaded = catalog_admin::load_pages(&session, &database, self.cat()).await;
         self.with(generation, |s| {
             s.busy = false;
             match loaded {
@@ -578,7 +659,7 @@ impl Ctl {
 
     async fn load_offers(&self, page: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let loaded = catalog_admin::load_offers(&session, &database, page).await;
+        let loaded = catalog_admin::load_offers(&session, &database, self.cat(), page).await;
         self.with(generation, |s| {
             s.loading.remove(&page);
             match loaded {
@@ -604,7 +685,7 @@ impl Ctl {
     async fn place(self, ids: Vec<i64>, page: i64, before: Option<i64>, copy: bool) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
-        let result = catalog_admin::place_offers(&session, &database, &ids, page, before, copy).await;
+        let result = catalog_admin::place_offers(&session, &database, self.cat(), &ids, page, before, copy).await;
         let caption = self.lock().page(page).map(|p| p.caption.clone()).unwrap_or_default();
         let pages = match &result {
             Ok(undo) => undo.pages.clone(),
@@ -642,8 +723,8 @@ impl Ctl {
         let Some(undo) = self.lock().undo.take() else { return };
         self.with(generation, |s| s.busy = true);
         let result = match &undo {
-            Undo::Offers(undo) => catalog_admin::undo_place(&session, &database, undo).await,
-            Undo::Page(undo) => catalog_admin::undo_page_move(&session, &database, undo).await,
+            Undo::Offers(undo) => catalog_admin::undo_place(&session, &database, self.cat(), undo).await,
+            Undo::Page(undo) => catalog_admin::undo_page_move(&session, &database, self.cat(), undo).await,
         };
         self.with(generation, |s| {
             s.busy = false;
@@ -678,13 +759,13 @@ impl Ctl {
         }
         self.with(generation, |s| s.busy = true);
         let (credits, points, points_type) = self.lock().new_price;
-        let result = catalog_admin::place_new_furni(&session, &database, &furni, page, before, credits, points, points_type).await;
+        let result = catalog_admin::place_new_furni(&session, &database, self.cat(), &furni, page, before, credits, points, points_type).await;
         self.with(generation, |s| {
             s.busy = false;
             match result {
                 Ok(undo) => {
                     s.status = Status {
-                        text: tf("{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.", &[("count", &furni.len().to_string()), ("page", &caption)]),
+                        text: tf("{count} furni got an offer on {page}. Publish to show it in the hotel.", &[("count", &furni.len().to_string()), ("page", &caption)]),
                         error: false,
                     };
                     s.undo = Some(Undo::Offers(undo));
@@ -709,7 +790,7 @@ impl Ctl {
             (s.page(id).map(|p| p.caption.clone()).unwrap_or_default(), s.page(parent).map(|p| p.caption.clone()).unwrap_or_default())
         };
         self.with(generation, |s| s.busy = true);
-        let result = catalog_admin::move_page(&session, &database, id, parent, before).await;
+        let result = catalog_admin::move_page(&session, &database, self.cat(), id, parent, before).await;
         self.with(generation, |s| {
             s.busy = false;
             match result {
@@ -728,13 +809,13 @@ impl Ctl {
     async fn load_unoffered(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         let furni = catalog_admin::load_sellable_furni(&session, &database).await;
-        let offers = catalog_admin::load_all_offers(&session, &database).await;
+        let offers = catalog_admin::load_all_offers(&session, &database, self.cat()).await;
         self.with(generation, |s| {
             s.unoffered_loading = false;
             match (furni, offers) {
                 (Ok(furni), Ok(offers)) => {
                     let mut list = catalog_admin::unoffered_furni(&furni, &offers);
-                    list.sort_by(|a, b| a.item_name.to_lowercase().cmp(&b.item_name.to_lowercase()));
+                    list.sort_by_key(|a| a.item_name.to_lowercase());
                     s.unoffered = Some(list);
                 }
                 (Err(error), _) | (_, Err(error)) => s.status = Status { text: error.to_string(), error: true },
@@ -751,9 +832,9 @@ impl Ctl {
         let cached = self.lock().columns.get(table).cloned();
         let columns = match cached {
             Some(columns) => Ok(columns),
-            None => catalog_admin::table_columns(&session, &database, table).await,
+            None => catalog_admin::table_columns(&session, &database, self.table(table)).await,
         };
-        let row = catalog_admin::load_row(&session, &database, table, id).await;
+        let row = catalog_admin::load_row(&session, &database, self.table(table), id).await;
         self.with(generation, |s| {
             let Some(editor) = s.editor.as_mut().filter(|e| e.id == id && e.table == table) else { return };
             match (columns, row) {
@@ -801,10 +882,34 @@ impl Ctl {
                 editor.status = Status { text: t("Nothing changed.").into(), error: false };
                 return;
             }
+            let pages = s.pages.clone();
+            let Some(editor) = s.editor.as_mut() else { return };
+            if let Some(problem) = editor.row_problem(&columns, &pages) {
+                editor.status = Status { text: problem, error: true };
+                return;
+            }
             editor.saving = true;
             (editor.table, editor.id, editor.page, changes, cleaned)
         };
-        let result = catalog_admin::save_row(&session, &database, table, id, &changes).await;
+        // Every furni of the offer must be in items_base, or the emulator leaves the offer out.
+        if table == "catalog_items" {
+            if let Some(Some(ids)) = changes.iter().find(|(c, _)| c == "item_ids").map(|(_, v)| v.as_deref().and_then(catalog_admin::item_ids)) {
+                let missing = match catalog_admin::furni_by_ids(&session, &database, &ids).await {
+                    Ok(found) => ids.iter().copied().find(|id| !found.iter().any(|f| f.id == *id)),
+                    Err(_) => None,
+                };
+                if let Some(id) = missing {
+                    self.with(generation, |s| {
+                        if let Some(editor) = s.editor.as_mut() {
+                            editor.saving = false;
+                            editor.status = Status { text: tf("Furni {id} is not in items_base.", &[("id", &id.to_string())]), error: true };
+                        }
+                    });
+                    return;
+                }
+            }
+        }
+        let result = catalog_admin::save_row(&session, &database, self.table(table), id, &changes).await;
         let ok = result.is_ok();
         self.with(generation, |s| {
             if result.is_ok() && table != "items_base" {
@@ -832,7 +937,7 @@ impl Ctl {
         });
         if ok {
             // The new values as the database has them, and the windows: the names of a furni, the page of an offer.
-            let row = catalog_admin::load_row(&session, &database, table, id).await;
+            let row = catalog_admin::load_row(&session, &database, self.table(table), id).await;
             let names = if table == "items_base" { catalog_admin::furni_by_ids(&session, &database, &[id]).await.ok() } else { None };
             let moved_to = row.as_ref().ok().and_then(|r| r.iter().find(|(n, _)| n == "page_id")).and_then(|(_, v)| v.as_deref()?.trim().parse::<i64>().ok());
             self.with(generation, |s| {
@@ -888,37 +993,120 @@ impl Ctl {
         });
     }
 
-    /// Fetches these files of the server's c_images/catalogue for their preview, one after the other.
-    async fn fetch_files(self, files: Vec<String>) {
-        let Some(server) = self.shared.session() else { return };
+    /// Fetches the server images that are on screen, a few at a time over one SFTP session, until none is wanted.
+    /// What was scrolled past before its turn is left out.
+    async fn fetch_files(self) {
+        let Some(server) = self.shared.session() else {
+            self.lock().fetch_running = false;
+            return;
+        };
         let generation = self.lock().generation;
         let folder = format!("{}/c_images/catalogue", aio_remote::octane::gamedata());
         let temp = std::env::temp_dir().join(format!("all-in-1-catalogue-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&temp);
-        for file in files {
-            let local = temp.join(&file);
-            let bytes = match server.download(&format!("{folder}/{file}"), &local, &|_| {}).await {
-                Ok(()) => std::fs::read(&local).ok().map(Arc::new),
-                Err(_) => None,
+        loop {
+            let batch: Vec<String> = {
+                let mut s = self.lock();
+                if s.generation != generation {
+                    return;
+                }
+                let mut batch: Vec<String> = Vec::new();
+                for file in s.fetch_wanted.iter() {
+                    if !s.fetched.contains_key(file) && !batch.contains(file) && batch.len() < 12 {
+                        batch.push(file.clone());
+                    }
+                }
+                if batch.is_empty() {
+                    s.fetch_running = false;
+                    return;
+                }
+                batch
             };
-            let _ = std::fs::remove_file(&local);
-            if self.with(generation, |s| {
-                s.fetching.remove(&file);
-                s.fetched.insert(file.clone(), bytes);
-            })
-            .is_none()
+            let pairs: Vec<(String, PathBuf)> = batch.iter().map(|f| (format!("{folder}/{f}"), temp.join(f))).collect();
+            let together = server.download_files(&pairs, &|_| {}, tokio_util::sync::CancellationToken::new()).await.is_ok();
+            let mut results = Vec::new();
+            for (file, (remote, local)) in batch.iter().zip(&pairs) {
+                let bytes = if together {
+                    std::fs::read(local).ok()
+                } else {
+                    // One missing file stops a batch: then one by one.
+                    server.read_file(remote, 8 << 20).await.ok().flatten()
+                };
+                let _ = std::fs::remove_file(local);
+                results.push((file.clone(), bytes.map(Arc::new)));
+            }
+            if self
+                .with(generation, |s| {
+                    for (file, bytes) in results {
+                        s.fetched.insert(file, bytes);
+                    }
+                })
+                .is_none()
             {
                 return;
             }
         }
     }
 
+    /// Translates the ticked texts of the page editor into the chosen language; they become changes to save.
+    async fn translate_texts(self) {
+        let generation = self.lock().generation;
+        let (language, work) = {
+            let mut s = self.lock();
+            let columns = s.editor.as_ref().and_then(|e| s.columns.get(e.table)).cloned().unwrap_or_default();
+            let Some(translator) = s.translator.as_mut() else { return };
+            translator.busy = true;
+            translator.error = None;
+            let ticked: Vec<String> = translator.columns.iter().filter(|(_, on)| *on).map(|(c, _)| c.clone()).collect();
+            let language = translator.language.clone();
+            let Some(editor) = s.editor.as_ref() else { return };
+            let work: Vec<(usize, String)> = ticked
+                .iter()
+                .filter_map(|name| columns.iter().position(|c| &c.name == name))
+                .filter(|i| !editor.nulls.get(*i).copied().unwrap_or(true) && !editor.values[*i].trim().is_empty())
+                .map(|i| (i, editor.values[i].clone()))
+                .collect();
+            (language, work)
+        };
+        let mut done = Vec::new();
+        let mut failed = None;
+        for (index, text) in work {
+            match aio_remote::page_translate::translate(&text, &language).await {
+                Ok(translated) => done.push((index, catalog_admin::safe_page_html(&translated))),
+                Err(error) => {
+                    failed = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        self.with(generation, |s| {
+            if let Some(editor) = s.editor.as_mut() {
+                for (index, text) in &done {
+                    if let Some(value) = editor.values.get_mut(*index) {
+                        *value = text.clone();
+                    }
+                }
+                if failed.is_none() {
+                    editor.status = Status { text: tf("{count} texts translated: check them, then Save.", &[("count", &done.len().to_string())]), error: false };
+                }
+            }
+            match failed {
+                Some(error) => {
+                    if let Some(translator) = s.translator.as_mut() {
+                        translator.busy = false;
+                        translator.error = Some(error);
+                    }
+                }
+                None => s.translator = None,
+            }
+        });
+    }
+
     /// A new page under `parent` (hidden until Visible is ticked), then its editor to name it.
     async fn new_page(self, parent: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let page = catalog_admin::new_page(&self.lock().pages, parent);
+        let page = catalog_admin::new_page(&self.lock().pages, parent, self.cat());
         self.with(generation, |s| s.busy = true);
-        let saved = catalog_admin::save_page(&session, &database, &page).await;
+        let saved = catalog_admin::save_page(&session, &database, self.cat(), &page).await;
         self.with(generation, |s| s.busy = false);
         match saved {
             Ok(id) => {
@@ -941,7 +1129,7 @@ impl Ctl {
     /// Asks first, then deletes the page with its offers (never one with pages under it or sold limited offers).
     async fn delete_page(self, id: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let offers = match catalog_admin::load_offers(&session, &database, id).await {
+        let offers = match catalog_admin::load_offers(&session, &database, self.cat(), id).await {
             Ok(offers) => offers,
             Err(error) => {
                 self.with(generation, |s| s.status = Status { text: error.to_string(), error: true });
@@ -963,7 +1151,7 @@ impl Ctl {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let deleted = catalog_admin::delete_page(&session, &database, id).await;
+        let deleted = catalog_admin::delete_page(&session, &database, self.cat(), id).await;
         self.with(generation, |s| {
             s.busy = false;
             match deleted {
@@ -1005,7 +1193,7 @@ impl Ctl {
         }
         self.with(generation, |s| s.busy = true);
         let ids: Vec<i64> = offers.iter().map(|o| o.id).collect();
-        let deleted = catalog_admin::delete_offers(&session, &database, &ids).await;
+        let deleted = catalog_admin::delete_offers(&session, &database, self.cat(), &ids).await;
         self.with(generation, |s| {
             s.busy = false;
             match deleted {
@@ -1041,7 +1229,7 @@ impl Ctl {
         let Some((prefix, only_new)) = self.lock().builder.as_ref().map(|b| (b.prefix.trim().to_string(), b.only_new)) else { return };
         self.with(generation, |s| s.busy = true);
         let furni = catalog_admin::furni_by_prefix(&session, &database, &prefix).await;
-        let offers = if only_new { catalog_admin::load_all_offers(&session, &database).await.map(Some) } else { Ok(None) };
+        let offers = if only_new { catalog_admin::load_all_offers(&session, &database, self.cat()).await.map(Some) } else { Ok(None) };
         self.with(generation, |s| {
             s.busy = false;
             match (furni, offers) {
@@ -1066,7 +1254,7 @@ impl Ctl {
             let s = self.lock();
             let Some(builder) = s.builder.as_ref() else { return };
             let Some(found) = builder.found.clone().filter(|f| !f.is_empty()) else { return };
-            let mut page = catalog_admin::new_page(&s.pages, builder.parent);
+            let mut page = catalog_admin::new_page(&s.pages, builder.parent, s.cat);
             page.caption = builder.caption.trim().to_string();
             (page, found, builder.price)
         };
@@ -1075,7 +1263,7 @@ impl Ctl {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let page_id = match catalog_admin::save_page(&session, &database, &page).await {
+        let page_id = match catalog_admin::save_page(&session, &database, self.cat(), &page).await {
             Ok(id) => id,
             Err(error) => {
                 self.with(generation, |s| {
@@ -1086,7 +1274,7 @@ impl Ctl {
             }
         };
         let offers = catalog_admin::offers_for(&found, page_id, &[], price.0, price.1, price.2);
-        let added = catalog_admin::add_offers(&session, &database, &offers).await;
+        let added = catalog_admin::add_offers(&session, &database, self.cat(), &offers).await;
         self.with(generation, |s| {
             s.busy = false;
             s.unpublished = true;
@@ -1149,7 +1337,17 @@ impl Ctl {
 
 impl CatalogExplorerView {
     pub fn new(_shared: &Shared) -> Self {
-        Self { state: Arc::new(Mutex::new(State { two: true, new_price: NEW_PRICE, ..State::default() })), images: Images::new() }
+        Self::with(Catalogue::Normal)
+    }
+
+    /// The Builders Club warehouse: its own pages and offers (`catalog_pages_bc`, `catalog_items_bc`), free, no
+    /// prices.
+    pub fn new_builders(_shared: &Shared) -> Self {
+        Self::with(Catalogue::Builders)
+    }
+
+    fn with(cat: Catalogue) -> Self {
+        Self { state: Arc::new(Mutex::new(State { cat, two: true, new_price: NEW_PRICE, ..State::default() })), images: Images::new() }
     }
 
     fn ctl(&self, shared: &Shared) -> Ctl {
@@ -1160,7 +1358,7 @@ impl CatalogExplorerView {
         let Some(server) = shared.session() else { return };
         let id = server_id(&server);
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.session_for == Some(id) {
                 return;
             }
@@ -1179,15 +1377,23 @@ impl CatalogExplorerView {
 impl View for CatalogExplorerView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.connect_if_needed(shared);
-        self.images.read_this_frame = 0;
+        game::set_builders(self.state.lock().unwrap().cat == Catalogue::Builders);
+        self.images.loader.poll(ui.ctx());
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock();
             let s = &mut *guard;
+            // The server images on screen this frame: the fetcher takes them from here.
+            s.fetch_wanted.clear();
             editor_window(&ctx, palette, s, &mut self.images, &mut actions);
-            picker_window(&ctx, palette, s, &mut self.images, &mut actions);
+            picker_window(&ctx, palette, s, &mut self.images);
+            if !s.fetch_wanted.is_empty() && !s.fetch_running && !s.sample {
+                s.fetch_running = true;
+                actions.push(Action::FetchFiles);
+            }
             html_window(&ctx, palette, s);
+            translator_window(&ctx, palette, s, &mut actions);
             builder_window(&ctx, palette, s, &mut actions);
             // The Delete key deletes the furni selected in a window (asks first).
             if s.editor.is_none() && s.builder.is_none() && !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
@@ -1257,8 +1463,8 @@ impl View for CatalogExplorerView {
                 Action::LoadOffers(page) => ctl.spawn(move |c| async move { c.load_offers(page).await }),
                 Action::FurniNames(ids) => ctl.spawn(move |c| async move { c.furni_names(ids).await }),
                 Action::Place { ids, page, before, copy } => {
-                    if self.state.lock().unwrap().sample {
-                        sample_place(&mut self.state.lock().unwrap(), &ids, page, before, copy);
+                    if self.state.lock().sample {
+                        sample_place(&mut self.state.lock(), &ids, page, before, copy);
                     } else {
                         ctl.spawn(move |c| c.place(ids, page, before, copy));
                     }
@@ -1266,7 +1472,7 @@ impl View for CatalogExplorerView {
                 Action::PlaceFurni { ids, page, before } => ctl.spawn(move |c| c.place_furni(ids, page, before)),
                 Action::MovePage { id, parent, before } => ctl.spawn(move |c| c.move_page(id, parent, before)),
                 Action::LoadUnoffered => ctl.spawn(|c| async move { c.load_unoffered().await }),
-                Action::EditRow { table, id, furni, .. } if self.state.lock().unwrap().sample => sample_editor(&mut self.state.lock().unwrap(), table, id, furni),
+                Action::EditRow { table, id, furni, .. } if self.state.lock().sample => sample_editor(&mut self.state.lock(), table, id, furni),
                 Action::EditRow { table, id, furni, page } => ctl.spawn(move |c| c.edit_row(table, id, furni, page)),
                 Action::SaveRow => ctl.spawn(|c| c.save_row()),
                 Action::ListCatalogueFiles => ctl.spawn(|c| c.list_catalogue_files()),
@@ -1281,7 +1487,8 @@ impl View for CatalogExplorerView {
                 Action::BuilderFind => ctl.spawn(|c| async move { c.builder_find().await }),
                 Action::BuilderBuild => ctl.spawn(|c| c.builder_build()),
                 Action::SearchFurni(text) => ctl.spawn(move |c| async move { c.search_furni(text).await }),
-                Action::FetchFiles(files) => ctl.spawn(move |c| c.fetch_files(files)),
+                Action::TranslateTexts => ctl.spawn(|c| c.translate_texts()),
+                Action::FetchFiles => ctl.spawn(|c| c.fetch_files()),
                 Action::Undo => ctl.spawn(|c| c.undo()),
                 Action::Publish => ctl.spawn(|c| c.publish()),
             }
@@ -1289,18 +1496,19 @@ impl View for CatalogExplorerView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().busy
+        self.state.lock().busy
     }
 
     fn session_changed(&mut self, shared: &Shared) {
-        self.state.lock().unwrap().close(shared);
+        self.state.lock().close(shared);
     }
 }
 
 /// A front page (layout frontpage, frontpage4, frontpage_featured ...): it shows promotions, never furni, so
 /// nothing can be dropped on it.
 fn is_front_page(page: &Page) -> bool {
-    page.layout.trim().to_lowercase().starts_with("frontpage")
+    let layout = page.layout.trim().to_lowercase();
+    layout.starts_with("frontpage") || layout == "builders_club_frontpage"
 }
 
 /// What was dropped on `response`, when it is a `P`. egui's `dnd_release_payload` takes the payload before it checks
@@ -1384,10 +1592,10 @@ fn window(ui: &mut egui::Ui, s: &mut State, images: &mut Images, index: usize, w
 fn title_bar(ui: &mut egui::Ui, s: &mut State, index: usize, width: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 30.0), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, game::TITLE);
-    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, game::TITLE_DARK));
+    painter.rect_filled(rect, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, game::title());
+    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, game::title_dark()));
     let path = s.panes[index].page.map(|p| s.path(p).join(" › ")).unwrap_or_default();
-    painter.text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, t("Catalogue"), egui::FontId::proportional(14.0), Color32::WHITE);
+    painter.text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, if s.cat == Catalogue::Builders { t("Builders Club warehouse") } else { t("Catalogue") }, egui::FontId::proportional(14.0), Color32::WHITE);
     let galley = painter.layout(path, egui::FontId::proportional(11.5), Color32::from_rgb(214, 234, 244), (rect.width() - 120.0).max(40.0));
     let at = egui::pos2(rect.right() - 10.0 - galley.size().x, rect.center().y - galley.size().y / 2.0);
     painter.galley(at, galley, Color32::WHITE);
@@ -1398,7 +1606,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
     let mut roots: Vec<(i64, String, i64, bool)> = s.roots().iter().map(|p| (p.id, p.caption.clone(), p.icon_image, p.visible)).collect();
     roots.push((UNOFFERED, t("Without offer").to_string(), -1, true));
     let mut chosen = None;
-    egui::Frame::new().fill(game::TAB).inner_margin(egui::Margin { left: 6, right: 6, top: 6, bottom: 0 }).show(ui, |ui| {
+    egui::Frame::new().fill(game::tab()).inner_margin(egui::Margin { left: 6, right: 6, top: 6, bottom: 0 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
         egui::ScrollArea::horizontal().id_salt(("catalog-tabs", index)).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1411,7 +1619,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
                     // A page dropped on a tab goes under that root page.
                     let page_drop = *id != UNOFFERED && response.dnd_hover_payload::<DragPage>().is_some();
-                    let fill = if active || page_drop { game::BODY } else if response.hovered() { game::TAB_HOVER } else { game::TAB };
+                    let fill = if active || page_drop { game::BODY } else if response.hovered() { game::tab_hover() } else { game::tab() };
                     ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, fill);
                     if page_drop {
                         ui.painter().rect_stroke(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
@@ -1423,7 +1631,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                         }
                         x = rect.left() + 26.0;
                     }
-                    let color = if *id == UNOFFERED { game::TITLE } else if *visible { game::TEXT } else { game::HIDDEN };
+                    let color = if *id == UNOFFERED { game::accent() } else if *visible { game::TEXT } else { game::HIDDEN };
                     ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, caption, font, color);
                     if *id != UNOFFERED {
                         response.context_menu(|ui| page_menu(ui, s, *id, false, actions));
@@ -1458,8 +1666,8 @@ fn light_fields(ui: &mut egui::Ui) {
     visuals.extreme_bg_color = Color32::WHITE;
     visuals.override_text_color = Some(game::TEXT);
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, game::TILE_EDGE);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, game::TITLE);
-    visuals.selection.stroke = Stroke::new(1.0_f32, game::TITLE);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, game::accent());
+    visuals.selection.stroke = Stroke::new(1.0_f32, game::accent());
     visuals.text_cursor.stroke = Stroke::new(1.5_f32, game::TEXT);
 }
 
@@ -1501,6 +1709,10 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
         if s.panes[index].root == Some(UNOFFERED) {
             ui.add(egui::TextEdit::singleline(&mut s.panes[index].furni_search).hint_text(RichText::new(t("Search furni")).italics()).desired_width(NAV_WIDTH - 12.0));
             ui.add_space(6.0);
+            if s.cat == Catalogue::Builders {
+                ui.add(egui::Label::new(RichText::new(t("Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.")).size(11.5).color(game::MUTED)).wrap());
+                return;
+            }
             ui.add(egui::Label::new(RichText::new(t("Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer at the price below there.")).size(11.5).color(game::MUTED)).wrap());
             ui.add_space(8.0);
             ui.label(RichText::new(t("Price of the new offers")).size(12.0).strong().color(game::TEXT));
@@ -1560,11 +1772,11 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 });
                 let highlight = furni_over || page_zone == Some(Zone::Into);
                 let fill = if highlight {
-                    game::TILE_SELECTED
+                    game::tile_selected()
                 } else if active {
-                    game::TITLE
+                    game::active()
                 } else if response.hovered() {
-                    game::NAV_HOVER
+                    game::nav_hover()
                 } else {
                     game::NAV
                 };
@@ -1583,7 +1795,7 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                     _ => {}
                 }
                 let mut x = rect.left() + 4.0 + depth as f32 * 12.0;
-                let text_color = if active && !highlight { Color32::WHITE } else if page.visible { game::TEXT } else { game::HIDDEN };
+                let text_color = if active && !highlight { game::active_text() } else if page.visible { game::TEXT } else { game::HIDDEN };
                 if has_children {
                     let open = s.panes[index].expanded.contains(&id);
                     ui.painter().text(egui::pos2(x + 4.0, rect.center().y), egui::Align2::CENTER_CENTER, if open { "▾" } else { "▸" }, egui::FontId::proportional(12.0), text_color);
@@ -1620,10 +1832,13 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 } else if response.clicked() {
                     let root = s.root_of(id);
                     let pane = &mut s.panes[index];
-                    if has_children && (pane.page == Some(id) || !pane.expanded.contains(&id)) {
-                        if !pane.expanded.insert(id) && pane.page == Some(id) {
-                            pane.expanded.remove(&id);
-                        }
+                    // Clicking the page that is already open, or a page that is not expanded yet, toggles it.
+                    if has_children
+                        && (pane.page == Some(id) || !pane.expanded.contains(&id))
+                        && !pane.expanded.insert(id)
+                        && pane.page == Some(id)
+                    {
+                        pane.expanded.remove(&id);
                     }
                     pane.page = Some(id);
                     pane.selected.clear();
@@ -1650,7 +1865,7 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
         // The page bar: icon, caption, what it holds; right-click edits the page.
         let (bar, bar_response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click());
         bar_response.on_hover_text(t("Right-click: edit the page")).context_menu(|ui| page_menu(ui, s, page_id, true, actions));
-        ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
+        ui.painter().rect_filled(bar, CornerRadius::same(6), game::page_bar());
         if let Some(texture) = images.page(ctx, page.icon_image) {
             sharp_image(ui.painter(), &texture, bar.left_center() + egui::vec2(22.0, 0.0), egui::vec2(34.0, 34.0), 1);
         }
@@ -1698,17 +1913,21 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for offer in row {
                         let (rect, response) = ui.allocate_exact_size(egui::vec2(TILE, TILE), Sense::click_and_drag());
+                        // Only the tiles on screen are drawn, and only their icons are loaded.
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
                         let selected = s.panes[index].selected.contains(&offer.id);
                         let painter = ui.painter();
-                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::TILE_SELECTED } else { game::TILE });
-                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::TITLE } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
+                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::tile_selected() } else { game::TILE });
+                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::accent() } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
                         let furni = first_furni(offer).and_then(|id| s.furni.get(&id)).cloned();
                         draw_furni(painter, ctx, images, furni.as_ref(), offer, rect.shrink(4.0), 1);
                         if offer.limited_stack > 0 {
                             painter.text(rect.right_top() + egui::vec2(-4.0, 3.0), egui::Align2::RIGHT_TOP, "LTD", egui::FontId::proportional(9.0), game::DROP);
                         }
                         if catalog_admin::item_ids(&offer.item_ids).is_some_and(|ids| ids.len() > 1) {
-                            painter.text(rect.left_top() + egui::vec2(4.0, 3.0), egui::Align2::LEFT_TOP, "+", egui::FontId::proportional(11.0), game::TITLE);
+                            painter.text(rect.left_top() + egui::vec2(4.0, 3.0), egui::Align2::LEFT_TOP, "+", egui::FontId::proportional(11.0), game::accent());
                         }
                         let response = response.on_hover_text(furni.as_ref().map(|f| f.public_name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| offer.catalog_name.clone()));
                         let bundle: Vec<i64> = catalog_admin::item_ids(&offer.item_ids).unwrap_or_default();
@@ -1790,7 +2009,7 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
     egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::hover());
-        ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
+        ui.painter().rect_filled(bar, CornerRadius::same(6), game::page_bar());
         ui.painter().text(bar.left_center() + egui::vec2(12.0, -7.0), egui::Align2::LEFT_CENTER, t("Without offer"), egui::FontId::proportional(15.0), game::TEXT);
         let Some(list) = s.unoffered.clone() else {
             ui.painter().text(bar.left_center() + egui::vec2(12.0, 9.0), egui::Align2::LEFT_CENTER, t("Reading the furni and the offers ..."), egui::FontId::proportional(11.0), game::MUTED);
@@ -1818,10 +2037,14 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for furni in row {
                         let (rect, response) = ui.allocate_exact_size(egui::vec2(TILE, TILE), Sense::click_and_drag());
+                        // Only the tiles on screen are drawn, and only their icons are loaded.
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
                         let selected = s.panes[index].furni_selected.contains(&furni.id);
                         let painter = ui.painter();
-                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::TILE_SELECTED } else { game::TILE });
-                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::TITLE } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
+                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::tile_selected() } else { game::TILE });
+                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::accent() } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
                         let offer = Offer { catalog_name: furni.item_name.clone(), ..Offer::default() };
                         draw_furni(painter, ctx, images, Some(furni), &offer, rect.shrink(4.0), 1);
                         let name = if furni.public_name.is_empty() { furni.item_name.clone() } else { format!("{} ({})", furni.public_name, furni.item_name) };
@@ -1862,10 +2085,10 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
 /// The furni editor: every items_base column of one furni, the flags as ticks, the rest in the table's order.
 fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images, actions: &mut Vec<Action>) {
     let fetched = &s.fetched;
-    let fetching = &s.fetching;
     let mut want: Vec<String> = Vec::new();
     let mut open_picker: Option<(usize, bool)> = None;
     let mut open_html: Option<usize> = None;
+    let mut open_translator = false;
     let mut want_names: Vec<i64> = Vec::new();
     let furni_names = &s.furni;
     let furni_search = &mut s.furni_search;
@@ -1876,11 +2099,12 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     let offer_name = columns.iter().position(|c| c.name == "catalog_name").and_then(|i| editor.values.get(i).cloned());
     let mut close = false;
     let changed = editor.changes(&columns).len();
+    let row_issue = if editor.original.is_some() { editor.row_problem(&columns, &s.pages) } else { None };
     egui::Modal::new(egui::Id::new("catalog-furni-editor")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(22, 18))).show(ctx, |ui| {
         ui.set_width(640.0);
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 72.0), Sense::hover());
-            ui.painter().rect_filled(rect, CornerRadius::same(6), game::PAGE_BAR);
+            ui.painter().rect_filled(rect, CornerRadius::same(6), game::page_bar());
             let value = |name: &str| columns.iter().position(|c| c.name == name).and_then(|i| editor.values.get(i).cloned());
             if editor.table == "catalog_pages" {
                 let icon = value("icon_image").and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(0);
@@ -1896,12 +2120,20 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                 if editor.table == "catalog_pages" {
                     let caption = value("caption").unwrap_or_default();
                     ui.label(RichText::new(caption).size(17.0).strong());
-                    ui.label(RichText::new(format!("catalog_pages id {}", editor.id)).size(12.0).color(palette.muted));
+                    ui.label(RichText::new(format!("{} id {}", real_table(s.cat, "catalog_pages"), editor.id)).size(12.0).color(palette.muted));
                     ui.label(RichText::new(t("Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
+                    if ui.add_enabled(!editor.saving, widgets::secondary_button(t("Translate texts ..."))).on_hover_text(t("Translate the page's texts with Google Translate, as Octane's page editor does; the HTML stays as it is.")).clicked() {
+                        open_translator = true;
+                    }
                 } else if editor.table == "catalog_items" {
                     ui.label(RichText::new(offer_name.clone().filter(|n| !n.is_empty()).unwrap_or(furni_name)).size(17.0).strong());
-                    ui.label(RichText::new(format!("catalog_items id {}", editor.id)).size(12.0).color(palette.muted));
-                    ui.label(RichText::new(t("Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
+                    ui.label(RichText::new(format!("{} id {}", real_table(s.cat, "catalog_items"), editor.id)).size(12.0).color(palette.muted));
+                    let about = if s.cat == Catalogue::Builders {
+                        t("Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.")
+                    } else {
+                        t("Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.")
+                    };
+                    ui.label(RichText::new(about).size(11.5).color(palette.muted));
                 } else {
                     ui.label(RichText::new(furni_name).size(17.0).strong());
                     ui.label(RichText::new(format!("{} · items_base id {}", furni.as_ref().map(|f| f.item_name.as_str()).unwrap_or(""), editor.id)).size(12.0).color(palette.muted));
@@ -1987,11 +2219,11 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                             // The image the value means, small, and the picker.
                             let files = value_files(&editor.values[i], icon);
                             let (rect, _) = ui.allocate_exact_size(egui::vec2(if icon { 26.0 } else { 90.0 }, 22.0), Sense::hover());
-                            ui.painter().rect_filled(rect, CornerRadius::same(3), game::PAGE_BAR);
+                            ui.painter().rect_filled(rect, CornerRadius::same(3), game::page_bar());
                             let mut texture = None;
                             for file in &files {
                                 let (found, fetch) = images.catalogue_file(ctx, file, fetched);
-                                if fetch && !fetching.contains(file) {
+                                if fetch {
                                     want.push(file.clone());
                                 }
                                 if found.is_some() {
@@ -2068,9 +2300,13 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
             ui.add(egui::Label::new(RichText::new(&editor.status.text).size(12.0).color(color)).wrap());
             ui.add_space(6.0);
         }
+        if let Some(issue) = &row_issue {
+            ui.add(egui::Label::new(RichText::new(issue).size(12.0).color(palette.error_text)).wrap());
+            ui.add_space(6.0);
+        }
         ui.horizontal(|ui| {
             let label = if changed > 0 { tf("Save changes ({count})", &[("count", &changed.to_string())]) } else { t("Save").to_string() };
-            if ui.add_enabled(changed > 0 && !editor.saving && !s.sample, widgets::primary_button(&label)).clicked() {
+            if ui.add_enabled(changed > 0 && row_issue.is_none() && !editor.saving && !s.sample, widgets::primary_button(&label)).clicked() {
                 actions.push(Action::SaveRow);
             }
             if ui.add_enabled(changed > 0 && !editor.saving, widgets::secondary_button(t("Undo changes"))).clicked() {
@@ -2083,9 +2319,18 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
             }
         });
     });
-    if !want.is_empty() && !s.sample {
-        s.fetching.extend(want.iter().cloned());
-        actions.push(Action::FetchFiles(want));
+    if !s.sample {
+        s.fetch_wanted.extend(want);
+    }
+    if open_translator {
+        let present: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+        let choices: Vec<(String, bool)> = ["caption", "page_text1", "page_text2", "page_text_details", "page_text_teaser"]
+            .iter()
+            .filter(|c| present.iter().any(|p| p == *c))
+            .map(|c| (c.to_string(), *c != "caption"))
+            .collect();
+        let language = s.translator.as_ref().map(|t| t.language.clone()).unwrap_or_else(|| "en".into());
+        s.translator = Some(Translator { language, columns: choices, busy: false, error: None });
     }
     want_names.retain(|id| !s.furni_asked.contains(id));
     want_names.dedup();
@@ -2113,7 +2358,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
 
 /// The image picker over the editor: the page icons (icon_image) or the catalogue images (page_headline ...) of this
 /// computer and the server, with a search; a click writes the choice in the field.
-fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images, actions: &mut Vec<Action>) {
+fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images) {
     let Some(picker) = s.picker.as_mut() else { return };
     let Some(editor) = s.editor.as_mut() else {
         s.picker = None;
@@ -2153,29 +2398,33 @@ fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
             ui.label(RichText::new(t("Reading the server's catalogue images ...")).size(12.0).color(palette.muted));
         }
         let (cell, label_height) = if icon { (egui::vec2(60.0, 44.0), 14.0) } else { (egui::vec2(228.0, 84.0), 16.0) };
-        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.55).auto_shrink([false, true]).show(ui, |ui| {
-            if shown.is_empty() && !s.listing {
-                ui.label(RichText::new(t("No images found.")).color(palette.muted));
-            }
-            let columns = ((ui.available_width() + 6.0) / (cell.x + 6.0)).floor().max(1.0) as usize;
-            for row in shown.chunks(columns) {
+        if shown.is_empty() && !s.listing {
+            ui.label(RichText::new(t("No images found.")).color(palette.muted));
+        }
+        // Only the rows on screen are laid out: a server can have thousands of catalogue images.
+        let columns = ((ui.available_width() - 14.0 + 6.0) / (cell.x + 6.0)).floor().max(1.0) as usize;
+        let rows: Vec<&[String]> = shown.chunks(columns).collect();
+        let row_height = cell.y + label_height + 4.0;
+        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.55).auto_shrink([false, true]).show_rows(ui, row_height, rows.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for row in rows[range].iter().copied() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for file in row {
                         let (rect, response) = ui.allocate_exact_size(cell + egui::vec2(0.0, label_height), Sense::click());
                         let selected = picked_value(file, icon) == current.trim();
                         let image_rect = egui::Rect::from_min_size(rect.min, cell);
-                        ui.painter().rect_filled(image_rect, CornerRadius::same(5), if selected { game::TILE_SELECTED } else { game::PAGE_BAR });
+                        ui.painter().rect_filled(image_rect, CornerRadius::same(5), if selected { game::tile_selected() } else { game::page_bar() });
                         ui.painter().rect_stroke(
                             image_rect,
                             CornerRadius::same(5),
-                            Stroke::new(if selected { 2.0_f32 } else if response.hovered() { 1.5 } else { 1.0 }, if selected || response.hovered() { game::TITLE } else { game::TILE_EDGE }),
+                            Stroke::new(if selected { 2.0_f32 } else if response.hovered() { 1.5 } else { 1.0 }, if selected || response.hovered() { game::accent() } else { game::TILE_EDGE }),
                             egui::StrokeKind::Inside,
                         );
                         // Previews only of what is on screen: the rest is fetched when scrolled to.
                         if ui.is_rect_visible(rect) {
                             let (texture, fetch) = images.catalogue_file(ctx, file, &s.fetched);
-                            if fetch && !s.fetching.contains(file) && want.len() < 24 {
+                            if fetch {
                                 want.push(file.clone());
                             }
                             match texture {
@@ -2213,9 +2462,8 @@ fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
         }
         close = true;
     }
-    if !want.is_empty() && !s.sample {
-        s.fetching.extend(want.iter().cloned());
-        actions.push(Action::FetchFiles(want));
+    if !s.sample {
+        s.fetch_wanted.extend(want);
     }
     if close {
         s.picker = None;
@@ -2377,7 +2625,7 @@ fn html_preview(html: &str) -> egui::text::LayoutJob {
         let family = if look.bold { egui::FontFamily::Name("bold".into()) } else { egui::FontFamily::Proportional };
         let mut format = egui::TextFormat {
             font_id: egui::FontId::new(13.0, family),
-            color: if look.link { game::TITLE } else { look.color.unwrap_or(game::TEXT) },
+            color: if look.link { game::title() } else { look.color.unwrap_or(game::TEXT) },
             italics: look.italic,
             ..Default::default()
         };
@@ -2478,6 +2726,7 @@ fn page_menu(ui: &mut egui::Ui, s: &State, id: i64, on_bar: bool, actions: &mut 
 /// (class names that start with the prefix), at one price.
 fn builder_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
     let busy = s.busy;
+    let builders = s.cat == Catalogue::Builders;
     let parent = s.builder.as_ref().map(|b| b.parent).and_then(|p| s.page(p)).map(|p| p.caption.clone()).unwrap_or_default();
     let Some(builder) = s.builder.as_mut() else { return };
     let mut close = false;
@@ -2503,16 +2752,18 @@ fn builder_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions
             ui.label("");
             ui.checkbox(&mut builder.only_new, t("Only furni no offer sells yet"));
             ui.end_row();
-            ui.label(t("Credits"));
-            ui.add(egui::DragValue::new(&mut builder.price.0).range(0..=1_000_000_000));
-            ui.end_row();
-            ui.label(t("Points"));
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut builder.price.1).range(0..=1_000_000_000));
-                ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
-                ui.add(egui::DragValue::new(&mut builder.price.2).range(0..=1000));
-            });
-            ui.end_row();
+            if !builders {
+                ui.label(t("Credits"));
+                ui.add(egui::DragValue::new(&mut builder.price.0).range(0..=1_000_000_000));
+                ui.end_row();
+                ui.label(t("Points"));
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut builder.price.1).range(0..=1_000_000_000));
+                    ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
+                    ui.add(egui::DragValue::new(&mut builder.price.2).range(0..=1000));
+                });
+                ui.end_row();
+            }
         });
         ui.add_space(8.0);
         match &builder.found {
@@ -2591,7 +2842,7 @@ fn info_box(ui: &mut egui::Ui, ctx: &egui::Context, s: &State, images: &mut Imag
     };
     let furni = first_furni(offer).and_then(|id| s.furni.get(&id));
     let preview = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 8.0), egui::vec2(height - 16.0, height - 16.0));
-    painter.rect_filled(preview, CornerRadius::same(6), game::PAGE_BAR);
+    painter.rect_filled(preview, CornerRadius::same(6), game::page_bar());
     draw_furni(painter, ctx, images, furni, offer, preview.shrink(6.0), 2);
     let x = preview.right() + 12.0;
     let name = furni.map(|f| f.public_name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| offer.catalog_name.clone());
@@ -2619,6 +2870,12 @@ fn info_box(ui: &mut egui::Ui, ctx: &egui::Context, s: &State, images: &mut Imag
         painter.galley(egui::pos2(px + 18.0, y - galley.size().y / 2.0), galley, game::TEXT);
         px += 30.0 + w;
     };
+    if s.cat == Catalogue::Builders {
+        painter.circle_filled(egui::pos2(px + 7.0, y), 7.0, game::BUILDERS);
+        painter.circle_stroke(egui::pos2(px + 7.0, y), 7.0, Stroke::new(1.0_f32, Color32::from_black_alpha(90)));
+        painter.text(egui::pos2(px + 18.0, y), egui::Align2::LEFT_CENTER, t("Builders Club"), egui::FontId::proportional(13.0), game::TEXT);
+        return;
+    }
     coin(offer.cost_credits, game::CREDITS, t("credits"));
     let (color, label) = match offer.points_type {
         0 => (game::DUCKETS, t("duckets")),
@@ -2924,6 +3181,17 @@ mod tests {
     }
 
     #[test]
+    fn the_builders_club_explorer_edits_the_bc_tables() {
+        assert_eq!(real_table(Catalogue::Normal, "catalog_pages"), "catalog_pages");
+        assert_eq!(real_table(Catalogue::Builders, "catalog_pages"), "catalog_pages_bc");
+        assert_eq!(real_table(Catalogue::Builders, "catalog_items"), "catalog_items_bc");
+        assert_eq!(real_table(Catalogue::Builders, "items_base"), "items_base");
+        let page = |layout: &str| Page { layout: layout.into(), ..Page::default() };
+        assert!(is_front_page(&page("builders_club_frontpage")) && is_front_page(&page("frontpage4")));
+        assert!(!is_front_page(&page("builders_club_addons")));
+    }
+
+    #[test]
     fn picked_images_become_the_values_the_client_reads() {
         assert_eq!(icon_number("icon_12.png"), Some(12));
         assert_eq!(icon_number("icon_x.png"), None);
@@ -2948,5 +3216,69 @@ mod tests {
         let (page, offers) = frame(&ctx, at + egui::vec2(20.0, 20.0), Some(false), None);
         assert!(!offers, "the payload is a page, not offers");
         assert_eq!(page, Some(42), "the page arrives although the offers were asked for first");
+    }
+}
+
+/// A broken rule of an offer or page row, in words.
+fn row_problem_text(problem: &catalog_admin::RowProblem) -> String {
+    use catalog_admin::RowProblem as P;
+    match problem {
+        P::OfferNameEmpty => t("The offer needs a name (catalog_name).").into(),
+        P::OfferItemIds => t("item_ids must be furni ids like 123 or 123:2, separated by ;.").into(),
+        P::OfferAmount(amount) => tf("The amount must be 1 to 10,000, not {amount}.", &[("amount", &amount.to_string())]),
+        P::OfferNegativePrice => t("Credits and points cannot be negative.").into(),
+        P::OfferLimitedBelowSold { size, sold } => tf("The limited size {size} is below the {sold} already sold.", &[("size", &size.to_string()), ("sold", &sold.to_string())]),
+        P::OfferPageMissing(page) => tf("Page {page} does not exist.", &[("page", &page.to_string())]),
+        P::OfferSongMissing => t("A song offer (SONG ...) needs a song_id and the soundtrack code in extradata.").into(),
+        P::PageCaptionEmpty => t("The page needs a caption.").into(),
+        P::PageMinRank(rank) => tf("min_rank must be at least 1, not {rank}.", &[("rank", &rank.to_string())]),
+        P::PageNegative(column) => tf("{column} cannot be negative.", &[("column", column)]),
+        P::PageParentMissing(page) => tf("The parent page {page} does not exist.", &[("page", &page.to_string())]),
+        P::PageParentLoop => t("A page cannot go under itself or one of its own pages.").into(),
+        P::PageIncludeInvalid(token) => tf("\"{token}\" in includes is not a page id: write page ids separated by ;.", &[("token", token)]),
+        P::PageIncludeMissing(page) => tf("includes names page {page}, which does not exist.", &[("page", &page.to_string())]),
+    }
+}
+
+/// The page text translator: a language and which texts, then Translate (Google Translate).
+fn translator_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    if s.editor.is_none() {
+        s.translator = None;
+    }
+    let Some(translator) = s.translator.as_mut() else { return };
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("catalog-translator")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(20, 16))).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(t("Translate texts")).size(16.0).strong());
+        ui.label(RichText::new(t("Google Translate puts the ticked texts in the language you choose (the language they are in now is found by itself). The HTML stays as it is. The texts become changes in the editor: check them, then Save.")).size(11.5).color(palette.muted));
+        ui.add_space(8.0);
+        let name = aio_remote::page_translate::LANGUAGES.iter().find(|(code, _)| *code == translator.language).map(|(_, n)| *n).unwrap_or("?");
+        egui::ComboBox::from_id_salt("catalog-translate-language").selected_text(name).width(240.0).height(320.0).show_ui(ui, |ui| {
+            for (code, name) in aio_remote::page_translate::LANGUAGES {
+                ui.selectable_value(&mut translator.language, code.to_string(), *name);
+            }
+        });
+        ui.add_space(6.0);
+        for (column, on) in translator.columns.iter_mut() {
+            ui.checkbox(on, column.as_str());
+        }
+        if let Some(error) = &translator.error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(error).size(12.0).color(palette.error_text));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let any = translator.columns.iter().any(|(_, on)| *on);
+            let label = if translator.busy { t("Translating ...") } else { t("Translate") };
+            if ui.add_enabled(any && !translator.busy && !s.sample, widgets::primary_button(label)).clicked() {
+                actions.push(Action::TranslateTexts);
+            }
+            if ui.add_enabled(!translator.busy, widgets::secondary_button(t("Cancel"))).clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        s.translator = None;
     }
 }

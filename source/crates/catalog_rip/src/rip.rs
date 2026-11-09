@@ -1610,6 +1610,10 @@ impl Output<'_> {
         let sql = export::arcturus_sql_with(catalog, items.as_ref(), furnidata.as_ref());
         write("catalog_pages.sql", &sql.pages)?;
         write("catalog_items.sql", &sql.items)?;
+        if !sql.pages_bc.is_empty() {
+            write("catalog_pages_bc.sql", &sql.pages_bc)?;
+            write("catalog_items_bc.sql", &sql.items_bc)?;
+        }
         let existing = self.existing().await;
         let manager = manager::manager_sql_with(
             catalog,

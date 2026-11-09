@@ -599,11 +599,17 @@ pub struct SqlStats {
     pub unknown_layouts: BTreeMap<String, usize>,
     pub synthetic_page_ids: usize,
     pub truncated_values: usize,
+    /// Of pages / items: the Builders Club rows (catalog_pages_bc / catalog_items_bc).
+    pub bc_pages: usize,
+    pub bc_items: usize,
 }
 
 pub struct SqlFiles {
     pub pages: String,
     pub items: String,
+    /// catalog_pages_bc.sql / catalog_items_bc.sql (empty when no Builders Club was ripped).
+    pub pages_bc: String,
+    pub items_bc: String,
     pub stats: SqlStats,
 }
 
@@ -613,7 +619,6 @@ struct PageRow<'a> {
     order: usize,
     node: &'a IndexNode,
     page: Option<&'a CatalogPage>,
-    modes: Vec<&'a str>,
 }
 
 const ROWS_PER_INSERT: usize = 250;
@@ -650,26 +655,106 @@ pub fn arcturus_sql(catalog: &RippedCatalog, items: Option<&ItemsBase>) -> SqlFi
 }
 
 /// [`arcturus_sql`] with the source hotel's furnidata (see [`item_ids_sql_with`]).
+///
+/// The normal catalogue goes to catalog_pages / catalog_items; the Builders Club catalogue to
+/// catalog_pages_bc / catalog_items_bc (the warehouse tables of Arcturus Morningstar and its
+/// forks), in their own files. Habbo numbers the two catalogues apart: the same page id can be
+/// another page in each (on habbo.it 67 ids are in both, with other offers), so they are never
+/// merged into one row.
 pub fn arcturus_sql_with(
     catalog: &RippedCatalog,
     items: Option<&ItemsBase>,
     furnidata: Option<&Furnidata>,
 ) -> SqlFiles {
     let mut stats = SqlStats::default();
+    let normal: Vec<&RippedMode> = catalog
+        .modes
+        .iter()
+        .filter(|m| m.mode.eq_ignore_ascii_case("NORMAL"))
+        .collect();
+    let builders: Vec<&RippedMode> = catalog
+        .modes
+        .iter()
+        .filter(|m| !m.mode.eq_ignore_ascii_case("NORMAL"))
+        .collect();
+    let (page_rows, item_rows) = arcturus_rows(&normal, false, items, furnidata, &mut stats);
+    let (bc_page_rows, bc_item_rows) = arcturus_rows(&builders, true, items, furnidata, &mut stats);
+    stats.bc_pages = bc_page_rows.len();
+    stats.bc_items = bc_item_rows.len();
 
-    // Pages: one row per page id over every mode (a page in both modes becomes BOTH). Disabled
-    // pages (id -1 in the index) get new ids above the highest real one.
-    let mut next_synthetic = first_free_page_id(&catalog.modes);
+    let unresolved_note = |sql: &mut String| {
+        if items.is_none() {
+            sql.push_str("-- item_ids are looked up in items_base while importing (subqueries on sprite_id + type,\n-- badges on item_name); a product the hotel does not have yields an empty entry.\n\n");
+        } else if stats.products_unresolved > 0 {
+            sql.push_str("-- Products the database did not have when ripping are looked up in items_base while\n-- importing (subqueries); a product the hotel still does not have yields an empty entry.\n\n");
+        }
+    };
+
+    let mut pages_sql = header("catalog_pages for Arcturus", catalog);
+    pages_sql.push_str("-- To replace the hotel's catalogue instead of adding to it, first run:\n--   DELETE FROM `catalog_items`; DELETE FROM `catalog_pages`;\n\n");
+    write_inserts(
+        &mut pages_sql,
+        "INSERT INTO `catalog_pages` (`id`, `parent_id`, `caption_save`, `caption`, `page_layout`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`, `club_only`, `catalog_mode`, `vip_only`, `page_headline`, `page_teaser`, `page_special`, `page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`, `room_id`, `includes`)",
+        &page_rows,
+    );
+    pages_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
+
+    let mut items_sql = header("catalog_items for Arcturus", catalog);
+    unresolved_note(&mut items_sql);
+    write_inserts(
+        &mut items_sql,
+        "INSERT INTO `catalog_items` (`id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`, `cost_points`, `points_type`, `amount`, `limited_stack`, `limited_sells`, `order_number`, `offer_id`, `song_id`, `extradata`, `have_offer`, `club_only`)",
+        &item_rows,
+    );
+    items_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
+
+    let (mut pages_bc, mut items_bc) = (String::new(), String::new());
+    if !builders.is_empty() {
+        pages_bc = header("catalog_pages_bc (Builders Club) for Arcturus", catalog);
+        pages_bc.push_str("-- To replace the Builders Club catalogue instead of adding to it, first run:\n--   DELETE FROM `catalog_items_bc`; DELETE FROM `catalog_pages_bc`;\n\n");
+        write_inserts(
+            &mut pages_bc,
+            "INSERT INTO `catalog_pages_bc` (`id`, `parent_id`, `caption`, `page_layout`, `icon_color`, `icon_image`, `order_num`, `visible`, `enabled`, `page_headline`, `page_teaser`, `page_special`, `page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`)",
+            &bc_page_rows,
+        );
+        pages_bc.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
+        items_bc = header("catalog_items_bc (Builders Club) for Arcturus", catalog);
+        unresolved_note(&mut items_bc);
+        write_inserts(
+            &mut items_bc,
+            "INSERT INTO `catalog_items_bc` (`id`, `item_ids`, `page_id`, `catalog_name`, `order_number`, `extradata`)",
+            &bc_item_rows,
+        );
+        items_bc.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
+    }
+
+    SqlFiles {
+        pages: pages_sql,
+        items: items_sql,
+        pages_bc,
+        items_bc,
+        stats,
+    }
+}
+
+/// The page and offer rows of some catalogues (one table set: normal, or the Builders Club's
+/// `_bc` tables with their fewer columns).
+fn arcturus_rows(
+    modes: &[&RippedMode],
+    bc: bool,
+    items: Option<&ItemsBase>,
+    furnidata: Option<&Furnidata>,
+    stats: &mut SqlStats,
+) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    // One row per page id; disabled pages (id -1 in the index) get new ids above the highest.
+    let mut next_synthetic = first_free_page_id(modes.iter().copied());
     let mut rows: Vec<PageRow> = Vec::new();
     let mut row_of: HashMap<i32, usize> = HashMap::new();
-    for mode in &catalog.modes {
+    for mode in modes {
         for numbered in numbered_pages(mode, &mut next_synthetic, &mut stats.synthetic_page_ids) {
             match row_of.get(&numbered.id) {
                 Some(&existing) => {
                     let row = &mut rows[existing];
-                    if !row.modes.contains(&mode.mode.as_str()) {
-                        row.modes.push(&mode.mode);
-                    }
                     if row.page.is_none() {
                         row.page = numbered.page;
                     }
@@ -682,7 +767,6 @@ pub fn arcturus_sql_with(
                         order: numbered.order,
                         node: numbered.node,
                         page: numbered.page,
-                        modes: vec![&mode.mode],
                     });
                 }
             }
@@ -722,40 +806,55 @@ pub fn arcturus_sql_with(
             .page
             .map(|p| map_page_content(&p.layout, &p.images, &p.texts))
             .unwrap_or_default();
-        let catalog_mode = match (
-            row.modes.iter().any(|m| m.eq_ignore_ascii_case("NORMAL")),
-            row.modes.iter().any(|m| !m.eq_ignore_ascii_case("NORMAL")),
-        ) {
-            (true, true) => "BOTH",
-            (false, true) => "BUILDER",
-            _ => "NORMAL",
-        };
         let t = &mut stats.truncated_values;
-        let values = [
-            row.id.to_string(),
-            row.parent_id.to_string(),
-            sql_str(&fit(&node.name, 128, t)),
-            sql_str(&fit(&node.localization, 128, t)),
-            sql_str(layout),
-            "1".into(),
-            node.icon.to_string(),
-            "1".into(),
-            row.order.to_string(),
-            sql_str(if node.visible { "1" } else { "0" }),
-            sql_str(if node.page_id > 0 { "1" } else { "0" }),
-            "'0'".into(),
-            sql_str(catalog_mode),
-            "'0'".into(),
-            sql_str(&fit(&content.headline, 1024, t)),
-            sql_str(&fit(&content.teaser, 64, t)),
-            sql_str(&fit(&content.special, 2048, t)),
-            sql_str(&content.text1),
-            sql_str(&content.text2),
-            sql_str(&content.text_details),
-            sql_str(&content.text_teaser),
-            "0".into(),
-            "''".into(),
-        ];
+        let visible = sql_str(if node.visible { "1" } else { "0" });
+        let enabled = sql_str(if node.page_id > 0 { "1" } else { "0" });
+        let values: Vec<String> = if bc {
+            vec![
+                row.id.to_string(),
+                row.parent_id.to_string(),
+                sql_str(&fit(&node.localization, 128, t)),
+                sql_str(layout),
+                "1".into(),
+                node.icon.to_string(),
+                row.order.to_string(),
+                visible,
+                enabled,
+                sql_str(&fit(&content.headline, 1024, t)),
+                sql_str(&fit(&content.teaser, 64, t)),
+                sql_str(&fit(&content.special, 2048, t)),
+                sql_str(&content.text1),
+                sql_str(&content.text2),
+                sql_str(&content.text_details),
+                sql_str(&content.text_teaser),
+            ]
+        } else {
+            vec![
+                row.id.to_string(),
+                row.parent_id.to_string(),
+                sql_str(&fit(&node.name, 128, t)),
+                sql_str(&fit(&node.localization, 128, t)),
+                sql_str(layout),
+                "1".into(),
+                node.icon.to_string(),
+                "1".into(),
+                row.order.to_string(),
+                visible,
+                enabled,
+                "'0'".into(),
+                sql_str("NORMAL"),
+                "'0'".into(),
+                sql_str(&fit(&content.headline, 1024, t)),
+                sql_str(&fit(&content.teaser, 64, t)),
+                sql_str(&fit(&content.special, 2048, t)),
+                sql_str(&content.text1),
+                sql_str(&content.text2),
+                sql_str(&content.text_details),
+                sql_str(&content.text_teaser),
+                "0".into(),
+                "''".into(),
+            ]
+        };
         page_rows.push((note, format!("({})", values.join(", "))));
         stats.pages += 1;
 
@@ -817,60 +916,44 @@ pub fn arcturus_sql_with(
                 String::new()
             };
             let t = &mut stats.truncated_values;
-            let values = [
-                id,
-                ids.sql,
-                row.id.to_string(),
-                sql_str(&fit(&offer.localization_id, 100, t)),
-                offer.price_credits.to_string(),
-                offer.price_activity_points.to_string(),
-                offer.activity_point_type.to_string(),
-                amount.to_string(),
-                stack.to_string(),
-                sells.to_string(),
-                (position + 1).to_string(),
-                offer.offer_id.to_string(),
-                "0".into(),
-                sql_str(&fit(&first.extra_param, 500, t)),
-                sql_str(if offer.bundle_purchase_allowed {
-                    "1"
-                } else {
-                    "0"
-                }),
-                sql_str(if offer.club_level > 0 { "1" } else { "0" }),
-            ];
+            let values: Vec<String> = if bc {
+                vec![
+                    id,
+                    ids.sql,
+                    row.id.to_string(),
+                    sql_str(&fit(&offer.localization_id, 100, t)),
+                    (position + 1).to_string(),
+                    sql_str(&fit(&first.extra_param, 500, t)),
+                ]
+            } else {
+                vec![
+                    id,
+                    ids.sql,
+                    row.id.to_string(),
+                    sql_str(&fit(&offer.localization_id, 100, t)),
+                    offer.price_credits.to_string(),
+                    offer.price_activity_points.to_string(),
+                    offer.activity_point_type.to_string(),
+                    amount.to_string(),
+                    stack.to_string(),
+                    sells.to_string(),
+                    (position + 1).to_string(),
+                    offer.offer_id.to_string(),
+                    "0".into(),
+                    sql_str(&fit(&first.extra_param, 500, t)),
+                    sql_str(if offer.bundle_purchase_allowed {
+                        "1"
+                    } else {
+                        "0"
+                    }),
+                    sql_str(if offer.club_level > 0 { "1" } else { "0" }),
+                ]
+            };
             item_rows.push((note, format!("({})", values.join(", "))));
             stats.items += 1;
         }
     }
-
-    let mut pages_sql = header("catalog_pages for Arcturus", catalog);
-    pages_sql.push_str("-- To replace the hotel's catalogue instead of adding to it, first run:\n--   DELETE FROM `catalog_items`; DELETE FROM `catalog_pages`;\n\n");
-    write_inserts(
-        &mut pages_sql,
-        "INSERT INTO `catalog_pages` (`id`, `parent_id`, `caption_save`, `caption`, `page_layout`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`, `club_only`, `catalog_mode`, `vip_only`, `page_headline`, `page_teaser`, `page_special`, `page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`, `room_id`, `includes`)",
-        &page_rows,
-    );
-    pages_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
-
-    let mut items_sql = header("catalog_items for Arcturus", catalog);
-    if items.is_none() {
-        items_sql.push_str("-- item_ids are looked up in items_base while importing (subqueries on sprite_id + type,\n-- badges on item_name); a product the hotel does not have yields an empty entry.\n\n");
-    } else if stats.products_unresolved > 0 {
-        items_sql.push_str("-- Products the database did not have when ripping are looked up in items_base while\n-- importing (subqueries); a product the hotel still does not have yields an empty entry.\n\n");
-    }
-    write_inserts(
-        &mut items_sql,
-        "INSERT INTO `catalog_items` (`id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`, `cost_points`, `points_type`, `amount`, `limited_stack`, `limited_sells`, `order_number`, `offer_id`, `song_id`, `extradata`, `have_offer`, `club_only`)",
-        &item_rows,
-    );
-    items_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
-
-    SqlFiles {
-        pages: pages_sql,
-        items: items_sql,
-        stats,
-    }
+    (page_rows, item_rows)
 }
 
 /// README.txt for the output folder.
@@ -908,12 +991,15 @@ pub fn readme(
          \x20                     extra data, amount and limited series) and frontpage items.\n\
          \x20 catalog_pages.sql   INSERTs for Arcturus' catalog_pages.\n\
          \x20 catalog_items.sql   INSERTs for Arcturus' catalog_items.\n\
+         \x20 catalog_pages_bc.sql, catalog_items_bc.sql  The Builders Club catalogue, for catalog_pages_bc\n\
+         \x20                     and catalog_items_bc (only when it was ripped; Habbo numbers it apart).\n\
          \x20 images/             Page images (headers, teasers, ...) from the catalogue image URL,\n\
          \x20 images/icons/       page icons icon_<n>.png from the icon URL,\n\
          \x20 images/frontpage/   frontpage promo images.\n\
          \nIMPORT (Arcturus / Morningstar, MariaDB or MySQL)\n\
          \x20 1. Back up your database.\n\
-         \x20 2. Import catalog_pages.sql, then catalog_items.sql (catalog_items references catalog_pages).\n\
+         \x20 2. Import catalog_pages.sql, then catalog_items.sql (catalog_items references catalog_pages);\n\
+         \x20    the same for catalog_pages_bc.sql and catalog_items_bc.sql when the hotel has those tables.\n\
          \x20    The page and offer ids are Habbo's: on a hotel that already has a catalogue they will collide.\n\
          \x20    To replace the catalogue, first run: DELETE FROM catalog_items; DELETE FROM catalog_pages;\n\
          \x20 3. Copy images/ into your catalogue image folder (c_images/catalogue) and images/icons into the\n\
@@ -923,7 +1009,7 @@ pub fn readme(
          \x20 catalog_pages: id = Habbo page id, parent_id = parent page (-1 at the top), caption_save = page name,\n\
          \x20   caption = localization, icon_image = icon, order_num = position under the parent, visible from\n\
          \x20   the index, enabled = 0 for pages Habbo lists as disabled (id -1; they get new ids above the\n\
-         \x20   highest page id), catalog_mode = NORMAL / BUILDER / BOTH. page_layout: Habbo's layout code\n\
+         \x20   highest page id), catalog_mode = NORMAL (the Builders Club is in the _bc files). page_layout: Habbo's layout code\n\
          \x20   mapped to the Arcturus enum (frontpage4 -> frontpage, guild_frontpage -> guilds,\n\
          \x20   guild_custom_furni -> guild_furni, club_gifts -> club_gift; codes the enum lacks -> default_3x3).\n\
          \x20   The page images and texts go into page_headline, page_teaser, page_special, page_text1,\n\

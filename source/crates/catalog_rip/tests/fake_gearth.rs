@@ -561,7 +561,8 @@ async fn rips_an_official_hotel_through_a_fake_gearth() {
     assert_eq!(report.pages_failed, 1);
     assert_eq!(report.items, 7);
     assert_eq!(report.frontpage_items, 3);
-    assert_eq!(report.sql.pages, 9); // 1..7, the disabled page, 100 (4 is BOTH)
+    assert_eq!(report.sql.pages, 10); // 1..7 + the disabled page; 100 and 4 in the _bc tables
+    assert_eq!((report.sql.bc_pages, report.sql.bc_items), (2, 1));
     assert_eq!(report.sql.synthetic_page_ids, 1);
     assert_eq!(report.sql.items, 7); // 5 shop offers + color chair + bc table
     assert_eq!(report.manager.pages, 10); // 8 NORMAL + 100 and 4 in the warehouse
@@ -603,11 +604,16 @@ async fn rips_an_official_hotel_through_a_fake_gearth() {
     let items_sql = std::fs::read_to_string(out.join("catalog_items.sql")).unwrap();
     assert!(pages_sql.contains("(1, -1, 'front_page', 'Front Page', 'frontpage', 1, 1, 1, 1, '1', '1', '0', 'NORMAL', '0', 'catalog_frontpage_headline_shop_EN', 'front_teaser', '', 'Redeem a voucher code here:', 'Second text', '', 'Teaser text', 0, '')"), "{pages_sql}");
     assert!(pages_sql.contains("(3, 2, 'shop_3x3', 'Shop 3x3', 'default_3x3', 1, 3, 1, 1, '1', '1', '0', 'NORMAL', '0', 'catalog_header_roombuilder', 'cr_infopic3', 'catalog_special_txtbg1', 'It\\'s a \\\"shop\\\"\\nline 2', '', 'Details \\\\ backslash', 'Teaser', 0, '')"), "{pages_sql}");
-    assert!(pages_sql.contains("(4, 2, 'rentables', 'Rentables', 'info_rentables', 1, 4, 1, 2, '1', '1', '0', 'BOTH', '0', 'catalog_rentables_header', '', '', 'Rent one||Rent two'"), "{pages_sql}");
-    assert!(pages_sql.contains("(101, 2, 'hidden_cat', 'Hidden category', 'default_3x3', 1, 5, 1, 3, '0', '0', '0', 'NORMAL'"), "{pages_sql}");
+    assert!(pages_sql.contains("(4, 2, 'rentables', 'Rentables', 'info_rentables', 1, 4, 1, 2, '1', '1', '0', 'NORMAL', '0', 'catalog_rentables_header', '', '', 'Rent one||Rent two'"), "{pages_sql}");
+    assert!(pages_sql.contains("(8, 2, 'hidden_cat', 'Hidden category', 'default_3x3', 1, 5, 1, 3, '0', '0', '0', 'NORMAL'"), "{pages_sql}");
     // recolorable_furniture is in Polaris' enum (migration V20261014120000): kept as is.
-    assert!(pages_sql.contains("(5, 101, 'hidden_child', 'Hidden child', 'recolorable_furniture'"), "{pages_sql}");
-    assert!(pages_sql.contains("(100, -1, 'bc_addons', 'BC Addons', 'builders_club_addons', 1, 9, 1, 1, '1', '1', '0', 'BUILDER'"), "{pages_sql}");
+    assert!(pages_sql.contains("(5, 8, 'hidden_child', 'Hidden child', 'recolorable_furniture'"), "{pages_sql}");
+    assert!(!pages_sql.contains("bc_addons"), "{pages_sql}");
+    let pages_bc = std::fs::read_to_string(out.join("catalog_pages_bc.sql")).unwrap();
+    let items_bc = std::fs::read_to_string(out.join("catalog_items_bc.sql")).unwrap();
+    assert!(pages_bc.contains("(100, -1, 'BC Addons', 'builders_club_addons', 1, 9, 1, '1', '1', 'bc_header', 'bc_teaser', ''"), "{pages_bc}");
+    assert!(items_bc.contains("INSERT INTO `catalog_items_bc` (`id`, `item_ids`, `page_id`, `catalog_name`, `order_number`, `extradata`)"), "{items_bc}");
+    assert!(items_bc.contains(", 100, 'bc_table', 1, '')"), "{items_bc}");
     assert!(pages_sql.contains("(6, -1, 'slow_page', 'Slow page', 'pets', 1, 7, 1, 3, '1', '1', '0', 'NORMAL', '0', 'pets_h', 'pets_t', '', 'p1', 'p2', 'pd', 'pt'"), "{pages_sql}");
     assert!(items_sql.contains("(300, CONCAT_WS(';', (SELECT `id` FROM `items_base` WHERE `type` = 's' AND `sprite_id` = 4001 ORDER BY `id` LIMIT 1)), 3, 'rare_dragon_ltd', 50, 0, 0, 1, 100, 37, 1, 300, 0, '', '1', '0')"), "{items_sql}");
     assert!(items_sql.contains("(302, CONCAT_WS(';', (SELECT CONCAT(`id`, ':2') FROM `items_base` WHERE `type` = 's' AND `sprite_id` = 4002 ORDER BY `id` LIMIT 1), (SELECT CONCAT(`id`, ':1') FROM `items_base` WHERE `type` = 'i' AND `sprite_id` = 5001 ORDER BY `id` LIMIT 1)), 3, 'bundle_o\\'brien', 25, 0, 0, 1, 0, 0, 3, 302, 0, '', '0', '1')"), "{items_sql}");

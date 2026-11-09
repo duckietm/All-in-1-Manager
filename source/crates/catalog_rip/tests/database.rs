@@ -204,3 +204,21 @@ fn changes_file_brings_an_imported_catalogue_up_to_date() {
 fn manager_sql_with_items(catalog: &RippedCatalog, items: &ItemsBase) -> String {
     manager_sql(catalog, Some(items)).text
 }
+
+
+/// Found ripping habbo.it: the same page id in both catalogues, with other offers in each.
+/// Merged into one row, the Builders Club offers were lost; they go to the _bc tables now.
+#[test]
+fn builders_club_pages_with_normal_ids_keep_their_offers() {
+    let mut catalog = catalog();
+    let shop_offers = catalog.modes[0].pages[&3].offers.clone();
+    // BC page 4 (also a normal page id) sells the shop's offers there.
+    catalog.modes[1].pages.get_mut(&4).unwrap().offers = shop_offers.clone();
+    let sql = arcturus_sql(&catalog, None);
+    assert_eq!(sql.stats.bc_items, 1 + shop_offers.len(), "bc table + the shop's offers");
+    assert!(sql.items_bc.contains("(300, CONCAT_WS"), "{}", sql.items_bc);
+    assert!(sql.items_bc.contains(", 4, 'rare_dragon_ltd', 1, '')"), "{}", sql.items_bc);
+    // The normal catalogue is untouched: page 4 has no offers there.
+    assert!(!sql.items.contains(", 4, 'rare_dragon_ltd',"), "{}", sql.items);
+    assert!(sql.items.contains(", 3, 'rare_dragon_ltd',"), "{}", sql.items);
+}

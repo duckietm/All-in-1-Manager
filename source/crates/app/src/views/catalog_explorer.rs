@@ -22,19 +22,68 @@ use crate::i18n::{t, tf};
 
 /// The game's catalogue colours: the same in the light and the dark theme, as in the client.
 mod game {
+    use std::cell::Cell;
+
     use eframe::egui::Color32;
-    pub const TITLE: Color32 = Color32::from_rgb(30, 114, 149);
-    pub const TITLE_DARK: Color32 = Color32::from_rgb(21, 85, 112);
+
+    thread_local! {
+        /// Drawing the Builders Club warehouse: its colours (orange and dark teal) instead of the catalogue's blue.
+        static WAREHOUSE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Which colours the explorer drawn next uses.
+    pub fn set_builders(on: bool) {
+        WAREHOUSE.with(|b| b.set(on));
+    }
+
+    fn pick(normal: Color32, builders: Color32) -> Color32 {
+        if WAREHOUSE.with(Cell::get) {
+            builders
+        } else {
+            normal
+        }
+    }
+
+    /// The window's title bar.
+    pub fn title() -> Color32 {
+        pick(Color32::from_rgb(30, 114, 149), Color32::from_rgb(28, 74, 96))
+    }
+    /// The line under the title bar: orange in the warehouse.
+    pub fn title_dark() -> Color32 {
+        pick(Color32::from_rgb(21, 85, 112), Color32::from_rgb(243, 156, 18))
+    }
+    /// Selection outlines, the Without offer tab, focus.
+    pub fn accent() -> Color32 {
+        pick(Color32::from_rgb(30, 114, 149), Color32::from_rgb(226, 132, 10))
+    }
+    /// The open page in the tree, and its text.
+    pub fn active() -> Color32 {
+        pick(Color32::from_rgb(30, 114, 149), Color32::from_rgb(245, 166, 35))
+    }
+    pub fn active_text() -> Color32 {
+        pick(Color32::WHITE, Color32::from_rgb(40, 24, 0))
+    }
+    pub fn tab() -> Color32 {
+        pick(Color32::from_rgb(200, 210, 218), Color32::from_rgb(226, 214, 192))
+    }
+    pub fn tab_hover() -> Color32 {
+        pick(Color32::from_rgb(218, 226, 232), Color32::from_rgb(240, 229, 208))
+    }
+    pub fn nav_hover() -> Color32 {
+        pick(Color32::from_rgb(222, 236, 245), Color32::from_rgb(253, 235, 200))
+    }
+    pub fn page_bar() -> Color32 {
+        pick(Color32::from_rgb(213, 226, 236), Color32::from_rgb(246, 231, 201))
+    }
+    pub fn tile_selected() -> Color32 {
+        pick(Color32::from_rgb(222, 238, 249), Color32::from_rgb(253, 236, 200))
+    }
+
     pub const FRAME: Color32 = Color32::from_rgb(40, 40, 40);
     pub const BODY: Color32 = Color32::from_rgb(234, 234, 234);
-    pub const TAB: Color32 = Color32::from_rgb(200, 210, 218);
-    pub const TAB_HOVER: Color32 = Color32::from_rgb(218, 226, 232);
     pub const NAV: Color32 = Color32::WHITE;
-    pub const NAV_HOVER: Color32 = Color32::from_rgb(222, 236, 245);
-    pub const PAGE_BAR: Color32 = Color32::from_rgb(213, 226, 236);
     pub const TILE: Color32 = Color32::from_rgb(205, 211, 217);
     pub const TILE_EDGE: Color32 = Color32::from_rgb(182, 190, 197);
-    pub const TILE_SELECTED: Color32 = Color32::from_rgb(222, 238, 249);
     pub const TEXT: Color32 = Color32::from_rgb(30, 30, 30);
     pub const MUTED: Color32 = Color32::from_rgb(110, 116, 122);
     pub const HIDDEN: Color32 = Color32::from_rgb(150, 150, 150);
@@ -1212,6 +1261,7 @@ impl CatalogExplorerView {
 impl View for CatalogExplorerView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.connect_if_needed(shared);
+        game::set_builders(self.state.lock().unwrap().cat == Catalogue::Builders);
         self.images.read_this_frame = 0;
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
@@ -1418,8 +1468,8 @@ fn window(ui: &mut egui::Ui, s: &mut State, images: &mut Images, index: usize, w
 fn title_bar(ui: &mut egui::Ui, s: &mut State, index: usize, width: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 30.0), Sense::hover());
     let painter = ui.painter();
-    painter.rect_filled(rect, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, game::TITLE);
-    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, game::TITLE_DARK));
+    painter.rect_filled(rect, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, game::title());
+    painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, game::title_dark()));
     let path = s.panes[index].page.map(|p| s.path(p).join(" › ")).unwrap_or_default();
     painter.text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, if s.cat == Catalogue::Builders { t("Builders Club warehouse") } else { t("Catalogue") }, egui::FontId::proportional(14.0), Color32::WHITE);
     let galley = painter.layout(path, egui::FontId::proportional(11.5), Color32::from_rgb(214, 234, 244), (rect.width() - 120.0).max(40.0));
@@ -1432,7 +1482,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
     let mut roots: Vec<(i64, String, i64, bool)> = s.roots().iter().map(|p| (p.id, p.caption.clone(), p.icon_image, p.visible)).collect();
     roots.push((UNOFFERED, t("Without offer").to_string(), -1, true));
     let mut chosen = None;
-    egui::Frame::new().fill(game::TAB).inner_margin(egui::Margin { left: 6, right: 6, top: 6, bottom: 0 }).show(ui, |ui| {
+    egui::Frame::new().fill(game::tab()).inner_margin(egui::Margin { left: 6, right: 6, top: 6, bottom: 0 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
         egui::ScrollArea::horizontal().id_salt(("catalog-tabs", index)).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -1445,7 +1495,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
                     // A page dropped on a tab goes under that root page.
                     let page_drop = *id != UNOFFERED && response.dnd_hover_payload::<DragPage>().is_some();
-                    let fill = if active || page_drop { game::BODY } else if response.hovered() { game::TAB_HOVER } else { game::TAB };
+                    let fill = if active || page_drop { game::BODY } else if response.hovered() { game::tab_hover() } else { game::tab() };
                     ui.painter().rect_filled(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, fill);
                     if page_drop {
                         ui.painter().rect_stroke(rect, CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, Stroke::new(2.0_f32, game::DROP), egui::StrokeKind::Inside);
@@ -1457,7 +1507,7 @@ fn tabs(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut Imag
                         }
                         x = rect.left() + 26.0;
                     }
-                    let color = if *id == UNOFFERED { game::TITLE } else if *visible { game::TEXT } else { game::HIDDEN };
+                    let color = if *id == UNOFFERED { game::accent() } else if *visible { game::TEXT } else { game::HIDDEN };
                     ui.painter().text(egui::pos2(x, rect.center().y), egui::Align2::LEFT_CENTER, caption, font, color);
                     if *id != UNOFFERED {
                         response.context_menu(|ui| page_menu(ui, s, *id, false, actions));
@@ -1492,8 +1542,8 @@ fn light_fields(ui: &mut egui::Ui) {
     visuals.extreme_bg_color = Color32::WHITE;
     visuals.override_text_color = Some(game::TEXT);
     visuals.widgets.inactive.bg_stroke = Stroke::new(1.0_f32, game::TILE_EDGE);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, game::TITLE);
-    visuals.selection.stroke = Stroke::new(1.0_f32, game::TITLE);
+    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0_f32, game::accent());
+    visuals.selection.stroke = Stroke::new(1.0_f32, game::accent());
     visuals.text_cursor.stroke = Stroke::new(1.5_f32, game::TEXT);
 }
 
@@ -1598,11 +1648,11 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                 });
                 let highlight = furni_over || page_zone == Some(Zone::Into);
                 let fill = if highlight {
-                    game::TILE_SELECTED
+                    game::tile_selected()
                 } else if active {
-                    game::TITLE
+                    game::active()
                 } else if response.hovered() {
-                    game::NAV_HOVER
+                    game::nav_hover()
                 } else {
                     game::NAV
                 };
@@ -1621,7 +1671,7 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
                     _ => {}
                 }
                 let mut x = rect.left() + 4.0 + depth as f32 * 12.0;
-                let text_color = if active && !highlight { Color32::WHITE } else if page.visible { game::TEXT } else { game::HIDDEN };
+                let text_color = if active && !highlight { game::active_text() } else if page.visible { game::TEXT } else { game::HIDDEN };
                 if has_children {
                     let open = s.panes[index].expanded.contains(&id);
                     ui.painter().text(egui::pos2(x + 4.0, rect.center().y), egui::Align2::CENTER_CENTER, if open { "▾" } else { "▸" }, egui::FontId::proportional(12.0), text_color);
@@ -1688,7 +1738,7 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
         // The page bar: icon, caption, what it holds; right-click edits the page.
         let (bar, bar_response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click());
         bar_response.on_hover_text(t("Right-click: edit the page")).context_menu(|ui| page_menu(ui, s, page_id, true, actions));
-        ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
+        ui.painter().rect_filled(bar, CornerRadius::same(6), game::page_bar());
         if let Some(texture) = images.page(ctx, page.icon_image) {
             sharp_image(ui.painter(), &texture, bar.left_center() + egui::vec2(22.0, 0.0), egui::vec2(34.0, 34.0), 1);
         }
@@ -1738,15 +1788,15 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                         let (rect, response) = ui.allocate_exact_size(egui::vec2(TILE, TILE), Sense::click_and_drag());
                         let selected = s.panes[index].selected.contains(&offer.id);
                         let painter = ui.painter();
-                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::TILE_SELECTED } else { game::TILE });
-                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::TITLE } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
+                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::tile_selected() } else { game::TILE });
+                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::accent() } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
                         let furni = first_furni(offer).and_then(|id| s.furni.get(&id)).cloned();
                         draw_furni(painter, ctx, images, furni.as_ref(), offer, rect.shrink(4.0), 1);
                         if offer.limited_stack > 0 {
                             painter.text(rect.right_top() + egui::vec2(-4.0, 3.0), egui::Align2::RIGHT_TOP, "LTD", egui::FontId::proportional(9.0), game::DROP);
                         }
                         if catalog_admin::item_ids(&offer.item_ids).is_some_and(|ids| ids.len() > 1) {
-                            painter.text(rect.left_top() + egui::vec2(4.0, 3.0), egui::Align2::LEFT_TOP, "+", egui::FontId::proportional(11.0), game::TITLE);
+                            painter.text(rect.left_top() + egui::vec2(4.0, 3.0), egui::Align2::LEFT_TOP, "+", egui::FontId::proportional(11.0), game::accent());
                         }
                         let response = response.on_hover_text(furni.as_ref().map(|f| f.public_name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| offer.catalog_name.clone()));
                         let bundle: Vec<i64> = catalog_admin::item_ids(&offer.item_ids).unwrap_or_default();
@@ -1828,7 +1878,7 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
     egui::Frame::new().inner_margin(egui::Margin::same(8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         let (bar, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::hover());
-        ui.painter().rect_filled(bar, CornerRadius::same(6), game::PAGE_BAR);
+        ui.painter().rect_filled(bar, CornerRadius::same(6), game::page_bar());
         ui.painter().text(bar.left_center() + egui::vec2(12.0, -7.0), egui::Align2::LEFT_CENTER, t("Without offer"), egui::FontId::proportional(15.0), game::TEXT);
         let Some(list) = s.unoffered.clone() else {
             ui.painter().text(bar.left_center() + egui::vec2(12.0, 9.0), egui::Align2::LEFT_CENTER, t("Reading the furni and the offers ..."), egui::FontId::proportional(11.0), game::MUTED);
@@ -1858,8 +1908,8 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
                         let (rect, response) = ui.allocate_exact_size(egui::vec2(TILE, TILE), Sense::click_and_drag());
                         let selected = s.panes[index].furni_selected.contains(&furni.id);
                         let painter = ui.painter();
-                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::TILE_SELECTED } else { game::TILE });
-                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::TITLE } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
+                        painter.rect_filled(rect, CornerRadius::same(6), if selected { game::tile_selected() } else { game::TILE });
+                        painter.rect_stroke(rect, CornerRadius::same(6), Stroke::new(if selected { 2.0_f32 } else { 1.0 }, if selected { game::accent() } else { game::TILE_EDGE }), egui::StrokeKind::Inside);
                         let offer = Offer { catalog_name: furni.item_name.clone(), ..Offer::default() };
                         draw_furni(painter, ctx, images, Some(furni), &offer, rect.shrink(4.0), 1);
                         let name = if furni.public_name.is_empty() { furni.item_name.clone() } else { format!("{} ({})", furni.public_name, furni.item_name) };
@@ -1918,7 +1968,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
         ui.set_width(640.0);
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(72.0, 72.0), Sense::hover());
-            ui.painter().rect_filled(rect, CornerRadius::same(6), game::PAGE_BAR);
+            ui.painter().rect_filled(rect, CornerRadius::same(6), game::page_bar());
             let value = |name: &str| columns.iter().position(|c| c.name == name).and_then(|i| editor.values.get(i).cloned());
             if editor.table == "catalog_pages" {
                 let icon = value("icon_image").and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(0);
@@ -2030,7 +2080,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                             // The image the value means, small, and the picker.
                             let files = value_files(&editor.values[i], icon);
                             let (rect, _) = ui.allocate_exact_size(egui::vec2(if icon { 26.0 } else { 90.0 }, 22.0), Sense::hover());
-                            ui.painter().rect_filled(rect, CornerRadius::same(3), game::PAGE_BAR);
+                            ui.painter().rect_filled(rect, CornerRadius::same(3), game::page_bar());
                             let mut texture = None;
                             for file in &files {
                                 let (found, fetch) = images.catalogue_file(ctx, file, fetched);
@@ -2208,11 +2258,11 @@ fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                         let (rect, response) = ui.allocate_exact_size(cell + egui::vec2(0.0, label_height), Sense::click());
                         let selected = picked_value(file, icon) == current.trim();
                         let image_rect = egui::Rect::from_min_size(rect.min, cell);
-                        ui.painter().rect_filled(image_rect, CornerRadius::same(5), if selected { game::TILE_SELECTED } else { game::PAGE_BAR });
+                        ui.painter().rect_filled(image_rect, CornerRadius::same(5), if selected { game::tile_selected() } else { game::page_bar() });
                         ui.painter().rect_stroke(
                             image_rect,
                             CornerRadius::same(5),
-                            Stroke::new(if selected { 2.0_f32 } else if response.hovered() { 1.5 } else { 1.0 }, if selected || response.hovered() { game::TITLE } else { game::TILE_EDGE }),
+                            Stroke::new(if selected { 2.0_f32 } else if response.hovered() { 1.5 } else { 1.0 }, if selected || response.hovered() { game::accent() } else { game::TILE_EDGE }),
                             egui::StrokeKind::Inside,
                         );
                         // Previews only of what is on screen: the rest is fetched when scrolled to.
@@ -2420,7 +2470,7 @@ fn html_preview(html: &str) -> egui::text::LayoutJob {
         let family = if look.bold { egui::FontFamily::Name("bold".into()) } else { egui::FontFamily::Proportional };
         let mut format = egui::TextFormat {
             font_id: egui::FontId::new(13.0, family),
-            color: if look.link { game::TITLE } else { look.color.unwrap_or(game::TEXT) },
+            color: if look.link { game::title() } else { look.color.unwrap_or(game::TEXT) },
             italics: look.italic,
             ..Default::default()
         };
@@ -2637,7 +2687,7 @@ fn info_box(ui: &mut egui::Ui, ctx: &egui::Context, s: &State, images: &mut Imag
     };
     let furni = first_furni(offer).and_then(|id| s.furni.get(&id));
     let preview = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 8.0), egui::vec2(height - 16.0, height - 16.0));
-    painter.rect_filled(preview, CornerRadius::same(6), game::PAGE_BAR);
+    painter.rect_filled(preview, CornerRadius::same(6), game::page_bar());
     draw_furni(painter, ctx, images, furni, offer, preview.shrink(6.0), 2);
     let x = preview.right() + 12.0;
     let name = furni.map(|f| f.public_name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| offer.catalog_name.clone());

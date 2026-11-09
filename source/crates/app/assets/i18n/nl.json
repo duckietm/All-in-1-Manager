@@ -3355,5 +3355,11 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Deze datum is voorbij. De emulator stuurt de tegel nog steeds (als een die nooit afloopt), dus het hotel blijft hem tonen: maak de datum leeg of verwijder de tegel.",
   "Tile {n} of {count}": "Tegel {n} van {count}",
   "{count} of at most {max} characters.": "{count} van maximaal {max} tekens.",
-  "◀ Earlier": "◀ Eerder"
+  "◀ Earlier": "◀ Eerder",
+  "Polaris loads the hotel view again directly. An older emulator gets {command} sent as the staff player typed here, who must be online.": "Polaris laadt de hotelview direct opnieuw. Een oudere emulator krijgt {command} gestuurd als de hier ingevulde staff, die online moet zijn.",
+  "Press Reload in the hotel to load the changes, or restart the emulator.": "Druk op Herladen in het hotel om de wijzigingen te laden, of herstart de emulator.",
+  "Staff player for older emulators:": "Staff voor oudere emulators:",
+  "The hotel view is loaded again and shown to everyone online.": "De hotelview is opnieuw geladen en wordt aan iedereen online getoond.",
+  "This emulator is older and cannot reload from here. {reload}": "Deze emulator is ouder en kan niet vanaf hier herladen. {reload}",
+  "{name}: loaded again in the hotel.": "{name}: opnieuw geladen in het hotel."
 }

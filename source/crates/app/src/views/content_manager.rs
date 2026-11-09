@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use aio_remote::content_admin::{
     self, CurrencyTotal, Field, FieldKind, Row, Setting, TableSpec, ACHIEVEMENT_CATEGORIES, BADGE_PART_TYPES, DAILY_REWARD_TYPES, GOAL_TYPES, PET_SOUND_TYPES,
 };
+use aio_remote::rcon;
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
@@ -600,11 +601,27 @@ impl Tab {
         }
     }
 
-    /// How the hotel loads the tab's changes.
+    /// The `reloadcontent` target that loads the tab's changes in the running hotel.
+    fn reload_target(self) -> &'static str {
+        match self {
+            Tab::Achievements => "achievements",
+            Tab::DailyTasks => "dailytasks",
+            Tab::Quests => "quests",
+            Tab::Polls => "polls",
+            Tab::PublicRooms | Tab::RoomCategories => "navigator",
+            Tab::Pets | Tab::PetCommands => "petdata",
+            Tab::BadgeParts => "guildparts",
+            Tab::ChatBubbles => "chatbubbles",
+            Tab::Calendars => "calendar",
+            Tab::Currencies => "config",
+        }
+    }
+
+    /// How the hotel loads the tab's changes without the Reload button (an emulator without `reloadcontent`).
     fn reload_note(self) -> &'static str {
         match self {
             Tab::Achievements => t("The emulator loads achievements when it starts: type :update_achievements in the hotel (or restart the emulator) to load the changes."),
-            Tab::DailyTasks | Tab::Quests => t("The emulator loads quests and daily tasks only when it starts: restart the emulator to load the changes."),
+            Tab::DailyTasks | Tab::Quests => t("Press Reload in the hotel to load the changes, or restart the emulator."),
             Tab::Polls => t("Type :update_polls in the hotel (or restart the emulator) to load the changes."),
             Tab::PublicRooms | Tab::RoomCategories => t("Type :update_navigator in the hotel (or restart the emulator) to load the changes."),
             Tab::Pets | Tab::PetCommands => t("Type :update_pet_data in the hotel (or restart the emulator) to load the changes."),
@@ -852,6 +869,34 @@ impl Ctl {
         }
     }
 
+    /// Loads the tab's content again in the running hotel (RCON `reloadcontent`), as its `:update_*` command does.
+    async fn reload_hotel(self) {
+        let Some(server) = self.shared.session() else { return };
+        let (generation, tab) = {
+            let mut state = self.lock();
+            if state.busy {
+                return;
+            }
+            state.busy = true;
+            (state.generation, state.tab)
+        };
+        let answer = rcon::send(&*server, &rcon::reload_content_request(tab.reload_target())).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match answer {
+                Ok(answer) if answer.ok() => s.ok(tf("{name}: loaded again in the hotel.", &[("name", tab.label())])),
+                Ok(answer) if rcon::is_unknown_command(&answer) => {
+                    s.error(tf("This emulator is older and cannot reload from here. {reload}", &[("reload", tab.reload_note())]))
+                }
+                Ok(answer) => {
+                    let message = if answer.message.is_empty() { tf("status {status}", &[("status", &answer.status.to_string())]) } else { answer.message };
+                    s.error(tf("The emulator refused: {message}", &[("message", &message)]))
+                }
+                Err(error) => s.error(error.to_string()),
+            }
+        });
+    }
+
     /// Saves the row shown (adds it when it is new) and loads the table again.
     async fn save(self, kind: Kind) {
         let Some((generation, session, database)) = self.session() else { return };
@@ -1040,6 +1085,7 @@ enum Action {
     Save(Kind),
     Delete(Kind),
     SaveSetting(usize),
+    ReloadHotel,
 }
 
 fn frame(palette: &Palette) -> egui::Frame {
@@ -1085,6 +1131,7 @@ impl View for ContentManagerView {
                 Action::Save(kind) => ctl.spawn(move |c| c.save(kind)),
                 Action::Delete(kind) => ctl.spawn(move |c| c.delete(kind)),
                 Action::SaveSetting(index) => ctl.spawn(move |c| c.save_setting(index)),
+                Action::ReloadHotel => ctl.spawn(|c| c.reload_hotel()),
             }
         }
     }
@@ -1140,7 +1187,13 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<A
         }
     });
     ui.add_space(2.0);
-    widgets::muted(ui, palette, s.tab.reload_note(), 12.0);
+    ui.horizontal_wrapped(|ui| {
+        // RCON reloadcontent: the tab's :update_* command, without being logged in to the hotel.
+        if ui.add_enabled(s.session.is_some() && !s.busy, small(t("Reload in the hotel"))).clicked() {
+            actions.push(Action::ReloadHotel);
+        }
+        widgets::muted(ui, palette, s.tab.reload_note(), 12.0);
+    });
     ui.add_space(6.0);
     let Some(kind) = s.tab.kind() else {
         egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {

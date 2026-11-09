@@ -20,6 +20,22 @@ pub fn request(key: &str, data: Value) -> String {
     serde_json::json!({ "key": key, "data": data }).to_string()
 }
 
+/// Polaris' `reloadcontent`: loads one kind of content again, as its in-game `:update_*` command does.
+pub const RELOAD_CONTENT: &str = "reloadcontent";
+
+/// What the emulator answers for a key it does not know (an emulator from before a command was added).
+pub const UNKNOWN_COMMAND: &str = "unknown command";
+
+/// The `reloadcontent` request for `target` (`achievements`, `navigator`, `hotelview`, ...).
+pub fn reload_content_request(target: &str) -> String {
+    request(RELOAD_CONTENT, serde_json::json!({ "target": target }))
+}
+
+/// Whether the emulator does not know the command it was sent.
+pub fn is_unknown_command(answer: &Answer) -> bool {
+    answer.status == STATUS_ERROR && answer.message == UNKNOWN_COMMAND
+}
+
 /// A script that sends `request` to the RCON port of the emulator on 127.0.0.1 and prints the answer.
 pub fn script(request: &str) -> String {
     format!(
@@ -88,6 +104,18 @@ pub async fn send(server: &dyn Server, request: &str) -> Result<Answer> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reload_content_names_its_target() {
+        assert_eq!(reload_content_request("petdata"), r#"{"key":"reloadcontent","data":{"target":"petdata"}}"#);
+    }
+
+    #[test]
+    fn an_older_emulator_does_not_know_the_command() {
+        assert!(is_unknown_command(&Answer { status: STATUS_ERROR, message: "unknown command".into() }));
+        assert!(!is_unknown_command(&Answer { status: STATUS_ERROR, message: "Unknown target. Use one of: polls".into() }));
+        assert!(!is_unknown_command(&Answer { status: STATUS_OK, message: String::new() }));
+    }
 
     #[test]
     fn requests_are_json_and_one_shell_word() {

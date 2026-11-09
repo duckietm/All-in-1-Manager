@@ -3355,5 +3355,11 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Esta fecha ya pasó. El emulador sigue enviando el mosaico (como uno que nunca termina), así que el hotel lo sigue mostrando: vacía la fecha o quita el mosaico.",
   "Tile {n} of {count}": "Mosaico {n} de {count}",
   "{count} of at most {max} characters.": "{count} de como máximo {max} caracteres.",
-  "◀ Earlier": "◀ Antes"
+  "◀ Earlier": "◀ Antes",
+  "Polaris loads the hotel view again directly. An older emulator gets {command} sent as the staff player typed here, who must be online.": "Polaris recarga directamente la vista del hotel. A un emulador más antiguo se le envía {command} como el staff indicado aquí, que debe estar conectado.",
+  "Press Reload in the hotel to load the changes, or restart the emulator.": "Pulsa Recargar en el hotel para cargar los cambios, o reinicia el emulador.",
+  "Staff player for older emulators:": "Staff para emuladores antiguos:",
+  "The hotel view is loaded again and shown to everyone online.": "La vista del hotel se ha recargado y se muestra a todos los conectados.",
+  "This emulator is older and cannot reload from here. {reload}": "Este emulador es más antiguo y no puede recargar desde aquí. {reload}",
+  "{name}: loaded again in the hotel.": "{name}: recargado en el hotel."
 }

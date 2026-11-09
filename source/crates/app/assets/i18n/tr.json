@@ -3355,5 +3355,11 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Bu tarih geçti. Emülatör karoyu hâlâ gönderiyor (hiç bitmeyen biri olarak), bu yüzden otel onu göstermeye devam eder: tarihi temizleyin ya da karoyu kaldırın.",
   "Tile {n} of {count}": "Karo {n} / {count}",
   "{count} of at most {max} characters.": "En fazla {max} karakterden {count}.",
-  "◀ Earlier": "◀ Önce"
+  "◀ Earlier": "◀ Önce",
+  "Polaris loads the hotel view again directly. An older emulator gets {command} sent as the staff player typed here, who must be online.": "Polaris otel görünümünü doğrudan yeniden yükler. Daha eski bir emülatöre {command}, buraya yazılan ve çevrimiçi olması gereken yetkili adına gönderilir.",
+  "Press Reload in the hotel to load the changes, or restart the emulator.": "Değişiklikleri yüklemek için Otelde yeniden yükle'ye bas veya emülatörü yeniden başlat.",
+  "Staff player for older emulators:": "Eski emülatörler için yetkili:",
+  "The hotel view is loaded again and shown to everyone online.": "Otel görünümü yeniden yüklendi ve çevrimiçi herkese gösteriliyor.",
+  "This emulator is older and cannot reload from here. {reload}": "Bu emülatör daha eski ve buradan yeniden yükleyemez. {reload}",
+  "{name}: loaded again in the hotel.": "{name}: otelde yeniden yüklendi."
 }

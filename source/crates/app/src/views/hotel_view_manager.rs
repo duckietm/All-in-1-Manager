@@ -452,10 +452,40 @@ impl Ctl {
         .await;
     }
 
-    /// Sends `:update_hotel_view` over RCON as the online staff player typed.
+    /// Loads the hotel view again: RCON `reloadcontent` on Polaris, else `:update_hotel_view` over RCON as the online
+    /// staff player typed (an emulator from before `reloadcontent`).
     async fn reload(self) {
         let Some(server) = self.shared.session() else { return };
         let Some((generation, session, database)) = self.session() else { return };
+        self.with(generation, |s| s.busy = true);
+        let direct = rcon::send(&*server, &rcon::reload_content_request("hotelview")).await;
+        match direct {
+            Ok(answer) if answer.ok() => {
+                self.with(generation, |s| {
+                    s.busy = false;
+                    s.status = Status { text: t("The hotel view is loaded again and shown to everyone online.").into(), error: false };
+                });
+                return;
+            }
+            // An emulator from before reloadcontent: the staff route below.
+            Ok(answer) if rcon::is_unknown_command(&answer) => {}
+            // It knows reloadcontent but refused or did not answer: the staff route would fail the same way.
+            Ok(answer) => {
+                self.with(generation, |s| {
+                    s.busy = false;
+                    s.error(tf("The emulator refused: {message}", &[("message", &answer.message)]));
+                });
+                return;
+            }
+            Err(error) => {
+                self.with(generation, |s| {
+                    s.busy = false;
+                    s.error(error.to_string());
+                });
+                return;
+            }
+        }
+        self.with(generation, |s| s.busy = false);
         let name = self.lock().staff.trim().to_string();
         if name.is_empty() {
             self.lock().error(t("Type the name of a staff player who is online in the hotel.").into());
@@ -644,12 +674,15 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
     });
     ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(t("Reload in the hotel as")).size(12.5));
-        ui.add_sized([180.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut s.staff).hint_text(t("Online staff player")));
-        let hover = tf("Sends {command} over RCON as this player, who must be online and may use the command.", &[("command", admin::RELOAD_COMMAND)]);
+        let hover = tf(
+            "Polaris loads the hotel view again directly. An older emulator gets {command} sent as the staff player typed here, who must be online.",
+            &[("command", admin::RELOAD_COMMAND)],
+        );
         if ui.add_enabled(ready, small(t("Reload in the hotel"))).on_hover_text(hover).clicked() {
             actions.push(Action::Reload);
         }
+        ui.label(RichText::new(t("Staff player for older emulators:")).size(12.5));
+        ui.add_sized([180.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut s.staff).hint_text(t("Online staff player")));
         widgets::muted(ui, palette, &tf("Or type {command} in the hotel.", &[("command", admin::RELOAD_COMMAND)]), 12.0);
     });
     if !s.status.text.is_empty() {

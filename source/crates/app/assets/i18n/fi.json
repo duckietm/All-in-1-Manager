@@ -3355,5 +3355,11 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Tämä päivä on mennyt. Emulaattori lähettää ruudun yhä (ikään kuin se ei koskaan päättyisi), joten hotelli näyttää sitä edelleen: tyhjennä päivä tai poista ruutu.",
   "Tile {n} of {count}": "Ruutu {n}/{count}",
   "{count} of at most {max} characters.": "{count} / enintään {max} merkkiä.",
-  "◀ Earlier": "◀ Aiemmin"
+  "◀ Earlier": "◀ Aiemmin",
+  "Polaris loads the hotel view again directly. An older emulator gets {command} sent as the staff player typed here, who must be online.": "Polaris lataa hotellinäkymän suoraan uudelleen. Vanhemmalle emulaattorille lähetetään {command} tähän kirjoitetun henkilökunnan jäsenen nimissä, jonka täytyy olla paikalla.",
+  "Press Reload in the hotel to load the changes, or restart the emulator.": "Lataa muutokset painamalla Lataa uudelleen hotellissa tai käynnistä emulaattori uudelleen.",
+  "Staff player for older emulators:": "Henkilökunnan jäsen vanhemmille emulaattoreille:",
+  "The hotel view is loaded again and shown to everyone online.": "Hotellinäkymä on ladattu uudelleen ja näytetään kaikille paikalla oleville.",
+  "This emulator is older and cannot reload from here. {reload}": "Tämä emulaattori on vanhempi eikä voi ladata uudelleen täältä. {reload}",
+  "{name}: loaded again in the hotel.": "{name}: ladattu uudelleen hotellissa."
 }

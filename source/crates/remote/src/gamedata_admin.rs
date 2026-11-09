@@ -681,7 +681,10 @@ mod tests {
     }
 
     /// Runs the save script with bash on a temporary folder (skipped without bash or sha256sum).
+    /// The script runs on the Linux server: on Windows, Git's bash gets `C:\...` paths it cannot use, so it is not run
+    /// there.
     #[test]
+    #[cfg_attr(windows, ignore = "the save script is for the Linux server; Windows paths do not work in it")]
     fn save_script_in_bash() {
         let has = |tool: &str| std::process::Command::new("sh").arg("-c").arg(format!("command -v {tool}")).output().is_ok_and(|o| o.status.success());
         if !has("bash") || !has("sha256sum") {

@@ -1,7 +1,7 @@
 //! EpicNext CMS becomes the hotel's website, as AtomCMS does: Next.js on the server itself (not Docker), Octane on
 //! /client/. (EpicNextStep.cs, InstallerWindow._epicNextWizard)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::atom_cms::AtomCmsState;
 use aio_remote::git_clone::{self, CloneTargetKind};
@@ -9,6 +9,7 @@ use aio_remote::web_access::{self, WebAccessSettings};
 use aio_remote::{cms_site, custom_cms, epicnext, fail, octane, Server};
 use async_trait::async_trait;
 use eframe::egui;
+use parking_lot::Mutex;
 
 use super::atom_cms::{field_label, hint, hotel_name_from_site, hotel_name_problem, move_aside, text_box};
 use crate::gui::icons::Icon;
@@ -41,7 +42,7 @@ pub struct EpicNextStep {
 
 impl EpicNextStep {
     pub fn atom_tables(&self) -> bool {
-        *self.atom_tables.lock().unwrap()
+        *self.atom_tables.lock()
     }
 }
 
@@ -129,7 +130,7 @@ impl InstallStep for EpicNextStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.spacing_mut().item_spacing.y = 6.0;
         ui.add_space(2.0);
@@ -152,7 +153,7 @@ impl InstallStep for EpicNextStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         if let Some(problem) = hotel_name_problem(&mut form.hotel_name) {
             return Some(problem);
         }
@@ -171,7 +172,7 @@ impl InstallStep for EpicNextStep {
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = epicnext::inspect(server.as_ref()).await?;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             if form.hotel_name.trim().is_empty() {
                 form.hotel_name = match (&state.hotel_name, &state.server.hotel_name) {
                     (Some(name), _) if !name.is_empty() => name.clone(),
@@ -225,7 +226,7 @@ impl InstallStep for EpicNextStep {
 
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let (hotel_name, url, branch, folder) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             (form.hotel_name.trim().to_string(), form.git_url.trim().to_string(), form.branch.trim().to_string(), clean_folder(&form.folder))
         };
         let directory = epicnext::directory();
@@ -296,7 +297,7 @@ impl InstallStep for EpicNextStep {
         epicnext::test(server, &site, &log).await?;
         ui.done("OK");
 
-        *self.atom_tables.lock().unwrap() = state.atom_tables;
+        *self.atom_tables.lock() = state.atom_tables;
         Ok(ui.succeeded(
             &tf("EpicNext is the website of {url}", &[("url", &site.url())]),
             &tf(

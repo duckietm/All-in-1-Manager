@@ -1,12 +1,13 @@
 //! CrowdSec in Docker with Traefik's bouncer, enrolled in the CrowdSec console with the user's key. (CrowdSecStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::crowdsec::{self, CrowdSecResult, CrowdSecSettings, CrowdSecState};
 use aio_remote::web_access::WebAccessSettings;
 use aio_remote::{fail, fail2ban, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 
 use super::fail2ban::{client_hint, whitelist_editor};
 use crate::gui::icons::Icon;
@@ -64,16 +65,16 @@ pub struct CrowdSecStep {
 
 impl CrowdSecStep {
     pub fn site(&self) -> Option<WebAccessSettings> {
-        self.output.lock().unwrap().site.clone()
+        self.output.lock().site.clone()
     }
     pub fn instance_name(&self) -> Option<String> {
-        self.output.lock().unwrap().instance_name.clone()
+        self.output.lock().instance_name.clone()
     }
     pub fn enrolled_now(&self) -> bool {
-        self.output.lock().unwrap().enrolled_now
+        self.output.lock().enrolled_now
     }
     pub fn result(&self) -> Option<CrowdSecResult> {
-        self.output.lock().unwrap().result
+        self.output.lock().result
     }
 }
 
@@ -224,7 +225,7 @@ impl InstallStep for CrowdSecStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(8.0);
         if let Some(banner) = &form.cloudflare {
@@ -270,14 +271,14 @@ impl InstallStep for CrowdSecStep {
     }
 
     fn validate(&self) -> Option<String> {
-        self.form.lock().unwrap().read().err()
+        self.form.lock().read().err()
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = crowdsec::inspect(server.as_ref()).await?;
-        self.output.lock().unwrap().site = state.site.clone();
+        self.output.lock().site = state.site.clone();
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.enrolled = state.enrolled;
             if !form.filled {
                 form.name = state.instance_name.clone().unwrap_or_else(|| default_name(state.site.as_ref()));
@@ -317,7 +318,7 @@ impl InstallStep for CrowdSecStep {
         let log = ui.logger();
         let server = server.as_ref();
         log("> Checking the server ...");
-        let read = self.form.lock().unwrap().read();
+        let read = self.form.lock().read();
         let settings = match read {
             Ok(settings) => settings,
             Err(problem) => fail!("{problem}"),
@@ -353,7 +354,7 @@ impl InstallStep for CrowdSecStep {
         ui.done(if result.bouncer_connected { t("connected") } else { t("not connected yet") });
 
         {
-            let mut output = self.output.lock().unwrap();
+            let mut output = self.output.lock();
             output.site = Some(site.clone());
             output.instance_name = Some(settings.instance_name.clone());
             output.enrolled_now = enroll_now;

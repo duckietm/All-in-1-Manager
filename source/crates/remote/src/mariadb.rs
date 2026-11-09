@@ -366,7 +366,7 @@ pub async fn create_users(server: &dyn Server, credentials: &DatabaseCredentials
          FLUSH PRIVILEGES;\n",
         local_root_password_sql(credentials)
     );
-    let body = fill_once(
+    let body = fill(
         CREATE_USERS,
         &[
             ("RootUser", &credentials.root_user),
@@ -410,7 +410,7 @@ pub async fn test_login(
             identifier(database)
         ),
     };
-    let body = fill_once(
+    let body = fill(
         TEST_LOGIN,
         &[
             ("remote", if remote { "" } else { "ip=" }),
@@ -443,26 +443,6 @@ fn caught(result: Result<()>) -> Result<Option<String>> {
     }
 }
 
-/// Fills placeholders at once, so a value that itself contains "{{name}}" stays as it is, like a C# interpolation.
-fn fill_once(template: &str, values: &[(&str, &str)]) -> String {
-    let mut text = String::with_capacity(template.len());
-    let mut rest = template;
-    'outer: while let Some(start) = rest.find("{{") {
-        for (name, value) in values {
-            let placeholder = format!("{{{{{name}}}}}");
-            if rest[start..].starts_with(&placeholder) {
-                text.push_str(&rest[..start]);
-                text.push_str(value);
-                rest = &rest[start + placeholder.len()..];
-                continue 'outer;
-            }
-        }
-        text.push_str(&rest[..start + 2]);
-        rest = &rest[start + 2..];
-    }
-    text.push_str(rest);
-    text
-}
 
 fn account(user: &str) -> String {
     format!("{}@'%'", sql_literal(user))
@@ -524,7 +504,7 @@ mod tests {
     fn sql_pieces() {
         assert_eq!(account("o'k"), "'o\\'k'@'%'");
         assert_eq!(identifier("ha`bbo"), "`ha``bbo`");
-        assert_eq!(fill_once("a {{x}} {{y}} {{z}}", &[("x", "{{y}}"), ("y", "2")]), "a {{y}} 2 {{z}}");
+        assert_eq!(fill("a {{x}} {{y}} {{z}}", &[("x", "{{y}}"), ("y", "2")]), "a {{y}} 2 {{z}}");
     }
 
     #[test]

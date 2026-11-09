@@ -164,7 +164,7 @@ pub fn from_asar(asar: &[u8]) -> Result<Option<Vec<u8>>> {
     }
     let header: serde_json::Value =
         serde_json::from_slice(&asar[16..16 + json_length]).map_err(|e| bad(format!("The .asar header is not JSON: {e}")))?;
-    fn find<'a>(directory: &'a serde_json::Value) -> Option<&'a serde_json::Value> {
+    fn find(directory: &serde_json::Value) -> Option<&serde_json::Value> {
         for (name, child) in directory.get("files")?.as_object()? {
             if child.get("files").is_some() {
                 if let Some(found) = find(child) {

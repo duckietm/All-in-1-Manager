@@ -1,11 +1,12 @@
 //! Removes CrowdSec: the bouncer out of Traefik first, then the engine; its data only when asked.
 //! (RemoveCrowdSecStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::{crowdsec, Server};
 use async_trait::async_trait;
 use eframe::egui;
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -23,7 +24,7 @@ pub struct RemoveCrowdSecStep {
 
 impl RemoveCrowdSecStep {
     pub fn data_deleted(&self) -> bool {
-        *self.data_deleted.lock().unwrap()
+        *self.data_deleted.lock()
     }
 }
 
@@ -87,7 +88,7 @@ impl InstallStep for RemoveCrowdSecStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, _palette: &Palette) {
-        let mut delete = self.delete_data.lock().unwrap();
+        let mut delete = self.delete_data.lock();
         ui.add_space(8.0);
         ui.checkbox(
             &mut delete,
@@ -125,7 +126,7 @@ impl InstallStep for RemoveCrowdSecStep {
         let server = server.as_ref();
         log("> Checking the server ...");
         let state = crowdsec::inspect(server).await?;
-        let delete = *self.delete_data.lock().unwrap();
+        let delete = *self.delete_data.lock();
         if state.installed {
             log(&format!(
                 "  CrowdSec {}, bouncer in Traefik: {}",
@@ -139,7 +140,7 @@ impl InstallStep for RemoveCrowdSecStep {
 
         crowdsec::remove(server, state.site.as_ref(), delete, &log).await?;
         ui.done(if delete { t("removed, data deleted") } else { t("removed, data kept") });
-        *self.data_deleted.lock().unwrap() = delete;
+        *self.data_deleted.lock() = delete;
         Ok(ui.succeeded(t("CrowdSec is removed"), &result_message(delete)))
     }
 }

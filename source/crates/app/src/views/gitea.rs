@@ -1,13 +1,14 @@
 //! Gitea, your own Git server, in Docker behind the hotel's Traefik on a domain of its own. (GiteaStep.cs)
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::gitea::{self, GiteaResult, GiteaSettings, GiteaState};
 use aio_remote::web_access::WebAccessSettings;
 use aio_remote::{fail, local_ports, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{Extra, InstallStep, Intro, StepOutcome, StepUi};
@@ -47,11 +48,11 @@ impl GiteaStep {
     }
 
     pub fn settings(&self) -> Option<GiteaSettings> {
-        self.output.lock().unwrap().settings.clone()
+        self.output.lock().settings.clone()
     }
 
     pub fn result(&self) -> Option<GiteaResult> {
-        self.output.lock().unwrap().result.clone()
+        self.output.lock().result.clone()
     }
 }
 
@@ -179,7 +180,7 @@ impl InstallStep for GiteaStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         ui.add_space(8.0);
         let (heading, message) = dns_warning(&form.domain, form.cloudflare);
         widgets::result_banner(ui, palette, ResultKind::Warning, &heading, &message);
@@ -202,7 +203,7 @@ impl InstallStep for GiteaStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         form.domain = form.domain.trim().trim_end_matches('.').to_lowercase();
         if let Some(problem) = gitea::domain_problem(&form.domain, form.site.as_ref()) {
             return Some(problem);
@@ -218,7 +219,7 @@ impl InstallStep for GiteaStep {
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = gitea::inspect(server.as_ref()).await?;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.site = state.site.clone();
             if form.domain.trim().is_empty() {
                 form.domain = state.domain.clone().unwrap_or_else(|| gitea::suggested_domain(state.site.as_ref()));
@@ -241,7 +242,7 @@ impl InstallStep for GiteaStep {
         let domain = state.domain.clone().unwrap_or_default();
         if state.installed() {
             // Skipped as installed: the finish page and its Open button still need Gitea's address.
-            self.output.lock().unwrap().settings = Some(GiteaSettings {
+            self.output.lock().settings = Some(GiteaSettings {
                 domain: domain.clone(),
                 https: site.https,
                 cloudflare: state.cloudflare.unwrap_or(false),
@@ -280,7 +281,7 @@ impl InstallStep for GiteaStep {
         }
         let https = state.site.as_ref().map(|s| s.https).unwrap_or(false);
         let settings = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             GiteaSettings {
                 domain: form.domain.trim().to_string(),
                 https,
@@ -300,7 +301,7 @@ impl InstallStep for GiteaStep {
         ui.done(if certificate { t("OK") } else { t("no certificate yet") });
 
         {
-            let mut output = self.output.lock().unwrap();
+            let mut output = self.output.lock();
             output.settings = Some(settings.clone());
             output.result = Some(GiteaResult { certificate_valid: certificate, ..result.clone() });
         }

@@ -4,7 +4,7 @@
 //! **Publish** makes the running emulator load the catalogue again (RCON `updatecatalog`), which tells the players
 //! online to refresh it. The data and its rules live in `aio_remote::catalog_admin`.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 mod front_page;
 
@@ -15,6 +15,7 @@ use aio_remote::catalog_transfer;
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::sql_editor::login::{Login, Prompt};
 use super::sql_editor::text;
@@ -154,8 +155,8 @@ fn server_id(server: &Arc<dyn Server>) -> usize {
 }
 
 impl Ctl {
-    fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap()
+    fn lock(&self) -> parking_lot::MutexGuard<'_, State> {
+        self.state.lock()
     }
 
     fn with<R>(&self, generation: u64, change: impl FnOnce(&mut State) -> R) -> Option<R> {
@@ -913,7 +914,7 @@ impl CatalogManagerView {
         let Some(server) = shared.session() else { return };
         let id = server_id(&server);
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.session_for == Some(id) {
                 return;
             }
@@ -973,7 +974,7 @@ impl View for CatalogManagerView {
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
-            let mut guard = self.state.lock().unwrap();
+            let mut guard = self.state.lock();
             let s = &mut *guard;
             if let Some(prompt) = s.prompt.as_mut() {
                 if prompt.show(&ctx, palette) {
@@ -1021,11 +1022,11 @@ impl View for CatalogManagerView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().busy
+        self.state.lock().busy
     }
 
     fn session_changed(&mut self, shared: &Shared) {
-        self.state.lock().unwrap().close(shared);
+        self.state.lock().close(shared);
     }
 }
 

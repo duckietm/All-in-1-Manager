@@ -941,27 +941,9 @@ pub fn deploy(site: Option<WebAccessSettings>, summaries: Vec<Option<String>>, s
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clean_steps() {
-        assert!(clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::AlreadyInstalled)]));
-        assert!(!clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::Skipped)]));
-        assert!(clean(&[]));
-    }
-
-    #[test]
-    fn asset_table_complete() {
-        assert_eq!(ASSETS.len(), 19);
-        assert!(ASSETS.iter().all(|(folder, contents)| !folder.is_empty() && !contents.is_empty()));
-    }
-}
-
 /// Import Assets' finish page: where the furniture went, how to move it, and the way back.
 pub fn import_assets(imported: super::import_assets::Imported, steps: Steps, shared: crate::gui::Shared) -> Box<dyn FinishPage> {
-    let upload = std::sync::Arc::new(std::sync::Mutex::new(super::import_assets::FileUpload::default()));
+    let upload = std::sync::Arc::new(parking_lot::Mutex::new(super::import_assets::FileUpload::default()));
     Page::boxed(move |ui, palette| {
         let ok = clean(&steps);
         let heading = match (&imported.result, ok) {
@@ -998,7 +980,7 @@ pub fn import_assets(imported: super::import_assets::Imported, steps: Steps, sha
                     ),
                     13.0,
                 );
-                let state = upload.lock().unwrap();
+                let state = upload.lock();
                 let (running, sent, result) = (state.running, state.sent, state.result.clone());
                 drop(state);
                 match (&result, running) {
@@ -1119,4 +1101,22 @@ pub fn item_fix(rows: usize, changes: usize, safety_backup: Option<String>, step
             });
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_steps() {
+        assert!(clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::AlreadyInstalled)]));
+        assert!(!clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::Skipped)]));
+        assert!(clean(&[]));
+    }
+
+    #[test]
+    fn asset_table_complete() {
+        assert_eq!(ASSETS.len(), 19);
+        assert!(ASSETS.iter().all(|(folder, contents)| !folder.is_empty() && !contents.is_empty()));
+    }
 }

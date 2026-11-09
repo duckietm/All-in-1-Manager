@@ -1,10 +1,11 @@
 //! Health check (Tools → Health check): one button reads the server (aio_remote::doctor, read only) and shows every
 //! part of the hotel as a green, yellow or red line, the problems first, with a Fix button that runs the matching tool.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::doctor::{self, Facts, Service};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::dashboard::chip;
 use crate::gui::theme::Palette;
@@ -123,7 +124,7 @@ pub fn classify(facts: &Facts) -> Vec<Line> {
         lines.push(line(status, t("Disk"), detail, None));
     }
     if let (Some(total), Some(available)) = (facts.memory_total_bytes, facts.memory_available_bytes) {
-        let percent = if total > 0 { available * 100 / total } else { 100 };
+        let percent = (available * 100).checked_div(total).unwrap_or(100);
         let detail = tf("{available} of {total} free.", &[("available", &size(available)), ("total", &size(total))]);
         lines.push(line(if percent < 10 { Status::Warning } else { Status::Ok }, t("Memory"), detail, None));
     }
@@ -223,7 +224,7 @@ impl DoctorView {
     pub fn check(&self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.checking {
                 return;
             }
@@ -233,7 +234,7 @@ impl DoctorView {
         let state = self.state.clone();
         shared.spawn(async move {
             let result = doctor::check(server.as_ref()).await.map(|facts| classify(&facts)).map_err(|e| step::error_message(&e));
-            let mut state = state.lock().unwrap();
+            let mut state = state.lock();
             state.result = Some(result);
             state.at = Some(chrono::Local::now());
             state.checking = false;
@@ -243,13 +244,13 @@ impl DoctorView {
 
 impl View for DoctorView {
     fn session_changed(&mut self, _shared: &Shared) {
-        *self.state.lock().unwrap() = State::default();
+        *self.state.lock() = State::default();
     }
 
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         // The first look at the page (or a new login) checks at once.
         let (checking, result, at, stale) = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             (state.checking, state.result.clone(), state.at, state.session != session_id(shared))
         };
         if stale && !checking {

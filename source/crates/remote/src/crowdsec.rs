@@ -105,7 +105,7 @@ fn matches_pattern(text: &str, min: usize, max: usize, allowed: impl Fn(char) ->
 /// The enrollment key from a paste: the key alone, or the whole command the console shows
 /// ("sudo cscli console enroll -e context cm1abc..."). None when there is none.
 pub fn key_from(text: &str) -> Option<String> {
-    let word = text.split([' ', '\t', '\r', '\n']).filter(|w| !w.is_empty()).filter(|w| !w.starts_with('-')).next_back()?;
+    let word = text.split([' ', '\t', '\r', '\n']).filter(|w| !w.is_empty()).rfind(|w| !w.starts_with('-'))?;
     let key = word.trim_matches(['"', '\'']);
     matches_pattern(key, 16, 64, |c| c.is_ascii_alphanumeric()).then(|| key.to_string())
 }

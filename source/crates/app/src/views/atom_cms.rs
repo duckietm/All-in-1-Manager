@@ -2,7 +2,7 @@
 //!
 //! Also holds what the CMS steps share (the option fields, the default hotel name, "Folder not empty").
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::atom_cms::{self, AtomCmsState};
 use aio_remote::git_clone::{self, CloneTargetKind};
@@ -10,6 +10,7 @@ use aio_remote::web_access::{self, WebAccessSettings};
 use aio_remote::{cms_site, fail, harden, octane, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::dialogs::Choice;
 use crate::gui::icons::Icon;
@@ -107,7 +108,7 @@ pub struct AtomCmsStep {
 
 impl AtomCmsStep {
     pub fn result(&self) -> AtomResult {
-        self.result.lock().unwrap().clone()
+        self.result.lock().clone()
     }
 }
 
@@ -185,20 +186,20 @@ impl InstallStep for AtomCmsStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         ui.add_space(2.0);
         field_label(ui, palette, t("The hotel's name (APP_NAME and the CMS' hotel_name)"));
         text_box(ui, &mut form.hotel_name, "My Hotel", 380.0, 100);
     }
 
     fn validate(&self) -> Option<String> {
-        hotel_name_problem(&mut self.form.lock().unwrap().hotel_name)
+        hotel_name_problem(&mut self.form.lock().hotel_name)
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = atom_cms::inspect(server.as_ref()).await?;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             if form.hotel_name.trim().is_empty() {
                 form.hotel_name = match &state.hotel_name {
                     Some(name) if !name.is_empty() && name != "Atom CMS" => name.clone(),
@@ -212,7 +213,7 @@ impl InstallStep for AtomCmsStep {
         }
         let site = state.site.clone().unwrap_or_default();
         if state.is_complete() {
-            *self.result.lock().unwrap() =
+            *self.result.lock() =
                 AtomResult { installation_key: state.installation_key.clone(), installation_completed: state.installation_completed };
             let installer = if state.installation_completed {
                 t("The AtomCMS web installer is done. ").to_string()
@@ -248,7 +249,7 @@ impl InstallStep for AtomCmsStep {
     }
 
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
-        let hotel_name = self.form.lock().unwrap().hotel_name.trim().to_string();
+        let hotel_name = self.form.lock().hotel_name.trim().to_string();
         let log = ui.logger();
         let server = server.as_ref();
         let directory = atom_cms::directory();
@@ -336,7 +337,7 @@ impl InstallStep for AtomCmsStep {
         ui.done("OK");
 
         let (key, completed) = atom_cms::installation_key(server, &site, &log).await?;
-        *self.result.lock().unwrap() = AtomResult { installation_key: key.clone(), installation_completed: completed };
+        *self.result.lock() = AtomResult { installation_key: key.clone(), installation_completed: completed };
         ui.done(if completed { t("web installer done") } else { key.as_deref().unwrap_or("") });
         if completed {
             return Ok(ui.succeeded(

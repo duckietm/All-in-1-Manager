@@ -4,13 +4,14 @@
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::furniture_language;
 use aio_core::settings::{RetroProfile, RetroUrls};
 use aio_remote::habbo_assets::retro;
 use aio_remote::habbo_assets::{self, Asset, Downloader, Options, Urls};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::gui::log_view::{self, LogLines};
@@ -274,7 +275,7 @@ impl GetAssetsView {
         let Some(hotel) = furniture_language::language(self.hotel) else { return };
         let cancel = CancellationToken::new();
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.running {
                 return;
             }
@@ -287,7 +288,7 @@ impl GetAssetsView {
         }
         let retro_run = jobs.iter().any(|j| !matches!(j, Job::Habbo(_)));
         let root = if retro_run { retro::custom_folder(&self.folder, &self.edit) } else { self.folder.clone() };
-        self.state.lock().unwrap().last_root = root.clone();
+        self.state.lock().last_root = root.clone();
         let retro_urls = self.edit.urls.clone();
         // The profile's Referer and custom headers, for a retro run only (Habbo's CDN needs none).
         let headers = if retro_run { retro_urls.request_headers() } else { Ok(Vec::new()) };
@@ -309,7 +310,7 @@ impl GetAssetsView {
             let ctx = task_shared.ctx.clone();
             let log_state = state.clone();
             let log = move |line: &str| {
-                log_state.lock().unwrap().log.push(line);
+                log_state.lock().log.push(line);
                 ctx.request_repaint();
             };
             let from = if retro_run { retro::folder_url(&retro_urls.furnidata) } else { hotel.domain.to_string() };
@@ -323,7 +324,7 @@ impl GetAssetsView {
                 None => Downloader::new(&root, Urls::habbo(hotel), options, &log, cancel.clone()),
             };
             match result {
-                Err(e) => state.lock().unwrap().results.push((t("Habbo assets").into(), Err(e.to_string()))),
+                Err(e) => state.lock().results.push((t("Habbo assets").into(), Err(e.to_string()))),
                 Ok(downloader) => {
                     for job in jobs {
                         if cancel.is_cancelled() {
@@ -343,11 +344,11 @@ impl GetAssetsView {
                             Ok(summary) => log(&format!("  {summary}")),
                             Err(e) => log(&format!("! {title}: {e}")),
                         }
-                        state.lock().unwrap().results.push((title, outcome));
+                        state.lock().results.push((title, outcome));
                     }
                 }
             }
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock();
             s.running = false;
             s.stopped = cancel.is_cancelled();
             s.cancel = None;
@@ -358,10 +359,10 @@ impl GetAssetsView {
 
     fn take_picked(&mut self) {
         let (folder, source) = {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             (state.picked_folder.take(), state.picked_source.take())
         };
-        let picked_retro = self.state.lock().unwrap().picked_retro.take();
+        let picked_retro = self.state.lock().picked_retro.take();
         if let Some((index, path)) = picked_retro {
             *retro_field(&mut self.edit.urls, index) = path.display().to_string();
         }
@@ -381,7 +382,7 @@ impl GetAssetsView {
         shared.spawn(async move {
             let dialog = rfd::AsyncFileDialog::new().set_title(t("Where the assets are downloaded to")).set_directory(start.parent().unwrap_or(&start));
             if let Some(folder) = dialog.pick_folder().await {
-                state.lock().unwrap().picked_folder = Some(folder.path().to_path_buf());
+                state.lock().picked_folder = Some(folder.path().to_path_buf());
             }
         });
     }
@@ -393,7 +394,7 @@ impl GetAssetsView {
                 .set_title(t("The app.asar of the Habbo Classic app"))
                 .add_filter("app.asar", &["asar"]);
             if let Some(file) = dialog.pick_file().await {
-                state.lock().unwrap().picked_source = Some(file.path().to_path_buf());
+                state.lock().picked_source = Some(file.path().to_path_buf());
             }
         });
     }
@@ -522,7 +523,7 @@ impl GetAssetsView {
                                 shared.spawn(async move {
                                     let dialog = rfd::AsyncFileDialog::new().add_filter("JSON / XML", &["json", "xml", "txt"]);
                                     if let Some(file) = dialog.pick_file().await {
-                                        state.lock().unwrap().picked_retro = Some((i, file.path().to_path_buf()));
+                                        state.lock().picked_retro = Some((i, file.path().to_path_buf()));
                                     }
                                 });
                             }
@@ -598,7 +599,7 @@ impl GetAssetsView {
                     *start = Some(vec![Job::ConvertSwf]);
                 }
                 if running && ui.add(widgets::secondary_button(t("Stop"))).clicked() {
-                    if let Some(cancel) = &self.state.lock().unwrap().cancel {
+                    if let Some(cancel) = &self.state.lock().cancel {
                         cancel.cancel();
                     }
                 }
@@ -615,7 +616,7 @@ impl GetAssetsView {
 impl View for GetAssetsView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.take_picked();
-        let running = self.state.lock().unwrap().running;
+        let running = self.state.lock().running;
         let folder = self.folder.clone();
         let margin = egui::Margin::symmetric(24, 20);
         let mut start: Option<Vec<Job>> = None;
@@ -764,7 +765,7 @@ impl View for GetAssetsView {
                         start = Some(Asset::ALL.iter().copied().filter(|a| a.in_download_all() || with_icons).map(Job::Habbo).collect());
                     }
                     if running && ui.add(widgets::secondary_button(t("Stop"))).clicked() {
-                        if let Some(cancel) = &self.state.lock().unwrap().cancel {
+                        if let Some(cancel) = &self.state.lock().cancel {
                             cancel.cancel();
                         }
                     }
@@ -777,10 +778,10 @@ impl View for GetAssetsView {
         }
 
         let (results, stopped) = {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             (state.results.clone(), state.stopped)
         };
-        let has_log = !self.state.lock().unwrap().log.is_empty();
+        let has_log = !self.state.lock().log.is_empty();
         if has_log || running {
             widgets::card(ui, palette, margin, |ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
@@ -801,7 +802,7 @@ impl View for GetAssetsView {
                         (ResultKind::Success, t("The assets are downloaded"))
                     };
                     widgets::result_banner(ui, palette, kind, heading, &lines.join("\n"));
-                    let last_retro = self.state.lock().unwrap().last_retro;
+                    let last_retro = self.state.lock().last_retro;
                     ui.horizontal(|ui| {
                         if last_retro {
                             if ui.add(widgets::primary_button("Asset Explorer")).on_hover_text(t("Upload the custom folder by hand.")).clicked() {
@@ -810,7 +811,7 @@ impl View for GetAssetsView {
                         } else if ui.add(widgets::primary_button(t("Deploy to the server"))).on_hover_text(t("Addons → Deploy Assets copies the folder to the server.")).clicked() {
                             shared.request(Request::Go(Page::DeployAssets));
                         }
-                        let shown = if last_retro { self.state.lock().unwrap().last_root.clone() } else { folder.clone() };
+                        let shown = if last_retro { self.state.lock().last_root.clone() } else { folder.clone() };
                         if ui.add(widgets::secondary_button(t("Open the folder"))).clicked() {
                             open_folder(&habbo_assets::gamedata_folder(&shown));
                         }
@@ -819,13 +820,13 @@ impl View for GetAssetsView {
                         }
                     });
                 }
-                let mut state = self.state.lock().unwrap();
+                let mut state = self.state.lock();
                 log_view::show(ui, "get_assets_log", &mut state.log, Some(300.0), t("The log appears here."));
             });
         }
 
         if done {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.results.clear();
             state.log.clear();
             state.stopped = false;
@@ -837,6 +838,6 @@ impl View for GetAssetsView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().running
+        self.state.lock().running
     }
 }

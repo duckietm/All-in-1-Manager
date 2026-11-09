@@ -1669,7 +1669,7 @@ pub fn database_script() -> String {
 /// The hotel database the emulator on the server uses.
 pub async fn hotel_database(server: &dyn Server) -> Result<String> {
     let result = server.run_as_root(&database_script()).await?;
-    let name = result.output.lines().map(str::trim).filter(|l| !l.is_empty()).last().unwrap_or("").to_string();
+    let name = result.output.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("").to_string();
     if !result.succeeded() || name.is_empty() {
         return Err(ServerError("Could not find the hotel database in the emulator's config.ini.".into()).into());
     }

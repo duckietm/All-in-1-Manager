@@ -60,7 +60,7 @@ pub struct WhitelistQuestion<'a> {
 
 pub async fn ask_whitelist(state: &SharedState, ctx: &egui::Context, question: WhitelistQuestion<'_>) -> Option<Changes> {
     let (sender, receiver) = oneshot::channel();
-    state.lock().unwrap().modal = Some(Modal::Whitelist(WhitelistModal {
+    state.lock().modal = Some(Modal::Whitelist(WhitelistModal {
         title: question.title.to_string(),
         status: question.status,
         text: question.current.join("\n"),
@@ -86,7 +86,7 @@ pub async fn ask_password(
     minimum: usize,
 ) -> Option<String> {
     let (sender, receiver) = oneshot::channel();
-    state.lock().unwrap().modal = Some(Modal::Password(PasswordModal {
+    state.lock().modal = Some(Modal::Password(PasswordModal {
         window_title: window_title.into(),
         heading: heading.into(),
         message: message.into(),
@@ -142,13 +142,13 @@ pub fn password_problem(password: &str, again: &str, confirm: bool, minimum: usi
 
 /// Draws the open dialog, if any.
 pub fn show(ctx: &egui::Context, palette: &Palette, state: &SharedState) {
-    let Some(mut modal) = state.lock().unwrap().modal.take() else { return };
+    let Some(mut modal) = state.lock().modal.take() else { return };
     let open = match &mut modal {
         Modal::Whitelist(dialog) => show_whitelist(ctx, palette, dialog),
         Modal::Password(dialog) => show_password(ctx, palette, dialog),
     };
     if open {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         if s.modal.is_none() {
             s.modal = Some(modal);
         }

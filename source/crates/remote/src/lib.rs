@@ -5,6 +5,7 @@
 pub mod recorder;
 pub mod script;
 pub mod server;
+pub mod known_hosts;
 pub mod ssh;
 
 pub mod asset_sync;

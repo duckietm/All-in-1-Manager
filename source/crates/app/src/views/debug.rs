@@ -7,11 +7,12 @@
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use aio_remote::server_tools::{debug_log_sources, DebugLogSource};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::gui::log_view::{self, LogLines};
@@ -78,7 +79,7 @@ impl DebugView {
         self.source = index.min(self.sources.len().saturating_sub(1));
         self.all.clear();
         self.shown.clear();
-        *self.incoming.lock().unwrap() = Incoming::default();
+        *self.incoming.lock() = Incoming::default();
         self.set_paused(false);
         let Some(server) = shared.session() else {
             self.show_state(t("Not connected: log in to follow the logs.").to_string(), true);
@@ -120,7 +121,7 @@ impl DebugView {
                 let incoming = incoming.clone();
                 // Lines arrive on the SSH task; the page adds them in batches, five times a second.
                 move |line: &str| {
-                    incoming.lock().unwrap().lines.push(line.to_string());
+                    incoming.lock().lines.push(line.to_string());
                     ctx.request_repaint_after(Duration::from_millis(200));
                 }
             };
@@ -132,7 +133,7 @@ impl DebugView {
                 Ok(()) => t("The log stopped on the server.").to_string(),
                 Err(error) => tf("Stopped: {message}", &[("message", &error.to_string())]),
             };
-            incoming.lock().unwrap().ended = Some((generation, ended));
+            incoming.lock().ended = Some((generation, ended));
         });
     }
 
@@ -145,7 +146,7 @@ impl DebugView {
 
     fn flush(&mut self) {
         let (batch, ended) = {
-            let mut incoming = self.incoming.lock().unwrap();
+            let mut incoming = self.incoming.lock();
             (std::mem::take(&mut incoming.lines), incoming.ended.take())
         };
         if !batch.is_empty() {

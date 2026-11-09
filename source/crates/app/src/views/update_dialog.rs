@@ -2,9 +2,10 @@
 //! ShowNewerVersionAsync): what is new, then Update and restart or Later. The download replaces the running program,
 //! which then starts again by itself; after Later (or when there is nothing to update) the login opens.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::login::LoginOpener;
 use crate::gui::dialogs::Choice;
@@ -93,7 +94,7 @@ async fn show_newer_version(shared: &Shared, latest: &str) {
 /// Draws the question; true once it is closed (Later, or Close after a failed download).
 pub(crate) fn show(ctx: &egui::Context, shared: &Shared, prompt: &mut UpdatePrompt) -> bool {
     let palette = Palette::current(ctx);
-    let state = prompt.state.lock().unwrap().clone();
+    let state = prompt.state.lock().clone();
     let busy = matches!(state, Download::Running { .. } | Download::Done);
     // Closing the window while the download runs would leave it half done.
     if busy && ctx.input(|i| i.viewport().close_requested()) && state != Download::Done {
@@ -126,12 +127,12 @@ pub(crate) fn show(ctx: &egui::Context, shared: &Shared, prompt: &mut UpdateProm
                     match &state {
                         Download::Asking => {}
                         Download::Running { done, total } => {
-                            let bar = if *total > 0 {
-                                egui::ProgressBar::new((*done as f32 / *total as f32).clamp(0.0, 1.0))
+                            if *total > 0 {
+                                let done = (*done as f32 / *total as f32).clamp(0.0, 1.0);
+                                ui.add(egui::ProgressBar::new(done).desired_height(6.0).fill(Fixed::brand()));
                             } else {
-                                egui::ProgressBar::new(0.0).animate(true)
-                            };
-                            ui.add(bar.desired_height(6.0).fill(Fixed::brand()));
+                                widgets::indeterminate_bar(ui, 6.0, Fixed::brand());
+                            }
                             let status = if *done == 0 && *total == 0 {
                                 tf("Downloading {name} ...", &[("name", update::ASSET_NAME)])
                             } else {
@@ -172,7 +173,7 @@ pub(crate) fn show(ctx: &egui::Context, shared: &Shared, prompt: &mut UpdateProm
 }
 
 fn start_download(shared: &Shared, prompt: &UpdatePrompt) {
-    *prompt.state.lock().unwrap() = Download::Running { done: 0, total: 0 };
+    *prompt.state.lock() = Download::Running { done: 0, total: 0 };
     let state = prompt.state.clone();
     let release = prompt.release.clone();
     let ctx = shared.ctx.clone();
@@ -180,7 +181,7 @@ fn start_download(shared: &Shared, prompt: &UpdatePrompt) {
         let progress_state = state.clone();
         let progress_ctx = ctx.clone();
         let result = update::download_and_replace(&release, move |done, total| {
-            *progress_state.lock().unwrap() = Download::Running { done, total };
+            *progress_state.lock() = Download::Running { done, total };
             progress_ctx.request_repaint();
         })
         .await;
@@ -190,7 +191,7 @@ fn start_download(shared: &Shared, prompt: &UpdatePrompt) {
         let next = match result {
             Err(error) => failed(format!("{error:#}")),
             Ok(_) => {
-                *state.lock().unwrap() = Download::Done;
+                *state.lock() = Download::Done;
                 ctx.request_repaint();
                 // Let the last line appear before the window goes away.
                 tokio::time::sleep(std::time::Duration::from_millis(400)).await;
@@ -202,7 +203,7 @@ fn start_download(shared: &Shared, prompt: &UpdatePrompt) {
                 }
             }
         };
-        *state.lock().unwrap() = next;
+        *state.lock() = next;
     });
 }
 

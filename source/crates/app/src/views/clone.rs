@@ -1,12 +1,13 @@
 //! Clones a hotel repository on the server, or updates an existing clone. (CloneStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::settings::{self, InstallerSettings, BRANCH_CHOICES};
 use aio_remote::git_clone::{self, CloneTargetKind};
 use aio_remote::{emulator, fail, octane, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::dialogs::Choice;
 use crate::gui::icons::Icon;
@@ -97,7 +98,7 @@ impl CloneStep {
     /// Puts the saved branch in the list; the Settings page may have changed it since this step was made.
     fn show_saved_branch(&self) {
         let branch = settings::choice_for(&InstallerSettings::load().branch_for(self.repository)).branch;
-        self.options.lock().unwrap().branch = branch.to_string();
+        self.options.lock().branch = branch.to_string();
     }
 
     /// The chosen branch stays chosen for this repository, also on the Settings page and next time.
@@ -108,11 +109,11 @@ impl CloneStep {
     }
 
     fn selected_branch(&self) -> String {
-        self.options.lock().unwrap().branch.clone()
+        self.options.lock().branch.clone()
     }
 
     fn set_cloned_branch(&self, branch: Option<String>) {
-        self.options.lock().unwrap().cloned_branch = branch;
+        self.options.lock().cloned_branch = branch;
     }
 }
 
@@ -160,7 +161,7 @@ impl InstallStep for CloneStep {
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
         let (mut branch, cloned) = {
-            let options = self.options.lock().unwrap();
+            let options = self.options.lock();
             (options.branch.clone(), options.cloned_branch.clone())
         };
         ui.add_space(8.0);
@@ -176,7 +177,7 @@ impl InstallStep for CloneStep {
                 }
             });
         if branch != before {
-            self.options.lock().unwrap().branch = branch.clone();
+            self.options.lock().branch = branch.clone();
             self.branch_chosen(&branch);
         }
         if let Some(note) = branch_note(&(self.target)(), cloned.as_deref(), &branch) {

@@ -338,20 +338,47 @@ impl Ctl {
         });
     }
 
-    /// Fetches these files under the server's c_images for their preview, one after the other.
-    async fn fetch_front_images(self, files: Vec<String>) {
-        let Some(server) = self.shared.session() else { return };
+    /// Fetches the front page images that are on screen, a few at a time over one SFTP session, until none is
+    /// wanted; what was scrolled past before its turn is left out.
+    async fn fetch_front_images(self) {
+        let Some(server) = self.shared.session() else {
+            self.lock().front.fetching = false;
+            return;
+        };
         let generation = self.lock().generation;
         let folder = format!("{}/c_images", aio_remote::octane::gamedata());
-        for file in files {
-            let bytes = match front_page::clean_path(&file) {
-                Some(path) => server.read_file(&format!("{folder}/{path}"), 8 << 20).await.ok().flatten().map(Arc::new),
-                None => None,
+        let temp = std::env::temp_dir().join(format!("all-in-1-front-page-{}", std::process::id()));
+        loop {
+            let batch: Vec<String> = {
+                let mut s = self.lock();
+                if s.generation != generation {
+                    return;
+                }
+                let mut batch: Vec<String> = Vec::new();
+                for file in s.front.wanted.iter() {
+                    if front_page::clean_path(file).is_some() && !s.front.fetched.contains_key(file) && !batch.contains(file) && batch.len() < 12 {
+                        batch.push(file.clone());
+                    }
+                }
+                if batch.is_empty() {
+                    s.front.fetching = false;
+                    return;
+                }
+                batch
             };
+            let pairs: Vec<(String, std::path::PathBuf)> = batch.iter().map(|f| (format!("{folder}/{f}"), temp.join(f))).collect();
+            let together = server.download_files(&pairs, &|_| {}, tokio_util::sync::CancellationToken::new()).await.is_ok();
+            let mut results = Vec::new();
+            for (file, (remote, local)) in batch.iter().zip(&pairs) {
+                let bytes = if together { std::fs::read(local).ok() } else { server.read_file(remote, 8 << 20).await.ok().flatten() };
+                let _ = std::fs::remove_file(local);
+                results.push((file.clone(), bytes.map(Arc::new)));
+            }
             if self
                 .with(generation, |s| {
-                    s.front.fetching.remove(&file);
-                    s.front.fetched.insert(file.clone(), bytes);
+                    for (file, bytes) in results {
+                        s.front.fetched.insert(file, bytes);
+                    }
                 })
                 .is_none()
             {
@@ -908,7 +935,7 @@ enum Action {
     LoadFeatured,
     SaveFeatured,
     ListFrontImages,
-    FetchFrontImages(Vec<String>),
+    FetchFrontImages,
     LoadLimited,
     ChangeLimited(i64, LimitedAction),
     LoadVouchers,
@@ -942,7 +969,7 @@ fn small(text: &str) -> egui::Button<'static> {
 impl View for CatalogManagerView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.connect_if_needed(shared);
-        self.images.new_frame();
+        self.images.new_frame(ui.ctx());
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
@@ -968,7 +995,7 @@ impl View for CatalogManagerView {
                 Action::LoadFeatured => ctl.spawn(|c| async move { c.load_featured().await }),
                 Action::SaveFeatured => ctl.spawn(|c| c.save_featured()),
                 Action::ListFrontImages => ctl.spawn(|c| c.list_front_images()),
-                Action::FetchFrontImages(files) => ctl.spawn(move |c| c.fetch_front_images(files)),
+                Action::FetchFrontImages => ctl.spawn(|c| c.fetch_front_images()),
                 Action::LoadLimited => ctl.spawn(|c| async move { c.load_limited().await }),
                 Action::ChangeLimited(offer_id, action) => ctl.spawn(move |c| c.change_limited(offer_id, action)),
                 Action::LoadVouchers => ctl.spawn(|c| async move { c.load_vouchers(None).await }),

@@ -16,6 +16,7 @@ use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
 use super::sql_editor::login::{Login, Prompt};
 use super::sql_editor::text;
 use crate::gui::dialogs::Choice;
+use crate::gui::image_loader::{ImageLoader, Source, State as LoadState};
 use crate::gui::theme::Palette;
 use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
 use crate::i18n::{t, tf};
@@ -160,7 +161,10 @@ struct State {
     catalogue_files: Option<Vec<String>>,
     listing: bool,
     fetched: HashMap<String, Option<Arc<Vec<u8>>>>,
-    fetching: HashSet<String>,
+    /// The server images on screen this frame that still have to be fetched (newest view first), and whether the
+    /// fetcher runs: it takes them from here, so what was scrolled past is never fetched.
+    fetch_wanted: Vec<String>,
+    fetch_running: bool,
     /// The columns of each table edited so far (items_base, catalog_items).
     columns: HashMap<&'static str, Vec<FurniColumn>>,
     login_visible: bool,
@@ -405,19 +409,19 @@ enum Action {
     BuilderBuild,
     SearchFurni(String),
     TranslateTexts,
-    FetchFiles(Vec<String>),
+    FetchFiles,
     Undo,
     Publish,
 }
 
 /// The icons on this computer: the furni icons (`icons/<class>_icon.png`) of Habbo's download and the retro profiles,
-/// and the catalogue's page icons (`c_images/catalogue/icon_<n>.png`). Read when first shown, at most a few per frame.
+/// and the catalogue's page icons (`c_images/catalogue/icon_<n>.png`). Read and decoded in the background
+/// ([`ImageLoader`]) when first shown; until then a placeholder.
 #[derive(Default)]
 struct Images {
     icon_folders: Vec<PathBuf>,
     catalogue_folders: Vec<PathBuf>,
-    loaded: HashMap<String, Option<egui::TextureHandle>>,
-    read_this_frame: usize,
+    loader: ImageLoader,
     /// The files of the local c_images/catalogue folders (read once, for the picker).
     local_catalogue: Option<Vec<String>>,
 }
@@ -435,32 +439,11 @@ impl Images {
         }
     }
 
-    fn read(&mut self, ctx: &egui::Context, key: String, paths: Vec<PathBuf>) -> Option<egui::TextureHandle> {
-        if let Some(found) = self.loaded.get(&key) {
-            return found.clone();
-        }
-        if self.read_this_frame >= 24 {
-            ctx.request_repaint();
-            return None;
-        }
-        self.read_this_frame += 1;
-        let texture = paths.iter().find_map(|path| {
-            let bytes = std::fs::read(path).ok()?;
-            let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
-            let size = [image.width() as usize, image.height() as usize];
-            let color = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
-            // Pixel art: no smoothing when it is drawn larger.
-            Some(ctx.load_texture(&key, color, egui::TextureOptions::NEAREST))
-        });
-        self.loaded.insert(key, texture.clone());
-        texture
-    }
-
     /// A furni's icon by its items_base name ("rare_dragonlamp*4" -> rare_dragonlamp_4_icon.png).
-    fn furni(&mut self, ctx: &egui::Context, item_name: &str) -> Option<egui::TextureHandle> {
+    fn furni(&mut self, _ctx: &egui::Context, item_name: &str) -> Option<egui::TextureHandle> {
         let file = format!("{}_icon.png", item_name.trim().replace('*', "_"));
-        let paths = self.icon_folders.iter().flat_map(|f| [f.join(&file), f.join(file.to_lowercase())]).collect();
-        self.read(ctx, format!("furni:{file}"), paths)
+        let folders = &self.icon_folders;
+        self.loader.get(&format!("furni:{file}"), || Source::Files(folders.iter().flat_map(|f| [f.join(&file), f.join(file.to_lowercase())]).collect()))
     }
 
     /// The image files of the local c_images/catalogue folders.
@@ -481,36 +464,35 @@ impl Images {
     }
 
     /// A file of c_images/catalogue: from this computer, else from what was fetched from the server. The second value
-    /// is true when it still has to be fetched.
-    fn catalogue_file(&mut self, ctx: &egui::Context, file: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
-        let paths: Vec<PathBuf> = self.catalogue_folders.iter().map(|f| f.join(file)).collect();
-        if paths.iter().any(|p| p.is_file()) {
-            return (self.read(ctx, format!("page:{file}"), paths), false);
+    /// is true when it still has to be fetched (it is not on this computer).
+    fn catalogue_file(&mut self, _ctx: &egui::Context, file: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
+        let local = format!("page:{file}");
+        match self.loader.state(&local) {
+            LoadState::Ready(texture) => return (Some(texture), false),
+            LoadState::Pending => return (None, false),
+            LoadState::Unknown => {
+                let folders = &self.catalogue_folders;
+                self.loader.get(&local, || Source::Files(folders.iter().map(|f| f.join(file)).collect()));
+                return (None, false);
+            }
+            // Not on this computer: the server's copy.
+            LoadState::Missing => {}
         }
         match fetched.get(file) {
             None => (None, true),
             Some(None) => (None, false),
             Some(Some(bytes)) => {
-                let key = format!("server:{file}");
-                if let Some(found) = self.loaded.get(&key) {
-                    return (found.clone(), false);
-                }
-                let texture = image::load_from_memory(bytes).ok().map(|image| {
-                    let image = image.to_rgba8();
-                    let color = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
-                    ctx.load_texture(&key, color, egui::TextureOptions::NEAREST)
-                });
-                self.loaded.insert(key, texture.clone());
-                (texture, false)
+                let bytes = bytes.clone();
+                (self.loader.get(&format!("server:{file}"), || Source::Bytes(bytes)), false)
             }
         }
     }
 
     /// A page icon by its number (icon_image).
-    fn page(&mut self, ctx: &egui::Context, number: i64) -> Option<egui::TextureHandle> {
+    fn page(&mut self, _ctx: &egui::Context, number: i64) -> Option<egui::TextureHandle> {
         let file = format!("icon_{number}.png");
-        let paths = self.catalogue_folders.iter().map(|f| f.join(&file)).collect();
-        self.read(ctx, format!("page:{file}"), paths)
+        let folders = &self.catalogue_folders;
+        self.loader.get(&format!("page:{file}"), || Source::Files(folders.iter().map(|f| f.join(&file)).collect()))
     }
 }
 
@@ -1010,25 +992,54 @@ impl Ctl {
         });
     }
 
-    /// Fetches these files of the server's c_images/catalogue for their preview, one after the other.
-    async fn fetch_files(self, files: Vec<String>) {
-        let Some(server) = self.shared.session() else { return };
+    /// Fetches the server images that are on screen, a few at a time over one SFTP session, until none is wanted.
+    /// What was scrolled past before its turn is left out.
+    async fn fetch_files(self) {
+        let Some(server) = self.shared.session() else {
+            self.lock().fetch_running = false;
+            return;
+        };
         let generation = self.lock().generation;
         let folder = format!("{}/c_images/catalogue", aio_remote::octane::gamedata());
         let temp = std::env::temp_dir().join(format!("all-in-1-catalogue-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&temp);
-        for file in files {
-            let local = temp.join(&file);
-            let bytes = match server.download(&format!("{folder}/{file}"), &local, &|_| {}).await {
-                Ok(()) => std::fs::read(&local).ok().map(Arc::new),
-                Err(_) => None,
+        loop {
+            let batch: Vec<String> = {
+                let mut s = self.lock();
+                if s.generation != generation {
+                    return;
+                }
+                let mut batch: Vec<String> = Vec::new();
+                for file in s.fetch_wanted.iter() {
+                    if !s.fetched.contains_key(file) && !batch.contains(file) && batch.len() < 12 {
+                        batch.push(file.clone());
+                    }
+                }
+                if batch.is_empty() {
+                    s.fetch_running = false;
+                    return;
+                }
+                batch
             };
-            let _ = std::fs::remove_file(&local);
-            if self.with(generation, |s| {
-                s.fetching.remove(&file);
-                s.fetched.insert(file.clone(), bytes);
-            })
-            .is_none()
+            let pairs: Vec<(String, PathBuf)> = batch.iter().map(|f| (format!("{folder}/{f}"), temp.join(f))).collect();
+            let together = server.download_files(&pairs, &|_| {}, tokio_util::sync::CancellationToken::new()).await.is_ok();
+            let mut results = Vec::new();
+            for (file, (remote, local)) in batch.iter().zip(&pairs) {
+                let bytes = if together {
+                    std::fs::read(local).ok()
+                } else {
+                    // One missing file stops a batch: then one by one.
+                    server.read_file(remote, 8 << 20).await.ok().flatten()
+                };
+                let _ = std::fs::remove_file(local);
+                results.push((file.clone(), bytes.map(Arc::new)));
+            }
+            if self
+                .with(generation, |s| {
+                    for (file, bytes) in results {
+                        s.fetched.insert(file, bytes);
+                    }
+                })
+                .is_none()
             {
                 return;
             }
@@ -1366,14 +1377,20 @@ impl View for CatalogExplorerView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.connect_if_needed(shared);
         game::set_builders(self.state.lock().unwrap().cat == Catalogue::Builders);
-        self.images.read_this_frame = 0;
+        self.images.loader.poll(ui.ctx());
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
             let mut guard = self.state.lock().unwrap();
             let s = &mut *guard;
+            // The server images on screen this frame: the fetcher takes them from here.
+            s.fetch_wanted.clear();
             editor_window(&ctx, palette, s, &mut self.images, &mut actions);
-            picker_window(&ctx, palette, s, &mut self.images, &mut actions);
+            picker_window(&ctx, palette, s, &mut self.images);
+            if !s.fetch_wanted.is_empty() && !s.fetch_running && !s.sample {
+                s.fetch_running = true;
+                actions.push(Action::FetchFiles);
+            }
             html_window(&ctx, palette, s);
             translator_window(&ctx, palette, s, &mut actions);
             builder_window(&ctx, palette, s, &mut actions);
@@ -1470,7 +1487,7 @@ impl View for CatalogExplorerView {
                 Action::BuilderBuild => ctl.spawn(|c| c.builder_build()),
                 Action::SearchFurni(text) => ctl.spawn(move |c| async move { c.search_furni(text).await }),
                 Action::TranslateTexts => ctl.spawn(|c| c.translate_texts()),
-                Action::FetchFiles(files) => ctl.spawn(move |c| c.fetch_files(files)),
+                Action::FetchFiles => ctl.spawn(|c| c.fetch_files()),
                 Action::Undo => ctl.spawn(|c| c.undo()),
                 Action::Publish => ctl.spawn(|c| c.publish()),
             }
@@ -1892,6 +1909,10 @@ fn content(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut I
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for offer in row {
                         let (rect, response) = ui.allocate_exact_size(egui::vec2(TILE, TILE), Sense::click_and_drag());
+                        // Only the tiles on screen are drawn, and only their icons are loaded.
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
                         let selected = s.panes[index].selected.contains(&offer.id);
                         let painter = ui.painter();
                         painter.rect_filled(rect, CornerRadius::same(6), if selected { game::tile_selected() } else { game::TILE });
@@ -2012,6 +2033,10 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for furni in row {
                         let (rect, response) = ui.allocate_exact_size(egui::vec2(TILE, TILE), Sense::click_and_drag());
+                        // Only the tiles on screen are drawn, and only their icons are loaded.
+                        if !ui.is_rect_visible(rect) {
+                            continue;
+                        }
                         let selected = s.panes[index].furni_selected.contains(&furni.id);
                         let painter = ui.painter();
                         painter.rect_filled(rect, CornerRadius::same(6), if selected { game::tile_selected() } else { game::TILE });
@@ -2056,7 +2081,6 @@ fn unoffered(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mut
 /// The furni editor: every items_base column of one furni, the flags as ticks, the rest in the table's order.
 fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images, actions: &mut Vec<Action>) {
     let fetched = &s.fetched;
-    let fetching = &s.fetching;
     let mut want: Vec<String> = Vec::new();
     let mut open_picker: Option<(usize, bool)> = None;
     let mut open_html: Option<usize> = None;
@@ -2195,7 +2219,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                             let mut texture = None;
                             for file in &files {
                                 let (found, fetch) = images.catalogue_file(ctx, file, fetched);
-                                if fetch && !fetching.contains(file) {
+                                if fetch {
                                     want.push(file.clone());
                                 }
                                 if found.is_some() {
@@ -2291,9 +2315,8 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
             }
         });
     });
-    if !want.is_empty() && !s.sample {
-        s.fetching.extend(want.iter().cloned());
-        actions.push(Action::FetchFiles(want));
+    if !s.sample {
+        s.fetch_wanted.extend(want);
     }
     if open_translator {
         let present: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
@@ -2331,7 +2354,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
 
 /// The image picker over the editor: the page icons (icon_image) or the catalogue images (page_headline ...) of this
 /// computer and the server, with a search; a click writes the choice in the field.
-fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images, actions: &mut Vec<Action>) {
+fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Images) {
     let Some(picker) = s.picker.as_mut() else { return };
     let Some(editor) = s.editor.as_mut() else {
         s.picker = None;
@@ -2371,12 +2394,16 @@ fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
             ui.label(RichText::new(t("Reading the server's catalogue images ...")).size(12.0).color(palette.muted));
         }
         let (cell, label_height) = if icon { (egui::vec2(60.0, 44.0), 14.0) } else { (egui::vec2(228.0, 84.0), 16.0) };
-        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.55).auto_shrink([false, true]).show(ui, |ui| {
-            if shown.is_empty() && !s.listing {
-                ui.label(RichText::new(t("No images found.")).color(palette.muted));
-            }
-            let columns = ((ui.available_width() + 6.0) / (cell.x + 6.0)).floor().max(1.0) as usize;
-            for row in shown.chunks(columns) {
+        if shown.is_empty() && !s.listing {
+            ui.label(RichText::new(t("No images found.")).color(palette.muted));
+        }
+        // Only the rows on screen are laid out: a server can have thousands of catalogue images.
+        let columns = ((ui.available_width() - 14.0 + 6.0) / (cell.x + 6.0)).floor().max(1.0) as usize;
+        let rows: Vec<&[String]> = shown.chunks(columns).collect();
+        let row_height = cell.y + label_height + 4.0;
+        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.55).auto_shrink([false, true]).show_rows(ui, row_height, rows.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for row in rows[range].iter().copied() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for file in row {
@@ -2393,7 +2420,7 @@ fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                         // Previews only of what is on screen: the rest is fetched when scrolled to.
                         if ui.is_rect_visible(rect) {
                             let (texture, fetch) = images.catalogue_file(ctx, file, &s.fetched);
-                            if fetch && !s.fetching.contains(file) && want.len() < 24 {
+                            if fetch {
                                 want.push(file.clone());
                             }
                             match texture {
@@ -2431,9 +2458,8 @@ fn picker_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
         }
         close = true;
     }
-    if !want.is_empty() && !s.sample {
-        s.fetching.extend(want.iter().cloned());
-        actions.push(Action::FetchFiles(want));
+    if !s.sample {
+        s.fetch_wanted.extend(want);
     }
     if close {
         s.picker = None;

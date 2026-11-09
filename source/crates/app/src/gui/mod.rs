@@ -9,6 +9,7 @@ pub mod dialogs;
 pub mod dry_run;
 pub mod flags;
 pub mod icons;
+pub mod image_loader;
 pub mod language_picker;
 pub mod log_view;
 pub mod scenes;

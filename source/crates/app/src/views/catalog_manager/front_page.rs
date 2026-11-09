@@ -3,7 +3,7 @@
 //! and the voucher box under the list. Click a tile to edit it, drag one onto another to swap their places, and
 //! **Choose ...** picks its image from the catalogue images of this computer and the server.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -12,6 +12,7 @@ use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
 
 use super::{small, Action, FeaturedRow, State};
 use crate::gui::theme::Palette;
+use crate::gui::image_loader::{ImageLoader, Source, State as LoadState};
 use crate::gui::widgets;
 use crate::i18n::{t, tf};
 
@@ -52,9 +53,12 @@ pub(super) struct FrontState {
     /// The image files under the server's c_images (None until read), and whether that is being read.
     pub server_files: Option<Vec<String>>,
     pub listing: bool,
-    /// Files fetched from the server for their preview (None: could not be), and those on their way.
+    /// Files fetched from the server for their preview (None: could not be); the ones on screen this frame that
+    /// still have to be fetched, and whether the fetcher runs (it takes them from here, so what was scrolled past is
+    /// never fetched).
     pub fetched: HashMap<String, Option<Arc<Vec<u8>>>>,
-    pub fetching: HashSet<String>,
+    pub wanted: Vec<String>,
+    pub fetching: bool,
     pub header: Option<FrontHeader>,
     /// The screenshot's sample: nothing to fetch.
     pub sample: bool,
@@ -108,13 +112,13 @@ fn is_promo(path: &str) -> bool {
     lower.contains("feature") || lower.starts_with("web_promo") || lower.contains("promo")
 }
 
-/// The images of this computer's c_images folders (Habbo assets and the retro profiles), read when first shown.
+/// The images of this computer's c_images folders (Habbo assets and the retro profiles), read and decoded in the
+/// background ([`ImageLoader`]) when first shown.
 #[derive(Default)]
 pub(super) struct FrontImages {
     roots: Vec<PathBuf>,
-    loaded: HashMap<String, Option<egui::TextureHandle>>,
+    loader: ImageLoader,
     local: Option<Vec<String>>,
-    read_this_frame: usize,
 }
 
 impl FrontImages {
@@ -126,52 +130,39 @@ impl FrontImages {
         FrontImages { roots: gamedata.iter().map(|g| g.join("c_images")).collect(), ..FrontImages::default() }
     }
 
-    pub fn new_frame(&mut self) {
-        self.read_this_frame = 0;
-    }
-
-    fn texture_from(ctx: &egui::Context, key: &str, bytes: &[u8]) -> Option<egui::TextureHandle> {
-        let image = image::load_from_memory(bytes).ok()?.to_rgba8();
-        let color = egui::ColorImage::from_rgba_unmultiplied([image.width() as usize, image.height() as usize], image.as_raw());
-        // Pixel art: no smoothing when it is drawn larger.
-        Some(ctx.load_texture(key, color, egui::TextureOptions::NEAREST))
+    /// Takes the images loaded in the background. Once per frame, before drawing.
+    pub fn new_frame(&mut self, ctx: &egui::Context) {
+        self.loader.poll(ctx);
     }
 
     /// An image under c_images: from this computer, else what was fetched from the server. The second value is true
-    /// when it still has to be fetched.
-    fn image(&mut self, ctx: &egui::Context, path: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
+    /// when it still has to be fetched (it is not on this computer).
+    fn image(&mut self, _ctx: &egui::Context, path: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
         let Some(path) = clean_path(path) else { return (None, false) };
-        let local: Vec<PathBuf> = self.roots.iter().map(|r| r.join(&path)).filter(|p| p.is_file()).collect();
-        let key = if local.is_empty() { format!("server:{path}") } else { format!("local:{path}") };
-        if let Some(found) = self.loaded.get(&key) {
-            return (found.clone(), false);
+        let local = format!("local:{path}");
+        match self.loader.state(&local) {
+            LoadState::Ready(texture) => return (Some(texture), false),
+            LoadState::Pending => return (None, false),
+            LoadState::Unknown => {
+                let roots = &self.roots;
+                self.loader.get(&local, || Source::Files(roots.iter().map(|r| r.join(&path)).collect()));
+                return (None, false);
+            }
+            LoadState::Missing => {}
         }
-        if local.is_empty() {
-            match fetched.get(&path) {
-                None => return (None, true),
-                Some(None) => {
-                    self.loaded.insert(key, None);
-                    return (None, false);
-                }
-                Some(Some(_)) => {}
+        match fetched.get(&path) {
+            None => (None, true),
+            Some(None) => (None, false),
+            Some(Some(bytes)) => {
+                let bytes = bytes.clone();
+                (self.loader.get(&format!("server:{path}"), || Source::Bytes(bytes)), false)
             }
         }
-        if self.read_this_frame >= 12 {
-            ctx.request_repaint();
-            return (None, false);
-        }
-        self.read_this_frame += 1;
-        let texture = match local.first() {
-            Some(file) => std::fs::read(file).ok().and_then(|bytes| Self::texture_from(ctx, &key, &bytes)),
-            None => fetched.get(&path).cloned().flatten().and_then(|bytes| Self::texture_from(ctx, &key, &bytes)),
-        };
-        self.loaded.insert(key, texture.clone());
-        (texture, false)
     }
 
     /// Forgets what was read, so a reload shows changed files.
     pub fn clear(&mut self) {
-        self.loaded.clear();
+        self.loader.clear();
         self.local = None;
     }
 
@@ -346,13 +337,11 @@ pub(super) fn show(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: 
         }
     }
     picker(&ctx, palette, &mut s.front, rows, images, &mut want);
-    if !want.is_empty() && !s.front.sample {
-        want.retain(|f| !s.front.fetching.contains(f));
-        want.dedup();
-        if !want.is_empty() {
-            s.front.fetching.extend(want.iter().cloned());
-            actions.push(Action::FetchFrontImages(want));
-        }
+    want.dedup();
+    s.front.wanted = want;
+    if !s.front.wanted.is_empty() && !s.front.fetching && !s.front.sample {
+        s.front.fetching = true;
+        actions.push(Action::FetchFrontImages);
     }
 }
 
@@ -501,7 +490,7 @@ fn tile(
     match texture {
         Some(texture) => cover(&painter, &texture, rect),
         None => {
-            let waiting = clean_path(path).is_some_and(|p| front.fetching.contains(&p) || !front.fetched.contains_key(&p)) && !front.sample;
+            let waiting = clean_path(path).is_some_and(|p| !front.fetched.contains_key(&p)) && !front.sample;
             let text = if path.is_empty() {
                 t("No image").to_string()
             } else if waiting {
@@ -755,12 +744,15 @@ fn picker(ctx: &egui::Context, palette: &Palette, front: &mut FrontState, rows: 
         }
         let cell = egui::vec2(178.0, 120.0);
         let label_height = 16.0;
-        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.6).auto_shrink([false, true]).show(ui, |ui| {
-            if shown.is_empty() && !front.listing {
-                ui.label(RichText::new(t("No images found.")).color(palette.muted));
-            }
-            let columns = ((ui.available_width() + 6.0) / (cell.x + 6.0)).floor().max(1.0) as usize;
-            for chunk in shown.chunks(columns) {
+        if shown.is_empty() && !front.listing {
+            ui.label(RichText::new(t("No images found.")).color(palette.muted));
+        }
+        // Only the rows on screen are laid out.
+        let columns = ((ui.available_width() - 14.0 + 6.0) / (cell.x + 6.0)).floor().max(1.0) as usize;
+        let rows: Vec<&[String]> = shown.chunks(columns).collect();
+        egui::ScrollArea::vertical().max_height(ctx.screen_rect().height() * 0.6).auto_shrink([false, true]).show_rows(ui, cell.y + label_height + 4.0, rows.len(), |ui, range| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for chunk in rows[range].iter().copied() {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     for file in chunk {
@@ -776,7 +768,7 @@ fn picker(ctx: &egui::Context, palette: &Palette, front: &mut FrontState, rows: 
                         );
                         if ui.is_rect_visible(rect) {
                             let (texture, fetch) = images.image(ctx, file, &front.fetched);
-                            if fetch && want.len() < 24 {
+                            if fetch {
                                 want.push(file.clone());
                             }
                             match texture {

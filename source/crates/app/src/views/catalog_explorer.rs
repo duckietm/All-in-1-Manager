@@ -1377,7 +1377,7 @@ impl CatalogExplorerView {
 impl View for CatalogExplorerView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.connect_if_needed(shared);
-        game::set_builders(self.state.lock().unwrap().cat == Catalogue::Builders);
+        game::set_builders(self.state.lock().cat == Catalogue::Builders);
         self.images.loader.poll(ui.ctx());
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
@@ -1481,7 +1481,7 @@ impl View for CatalogExplorerView {
                 Action::DeleteOffers { ids, page } => ctl.spawn(move |c| c.delete_offers(ids, page)),
                 Action::SortByName(page) => ctl.spawn(move |c| c.sort_by_name(page)),
                 Action::OpenBuilder(parent) => {
-                    let mut s = self.state.lock().unwrap();
+                    let mut s = self.state.lock();
                     s.builder = Some(Builder { parent, caption: String::new(), prefix: String::new(), only_new: true, price: s.new_price, found: None });
                 }
                 Action::BuilderFind => ctl.spawn(|c| async move { c.builder_find().await }),
@@ -2210,10 +2210,11 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                                 ui.add(egui::TextEdit::singleline(&mut editor.values[i]).desired_width(width));
                             }
                         });
-                        if editor.table == "catalog_pages" && catalog_admin::PAGE_TEXT_COLUMNS.contains(&column.name.as_str()) {
-                            if ui.add_enabled(!editor.nulls[i], widgets::secondary_button(t("HTML ..."))).on_hover_text(t("A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.")).clicked() {
-                                open_html = Some(i);
-                            }
+                        if editor.table == "catalog_pages"
+                            && catalog_admin::PAGE_TEXT_COLUMNS.contains(&column.name.as_str())
+                            && ui.add_enabled(!editor.nulls[i], widgets::secondary_button(t("HTML ..."))).on_hover_text(t("A small HTML editor with a preview; only the HTML Octane and the gameserver both show is kept.")).clicked()
+                        {
+                            open_html = Some(i);
                         }
                         if let (true, Some(icon)) = (editor.table == "catalog_pages", image_column(&column.name)) {
                             // The image the value means, small, and the picker.
@@ -3146,6 +3147,70 @@ fn sample_place(s: &mut State, ids: &[i64], page: i64, before: Option<i64>, copy
     s.offers.insert(page, offers);
 }
 
+/// A broken rule of an offer or page row, in words.
+fn row_problem_text(problem: &catalog_admin::RowProblem) -> String {
+    use catalog_admin::RowProblem as P;
+    match problem {
+        P::OfferNameEmpty => t("The offer needs a name (catalog_name).").into(),
+        P::OfferItemIds => t("item_ids must be furni ids like 123 or 123:2, separated by ;.").into(),
+        P::OfferAmount(amount) => tf("The amount must be 1 to 10,000, not {amount}.", &[("amount", &amount.to_string())]),
+        P::OfferNegativePrice => t("Credits and points cannot be negative.").into(),
+        P::OfferLimitedBelowSold { size, sold } => tf("The limited size {size} is below the {sold} already sold.", &[("size", &size.to_string()), ("sold", &sold.to_string())]),
+        P::OfferPageMissing(page) => tf("Page {page} does not exist.", &[("page", &page.to_string())]),
+        P::OfferSongMissing => t("A song offer (SONG ...) needs a song_id and the soundtrack code in extradata.").into(),
+        P::PageCaptionEmpty => t("The page needs a caption.").into(),
+        P::PageMinRank(rank) => tf("min_rank must be at least 1, not {rank}.", &[("rank", &rank.to_string())]),
+        P::PageNegative(column) => tf("{column} cannot be negative.", &[("column", column)]),
+        P::PageParentMissing(page) => tf("The parent page {page} does not exist.", &[("page", &page.to_string())]),
+        P::PageParentLoop => t("A page cannot go under itself or one of its own pages.").into(),
+        P::PageIncludeInvalid(token) => tf("\"{token}\" in includes is not a page id: write page ids separated by ;.", &[("token", token)]),
+        P::PageIncludeMissing(page) => tf("includes names page {page}, which does not exist.", &[("page", &page.to_string())]),
+    }
+}
+
+/// The page text translator: a language and which texts, then Translate (Google Translate).
+fn translator_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    if s.editor.is_none() {
+        s.translator = None;
+    }
+    let Some(translator) = s.translator.as_mut() else { return };
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("catalog-translator")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(20, 16))).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(t("Translate texts")).size(16.0).strong());
+        ui.label(RichText::new(t("Google Translate puts the ticked texts in the language you choose (the language they are in now is found by itself). The HTML stays as it is. The texts become changes in the editor: check them, then Save.")).size(11.5).color(palette.muted));
+        ui.add_space(8.0);
+        let name = aio_remote::page_translate::LANGUAGES.iter().find(|(code, _)| *code == translator.language).map(|(_, n)| *n).unwrap_or("?");
+        egui::ComboBox::from_id_salt("catalog-translate-language").selected_text(name).width(240.0).height(320.0).show_ui(ui, |ui| {
+            for (code, name) in aio_remote::page_translate::LANGUAGES {
+                ui.selectable_value(&mut translator.language, code.to_string(), *name);
+            }
+        });
+        ui.add_space(6.0);
+        for (column, on) in translator.columns.iter_mut() {
+            ui.checkbox(on, column.as_str());
+        }
+        if let Some(error) = &translator.error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(error).size(12.0).color(palette.error_text));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let any = translator.columns.iter().any(|(_, on)| *on);
+            let label = if translator.busy { t("Translating ...") } else { t("Translate") };
+            if ui.add_enabled(any && !translator.busy && !s.sample, widgets::primary_button(label)).clicked() {
+                actions.push(Action::TranslateTexts);
+            }
+            if ui.add_enabled(!translator.busy, widgets::secondary_button(t("Cancel"))).clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        s.translator = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3216,69 +3281,5 @@ mod tests {
         let (page, offers) = frame(&ctx, at + egui::vec2(20.0, 20.0), Some(false), None);
         assert!(!offers, "the payload is a page, not offers");
         assert_eq!(page, Some(42), "the page arrives although the offers were asked for first");
-    }
-}
-
-/// A broken rule of an offer or page row, in words.
-fn row_problem_text(problem: &catalog_admin::RowProblem) -> String {
-    use catalog_admin::RowProblem as P;
-    match problem {
-        P::OfferNameEmpty => t("The offer needs a name (catalog_name).").into(),
-        P::OfferItemIds => t("item_ids must be furni ids like 123 or 123:2, separated by ;.").into(),
-        P::OfferAmount(amount) => tf("The amount must be 1 to 10,000, not {amount}.", &[("amount", &amount.to_string())]),
-        P::OfferNegativePrice => t("Credits and points cannot be negative.").into(),
-        P::OfferLimitedBelowSold { size, sold } => tf("The limited size {size} is below the {sold} already sold.", &[("size", &size.to_string()), ("sold", &sold.to_string())]),
-        P::OfferPageMissing(page) => tf("Page {page} does not exist.", &[("page", &page.to_string())]),
-        P::OfferSongMissing => t("A song offer (SONG ...) needs a song_id and the soundtrack code in extradata.").into(),
-        P::PageCaptionEmpty => t("The page needs a caption.").into(),
-        P::PageMinRank(rank) => tf("min_rank must be at least 1, not {rank}.", &[("rank", &rank.to_string())]),
-        P::PageNegative(column) => tf("{column} cannot be negative.", &[("column", column)]),
-        P::PageParentMissing(page) => tf("The parent page {page} does not exist.", &[("page", &page.to_string())]),
-        P::PageParentLoop => t("A page cannot go under itself or one of its own pages.").into(),
-        P::PageIncludeInvalid(token) => tf("\"{token}\" in includes is not a page id: write page ids separated by ;.", &[("token", token)]),
-        P::PageIncludeMissing(page) => tf("includes names page {page}, which does not exist.", &[("page", &page.to_string())]),
-    }
-}
-
-/// The page text translator: a language and which texts, then Translate (Google Translate).
-fn translator_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
-    if s.editor.is_none() {
-        s.translator = None;
-    }
-    let Some(translator) = s.translator.as_mut() else { return };
-    let mut close = false;
-    egui::Modal::new(egui::Id::new("catalog-translator")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(20, 16))).show(ctx, |ui| {
-        ui.set_width(420.0);
-        ui.label(RichText::new(t("Translate texts")).size(16.0).strong());
-        ui.label(RichText::new(t("Google Translate puts the ticked texts in the language you choose (the language they are in now is found by itself). The HTML stays as it is. The texts become changes in the editor: check them, then Save.")).size(11.5).color(palette.muted));
-        ui.add_space(8.0);
-        let name = aio_remote::page_translate::LANGUAGES.iter().find(|(code, _)| *code == translator.language).map(|(_, n)| *n).unwrap_or("?");
-        egui::ComboBox::from_id_salt("catalog-translate-language").selected_text(name).width(240.0).height(320.0).show_ui(ui, |ui| {
-            for (code, name) in aio_remote::page_translate::LANGUAGES {
-                ui.selectable_value(&mut translator.language, code.to_string(), *name);
-            }
-        });
-        ui.add_space(6.0);
-        for (column, on) in translator.columns.iter_mut() {
-            ui.checkbox(on, column.as_str());
-        }
-        if let Some(error) = &translator.error {
-            ui.add_space(6.0);
-            ui.label(RichText::new(error).size(12.0).color(palette.error_text));
-        }
-        ui.add_space(10.0);
-        ui.horizontal(|ui| {
-            let any = translator.columns.iter().any(|(_, on)| *on);
-            let label = if translator.busy { t("Translating ...") } else { t("Translate") };
-            if ui.add_enabled(any && !translator.busy && !s.sample, widgets::primary_button(label)).clicked() {
-                actions.push(Action::TranslateTexts);
-            }
-            if ui.add_enabled(!translator.busy, widgets::secondary_button(t("Cancel"))).clicked() {
-                close = true;
-            }
-        });
-    });
-    if close {
-        s.translator = None;
     }
 }

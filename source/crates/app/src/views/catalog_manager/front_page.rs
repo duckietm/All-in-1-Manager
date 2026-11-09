@@ -406,7 +406,7 @@ fn game_window(
     let first_rect = at(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), FIRST));
     match order.first() {
         Some(&index) => tile(ui, ctx, front, images, rows, index, first_rect, want, swap, busy),
-        None => placeholder(ui, first_rect, &t("No tiles yet: Add tile")),
+        None => placeholder(ui, first_rect, t("No tiles yet: Add tile")),
     }
 
     // The list beside it, scrolling like the game's.
@@ -420,7 +420,7 @@ fn game_window(
             }
             if order.len() < 2 {
                 let (rect, _) = ui.allocate_exact_size(ITEM, Sense::hover());
-                placeholder(ui, rect, &t("The other slots are listed here"));
+                placeholder(ui, rect, t("The other slots are listed here"));
             }
         });
     });

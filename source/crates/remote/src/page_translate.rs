@@ -75,7 +75,7 @@ pub fn parts(text: &str) -> Vec<String> {
     while rest.chars().count() > MAX_PART {
         let limit = rest.char_indices().nth(MAX_PART).map(|(i, _)| i).unwrap_or(rest.len());
         let window = &rest[..limit];
-        let cut = window.rfind(|c| matches!(c, '.' | '!' | '?' | '\n')).map(|i| i + 1).or_else(|| window.rfind(' ').map(|i| i + 1)).filter(|i| *i > 0).unwrap_or(limit);
+        let cut = window.rfind(['.', '!', '?', '\n']).map(|i| i + 1).or_else(|| window.rfind(' ').map(|i| i + 1)).filter(|i| *i > 0).unwrap_or(limit);
         list.push(rest[..cut].to_string());
         rest = &rest[cut..];
     }

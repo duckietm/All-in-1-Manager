@@ -145,10 +145,7 @@ pub fn statements(sql: &str) -> std::result::Result<Vec<String>, String> {
             }
         } else if quoted {
             current.push(c);
-            if c == '\\' && next != '\0' {
-                current.push(next);
-                i += 1;
-            } else if c == '\'' && next == '\'' {
+            if (c == '\\' && next != '\0') || (c == '\'' && next == '\'') {
                 current.push(next);
                 i += 1;
             } else if c == '\'' {

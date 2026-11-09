@@ -124,10 +124,20 @@ struct Pane {
     furni_search: String,
 }
 
+/// The page text translator: the language, which text columns, and whether it is busy.
+struct Translator {
+    language: String,
+    columns: Vec<(String, bool)>,
+    busy: bool,
+    error: Option<String>,
+}
+
 #[derive(Default)]
 struct State {
     /// The normal catalogue or the Builders Club warehouse (`catalog_pages_bc`, `catalog_items_bc`).
     cat: Catalogue,
+    /// The page text translator (Google Translate, as Octane's page editor).
+    translator: Option<Translator>,
     generation: u64,
     session: Option<Arc<SqlSession>>,
     session_for: Option<usize>,
@@ -394,6 +404,7 @@ enum Action {
     BuilderFind,
     BuilderBuild,
     SearchFurni(String),
+    TranslateTexts,
     FetchFiles(Vec<String>),
     Undo,
     Publish,
@@ -1024,6 +1035,60 @@ impl Ctl {
         }
     }
 
+    /// Translates the ticked texts of the page editor into the chosen language; they become changes to save.
+    async fn translate_texts(self) {
+        let generation = self.lock().generation;
+        let (language, work) = {
+            let mut s = self.lock();
+            let columns = s.editor.as_ref().and_then(|e| s.columns.get(e.table)).cloned().unwrap_or_default();
+            let Some(translator) = s.translator.as_mut() else { return };
+            translator.busy = true;
+            translator.error = None;
+            let ticked: Vec<String> = translator.columns.iter().filter(|(_, on)| *on).map(|(c, _)| c.clone()).collect();
+            let language = translator.language.clone();
+            let Some(editor) = s.editor.as_ref() else { return };
+            let work: Vec<(usize, String)> = ticked
+                .iter()
+                .filter_map(|name| columns.iter().position(|c| &c.name == name))
+                .filter(|i| !editor.nulls.get(*i).copied().unwrap_or(true) && !editor.values[*i].trim().is_empty())
+                .map(|i| (i, editor.values[i].clone()))
+                .collect();
+            (language, work)
+        };
+        let mut done = Vec::new();
+        let mut failed = None;
+        for (index, text) in work {
+            match aio_remote::page_translate::translate(&text, &language).await {
+                Ok(translated) => done.push((index, catalog_admin::safe_page_html(&translated))),
+                Err(error) => {
+                    failed = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+        self.with(generation, |s| {
+            if let Some(editor) = s.editor.as_mut() {
+                for (index, text) in &done {
+                    if let Some(value) = editor.values.get_mut(*index) {
+                        *value = text.clone();
+                    }
+                }
+                if failed.is_none() {
+                    editor.status = Status { text: tf("{count} texts translated: check them, then Save.", &[("count", &done.len().to_string())]), error: false };
+                }
+            }
+            match failed {
+                Some(error) => {
+                    if let Some(translator) = s.translator.as_mut() {
+                        translator.busy = false;
+                        translator.error = Some(error);
+                    }
+                }
+                None => s.translator = None,
+            }
+        });
+    }
+
     /// A new page under `parent` (hidden until Visible is ticked), then its editor to name it.
     async fn new_page(self, parent: i64) {
         let Some((generation, session, database)) = self.session() else { return };
@@ -1310,6 +1375,7 @@ impl View for CatalogExplorerView {
             editor_window(&ctx, palette, s, &mut self.images, &mut actions);
             picker_window(&ctx, palette, s, &mut self.images, &mut actions);
             html_window(&ctx, palette, s);
+            translator_window(&ctx, palette, s, &mut actions);
             builder_window(&ctx, palette, s, &mut actions);
             // The Delete key deletes the furni selected in a window (asks first).
             if s.editor.is_none() && s.builder.is_none() && !ctx.wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Delete)) {
@@ -1403,6 +1469,7 @@ impl View for CatalogExplorerView {
                 Action::BuilderFind => ctl.spawn(|c| async move { c.builder_find().await }),
                 Action::BuilderBuild => ctl.spawn(|c| c.builder_build()),
                 Action::SearchFurni(text) => ctl.spawn(move |c| async move { c.search_furni(text).await }),
+                Action::TranslateTexts => ctl.spawn(|c| c.translate_texts()),
                 Action::FetchFiles(files) => ctl.spawn(move |c| c.fetch_files(files)),
                 Action::Undo => ctl.spawn(|c| c.undo()),
                 Action::Publish => ctl.spawn(|c| c.publish()),
@@ -1993,6 +2060,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     let mut want: Vec<String> = Vec::new();
     let mut open_picker: Option<(usize, bool)> = None;
     let mut open_html: Option<usize> = None;
+    let mut open_translator = false;
     let mut want_names: Vec<i64> = Vec::new();
     let furni_names = &s.furni;
     let furni_search = &mut s.furni_search;
@@ -2026,6 +2094,9 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                     ui.label(RichText::new(caption).size(17.0).strong());
                     ui.label(RichText::new(format!("{} id {}", real_table(s.cat, "catalog_pages"), editor.id)).size(12.0).color(palette.muted));
                     ui.label(RichText::new(t("Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
+                    if ui.add_enabled(!editor.saving, widgets::secondary_button(t("Translate texts ..."))).on_hover_text(t("Translate the page's texts with Google Translate, as Octane's page editor does; the HTML stays as it is.")).clicked() {
+                        open_translator = true;
+                    }
                 } else if editor.table == "catalog_items" {
                     ui.label(RichText::new(offer_name.clone().filter(|n| !n.is_empty()).unwrap_or(furni_name)).size(17.0).strong());
                     ui.label(RichText::new(format!("{} id {}", real_table(s.cat, "catalog_items"), editor.id)).size(12.0).color(palette.muted));
@@ -2223,6 +2294,16 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     if !want.is_empty() && !s.sample {
         s.fetching.extend(want.iter().cloned());
         actions.push(Action::FetchFiles(want));
+    }
+    if open_translator {
+        let present: Vec<String> = columns.iter().map(|c| c.name.clone()).collect();
+        let choices: Vec<(String, bool)> = ["caption", "page_text1", "page_text2", "page_text_details", "page_text_teaser"]
+            .iter()
+            .filter(|c| present.iter().any(|p| p == *c))
+            .map(|c| (c.to_string(), *c != "caption"))
+            .collect();
+        let language = s.translator.as_ref().map(|t| t.language.clone()).unwrap_or_else(|| "en".into());
+        s.translator = Some(Translator { language, columns: choices, busy: false, error: None });
     }
     want_names.retain(|id| !s.furni_asked.contains(id));
     want_names.dedup();
@@ -3126,5 +3207,48 @@ fn row_problem_text(problem: &catalog_admin::RowProblem) -> String {
         P::PageParentLoop => t("A page cannot go under itself or one of its own pages.").into(),
         P::PageIncludeInvalid(token) => tf("\"{token}\" in includes is not a page id: write page ids separated by ;.", &[("token", token)]),
         P::PageIncludeMissing(page) => tf("includes names page {page}, which does not exist.", &[("page", &page.to_string())]),
+    }
+}
+
+/// The page text translator: a language and which texts, then Translate (Google Translate).
+fn translator_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    if s.editor.is_none() {
+        s.translator = None;
+    }
+    let Some(translator) = s.translator.as_mut() else { return };
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("catalog-translator")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(20, 16))).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.label(RichText::new(t("Translate texts")).size(16.0).strong());
+        ui.label(RichText::new(t("Google Translate puts the ticked texts in the language you choose (the language they are in now is found by itself). The HTML stays as it is. The texts become changes in the editor: check them, then Save.")).size(11.5).color(palette.muted));
+        ui.add_space(8.0);
+        let name = aio_remote::page_translate::LANGUAGES.iter().find(|(code, _)| *code == translator.language).map(|(_, n)| *n).unwrap_or("?");
+        egui::ComboBox::from_id_salt("catalog-translate-language").selected_text(name).width(240.0).height(320.0).show_ui(ui, |ui| {
+            for (code, name) in aio_remote::page_translate::LANGUAGES {
+                ui.selectable_value(&mut translator.language, code.to_string(), *name);
+            }
+        });
+        ui.add_space(6.0);
+        for (column, on) in translator.columns.iter_mut() {
+            ui.checkbox(on, column.as_str());
+        }
+        if let Some(error) = &translator.error {
+            ui.add_space(6.0);
+            ui.label(RichText::new(error).size(12.0).color(palette.error_text));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let any = translator.columns.iter().any(|(_, on)| *on);
+            let label = if translator.busy { t("Translating ...") } else { t("Translate") };
+            if ui.add_enabled(any && !translator.busy && !s.sample, widgets::primary_button(label)).clicked() {
+                actions.push(Action::TranslateTexts);
+            }
+            if ui.add_enabled(!translator.busy, widgets::secondary_button(t("Cancel"))).clicked() {
+                close = true;
+            }
+        });
+    });
+    if close {
+        s.translator = None;
     }
 }

@@ -5,6 +5,7 @@
 //! The tables are Polaris's. Every change is one statement with `?` parameters; nothing typed in is put into SQL text.
 
 use crate::server::{Result, Server, ServerError};
+use crate::catalog_journal::{self as journal, Entity};
 use crate::sql_session::{quote, SqlSession, SqlValue};
 
 /// The page layouts Polaris knows (the `page_layout` enum of `catalog_pages`).
@@ -521,6 +522,45 @@ pub fn insert_offer_params(offer: &Offer, cat: Catalogue) -> Vec<SqlValue> {
     params
 }
 
+/// An INSERT of [`insert_page_sql`] or [`insert_offer_sql`] that also sets the id (taken from the emulator's id
+/// sequence).
+fn with_id(sql: &str) -> String {
+    sql.replacen(" (", " (id, ", 1).replacen("VALUES (", "VALUES (?, ", 1)
+}
+
+/// Adds a page or offer row: at an id from the emulator's sequence when the database has one, else AUTO_INCREMENT.
+/// Returns its id.
+async fn insert_row(session: &SqlSession, database: &str, cat: Catalogue, page: bool, sql: String, mut params: Vec<SqlValue>) -> Result<i64> {
+    match journal::reserve_ids(session, database, cat, page, 1).await {
+        Some(id) => {
+            params.insert(0, SqlValue::Int(id));
+            session.execute(&[(with_id(&sql), params)]).await?;
+            Ok(id)
+        }
+        None => Ok(session.execute(&[(sql, params)]).await?.1 as i64),
+    }
+}
+
+/// Writes what changed since `before` to the shared history; a failure there is not the change's failure.
+async fn record(session: &SqlSession, database: &str, summary: &str, before: journal::Snapshot) {
+    let _ = journal::record(session, database, summary, before).await;
+}
+
+/// The history snapshot of these pages and offers before a change.
+async fn snapshot_of(session: &SqlSession, database: &str, cat: Catalogue, pages: &[i64], offers: &[i64]) -> journal::Snapshot {
+    let entities: Vec<Entity> = pages.iter().map(|id| Entity::page(cat, *id)).chain(offers.iter().map(|id| Entity::offer(cat, *id))).collect();
+    journal::capture(session, database, &entities).await
+}
+
+/// Adds new pages or offers (id still unknown before) to a snapshot, as not existing yet.
+fn add_new(snapshot: &mut journal::Snapshot, entities: impl IntoIterator<Item = Entity>) {
+    if let Some(map) = snapshot.as_mut() {
+        for entity in entities {
+            map.entry(entity).or_insert(None);
+        }
+    }
+}
+
 /// A new page under `parent_id` (-1: the top level), after the pages already there; not saved yet (id 0).
 pub fn new_page(pages: &[Page], parent_id: i64, cat: Catalogue) -> Page {
     let order_num = pages.iter().filter(|p| p.parent_id == parent_id).map(|p| p.order_num).max().map_or(1, |o| o + 1);
@@ -589,18 +629,35 @@ pub async fn load_offers(session: &SqlSession, database: &str, cat: Catalogue, p
 /// Saves the page; a new one (id 0) is added. Returns its id.
 pub async fn save_page(session: &SqlSession, database: &str, cat: Catalogue, page: &Page) -> Result<i64> {
     if page.id <= 0 {
-        let (_, id) = session.execute(&[(insert_page_sql(database, cat), insert_page_params(page, cat))]).await?;
-        return Ok(id as i64);
+        let id = insert_row(session, database, cat, true, insert_page_sql(database, cat), insert_page_params(page, cat)).await?;
+        let mut snapshot = journal::has_history(session, database).await.then(Default::default);
+        add_new(&mut snapshot, [Entity::page(cat, id)]);
+        record(session, database, &format!("New page #{id} {}", page.caption.trim()), snapshot).await;
+        return Ok(id);
     }
+    let snapshot = snapshot_of(session, database, cat, &[page.id], &[]).await;
     session.execute(&[(update_page_sql(database, cat), update_page_params(page, cat))]).await?;
+    record(session, database, &format!("Saved page #{} {}", page.id, page.caption.trim()), snapshot).await;
     Ok(page.id)
 }
 
 /// Saves the offer; a new one (id 0) is added. Returns its id.
 pub async fn save_offer(session: &SqlSession, database: &str, cat: Catalogue, offer: &Offer) -> Result<i64> {
+    let snapshot = snapshot_of(session, database, cat, &[], &[offer.id.max(0)]).await;
+    let id = save_offer_quietly(session, database, cat, offer).await?;
+    let mut snapshot = snapshot.map(|mut m| {
+        m.retain(|e, _| e.id > 0);
+        m
+    });
+    add_new(&mut snapshot, [Entity::offer(cat, id)]);
+    record(session, database, &format!("Saved offer #{id} {}", offer.catalog_name.trim()), snapshot).await;
+    Ok(id)
+}
+
+/// [`save_offer`] without a history row: for changes that write one row for all they do.
+async fn save_offer_quietly(session: &SqlSession, database: &str, cat: Catalogue, offer: &Offer) -> Result<i64> {
     if offer.id <= 0 {
-        let (_, id) = session.execute(&[(insert_offer_sql(database, cat), insert_offer_params(offer, cat))]).await?;
-        return Ok(id as i64);
+        return insert_row(session, database, cat, false, insert_offer_sql(database, cat), insert_offer_params(offer, cat)).await;
     }
     session.execute(&[(update_offer_sql(database, cat), update_offer_params(offer, cat))]).await?;
     Ok(offer.id)
@@ -608,17 +665,20 @@ pub async fn save_offer(session: &SqlSession, database: &str, cat: Catalogue, of
 
 /// Deletes the page with its offers, in one transaction. Check [`page_delete_problem`] first.
 pub async fn delete_page(session: &SqlSession, database: &str, cat: Catalogue, id: i64) -> Result<u64> {
+    let offers: Vec<i64> = load_offers(session, database, cat, id).await.map(|o| o.iter().map(|o| o.id).collect()).unwrap_or_default();
+    let snapshot = snapshot_of(session, database, cat, &[id], &offers).await;
     let statements = vec![
         (format!("DELETE FROM {} WHERE page_id = ?", cat.items(database)), vec![SqlValue::Int(id)]),
         (format!("DELETE FROM {} WHERE id = ?", cat.pages(database)), vec![SqlValue::Int(id)]),
     ];
-    Ok(session.execute(&statements).await?.0)
+    let changed = session.execute(&statements).await?.0;
+    record(session, database, &format!("Deleted page #{id} with {} offers", offers.len()), snapshot).await;
+    Ok(changed)
 }
 
 /// Deletes the offer. Check [`offer_delete_problem`] first.
 pub async fn delete_offer(session: &SqlSession, database: &str, cat: Catalogue, id: i64) -> Result<u64> {
-    let statements = vec![(format!("DELETE FROM {} WHERE id = ?", cat.items(database)), vec![SqlValue::Int(id)])];
-    Ok(session.execute(&statements).await?.0)
+    delete_offers(session, database, cat, &[id]).await
 }
 
 // ---- The rules an offer or page row keeps (as Octane's catalogue admin and the emulator's check) ------------
@@ -937,7 +997,10 @@ pub async fn load_limited(session: &SqlSession, database: &str) -> Result<Vec<Li
 
 /// Does the action. Check [`limited_problem`] first.
 pub async fn change_limited(session: &SqlSession, database: &str, offer_id: i64, action: LimitedAction) -> Result<u64> {
-    Ok(session.execute(&limited_statements(database, offer_id, action)).await?.0)
+    let snapshot = snapshot_of(session, database, Catalogue::Normal, &[], &[offer_id]).await;
+    let changed = session.execute(&limited_statements(database, offer_id, action)).await?.0;
+    record(session, database, &format!("Changed the limited series of offer #{offer_id}"), snapshot).await;
+    Ok(changed)
 }
 
 // ---- Vouchers -------------------------------------------------------------------------------------------------
@@ -1280,14 +1343,21 @@ pub fn sorted_by_name(offers: &[Offer]) -> Vec<(i64, i64)> {
 pub async fn set_offer_order(session: &SqlSession, database: &str, cat: Catalogue, order: &[(i64, i64)]) -> Result<u64> {
     let sql = format!("UPDATE {} SET order_number = ? WHERE id = ?", cat.items(database));
     let statements: Vec<_> = order.iter().map(|(id, n)| (sql.clone(), vec![SqlValue::Int(*n), SqlValue::Int(*id)])).collect();
-    Ok(session.execute(&statements).await?.0)
+    let ids: Vec<i64> = order.iter().map(|(id, _)| *id).collect();
+    let snapshot = snapshot_of(session, database, cat, &[], &ids).await;
+    let changed = session.execute(&statements).await?.0;
+    record(session, database, &format!("Ordered {} offers", ids.len()), snapshot).await;
+    Ok(changed)
 }
 
 /// Deletes these offers in one transaction. Leave out offers with limited sales ([`offer_delete_problem`]).
 pub async fn delete_offers(session: &SqlSession, database: &str, cat: Catalogue, ids: &[i64]) -> Result<u64> {
     let sql = format!("DELETE FROM {} WHERE id = ?", cat.items(database));
     let statements: Vec<_> = ids.iter().map(|id| (sql.clone(), vec![SqlValue::Int(*id)])).collect();
-    Ok(session.execute(&statements).await?.0)
+    let snapshot = snapshot_of(session, database, cat, &[], ids).await;
+    let changed = session.execute(&statements).await?.0;
+    record(session, database, &format!("Deleted {} offers", ids.len()), snapshot).await;
+    Ok(changed)
 }
 
 // ---- Unoffered furni ---------------------------------------------------------------------------------------------
@@ -1336,8 +1406,27 @@ pub fn offers_for(furni: &[Furni], page_id: i64, existing: &[Offer], credits: i6
 
 /// Adds the offers in one transaction.
 pub async fn add_offers(session: &SqlSession, database: &str, cat: Catalogue, offers: &[Offer]) -> Result<u64> {
-    let statements: Vec<_> = offers.iter().map(|o| (insert_offer_sql(database, cat), insert_offer_params(o, cat))).collect();
-    Ok(session.execute(&statements).await?.0)
+    let first = journal::reserve_ids(session, database, cat, false, offers.len()).await;
+    let statements: Vec<_> = offers
+        .iter()
+        .enumerate()
+        .map(|(i, o)| match first {
+            Some(first) => {
+                let mut params = insert_offer_params(o, cat);
+                params.insert(0, SqlValue::Int(first + i as i64));
+                (with_id(&insert_offer_sql(database, cat)), params)
+            }
+            None => (insert_offer_sql(database, cat), insert_offer_params(o, cat)),
+        })
+        .collect();
+    let changed = session.execute(&statements).await?.0;
+    if let Some(first) = first {
+        let mut snapshot = journal::has_history(session, database).await.then(Default::default);
+        add_new(&mut snapshot, (0..offers.len()).map(|i| Entity::offer(cat, first + i as i64)));
+        let page = offers.first().map(|o| o.page_id).unwrap_or(0);
+        record(session, database, &format!("Added {} offers to page #{page}", offers.len()), snapshot).await;
+    }
+    Ok(changed)
 }
 
 // ---- Catalogue backups (on the server) --------------------------------------------------------------------------
@@ -1558,7 +1647,18 @@ pub fn merge_problem(pages: &[Page], target: i64, sources: &[i64]) -> Option<Str
 }
 
 pub async fn merge_pages(session: &SqlSession, database: &str, target: i64, sources: &[i64]) -> Result<u64> {
-    Ok(session.execute(&merge_pages_statements(database, target, sources)).await?.0)
+    let cat = Catalogue::Normal;
+    let pages = load_pages(session, database, cat).await.unwrap_or_default();
+    let mut page_ids: Vec<i64> = pages.iter().filter(|p| sources.contains(&p.parent_id)).map(|p| p.id).collect();
+    page_ids.extend(sources.iter().copied());
+    let mut offer_ids = Vec::new();
+    for source in sources {
+        offer_ids.extend(load_offers(session, database, cat, *source).await.unwrap_or_default().iter().map(|o| o.id));
+    }
+    let snapshot = snapshot_of(session, database, cat, &page_ids, &offer_ids).await;
+    let changed = session.execute(&merge_pages_statements(database, target, sources)).await?.0;
+    record(session, database, &format!("Merged {} pages into #{target}", sources.len()), snapshot).await;
+    Ok(changed)
 }
 
 /// The script that finds the hotel database the emulator uses (config.ini) and prints its name.
@@ -1661,6 +1761,9 @@ pub async fn place_offers(session: &SqlSession, database: &str, cat: Catalogue, 
         return Ok(PlaceUndo::default());
     }
     let target = load_offers(session, database, cat, page_id).await?;
+    let mut touched: Vec<i64> = target.iter().map(|o| o.id).collect();
+    touched.extend(ids.iter().copied());
+    let mut snapshot = snapshot_of(session, database, cat, &[], &touched).await;
     let rows = session.select(&offers_by_ids_sql(database, cat, ids.len()), ids.iter().map(|id| SqlValue::Int(*id)).collect()).await?;
     let dragged: Vec<Offer> = rows.iter().map(|row| offer_from_row(row)).collect();
     // In the order they were dragged.
@@ -1669,7 +1772,7 @@ pub async fn place_offers(session: &SqlSession, database: &str, cat: Catalogue, 
     let placed: Vec<i64> = if copy {
         for offer in &dragged {
             let copy = Offer { id: 0, page_id, ..offer.clone() };
-            match save_offer(session, database, cat, &copy).await {
+            match save_offer_quietly(session, database, cat, &copy).await {
                 Ok(id) => inserted.push(id),
                 Err(error) => {
                     let _ = session.execute(&undo_statements(database, cat, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
@@ -1695,12 +1798,19 @@ pub async fn place_offers(session: &SqlSession, database: &str, cat: Catalogue, 
         let _ = session.execute(&undo_statements(database, cat, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
         return Err(error);
     }
+    add_new(&mut snapshot, inserted.iter().map(|id| Entity::offer(cat, *id)));
+    let what = if copy { "Copied" } else { "Moved" };
+    record(session, database, &format!("{what} {} offers to page #{page_id}", ids.len()), snapshot).await;
     Ok(undo)
 }
 
 /// Puts a drop back (see [`place_offers`]), in one transaction.
 pub async fn undo_place(session: &SqlSession, database: &str, cat: Catalogue, undo: &PlaceUndo) -> Result<u64> {
-    Ok(session.execute(&undo_statements(database, cat, undo)).await?.0)
+    let ids: Vec<i64> = undo.before.iter().map(|(id, _, _)| *id).chain(undo.inserted.iter().copied()).collect();
+    let snapshot = snapshot_of(session, database, cat, &[], &ids).await;
+    let changed = session.execute(&undo_statements(database, cat, undo)).await?.0;
+    record(session, database, "Undid a drop", snapshot).await;
+    Ok(changed)
 }
 
 /// Gives `furni` (no offer sells them yet) an offer each on `page_id`, before the offer `before` (None: at the end):
@@ -1720,7 +1830,7 @@ pub async fn place_new_furni(
 ) -> Result<PlaceUndo> {
     let mut inserted = Vec::new();
     for offer in offers_for(furni, page_id, &[], credits, points, points_type) {
-        match save_offer(session, database, cat, &offer).await {
+        match save_offer_quietly(session, database, cat, &offer).await {
             Ok(id) => inserted.push(id),
             Err(error) => {
                 let _ = session.execute(&undo_statements(database, cat, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
@@ -1728,6 +1838,9 @@ pub async fn place_new_furni(
             }
         }
     }
+    let mut snapshot = journal::has_history(session, database).await.then(Default::default);
+    add_new(&mut snapshot, inserted.iter().map(|id| Entity::offer(cat, *id)));
+    record(session, database, &format!("Gave {} furni an offer on page #{page_id}", inserted.len()), snapshot).await;
     match place_offers(session, database, cat, &inserted, page_id, before, false).await {
         Ok(mut undo) => {
             undo.before.retain(|(id, _, _)| !inserted.contains(id));
@@ -1771,16 +1884,22 @@ pub async fn move_page(session: &SqlSession, database: &str, cat: Catalogue, pag
     let mut siblings: Vec<&Page> = pages.iter().filter(|p| p.parent_id == parent && p.id != parent).collect();
     siblings.sort_by_key(|p| (p.order_num, p.id));
     let order = arranged(&siblings.iter().map(|p| p.id).collect::<Vec<_>>(), &[page], before);
-    let before: Vec<(i64, i64, i64)> = order.iter().filter_map(|id| pages.iter().find(|p| p.id == *id)).map(|p| (p.id, p.parent_id, p.order_num)).collect();
+    let undo: Vec<(i64, i64, i64)> = order.iter().filter_map(|id| pages.iter().find(|p| p.id == *id)).map(|p| (p.id, p.parent_id, p.order_num)).collect();
+    let snapshot = snapshot_of(session, database, cat, &order, &[]).await;
     session.execute(&page_order_statements(database, cat, parent, &order)).await?;
-    Ok(PageUndo { before })
+    record(session, database, &format!("Moved page #{page} under #{parent}"), snapshot).await;
+    Ok(PageUndo { before: undo })
 }
 
 /// Puts a page move back, in one transaction.
 pub async fn undo_page_move(session: &SqlSession, database: &str, cat: Catalogue, undo: &PageUndo) -> Result<u64> {
     let sql = format!("UPDATE {} SET parent_id = ?, order_num = ? WHERE id = ?", cat.pages(database));
     let statements: Vec<_> = undo.before.iter().map(|(id, parent, order)| (sql.clone(), vec![SqlValue::Int(*parent), SqlValue::Int(*order), SqlValue::Int(*id)])).collect();
-    Ok(session.execute(&statements).await?.0)
+    let ids: Vec<i64> = undo.before.iter().map(|(id, _, _)| *id).collect();
+    let snapshot = snapshot_of(session, database, cat, &ids, &[]).await;
+    let changed = session.execute(&statements).await?.0;
+    record(session, database, "Undid a page move", snapshot).await;
+    Ok(changed)
 }
 
 // ---- The furni editor: one items_base row, every column ---------------------------------------------------
@@ -1911,7 +2030,22 @@ pub async fn save_row(session: &SqlSession, database: &str, table: &str, id: i64
     if changes.is_empty() {
         return Ok(0);
     }
-    Ok(session.execute(&[update_statement(database, table, id, changes)]).await?.0)
+    // A page or offer goes in the shared history; items_base and the rest do not.
+    let entity = match table {
+        "catalog_pages" => Some(Entity::page(Catalogue::Normal, id)),
+        "catalog_pages_bc" => Some(Entity::page(Catalogue::Builders, id)),
+        "catalog_items" => Some(Entity::offer(Catalogue::Normal, id)),
+        "catalog_items_bc" => Some(Entity::offer(Catalogue::Builders, id)),
+        _ => None,
+    };
+    let snapshot = match entity {
+        Some(entity) => journal::capture(session, database, &[entity]).await,
+        None => None,
+    };
+    let changed = session.execute(&[update_statement(database, table, id, changes)]).await?.0;
+    let names: Vec<&str> = changes.iter().map(|(c, _)| c.as_str()).collect();
+    record(session, database, &format!("Edited {table} #{id}: {}", names.join(", ")), snapshot).await;
+    Ok(changed)
 }
 
 /// Saves the changed columns of furni `id`.

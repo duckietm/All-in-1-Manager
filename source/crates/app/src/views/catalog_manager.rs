@@ -10,6 +10,8 @@ mod front_page;
 
 use aio_remote::catalog_admin::{self, CatalogBackup, Catalogue, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse};
 use aio_remote::catalog_health::{self, Kind};
+use aio_remote::catalog_journal;
+use aio_remote::catalog_transfer;
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
@@ -45,6 +47,7 @@ enum Tab {
     Limited,
     Vouchers,
     Checks,
+    History,
     Backups,
 }
 
@@ -60,6 +63,13 @@ impl FeaturedRow {
         let expiry = catalog_admin::expiry_text(slot.expire_timestamp);
         FeaturedRow { slot, expiry }
     }
+}
+
+/// The preview of an SQL import (Octane's Catalog Studio format).
+struct Transfer {
+    file: String,
+    current: std::collections::BTreeMap<catalog_journal::Entity, serde_json::Value>,
+    changes: Vec<catalog_journal::Change>,
 }
 
 #[derive(Default)]
@@ -91,7 +101,11 @@ struct State {
     duplicates_ticked: std::collections::HashSet<i64>,
     /// The Backups tab: the backups on the server (None until it is opened) and the label for a new one.
     backups: Option<Vec<CatalogBackup>>,
+    /// The History tab: the latest operations (None until it is opened; Some(None) when the database has no history).
+    history: Option<Option<Vec<catalog_journal::Operation>>>,
     backup_label: String,
+    /// An SQL file being imported: its name, the catalogue as it was at the preview, and what it changes.
+    transfer: Option<Transfer>,
     /// Raised when the session closes: an older task changes nothing.
     generation: u64,
     session: Option<Arc<SqlSession>>,
@@ -253,6 +267,7 @@ impl Ctl {
             Tab::Limited => self.load_limited().await,
             Tab::Vouchers => self.load_vouchers(None).await,
             Tab::Checks => self.load_checks().await,
+            Tab::History => self.load_history().await,
             Tab::Backups => self.load_backups().await,
         }
     }
@@ -671,6 +686,137 @@ impl Ctl {
         self.load_backups().await;
     }
 
+    /// The latest operations of the catalogue's shared history (Octane's Catalog Studio and this Manager).
+    async fn load_history(&self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        self.with(generation, |s| s.busy = true);
+        let history = if catalog_journal::has_history(&session, &database).await { catalog_journal::load_history(&session, &database, 150).await.map(Some) } else { Ok(None) };
+        self.with(generation, |s| {
+            s.busy = false;
+            match history {
+                Ok(history) => s.history = Some(history),
+                Err(error) => s.status = Status::error(error.to_string()),
+            }
+        });
+    }
+
+    /// Asks first, then undoes one operation of the history, when its pages and offers are still as it left them.
+    async fn undo_operation(self, id: i64) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let operation = self.lock().history.clone().flatten().and_then(|h| h.into_iter().find(|o| o.id == id));
+        let Some(operation) = operation else { return };
+        match catalog_journal::undo_problem(&session, &database, &operation).await {
+            Ok(None) => {}
+            Ok(Some(problem)) => {
+                self.with(generation, |s| s.status = Status::error(tf("Operation #{id} cannot be undone: {problem}", &[("id", &id.to_string()), ("problem", &problem)])));
+                return;
+            }
+            Err(error) => {
+                self.with(generation, |s| s.status = Status::error(error.to_string()));
+                return;
+            }
+        }
+        let options = vec![Choice::new(t("Undo it"), t("Put every page and offer it changed back as it was before."), true).primary(), Choice::new(t("Cancel"), t("Leave it."), false)];
+        let message = tf("{count} pages and offers go back to how they were before operation #{id}. The undo is recorded in the history too.", &[("count", &operation.entries.len().to_string()), ("id", &id.to_string())]);
+        if !self.shared.dialogs.choose(t("Undo operation"), &operation.summary, &message, false, options).await {
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let result = catalog_journal::undo(&session, &database, &operation).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match result {
+                Ok(()) => {
+                    s.unpublished = true;
+                    s.status = Status::ok(tf("Operation #{id} undone. Publish to show it in the hotel.", &[("id", &id.to_string())]));
+                }
+                Err(error) => s.status = Status::error(error.to_string()),
+            }
+        });
+        self.load_history().await;
+    }
+
+    /// Saves the whole catalogue (both catalogues) as an SQL file in Octane's Catalog Studio format.
+    async fn export_catalogue(self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let Some(file) = rfd::AsyncFileDialog::new().set_title(t("Export the catalogue")).add_filter(t("SQL files"), &["sql"]).set_file_name("catalog-studio.sql").save_file().await else {
+            return;
+        };
+        self.with(generation, |s| s.busy = true);
+        let text = catalog_transfer::export(&session, &database).await;
+        let written = match text {
+            Ok(text) => tokio::fs::write(file.path(), text).await.map_err(|e| e.to_string()),
+            Err(error) => Err(error.to_string()),
+        };
+        let name = file.path().display().to_string();
+        self.with(generation, |s| {
+            s.busy = false;
+            s.status = match written {
+                Ok(()) => Status::ok(tf("The catalogue is saved in {file}.", &[("file", &name)])),
+                Err(error) => Status::error(error),
+            };
+        });
+    }
+
+    /// Reads an SQL file (Octane's Catalog Studio format) and shows what it would change; nothing is written yet.
+    async fn import_catalogue(self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let Some(file) = rfd::AsyncFileDialog::new().set_title(t("Import a catalogue file")).add_filter(t("SQL files"), &["sql", "txt"]).add_filter(t("All files"), &["*"]).pick_file().await else {
+            return;
+        };
+        let name = file.file_name();
+        let text = match tokio::fs::read(file.path()).await {
+            Ok(bytes) => String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(&bytes)).into_owned(),
+            Err(error) => {
+                self.with(generation, |s| s.status = Status::error(error.to_string()));
+                return;
+            }
+        };
+        self.with(generation, |s| {
+            s.busy = true;
+            s.transfer = None;
+        });
+        let preview = catalog_transfer::preview(&session, &database, &text).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match preview {
+                Ok((current, changes)) => {
+                    s.status = Status::ok(tf("{file}: {count} changes. Check them, then Apply.", &[("file", &name), ("count", &changes.len().to_string())]));
+                    s.transfer = Some(Transfer { file: name, current, changes });
+                }
+                Err(error) => s.status = Status::error(tf("{file} cannot be imported: {error}", &[("file", &name), ("error", &error.to_string())])),
+            }
+        });
+    }
+
+    /// Asks first, then writes the previewed import.
+    async fn apply_import(self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let Some((count, file)) = self.lock().transfer.as_ref().map(|t| (t.changes.len(), t.file.clone())) else { return };
+        let options = vec![Choice::new(t("Apply"), t("Write the changes to the hotel database."), true).primary(), Choice::new(t("Cancel"), t("Change nothing."), false)];
+        let message = tf("{count} pages and offers are created, changed or deleted as {file} says, in one go. It is recorded in the history, so it can be undone there. Make a backup first if you may want the whole catalogue back.", &[("count", &count.to_string()), ("file", &file)]);
+        if !self.shared.dialogs.choose(t("Import the catalogue"), &file, &message, false, options).await {
+            return;
+        }
+        let Some(transfer) = self.lock().transfer.take() else { return };
+        self.with(generation, |s| s.busy = true);
+        let result = catalog_transfer::apply(&session, &database, &transfer.current, &transfer.changes).await;
+        self.with(generation, |s| {
+            s.busy = false;
+            match result {
+                Ok(()) => {
+                    s.unpublished = true;
+                    s.history = None;
+                    s.status = Status::ok(tf("{count} changes of {file} are written. Publish to show them in the hotel.", &[("count", &count.to_string()), ("file", &file)]));
+                }
+                Err(error) => {
+                    s.status = Status::error(error.to_string());
+                    s.transfer = Some(transfer);
+                }
+            }
+        });
+    }
+
     /// Asks first, then merges the pages into the first one.
     async fn merge_pages(self, target: i64, sources: Vec<i64>) {
         let Some((generation, session, database)) = self.session() else { return };
@@ -773,6 +919,11 @@ enum Action {
     LoadChecks,
     DeleteDuplicates,
     LoadBackups,
+    LoadHistory,
+    ExportCatalogue,
+    ImportCatalogue,
+    ApplyImport,
+    UndoOperation(i64),
     MakeBackup,
     RestoreBackup(String),
     DeleteBackup(String),
@@ -828,6 +979,11 @@ impl View for CatalogManagerView {
                 Action::LoadChecks => ctl.spawn(|c| async move { c.load_checks().await }),
                 Action::DeleteDuplicates => ctl.spawn(|c| c.delete_duplicates()),
                 Action::LoadBackups => ctl.spawn(|c| async move { c.load_backups().await }),
+                Action::LoadHistory => ctl.spawn(|c| async move { c.load_history().await }),
+                Action::ExportCatalogue => ctl.spawn(|c| c.export_catalogue()),
+                Action::ImportCatalogue => ctl.spawn(|c| c.import_catalogue()),
+                Action::ApplyImport => ctl.spawn(|c| c.apply_import()),
+                Action::UndoOperation(id) => ctl.spawn(move |c| c.undo_operation(id)),
                 Action::MakeBackup => ctl.spawn(|c| c.make_backup()),
                 Action::RestoreBackup(file) => ctl.spawn(move |c| c.restore_backup(file)),
                 Action::DeleteBackup(file) => ctl.spawn(move |c| c.delete_backup(file)),
@@ -881,7 +1037,7 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
 
 fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontImages, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::Backups, t("Backups"))] {
+        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::History, t("History")), (Tab::Backups, t("Backups"))] {
             if ui.selectable_label(s.tab == tab, RichText::new(label).size(15.0)).clicked() && s.tab != tab {
                 s.tab = tab;
                 if tab == Tab::FrontPage && s.featured.is_none() && s.session.is_some() {
@@ -896,6 +1052,9 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontI
                 if tab == Tab::Checks && s.all_offers.is_none() && s.session.is_some() {
                     actions.push(Action::LoadChecks);
                 }
+                if tab == Tab::History && s.history.is_none() && s.session.is_some() {
+                    actions.push(Action::LoadHistory);
+                }
                 if tab == Tab::Backups && s.backups.is_none() {
                     actions.push(Action::LoadBackups);
                 }
@@ -903,6 +1062,12 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontI
         }
     });
     ui.add_space(6.0);
+    if s.tab == Tab::History {
+        egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("catalog-history").auto_shrink([false, false]).show(ui, |ui| history(ui, palette, s, actions));
+        });
+        return;
+    }
     if s.tab == Tab::Backups {
         egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("catalog-backups").auto_shrink([false, false]).show(ui, |ui| backups(ui, palette, s, actions));
@@ -1268,6 +1433,8 @@ fn checks(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
 
 fn backups(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
     let busy = s.busy;
+    transfer(ui, palette, s, actions);
+    ui.add_space(14.0);
     ui.horizontal(|ui| {
         ui.label(widgets::title_text(t("Backups"), 17.0));
         if ui.add_enabled(!busy, small(t("Reload"))).clicked() {
@@ -1431,5 +1598,143 @@ fn health(ui: &mut egui::Ui, palette: &Palette, problems: &[catalog_health::Prob
                     widgets::muted(ui, palette, &tf("... and {count} more.", &[("count", &(these.len() - 200).to_string())]), 12.0);
                 }
             });
+    }
+}
+
+/// The History tab: every operation on pages and offers, by Octane's Catalog Studio and this Manager, with undo.
+fn history(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let busy = s.busy;
+    ui.horizontal(|ui| {
+        ui.label(widgets::title_text(t("History"), 17.0));
+        if ui.add_enabled(s.session.is_some() && !busy, small(t("Reload"))).clicked() {
+            actions.push(Action::LoadHistory);
+        }
+    });
+    widgets::muted(
+        ui,
+        palette,
+        t("Every change to pages and offers, made in Octane's Catalog Studio or here (the explorers, Checks, Limited), newest first: the same history Octane shows. Undo puts what one operation changed back, when nothing changed those pages and offers since. Front page tiles, vouchers and rolled back backups are not part of it."),
+        12.0,
+    );
+    ui.add_space(6.0);
+    let Some(history) = &s.history else {
+        widgets::muted(ui, palette, t("Loading ..."), 12.5);
+        return;
+    };
+    let Some(history) = history else {
+        widgets::muted(ui, palette, t("This hotel's database has no catalogue history (catalog_manager_history): the emulator is older than Catalog Studio."), 12.5);
+        return;
+    };
+    if history.is_empty() {
+        widgets::muted(ui, palette, t("No changes recorded yet."), 12.5);
+        return;
+    }
+    for operation in history {
+        widgets::card_frame(palette).inner_margin(8).corner_radius(8).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("#{}", operation.revision)).size(12.5).monospace().color(palette.muted));
+                ui.label(RichText::new(&operation.summary).size(13.0).strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(!busy && !operation.entries.is_empty(), small(t("Undo ..."))).clicked() {
+                        actions.push(Action::UndoOperation(operation.id));
+                    }
+                });
+            });
+            let who = if operation.actor.is_empty() { t("no player (All-in-1 Manager or a script)").to_string() } else { operation.actor.clone() };
+            ui.label(RichText::new(format!("{} · {} · {}", operation.created_at, who, operation.source)).size(11.5).color(palette.muted));
+            egui::CollapsingHeader::new(RichText::new(tf("{count} pages and offers", &[("count", &operation.entries.len().to_string())])).size(12.0))
+                .id_salt(("catalog-history-op", operation.id))
+                .show(ui, |ui| {
+                    for change in operation.entries.iter().take(100) {
+                        ui.horizontal_wrapped(|ui| {
+                            if change.entity.builders {
+                                ui.label(RichText::new("BC").size(11.0).strong().color(egui::Color32::from_rgb(226, 132, 10)));
+                            }
+                            let what = if change.entity.page { t("Page") } else { t("Offer") };
+                            ui.label(RichText::new(format!("{what} #{} {}", change.entity.id, change.name())).size(12.0).strong());
+                            ui.label(RichText::new(&change.operation).size(11.0).monospace().color(palette.muted));
+                            if change.operation == "UPDATE" || change.operation == "MOVE" {
+                                ui.label(RichText::new(change.fields().join(", ")).size(11.5).color(palette.muted));
+                            }
+                        });
+                    }
+                    if operation.entries.len() > 100 {
+                        widgets::muted(ui, palette, &tf("... and {count} more.", &[("count", &(operation.entries.len() - 100).to_string())]), 11.5);
+                    }
+                });
+        });
+        ui.add_space(4.0);
+    }
+}
+
+/// Export and import of the whole catalogue as one SQL file, in the format of Octane's Catalog Studio.
+fn transfer(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let busy = s.busy;
+    let ready = s.session.is_some() && !busy;
+    ui.horizontal(|ui| {
+        ui.label(widgets::title_text(t("Export and import"), 17.0));
+        if ui.add_enabled(ready, small(t("Export to a file ..."))).clicked() {
+            actions.push(Action::ExportCatalogue);
+        }
+        if ui.add_enabled(ready, small(t("Import a file ..."))).clicked() {
+            actions.push(Action::ImportCatalogue);
+        }
+    });
+    widgets::muted(
+        ui,
+        palette,
+        t("The pages and offers of the catalogue and the Builders Club warehouse as one SQL file, in the format of Octane's Catalog Studio: a file exported there can be imported here and the other way round. An import is never run as SQL: only INSERT, UPDATE and DELETE of catalog_pages and catalog_items with plain values are read, and you first see what would change."),
+        12.0,
+    );
+    let mut cancel = false;
+    if let Some(preview) = &s.transfer {
+        ui.add_space(6.0);
+        widgets::card_frame(palette).inner_margin(10).corner_radius(8).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let count = |op: &str| preview.changes.iter().filter(|c| c.operation == op).count();
+            ui.label(RichText::new(&preview.file).size(13.5).strong());
+            ui.label(
+                RichText::new(tf(
+                    "{created} new, {changed} changed, {moved} moved, {deleted} deleted.",
+                    &[("created", &count("CREATE").to_string()), ("changed", &count("UPDATE").to_string()), ("moved", &count("MOVE").to_string()), ("deleted", &count("DELETE").to_string())],
+                ))
+                .size(12.5),
+            );
+            egui::ScrollArea::vertical().id_salt("catalog-import-preview").max_height(260.0).show(ui, |ui| {
+                for change in preview.changes.iter().take(400) {
+                    ui.horizontal_wrapped(|ui| {
+                        if change.entity.builders {
+                            ui.label(RichText::new("BC").size(11.0).strong().color(egui::Color32::from_rgb(226, 132, 10)));
+                        }
+                        let what = if change.entity.page { t("Page") } else { t("Offer") };
+                        ui.label(RichText::new(format!("{what} #{} {}", change.entity.id, change.name())).size(12.0).strong());
+                        ui.label(RichText::new(&change.operation).size(11.0).monospace().color(palette.muted));
+                        if change.operation == "UPDATE" || change.operation == "MOVE" {
+                            ui.label(RichText::new(change.fields().join(", ")).size(11.5).color(palette.muted));
+                        }
+                    });
+                }
+                if preview.changes.len() > 400 {
+                    widgets::muted(ui, palette, &tf("... and {count} more.", &[("count", &(preview.changes.len() - 400).to_string())]), 11.5);
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let label = tf("Apply {count} changes", &[("count", &preview.changes.len().to_string())]);
+                if ui.add_enabled(!busy && !preview.changes.is_empty(), widgets::primary_button(&label)).clicked() {
+                    actions.push(Action::ApplyImport);
+                }
+                if ui.add_enabled(!busy, small(t("Cancel"))).clicked() {
+                    cancel = true;
+                }
+                if preview.changes.is_empty() {
+                    ui.label(RichText::new(t("The file changes nothing: the catalogue is already like this.")).size(12.0).color(palette.muted));
+                }
+            });
+        });
+    }
+    if cancel {
+        s.transfer = None;
     }
 }

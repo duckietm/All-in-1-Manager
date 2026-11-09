@@ -201,7 +201,7 @@ impl InstallStep for CrowdSecStep {
             bullets: vec![
                 tf(
                     "Runs the CrowdSec security engine in Docker ({directory}, image {image}). It reads Traefik's access log; its API is only on 127.0.0.1.",
-                    &[("directory", crowdsec::DIRECTORY), ("image", crowdsec::IMAGE)],
+                    &[("directory", crowdsec::directory()), ("image", crowdsec::IMAGE)],
                 ),
                 t("Adds CrowdSec's bouncer plugin to Traefik, on every route (the hotel, the CMS, Polaris, Gitea): a banned address gets 403 Forbidden.").into(),
                 t("Behind Cloudflare it uses the visitor's real address (past Cloudflare's IP ranges), never Cloudflare's: the step checks how your domain is set up.").into(),

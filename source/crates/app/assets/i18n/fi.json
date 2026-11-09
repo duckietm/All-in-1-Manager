@@ -1237,7 +1237,6 @@
   "Running.": "Käynnissä.",
   "Running; port 3000 answers.": "Käynnissä; portti 3000 vastaa.",
   "Runs Gitea in Docker ({directory}, image {image}) with SQLite: no database to set up. Repositories and settings stay in {directory}/data.": "Ajaa Giteaa Dockerissa ({directory}, image {image}) SQLitellä: määritettävää tietokantaa ei ole. Repositoriot ja asetukset säilyvät kansiossa {directory}/data.",
-  "Runs Traefik v3 in Docker (/opt/traefik). With https it gets and renews a Let's Encrypt certificate.": "Ajaa Traefik v3:a Dockerissa (/opt/traefik). Https:llä se hakee ja uusii Let's Encrypt -varmenteen.",
   "Runs as the systemd service {service} (user www-data, {upstream}, started at boot). No PHP.": "Toimii systemd-palveluna {service} (käyttäjä www-data, {upstream}, käynnistyy käynnistyksen yhteydessä). Ei PHP:tä.",
   "Runs the CrowdSec security engine in Docker ({directory}, image {image}). It reads Traefik's access log; its API is only on 127.0.0.1.": "Ajaa CrowdSecin tietoturvamoottoria Dockerissa ({directory}, image {image}). Se lukee Traefikin pääsylokia; sen API on vain osoitteessa 127.0.0.1.",
   "Runs the emulator as root (Settings → Server layout; a normal account is safer); root owns {repository} and the log folder {logs}.": "Ajaa emulaattoria rootina (Asetukset → Palvelimen rakenne; tavallinen tili on turvallisempi); root omistaa kansion {repository} ja lokikansion {logs}.",
@@ -3520,5 +3519,12 @@
   "Paid for": "Maksettu",
   "The most of one offer bought in one purchase (1 to 1000).": "Yhden tarjouksen enimmäismäärä yhdessä ostossa (1–1000).",
   "Type :update_config and then :update_catalog in the hotel (or restart the emulator) to load the changes.": "Kirjoita hotellissa :update_config ja sitten :update_catalog (tai käynnistä emulaattori uudelleen) ladataksesi muutokset.",
-  "What a buyer pays": "Mitä ostaja maksaa"
+  "What a buyer pays": "Mitä ostaja maksaa",
+  "Runs Traefik v3 in Docker ({directory}). With https it gets and renews a Let's Encrypt certificate.": "Ajaa Traefik v3:a Dockerissa ({directory}). Https:llä se hakee ja uusii Let's Encrypt -varmenteen.",
+  "EpicNext source": "EpicNextin lähdekoodi",
+  "NGINX hotel logs": "NGINX-hotellin lokit",
+  "NGINX hotel site (file)": "NGINX-hotellisivusto (tiedosto)",
+  "Traefik logs": "Traefikin lokit",
+  "Web and other services": "Verkko ja muut palvelut",
+  "Where the installer puts (and looks for) the web server, the other CMS, Gitea and CrowdSec. Change them only when your server keeps these somewhere else; a part that is already installed is not moved.": "Mihin asennusohjelma laittaa (ja mistä se etsii) verkkopalvelimen, toisen CMS:n, Gitean ja CrowdSecin. Muuta niitä vain, jos palvelimesi pitää niitä muualla; jo asennettua osaa ei siirretä."
 }

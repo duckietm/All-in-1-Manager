@@ -1237,7 +1237,6 @@
   "Running.": "Çalışıyor.",
   "Running; port 3000 answers.": "Çalışıyor; port 3000 yanıt veriyor.",
   "Runs Gitea in Docker ({directory}, image {image}) with SQLite: no database to set up. Repositories and settings stay in {directory}/data.": "Gitea'yı Docker'da ({directory}, image {image}) SQLite ile çalıştırır: kurulacak veritabanı yok. Depolar ve ayarlar {directory}/data içinde kalır.",
-  "Runs Traefik v3 in Docker (/opt/traefik). With https it gets and renews a Let's Encrypt certificate.": "Traefik v3'ü Docker'da çalıştırır (/opt/traefik). https ile bir Let's Encrypt sertifikası alır ve yeniler.",
   "Runs as the systemd service {service} (user www-data, {upstream}, started at boot). No PHP.": "systemd servisi {service} olarak çalışır (kullanıcı www-data, {upstream}, açılışta başlatılır). PHP yok.",
   "Runs the CrowdSec security engine in Docker ({directory}, image {image}). It reads Traefik's access log; its API is only on 127.0.0.1.": "CrowdSec güvenlik motorunu Docker'da çalıştırır ({directory}, image {image}). Traefik'in erişim log'unu okur; API'si yalnızca 127.0.0.1 üzerindedir.",
   "Runs the emulator as root (Settings → Server layout; a normal account is safer); root owns {repository} and the log folder {logs}.": "Emülatörü root olarak çalıştırır (Ayarlar → Sunucu düzeni; normal bir hesap daha güvenlidir); {repository} ve log klasörü {logs} root'a ait olur.",
@@ -3520,5 +3519,12 @@
   "Paid for": "Ödenen",
   "The most of one offer bought in one purchase (1 to 1000).": "Tek bir satın almada bir teklifin en fazla miktarı (1 ile 1000).",
   "Type :update_config and then :update_catalog in the hotel (or restart the emulator) to load the changes.": "Değişiklikleri yüklemek için otelde :update_config ve ardından :update_catalog yaz (veya emülatörü yeniden başlat).",
-  "What a buyer pays": "Bir alıcının ödediği"
+  "What a buyer pays": "Bir alıcının ödediği",
+  "Runs Traefik v3 in Docker ({directory}). With https it gets and renews a Let's Encrypt certificate.": "Traefik v3'ü Docker'da çalıştırır ({directory}). https ile bir Let's Encrypt sertifikası alır ve yeniler.",
+  "EpicNext source": "EpicNext kaynağı",
+  "NGINX hotel logs": "NGINX otel günlükleri",
+  "NGINX hotel site (file)": "NGINX otel sitesi (dosya)",
+  "Traefik logs": "Traefik günlükleri",
+  "Web and other services": "Web ve diğer hizmetler",
+  "Where the installer puts (and looks for) the web server, the other CMS, Gitea and CrowdSec. Change them only when your server keeps these somewhere else; a part that is already installed is not moved.": "Kurucunun web sunucusunu, diğer CMS'i, Gitea'yı ve CrowdSec'i koyduğu (ve aradığı) yer. Sunucunuz bunları başka bir yerde tutuyorsa değiştirin; zaten kurulu bir parça taşınmaz."
 }

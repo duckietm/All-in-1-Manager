@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use aio_remote::web_access::{self, WebAccessSettings, NGINX_PORT, POLARIS_PORT, TRAEFIK_DIRECTORY};
+use aio_remote::web_access::{self, WebAccessSettings, NGINX_PORT, POLARIS_PORT};
 use aio_remote::{emulator, fail, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
@@ -151,7 +151,7 @@ impl InstallStep for WebAccessStep {
             description: t("How visitors reach the hotel: Traefik answers on ports 80 and 443 and passes everything on.").into(),
             bullets: vec![
                 t("Installs Docker Engine from the official Docker repository (docs.docker.com/engine/install); its signing key is checked.").into(),
-                t("Runs Traefik v3 in Docker (/opt/traefik). With https it gets and renews a Let's Encrypt certificate.").into(),
+                tf("Runs Traefik v3 in Docker ({directory}). With https it gets and renews a Let's Encrypt certificate.", &[("directory", web_access::traefik_directory())]),
                 tf("NGINX now only listens on localhost:{port}: Traefik sends the site there.", &[("port", NGINX_PORT)]),
                 tf(
                     "/ws (the game websocket) and /api go straight to Polaris on localhost:{port}; the address is added to the emulator's whitelist.",
@@ -230,7 +230,7 @@ impl InstallStep for WebAccessStep {
                     "{} {}",
                     tf(
                         "Docker {docker}, Traefik in {traefik}, NGINX on localhost:{port}.",
-                        &[("docker", &docker), ("traefik", TRAEFIK_DIRECTORY), ("port", NGINX_PORT)]
+                        &[("docker", &docker), ("traefik", web_access::traefik_directory()), ("port", NGINX_PORT)]
                     ),
                     t("You can skip this step, or set it up again (for example with another address).")
                 ),
@@ -368,7 +368,7 @@ impl InstallStep for WebAccessStep {
         let renew = if settings.https { format!(" {}", t("The certificate renews automatically.")) } else { String::new() };
         Ok(ui.succeeded(
             &tf("The hotel answers on {url}", &[("url", &url)]),
-            &format!("{routes}{renew} {}", tf("Settings: {directory}.", &[("directory", TRAEFIK_DIRECTORY)])),
+            &format!("{routes}{renew} {}", tf("Settings: {directory}.", &[("directory", web_access::traefik_directory())])),
         ))
     }
 }

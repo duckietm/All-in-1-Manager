@@ -1237,7 +1237,6 @@
   "Running.": "Rodando.",
   "Running; port 3000 answers.": "Rodando; a porta 3000 responde.",
   "Runs Gitea in Docker ({directory}, image {image}) with SQLite: no database to set up. Repositories and settings stay in {directory}/data.": "Roda o Gitea no Docker ({directory}, imagem {image}) com SQLite: nenhum banco de dados para configurar. Os repositórios e configurações ficam em {directory}/data.",
-  "Runs Traefik v3 in Docker (/opt/traefik). With https it gets and renews a Let's Encrypt certificate.": "Roda o Traefik v3 no Docker (/opt/traefik). Com https ele obtém e renova um certificado Let's Encrypt.",
   "Runs as the systemd service {service} (user www-data, {upstream}, started at boot). No PHP.": "Roda como o serviço systemd {service} (usuário www-data, {upstream}, iniciado no boot). Sem PHP.",
   "Runs the CrowdSec security engine in Docker ({directory}, image {image}). It reads Traefik's access log; its API is only on 127.0.0.1.": "Roda o security engine do CrowdSec no Docker ({directory}, imagem {image}). Ele lê o log de acesso do Traefik; a API dele fica só em 127.0.0.1.",
   "Runs the emulator as root (Settings → Server layout; a normal account is safer); root owns {repository} and the log folder {logs}.": "Roda o emulador como root (Configurações → Layout do servidor; uma conta normal é mais segura); o root é dono de {repository} e da pasta de logs {logs}.",
@@ -3520,5 +3519,12 @@
   "Paid for": "Pagos",
   "The most of one offer bought in one purchase (1 to 1000).": "O máximo de uma oferta numa só compra (1 a 1000).",
   "Type :update_config and then :update_catalog in the hotel (or restart the emulator) to load the changes.": "Escreve :update_config e depois :update_catalog no hotel (ou reinicia o emulador) para carregar as alterações.",
-  "What a buyer pays": "O que um comprador paga"
+  "What a buyer pays": "O que um comprador paga",
+  "Runs Traefik v3 in Docker ({directory}). With https it gets and renews a Let's Encrypt certificate.": "Roda o Traefik v3 no Docker ({directory}). Com https ele obtém e renova um certificado Let's Encrypt.",
+  "EpicNext source": "Código do EpicNext",
+  "NGINX hotel logs": "Registos NGINX do hotel",
+  "NGINX hotel site (file)": "Site NGINX do hotel (ficheiro)",
+  "Traefik logs": "Registos do Traefik",
+  "Web and other services": "Web e outros serviços",
+  "Where the installer puts (and looks for) the web server, the other CMS, Gitea and CrowdSec. Change them only when your server keeps these somewhere else; a part that is already installed is not moved.": "Onde o instalador põe (e procura) o servidor web, o outro CMS, o Gitea e o CrowdSec. Altere-os só se o seu servidor os guarda noutro sítio; uma parte já instalada não é movida."
 }

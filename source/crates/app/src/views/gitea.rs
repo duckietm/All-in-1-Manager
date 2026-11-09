@@ -156,7 +156,7 @@ impl InstallStep for GiteaStep {
             bullets: vec![
                 tf(
                     "Runs Gitea in Docker ({directory}, image {image}) with SQLite: no database to set up. Repositories and settings stay in {directory}/data.",
-                    &[("directory", gitea::DIRECTORY), ("image", gitea::IMAGE)],
+                    &[("directory", gitea::directory()), ("image", gitea::IMAGE)],
                 ),
                 tf(
                     "Its web port is only on 127.0.0.1 (the first free port from {first} to {last}); Traefik answers for the domain and gets a Let's Encrypt certificate, as for the hotel.",

@@ -1683,6 +1683,17 @@ afterwards so the row shows the new version.
   | Database backups | `/var/backups/all-in-1` |
   | Hotel database (for new MariaDB passwords files) | `habbo` |
 
+  Under **Web and other services**, for a server that keeps these elsewhere (a part already installed is not moved):
+
+  | Setting | Default |
+  |---|---|
+  | NGINX hotel site (file; a file in `sites-available` is linked into `sites-enabled`, one elsewhere such as `conf.d` is read as it is) | `/etc/nginx/sites-available/hotel` |
+  | NGINX hotel logs | `/var/log/nginx/hotel` |
+  | Traefik (compose, `dynamic/` routes, certificates) / Traefik logs | `/opt/traefik`, `/var/log/traefik` |
+  | EpicNext CMS / EpicNext source | `/var/www/epicnext`, `/var/www/epicnext-src` |
+  | Gitea | `/opt/gitea` |
+  | CrowdSec | `/opt/crowdsec` |
+
   **Emulator account** is a list of the server's accounts once you are logged in: `root`, the people's accounts and
   the accounts in group `www-data` (where the emulator's account lives), each with a short note. **+ Create a new
   user ...** at the bottom asks for a name and creates it on the server right away as a service account (no login,

@@ -42,11 +42,11 @@ fn result_message(domain: Option<&str>, deleted: bool) -> String {
         message += &tf("{domain} no longer reaches Gitea. ", &[("domain", domain)]);
     }
     message += &if deleted {
-        tf("{directory} is deleted.", &[("directory", gitea::DIRECTORY)])
+        tf("{directory} is deleted.", &[("directory", gitea::directory())])
     } else {
         tf(
             "Its repositories, accounts and settings stay in {directory}: Install Gitea brings them back.",
-            &[("directory", gitea::DIRECTORY)],
+            &[("directory", gitea::directory())],
         )
     };
     message += t(" Remove the domain's A record when you no longer need it.");
@@ -80,11 +80,11 @@ impl InstallStep for RemoveGiteaStep {
                 t("Stops and removes the Gitea container and its Docker network (docker compose down).").into(),
                 tf(
                     "Removes its Traefik route ({file}): Traefik no longer answers for Gitea's domain, and its port is free again.",
-                    &[("file", gitea::ROUTE_FILE)],
+                    &[("file", gitea::route_file())],
                 ),
                 tf(
                     "Keeps {directory} (the repositories, accounts and settings) unless you tick the box below: installing Gitea again then brings everything back.",
-                    &[("directory", gitea::DIRECTORY)],
+                    &[("directory", gitea::directory())],
                 ),
                 t("Remove the domain's A record from your DNS yourself when you no longer need it.").into(),
             ],
@@ -103,7 +103,7 @@ impl InstallStep for RemoveGiteaStep {
             &mut delete,
             tf(
                 "Also delete the repositories, accounts and settings ({directory}): this cannot be undone",
-                &[("directory", gitea::DIRECTORY)],
+                &[("directory", gitea::directory())],
             ),
         );
         ui.add(

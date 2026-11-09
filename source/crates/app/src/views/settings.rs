@@ -66,6 +66,14 @@ struct LayoutFields {
     atom_installed: usize,
     backups: String,
     database: String,
+    epicnext: String,
+    epicnext_source: String,
+    gitea: String,
+    traefik: String,
+    traefik_logs: String,
+    crowdsec: String,
+    nginx_site: String,
+    nginx_logs: String,
 }
 
 pub struct SettingsView {
@@ -182,6 +190,14 @@ impl SettingsView {
             },
             backups: layout.backups.clone(),
             database: layout.database.clone(),
+            epicnext: layout.epicnext.clone(),
+            epicnext_source: layout.epicnext_source.clone(),
+            gitea: layout.gitea.clone(),
+            traefik: layout.traefik.clone(),
+            traefik_logs: layout.traefik_logs.clone(),
+            crowdsec: layout.crowdsec.clone(),
+            nginx_site: layout.nginx_site.clone(),
+            nginx_logs: layout.nginx_logs.clone(),
         };
         self.account = layout.emulator_account.clone();
     }
@@ -551,6 +567,30 @@ impl SettingsView {
             row(ui, t("Database backups"), &mut layout.backups, "/var/backups/all-in-1");
             row(ui, t("Hotel database"), &mut layout.database, "habbo");
         });
+        ui.add_space(10.0);
+        ui.label(RichText::new(t("Web and other services")).size(13.5).strong());
+        widgets::muted(
+            ui,
+            palette,
+            t("Where the installer puts (and looks for) the web server, the other CMS, Gitea and CrowdSec. Change them only when your server keeps these somewhere else; a part that is already installed is not moved."),
+            12.0,
+        );
+        egui::Grid::new("settings-layout-services").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+            let layout = &mut self.layout;
+            let row = |ui: &mut egui::Ui, name: &str, value: &mut String, hint: &str| {
+                label(ui, palette, name);
+                ui.add(egui::TextEdit::singleline(value).hint_text(RichText::new(hint).color(palette.subtle)).font(egui::TextStyle::Monospace).desired_width(380.0));
+                ui.end_row();
+            };
+            row(ui, t("NGINX hotel site (file)"), &mut layout.nginx_site, "/etc/nginx/sites-available/hotel");
+            row(ui, t("NGINX hotel logs"), &mut layout.nginx_logs, "/var/log/nginx/hotel");
+            row(ui, "Traefik", &mut layout.traefik, "/opt/traefik");
+            row(ui, t("Traefik logs"), &mut layout.traefik_logs, "/var/log/traefik");
+            row(ui, "EpicNext CMS", &mut layout.epicnext, "/var/www/epicnext");
+            row(ui, t("EpicNext source"), &mut layout.epicnext_source, "/var/www/epicnext-src");
+            row(ui, "Gitea", &mut layout.gitea, "/opt/gitea");
+            row(ui, "CrowdSec", &mut layout.crowdsec, "/opt/crowdsec");
+        });
         // root works, but the emulator then has every right on the server.
         if self.account == ROOT_ACCOUNT {
             widgets::result_banner(
@@ -649,6 +689,14 @@ impl SettingsView {
             },
             backups: fields.backups.clone(),
             database: fields.database.clone(),
+            epicnext: fields.epicnext.clone(),
+            epicnext_source: fields.epicnext_source.clone(),
+            gitea: fields.gitea.clone(),
+            traefik: fields.traefik.clone(),
+            traefik_logs: fields.traefik_logs.clone(),
+            crowdsec: fields.crowdsec.clone(),
+            nginx_site: fields.nginx_site.clone(),
+            nginx_logs: fields.nginx_logs.clone(),
         };
         layout.normalize();
         if let Some(problem) = layout.validate() {

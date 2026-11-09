@@ -452,7 +452,7 @@ pub fn epicnext(site: Option<WebAccessSettings>, atom_tables: bool, steps: Steps
                 ui,
                 &tf(
                     "More settings (mail, Valkey, Turnstile, OAuth ...) are in {directory}/.env; afterwards: systemctl restart {service}.",
-                    &[("directory", epicnext::DIRECTORY), ("service", epicnext::SERVICE)],
+                    &[("directory", epicnext::directory()), ("service", epicnext::SERVICE)],
                 ),
                 13.0,
             );
@@ -524,13 +524,13 @@ pub fn gitea(settings: Option<GiteaSettings>, result: Option<GiteaResult>, login
                 ui,
                 &tf(
                     "Update Gitea: run this addon again. Its repositories, accounts and settings are in {directory}/data: include it in your backups.",
-                    &[("directory", gitea::DIRECTORY)],
+                    &[("directory", gitea::directory())],
                 ),
                 13.0,
             );
             colored(
                 ui,
-                &tf("Settings beyond these: {directory}/data/gitea/conf/app.ini (docs.gitea.com).", &[("directory", gitea::DIRECTORY)]),
+                &tf("Settings beyond these: {directory}/data/gitea/conf/app.ini (docs.gitea.com).", &[("directory", gitea::directory())]),
                 12.0,
                 palette.subtle,
             );
@@ -547,9 +547,9 @@ pub fn remove_gitea(domain: Option<String>, data_deleted: bool, steps: Steps) ->
         } else {
             let mut text = domain.as_deref().map(|d| format!("{} ", tf("{domain} no longer reaches Gitea.", &[("domain", d)]))).unwrap_or_default();
             text.push_str(&if data_deleted {
-                tf("{directory} is deleted.", &[("directory", gitea::DIRECTORY)])
+                tf("{directory} is deleted.", &[("directory", gitea::directory())])
             } else {
-                tf("Its repositories, accounts and settings stay in {directory}.", &[("directory", gitea::DIRECTORY)])
+                tf("Its repositories, accounts and settings stay in {directory}.", &[("directory", gitea::directory())])
             });
             text
         };
@@ -806,7 +806,7 @@ pub fn crowdsec(site: Option<WebAccessSettings>, name: Option<String>, enrolled_
                 ui,
                 &tf(
                     "If CrowdSec stops, the hotel stays reachable (nobody is blocked until it runs again). Traefik's access log: {log} (a week kept).",
-                    &[("log", crowdsec::ACCESS_LOG)],
+                    &[("log", crowdsec::access_log())],
                 ),
                 12.0,
                 palette.subtle,
@@ -824,7 +824,7 @@ pub fn crowdsec(site: Option<WebAccessSettings>, name: Option<String>, enrolled_
                 ui,
                 &tf(
                     "Update CrowdSec: run this addon again (its data and enrollment stay). Your own compose additions go in {directory}/compose.override.yaml.",
-                    &[("directory", crowdsec::DIRECTORY)],
+                    &[("directory", crowdsec::directory())],
                 ),
                 12.0,
                 palette.subtle,
@@ -844,9 +844,9 @@ pub fn remove_crowdsec(data_deleted: bool, steps: Steps) -> Box<dyn FinishPage> 
                 "{} {}",
                 t("Traefik no longer checks visitors with CrowdSec."),
                 if data_deleted {
-                    tf("{directory} is deleted.", &[("directory", crowdsec::DIRECTORY)])
+                    tf("{directory} is deleted.", &[("directory", crowdsec::directory())])
                 } else {
-                    tf("Its data and enrollment stay in {directory}.", &[("directory", crowdsec::DIRECTORY)])
+                    tf("Its data and enrollment stay in {directory}.", &[("directory", crowdsec::directory())])
                 }
             )
         };

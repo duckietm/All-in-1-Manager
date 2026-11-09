@@ -109,7 +109,7 @@ map $http_upgrade $cms_{{name}}_connection {
 "#;
 
 const CONFIG: &str = r#"# {{name}}: the hotel's website (written by All-in-1 Manager, Addons → CMS). {{what}}.
-# Traefik (/opt/traefik) passes {{Url}} here, except /client, /gamedata and /custom (the hotel site on
+# Traefik ({{TraefikDirectory}}) passes {{Url}} here, except /client, /gamedata and /custom (the hotel site on
 # 127.0.0.1:{{HotelPort}}) and Polaris' /ws and /api paths.
 
 {{proxyHttp}}server {
@@ -163,10 +163,11 @@ fn config(site: &WebAccessSettings, name: &str, root: &str, php: bool, proxy: Op
         CONFIG,
         &[
             ("Url", &site.url()),
+            ("TraefikDirectory", crate::web_access::traefik_directory()),
             ("HotelPort", hotel_site::PORT),
             ("serverName", &hotel_site::server_name(site)),
             ("RealIpFile", hotel_site::REAL_IP_FILE),
-            ("LogDirectory", hotel_site::LOG_DIRECTORY),
+            ("LogDirectory", hotel_site::log_directory()),
             ("hsts", hsts),
             ("what", &what),
             ("name", name),
@@ -228,7 +229,7 @@ pub fn write_script(site: &WebAccessSettings, name: &str, root: &str, php: bool,
         WRITE,
         &[
             ("File", &file(name)),
-            ("LogDirectory", hotel_site::LOG_DIRECTORY),
+            ("LogDirectory", hotel_site::log_directory()),
             ("what", &what),
             ("name", name),
             ("EpicNextSite", crate::epicnext::SITE_NAME),

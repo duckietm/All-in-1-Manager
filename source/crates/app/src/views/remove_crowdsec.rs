@@ -29,11 +29,11 @@ impl RemoveCrowdSecStep {
 
 fn result_message(deleted: bool) -> String {
     let middle = if deleted {
-        tf("{directory} is deleted.", &[("directory", crowdsec::DIRECTORY)])
+        tf("{directory} is deleted.", &[("directory", crowdsec::directory())])
     } else {
         tf(
             "Its data and enrollment stay in {directory}: Install CrowdSec brings it back without a new key.",
-            &[("directory", crowdsec::DIRECTORY)],
+            &[("directory", crowdsec::directory())],
         )
     };
     format!(
@@ -74,7 +74,7 @@ impl InstallStep for RemoveCrowdSecStep {
                 t("Stops and removes the CrowdSec container (docker compose down).").into(),
                 tf(
                     "Keeps {directory} (its data and the enrollment) unless you tick the box below: installing again then needs no new key.",
-                    &[("directory", crowdsec::DIRECTORY)],
+                    &[("directory", crowdsec::directory())],
                 ),
                 t("Remove the engine from your CrowdSec console yourself when you no longer need it (Security Engines → the engine → Remove).").into(),
             ],
@@ -93,7 +93,7 @@ impl InstallStep for RemoveCrowdSecStep {
             &mut delete,
             tf(
                 "Also delete CrowdSec's data and enrollment ({directory}): installing again then needs a new key",
-                &[("directory", crowdsec::DIRECTORY)],
+                &[("directory", crowdsec::directory())],
             ),
         );
     }

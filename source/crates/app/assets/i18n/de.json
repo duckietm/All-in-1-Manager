@@ -1237,7 +1237,6 @@
   "Running.": "Läuft.",
   "Running; port 3000 answers.": "Läuft; Port 3000 antwortet.",
   "Runs Gitea in Docker ({directory}, image {image}) with SQLite: no database to set up. Repositories and settings stay in {directory}/data.": "Betreibt Gitea in Docker ({directory}, Image {image}) mit SQLite: keine Datenbank einzurichten. Repositorys und Einstellungen bleiben in {directory}/data.",
-  "Runs Traefik v3 in Docker (/opt/traefik). With https it gets and renews a Let's Encrypt certificate.": "Betreibt Traefik v3 in Docker (/opt/traefik). Mit https holt und erneuert es ein Let's-Encrypt-Zertifikat.",
   "Runs as the systemd service {service} (user www-data, {upstream}, started at boot). No PHP.": "Läuft als systemd-Dienst {service} (Benutzer www-data, {upstream}, beim Booten gestartet). Kein PHP.",
   "Runs the CrowdSec security engine in Docker ({directory}, image {image}). It reads Traefik's access log; its API is only on 127.0.0.1.": "Betreibt die CrowdSec-Security-Engine in Docker ({directory}, Image {image}). Sie liest das Access-Log von Traefik; ihre API ist nur auf 127.0.0.1.",
   "Runs the emulator as root (Settings → Server layout; a normal account is safer); root owns {repository} and the log folder {logs}.": "Betreibt den Emulator als root (Einstellungen → Server-Layout; ein normales Konto ist sicherer); root gehören {repository} und der Log-Ordner {logs}.",
@@ -3520,5 +3519,12 @@
   "Paid for": "Bezahlt",
   "The most of one offer bought in one purchase (1 to 1000).": "Die höchste Anzahl eines Angebots in einem Kauf (1 bis 1000).",
   "Type :update_config and then :update_catalog in the hotel (or restart the emulator) to load the changes.": "Tippe :update_config und danach :update_catalog im Hotel (oder starte den Emulator neu), um die Änderungen zu laden.",
-  "What a buyer pays": "Was ein Käufer bezahlt"
+  "What a buyer pays": "Was ein Käufer bezahlt",
+  "Runs Traefik v3 in Docker ({directory}). With https it gets and renews a Let's Encrypt certificate.": "Betreibt Traefik v3 in Docker ({directory}). Mit https holt und erneuert es ein Let's-Encrypt-Zertifikat.",
+  "EpicNext source": "EpicNext-Quellcode",
+  "NGINX hotel logs": "NGINX-Hotel-Logs",
+  "NGINX hotel site (file)": "NGINX-Hotel-Site (Datei)",
+  "Traefik logs": "Traefik-Logs",
+  "Web and other services": "Web und andere Dienste",
+  "Where the installer puts (and looks for) the web server, the other CMS, Gitea and CrowdSec. Change them only when your server keeps these somewhere else; a part that is already installed is not moved.": "Wo der Installer den Webserver, das andere CMS, Gitea und CrowdSec ablegt (und sucht). Ändere sie nur, wenn dein Server sie woanders hat; ein bereits installierter Teil wird nicht verschoben."
 }

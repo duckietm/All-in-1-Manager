@@ -1121,7 +1121,7 @@ async fn update_gitea(job: &Job) -> Result<()> {
             t("Update Gitea?"),
             &tf(
                 "Downloads the newest {image} image and restarts Gitea when it changed. The repositories, accounts and settings in {directory}/data stay; {domain} is away for a few seconds.",
-                &[("image", gitea::IMAGE), ("directory", gitea::DIRECTORY), ("domain", &domain)],
+                &[("image", gitea::IMAGE), ("directory", gitea::directory()), ("domain", &domain)],
             ),
             t("Update Gitea"),
         )

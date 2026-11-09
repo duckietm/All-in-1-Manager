@@ -1237,7 +1237,6 @@
   "Running.": "In esecuzione.",
   "Running; port 3000 answers.": "In esecuzione; la porta 3000 risponde.",
   "Runs Gitea in Docker ({directory}, image {image}) with SQLite: no database to set up. Repositories and settings stay in {directory}/data.": "Esegue Gitea in Docker ({directory}, immagine {image}) con SQLite: nessun database da configurare. Repository e impostazioni restano in {directory}/data.",
-  "Runs Traefik v3 in Docker (/opt/traefik). With https it gets and renews a Let's Encrypt certificate.": "Esegue Traefik v3 in Docker (/opt/traefik). Con https ottiene e rinnova un certificato Let's Encrypt.",
   "Runs as the systemd service {service} (user www-data, {upstream}, started at boot). No PHP.": "Gira come servizio systemd {service} (utente www-data, {upstream}, avviato all'avvio del sistema). Niente PHP.",
   "Runs the CrowdSec security engine in Docker ({directory}, image {image}). It reads Traefik's access log; its API is only on 127.0.0.1.": "Esegue il security engine di CrowdSec in Docker ({directory}, immagine {image}). Legge l'access log di Traefik; la sua API è solo su 127.0.0.1.",
   "Runs the emulator as root (Settings → Server layout; a normal account is safer); root owns {repository} and the log folder {logs}.": "Esegue l'emulatore come root (Impostazioni → Struttura del server; un account normale è più sicuro); root è proprietario di {repository} e della cartella dei log {logs}.",
@@ -3520,5 +3519,12 @@
   "Paid for": "Pagati",
   "The most of one offer bought in one purchase (1 to 1000).": "Il massimo di un'offerta in un solo acquisto (da 1 a 1000).",
   "Type :update_config and then :update_catalog in the hotel (or restart the emulator) to load the changes.": "Digita :update_config e poi :update_catalog nell'hotel (o riavvia l'emulatore) per caricare le modifiche.",
-  "What a buyer pays": "Quanto paga un acquirente"
+  "What a buyer pays": "Quanto paga un acquirente",
+  "Runs Traefik v3 in Docker ({directory}). With https it gets and renews a Let's Encrypt certificate.": "Esegue Traefik v3 in Docker ({directory}). Con https ottiene e rinnova un certificato Let's Encrypt.",
+  "EpicNext source": "Sorgente di EpicNext",
+  "NGINX hotel logs": "Log NGINX dell'hotel",
+  "NGINX hotel site (file)": "Sito NGINX dell'hotel (file)",
+  "Traefik logs": "Log di Traefik",
+  "Web and other services": "Web e altri servizi",
+  "Where the installer puts (and looks for) the web server, the other CMS, Gitea and CrowdSec. Change them only when your server keeps these somewhere else; a part that is already installed is not moved.": "Dove l'installer mette (e cerca) il server web, l'altro CMS, Gitea e CrowdSec. Cambiali solo se il tuo server li tiene altrove; una parte già installata non viene spostata."
 }

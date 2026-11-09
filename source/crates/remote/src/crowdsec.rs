@@ -2,7 +2,10 @@
 //!
 //! PORTING: the items above the line are used by other modules; keep their names and signatures.
 
-pub const DIRECTORY: &str = "/opt/crowdsec";
+/// CrowdSec's folder (Settings → Server layout).
+pub fn directory() -> &'static str {
+    &aio_core::ServerLayout::current().crowdsec
+}
 pub const CONTAINER: &str = "crowdsec";
 pub const IMAGE: &str = "crowdsecurity/crowdsec:latest";
 pub const CONSOLE_URL: &str = "https://app.crowdsec.net";
@@ -12,14 +15,21 @@ pub const MIDDLEWARE: &str = "crowdsec";
 pub const PLUGIN: &str = "crowdsec";
 pub const PLUGIN_MODULE: &str = "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin";
 pub const PLUGIN_VERSION: &str = "v1.8.1";
-pub const ACCESS_LOG_DIRECTORY: &str = "/var/log/traefik";
-pub const ACCESS_LOG: &str = "/var/log/traefik/access.log";
+/// Traefik's access log folder and file (Settings → Server layout).
+pub fn access_log_directory() -> &'static str {
+    &aio_core::ServerLayout::current().traefik_logs
+}
+
+pub fn access_log() -> &'static str {
+    static LOG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LOG.get_or_init(|| format!("{}/access.log", access_log_directory()))
+}
 pub const COLLECTIONS: &str = "crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/whitelist-good-actors";
 /// The version that runs: "v1.8.1".
 pub const VERSION_COMMAND: &str = "docker exec crowdsec cscli version 2>&1 | awk '/^version:/ {print $2}' | cut -d- -f1";
 
 pub fn middleware_file() -> String {
-    format!("{}/dynamic/crowdsec.yml", crate::web_access::TRAEFIK_DIRECTORY)
+    format!("{}/dynamic/crowdsec.yml", crate::web_access::traefik_directory())
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -154,8 +164,8 @@ pub async fn inspect(server: &dyn Server) -> Result<CrowdSecState> {
     let body = fill(
         INSPECT,
         &[
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
-            ("Directory", DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
+            ("Directory", directory()),
             ("MiddlewareFile", &middleware_file()),
             ("Container", CONTAINER),
             ("GoRunning", GO_RUNNING),
@@ -326,9 +336,9 @@ pub async fn install_engine(server: &dyn Server, settings: &CrowdSecSettings, lo
     let body = fill(
         INSTALL_ENGINE,
         &[
-            ("Directory", DIRECTORY),
-            ("AccessLogDirectory", ACCESS_LOG_DIRECTORY),
-            ("AccessLog", ACCESS_LOG),
+            ("Directory", directory()),
+            ("AccessLogDirectory", access_log_directory()),
+            ("AccessLog", access_log()),
             ("InstanceName", &settings.instance_name),
             ("Whitelist", &settings.whitelist.join(" ")),
             ("assets", &assets),
@@ -382,7 +392,7 @@ pub async fn enroll(server: &dyn Server, key: &str, name: &str, log: Log<'_>) ->
     let body = fill(
         ENROLL,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("Container", CONTAINER),
             ("quotedName", &shell_quote(name)),
             ("clean", &clean),
@@ -437,7 +447,7 @@ fn middleware_script(port: i64, whitelist: &[String], cloudflare: bool) -> Strin
     fill(
         MIDDLEWARE_SCRIPT,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("cloudflare", if cloudflare { "yes" } else { "no" }),
             ("MiddlewareFile", &middleware_file()),
             ("Middleware", MIDDLEWARE),
@@ -513,8 +523,8 @@ pub async fn configure_traefik(server: &dyn Server, site: &WebAccessSettings, wh
     let body = fill(
         CONFIGURE_TRAEFIK,
         &[
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
-            ("Directory", DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
+            ("Directory", directory()),
             ("MiddlewareFile", &middleware_file()),
             ("probe", &probe_function(site)),
             ("middleware", &middleware),
@@ -551,7 +561,7 @@ true"#;
 pub async fn test(server: &dyn Server, site: &WebAccessSettings, log: Log<'_>) -> Result<CrowdSecResult> {
     let body = fill(
         TEST,
-        &[("Container", CONTAINER), ("BouncerName", BOUNCER_NAME), ("AccessLog", ACCESS_LOG), ("probe", &probe_function(site))],
+        &[("Container", CONTAINER), ("BouncerName", BOUNCER_NAME), ("AccessLog", access_log()), ("probe", &probe_function(site))],
     );
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Testing CrowdSec failed", &["BOUNCER", "LOGREAD"], None).await?;
     Ok(CrowdSecResult { bouncer_connected: values.yes("BOUNCER"), log_read: values.yes("LOGREAD") })
@@ -571,7 +581,7 @@ pub async fn save_whitelist(server: &dyn Server, site: &WebAccessSettings, port:
         &[
             ("Container", CONTAINER),
             ("whitelist", &whitelist.join(" ")),
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("MiddlewareFile", &middleware_file()),
             ("allowlist", &allowlist_script(whitelist)),
             ("middleware", &middleware_script(port, whitelist, site.cloudflare)),
@@ -621,13 +631,13 @@ fi"#;
 /// restarts the bouncer keeps its ban list and the hotel stays reachable.
 pub async fn update(server: &dyn Server, log: Log<'_>) -> Result<()> {
     let ready = format!("docker exec {CONTAINER} cscli lapi status >/dev/null 2>&1");
-    server_tools::update_image(server, "CrowdSec", DIRECTORY, CONTAINER, VERSION_COMMAND, &ready, log).await?;
+    server_tools::update_image(server, "CrowdSec", directory(), CONTAINER, VERSION_COMMAND, &ready, log).await?;
     let body = fill(
         UPDATE_RULES,
         &[
             ("Container", CONTAINER),
             ("Plugin", PLUGIN),
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
             ("PluginVersion", PLUGIN_VERSION),
         ],
     );
@@ -667,7 +677,7 @@ pub async fn remove(server: &dyn Server, site: Option<&WebAccessSettings>, delet
         Some(site) => fill(
             REMOVE_TRAEFIK,
             &[
-                ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+                ("TraefikDirectory", web_access::traefik_directory()),
                 ("MiddlewareFile", &middleware_file()),
                 ("waitForTraefik", &web_access::wait_for_traefik_script()),
                 ("staticConfig", &web_access::static_config_script(site)),
@@ -677,7 +687,7 @@ pub async fn remove(server: &dyn Server, site: Option<&WebAccessSettings>, delet
     let body = fill(
         REMOVE,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("Container", CONTAINER),
             ("deleteData", if delete_data { "yes" } else { "no" }),
             ("Image", IMAGE),

@@ -49,10 +49,18 @@ impl EpicNextState {
 pub const REPOSITORY: &str = "https://gitea.epicnabbo.nl/Remco/EpicNext-Cms.git";
 pub const REPOSITORY_FOLDER: &str = "";
 /// A checkout of the repository when the CMS is in a folder of it; the folder is copied to [`DIRECTORY`].
-pub const SOURCE_DIRECTORY: &str = "/var/www/epicnext-src";
-const SOURCE_INFO: &str = "/var/www/epicnext-src/.all-in-1-source";
+pub fn source_directory() -> &'static str {
+    &aio_core::ServerLayout::current().epicnext_source
+}
+fn source_info() -> &'static str {
+    static INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INFO.get_or_init(|| format!("{}/.all-in-1-source", source_directory()))
+}
 pub const NAME: &str = "EpicNext CMS";
-pub const DIRECTORY: &str = "/var/www/epicnext";
+/// The CMS folder (Settings → Server layout).
+pub fn directory() -> &'static str {
+    &aio_core::ServerLayout::current().epicnext
+}
 pub const SERVICE_FILE: &str = "/etc/systemd/system/epicnext-cms.service";
 pub const PORT: u16 = 3002;
 pub const UPSTREAM: &str = "http://127.0.0.1:3002";
@@ -99,7 +107,7 @@ const STOP_SERVICE: &str = r#"if [ -d /run/systemd/system ]; then systemctl stop
 else pkill -u www-data -f '{{Directory}}/node_modules/next/' 2>/dev/null || true; fi"#;
 
 fn stop_service() -> String {
-    fill(STOP_SERVICE, &[("Service", SERVICE), ("Directory", DIRECTORY)])
+    fill(STOP_SERVICE, &[("Service", SERVICE), ("Directory", directory())])
 }
 
 const INSPECT: &str = r#"d={{Directory}}
@@ -121,8 +129,8 @@ pub async fn inspect(server: &dyn Server) -> Result<EpicNextState> {
     let script = fill(
         INSPECT,
         &[
-            ("Directory", DIRECTORY),
-            ("SourceInfo", SOURCE_INFO),
+            ("Directory", directory()),
+            ("SourceInfo", source_info()),
             ("ServiceFile", SERVICE_FILE),
             ("Upstream", UPSTREAM),
             ("EmulatorDirectory", &emulator::directory()),
@@ -219,12 +227,12 @@ pub async fn get_from_folder(server: &dyn Server, url: &str, branch: &str, folde
         GET_FROM_FOLDER,
         &[
             ("Environment", ENVIRONMENT),
-            ("SourceDirectory", SOURCE_DIRECTORY),
-            ("Directory", DIRECTORY),
+            ("SourceDirectory", source_directory()),
+            ("Directory", directory()),
             ("url", &shell_quote(url)),
             ("branch", &shell_quote(branch)),
             ("folder", &shell_quote(folder)),
-            ("SourceInfo", SOURCE_INFO),
+            ("SourceInfo", source_info()),
         ],
     );
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Getting EpicNext failed", &["COMMIT"], None).await?;
@@ -256,7 +264,7 @@ echo "  pnpm $p (corepack)""#;
 
 /// Node.js 26.12.1 or newer (apt upgrades an older Node.js 26 from NodeSource) and pnpm through corepack.
 pub async fn prepare_tools(server: &dyn Server, log: Log<'_>) -> Result<()> {
-    let body = fill(PREPARE_TOOLS, &[("Environment", ENVIRONMENT), ("NodeMinimum", NODE_MINIMUM), ("Directory", DIRECTORY)]);
+    let body = fill(PREPARE_TOOLS, &[("Environment", ENVIRONMENT), ("NodeMinimum", NODE_MINIMUM), ("Directory", directory())]);
     script::run(server, &script::with_prelude(&body), log, "Preparing Node.js and pnpm failed", None).await
 }
 
@@ -368,7 +376,7 @@ pub async fn configure_env(
     let body = fill(
         CONFIGURE_ENV,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("sets", &sets),
             ("EmulatorDirectory", &emulator::directory()),
             ("CmsUser", &shell_quote(credentials.map(|c| c.cms_user.as_str()).unwrap_or(""))),
@@ -534,12 +542,12 @@ pub async fn build(server: &dyn Server, log: Log<'_>) -> Result<()> {
         BUILD,
         &[
             ("Environment", ENVIRONMENT),
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("Gamedata", &octane::gamedata()),
             ("OldGamedataLink", OLD_GAMEDATA_LINK),
             ("EmulatorDirectory", &emulator::directory()),
-            ("SourceInfo", SOURCE_INFO),
-            ("SourceDirectory", SOURCE_DIRECTORY),
+            ("SourceInfo", source_info()),
+            ("SourceDirectory", source_directory()),
             ("StopService", &stop_service()),
             ("BaseSchemaScript", BASE_SCHEMA_SCRIPT),
         ],
@@ -602,13 +610,13 @@ echo "  {{Upstream}}/ answers HTTP $code""#;
 
 /// The systemd service (as www-data, on 127.0.0.1:3002, at boot), started and waited for.
 pub async fn start_service(server: &dyn Server, log: Log<'_>) -> Result<()> {
-    let start = format!("/usr/bin/node {DIRECTORY}/node_modules/next/dist/bin/next start -H 127.0.0.1 -p {PORT}");
+    let start = format!("/usr/bin/node {}/node_modules/next/dist/bin/next start -H 127.0.0.1 -p {PORT}", directory());
     let body = fill(
         START_SERVICE,
         &[
             ("Environment", ENVIRONMENT),
             ("Port", &PORT.to_string()),
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("ServiceFile", SERVICE_FILE),
             ("SiteName", SITE_NAME),
             ("start", &start),
@@ -644,7 +652,7 @@ pub async fn remove_service(server: &dyn Server, delete: bool, log: Log<'_>) -> 
             ("delete", if delete { "yes" } else { "no" }),
             ("ServiceFile", SERVICE_FILE),
             ("OldGamedataLink", OLD_GAMEDATA_LINK),
-            ("SourceDirectory", SOURCE_DIRECTORY),
+            ("SourceDirectory", source_directory()),
         ],
     );
     script::run(server, &script::with_prelude(&body), log, "Stopping EpicNext failed", None).await

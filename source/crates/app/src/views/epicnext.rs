@@ -90,7 +90,7 @@ impl InstallStep for EpicNextStep {
             bullets: vec![
                 tf(
                     "Clones EpicNext into {directory}, by default from its own repository ({repository}); a folder of another repository works too. Later runs update it.",
-                    &[("directory", epicnext::DIRECTORY), ("repository", epicnext::REPOSITORY)],
+                    &[("directory", epicnext::directory()), ("repository", epicnext::REPOSITORY)],
                 ),
                 tf(
                     "Node.js {node} or newer and pnpm (through corepack), then pnpm install, pnpm db:migrate (only EpicNext's own tables) and pnpm build, under its memory cap.",
@@ -228,7 +228,7 @@ impl InstallStep for EpicNextStep {
             let form = self.form.lock().unwrap();
             (form.hotel_name.trim().to_string(), form.git_url.trim().to_string(), form.branch.trim().to_string(), clean_folder(&form.folder))
         };
-        let directory = epicnext::DIRECTORY;
+        let directory = epicnext::directory();
         let log = ui.logger();
         let host = server.login().host.clone();
         let server = server.as_ref();

@@ -29,6 +29,19 @@ pub struct ServerLayout {
     pub atom_cms_installed: AtomCmsPresence,
     pub backups: String,
     pub database: String,
+    /// The EpicNext CMS (its build) and the folder its source is cloned to.
+    pub epicnext: String,
+    pub epicnext_source: String,
+    /// Gitea's docker compose folder.
+    pub gitea: String,
+    /// Traefik's folder (compose, `dynamic/` routes, certificates) and its access log folder.
+    pub traefik: String,
+    pub traefik_logs: String,
+    /// CrowdSec's docker compose folder.
+    pub crowdsec: String,
+    /// The hotel's NGINX site file and its log folder.
+    pub nginx_site: String,
+    pub nginx_logs: String,
 }
 
 impl Default for ServerLayout {
@@ -44,6 +57,14 @@ impl Default for ServerLayout {
             atom_cms_installed: AtomCmsPresence::Detect,
             backups: "/var/backups/all-in-1".into(),
             database: "habbo".into(),
+            epicnext: "/var/www/epicnext".into(),
+            epicnext_source: "/var/www/epicnext-src".into(),
+            gitea: "/opt/gitea".into(),
+            traefik: "/opt/traefik".into(),
+            traefik_logs: "/var/log/traefik".into(),
+            crowdsec: "/opt/crowdsec".into(),
+            nginx_site: "/etc/nginx/sites-available/hotel".into(),
+            nginx_logs: "/var/log/nginx/hotel".into(),
         }
     }
 }
@@ -113,8 +134,8 @@ impl ServerLayout {
     }
 
     /// The paths with their names, for checks and messages.
-    pub fn paths(&self) -> [(&'static str, &str); 7] {
-        [
+    pub fn paths(&self) -> Vec<(&'static str, &str)> {
+        vec![
             ("Emulator", &self.emulator_repository),
             ("Emulator logs", &self.emulator_logs),
             ("Octane", &self.octane),
@@ -122,6 +143,14 @@ impl ServerLayout {
             ("Gamedata", &self.gamedata),
             ("AtomCMS", &self.atom_cms),
             ("Database backups", &self.backups),
+            ("EpicNext CMS", &self.epicnext),
+            ("EpicNext source", &self.epicnext_source),
+            ("Gitea", &self.gitea),
+            ("Traefik", &self.traefik),
+            ("Traefik logs", &self.traefik_logs),
+            ("CrowdSec", &self.crowdsec),
+            ("NGINX hotel site", &self.nginx_site),
+            ("NGINX hotel logs", &self.nginx_logs),
         ]
     }
 
@@ -134,7 +163,7 @@ impl ServerLayout {
                 ));
             }
             let trimmed = value.trim_end_matches('/');
-            if trimmed.chars().count() < 2 || matches!(trimmed, "/var" | "/var/www" | "/usr" | "/etc" | "/opt" | "/home" | "/root" | "/tmp") {
+            if trimmed.chars().count() < 2 || matches!(trimmed, "/var" | "/var/www" | "/var/log" | "/usr" | "/etc" | "/etc/nginx" | "/opt" | "/home" | "/root" | "/tmp") {
                 return Some(format!("{name}: \"{value}\" is a system folder; use a folder of its own inside it."));
             }
         }
@@ -173,6 +202,18 @@ impl ServerLayout {
         self.gamedata = clean(&self.gamedata);
         self.atom_cms = clean(&self.atom_cms);
         self.backups = clean(&self.backups);
+        for path in [
+            &mut self.epicnext,
+            &mut self.epicnext_source,
+            &mut self.gitea,
+            &mut self.traefik,
+            &mut self.traefik_logs,
+            &mut self.crowdsec,
+            &mut self.nginx_site,
+            &mut self.nginx_logs,
+        ] {
+            *path = clean(path);
+        }
         self.emulator_account = self.emulator_account.trim().to_string();
         self.database = self.database.trim().to_string();
     }
@@ -186,6 +227,21 @@ mod tests {
     fn defaults_are_valid() {
         assert_eq!(ServerLayout::default().validate(), None);
         assert_eq!(ServerLayout::default().emulator_home(), "/var/lib/emulator");
+    }
+
+    #[test]
+    fn the_service_folders_are_checked_too() {
+        let layout = ServerLayout { gitea: "/opt/traefik".into(), ..Default::default() };
+        assert!(layout.validate().unwrap().contains("same folder"));
+        let layout = ServerLayout { traefik_logs: "/var/log".into(), ..Default::default() };
+        assert!(layout.validate().unwrap().contains("system folder"));
+        let mut layout = ServerLayout { nginx_site: " /etc/nginx/conf.d/hotel.conf/ ".into(), ..Default::default() };
+        layout.normalize();
+        assert_eq!(layout.nginx_site, "/etc/nginx/conf.d/hotel.conf");
+        assert_eq!(layout.validate(), None);
+        // Settings saved before these existed get the defaults.
+        let old: ServerLayout = serde_json::from_str(r#"{"Gamedata": "/srv/gamedata"}"#).unwrap();
+        assert_eq!((old.gamedata.as_str(), old.traefik.as_str()), ("/srv/gamedata", "/opt/traefik"));
     }
 
     #[test]

@@ -52,7 +52,7 @@ fn cms(site: &WebAccessSettings) -> Option<(String, String)> {
     if site.atom_cms {
         Some((atom_cms::SITE_NAME.into(), atom_cms::directory()))
     } else if site.epic_next {
-        Some((epicnext::SITE_NAME.into(), epicnext::DIRECTORY.into()))
+        Some((epicnext::SITE_NAME.into(), epicnext::directory().into()))
     } else {
         match &site.custom_cms {
             Some(name) if custom_cms::name_problem(name).is_none() => Some((name.clone(), custom_cms::directory(name))),
@@ -253,7 +253,7 @@ mod tests {
         assert_eq!(cms(&site), None);
         assert_eq!(delete_what(&site), "");
         site.epic_next = true;
-        assert_eq!(cms(&site), Some((epicnext::SITE_NAME.to_string(), epicnext::DIRECTORY.to_string())));
+        assert_eq!(cms(&site), Some((epicnext::SITE_NAME.to_string(), epicnext::directory().to_string())));
         assert!(delete_what(&site).contains(epicnext::SERVICE));
         site.epic_next = false;
         site.custom_cms = Some("mycms".into());

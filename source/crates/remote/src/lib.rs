@@ -18,6 +18,7 @@ pub mod cms_site;
 pub mod crowdsec;
 pub mod custom_cms;
 pub mod default_catalog;
+pub mod discount_rules;
 pub mod dev_tools;
 pub mod doctor;
 pub mod emulator;

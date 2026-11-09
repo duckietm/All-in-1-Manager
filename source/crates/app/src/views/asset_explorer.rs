@@ -344,7 +344,8 @@ fn load_local(location: &str) -> std::io::Result<Vec<Item>> {
             continue;
         }
         let path = entry.path();
-        let is_directory = path.is_dir();
+        // A link is followed to see whether it is a folder; anything else is known from its metadata already.
+        let is_directory = if metadata.file_type().is_symlink() { path.is_dir() } else { metadata.is_dir() };
         let item = Item {
             name: entry.file_name().to_string_lossy().into_owned(),
             is_directory,
@@ -397,8 +398,11 @@ fn local_size(path: &Path) -> i64 {
 
 struct Preview {
     request: u64,
-    image: egui::ColorImage,
+    image: Arc<egui::ColorImage>,
 }
+
+/// The previews shown last (file, size and date as the key), so going back to one is instant.
+const PREVIEW_CACHE: usize = 24;
 
 #[derive(Default)]
 struct State {
@@ -412,6 +416,11 @@ struct State {
     preview_text: String,
     preview_request: u64,
     preview: Option<Preview>,
+    /// The pane whose selection changed and wants a preview, and whether the preview worker runs: one at a time,
+    /// always for the latest selection, so holding an arrow key does not start a download per row.
+    preview_wanted: Option<Side>,
+    preview_running: bool,
+    preview_cache: std::collections::VecDeque<(String, Arc<egui::ColorImage>)>,
 }
 
 impl State {
@@ -966,6 +975,29 @@ impl Ops {
         .await;
     }
 
+    /// Shows the preview of the latest selection, after the selection stopped changing for a moment; then the next
+    /// one when it changed meanwhile, until none is wanted.
+    async fn preview_worker(&self) {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            let side = {
+                let mut state = self.lock();
+                match state.preview_wanted.take() {
+                    Some(side) => side,
+                    None => {
+                        state.preview_running = false;
+                        return;
+                    }
+                }
+            };
+            // Still moving: wait for the selection to settle.
+            if self.lock().preview_wanted.is_some() {
+                continue;
+            }
+            self.preview(side).await;
+        }
+    }
+
     /// The selected file's name, size and date, and for an image a preview with its pixel size.
     async fn preview(&self, side: Side) {
         let (request, items, remote_location) = {
@@ -995,6 +1027,23 @@ impl Ops {
         if !is_image(&item.name) {
             return;
         }
+        let key = format!("{side:?}|{}|{}|{}|{}", remote_location, item.full_path.display(), item.name, item.size);
+        let cached = self.lock().preview_cache.iter().find(|(k, _)| *k == key).map(|(_, image)| image.clone());
+        if let Some(image) = cached {
+            let [width, height] = image.size;
+            let mut state = self.lock();
+            if state.preview_request == request {
+                state.preview = Some(Preview { request, image });
+                state.preview_text = format!("{info} · {width}×{height}");
+            }
+            drop(state);
+            self.shared.ctx.request_repaint();
+            return;
+        }
+        // Another file was selected meanwhile: it gets the next turn.
+        if self.lock().preview_request != request || self.lock().preview_wanted.is_some() {
+            return;
+        }
         let data = match side {
             Side::Local if item.size <= 8 << 20 => tokio::fs::read(&item.full_path).await.ok(),
             Side::Local => None,
@@ -1007,8 +1056,13 @@ impl Ops {
         // Not a readable image: only the text is shown.
         let Ok(Ok(decoded)) = tokio::task::spawn_blocking(move || image::load_from_memory(&data).map(|i| i.to_rgba8())).await else { return };
         let (width, height) = decoded.dimensions();
-        let image = egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], decoded.as_raw());
+        let image = Arc::new(egui::ColorImage::from_rgba_unmultiplied([width as usize, height as usize], decoded.as_raw()));
         let mut state = self.lock();
+        state.preview_cache.retain(|(k, _)| *k != key);
+        state.preview_cache.push_back((key, image.clone()));
+        while state.preview_cache.len() > PREVIEW_CACHE {
+            state.preview_cache.pop_front();
+        }
         if state.preview_request != request {
             return;
         }
@@ -1521,7 +1575,7 @@ impl View for AssetExplorerView {
         match (&state.preview, &self.texture) {
             (Some(preview), Some((request, _))) if *request == preview.request => {}
             (Some(preview), _) => {
-                self.texture = Some((preview.request, ctx.load_texture("explorer-preview", preview.image.clone(), egui::TextureOptions::NEAREST)));
+                self.texture = Some((preview.request, ctx.load_texture("explorer-preview", (*preview.image).clone(), egui::TextureOptions::NEAREST)));
             }
             (None, _) => self.texture = None,
         }
@@ -1581,9 +1635,16 @@ impl View for AssetExplorerView {
                 preview = Some(side);
             }
         }
+        let start_worker = match preview {
+            Some(side) => {
+                state.preview_wanted = Some(side);
+                !std::mem::replace(&mut state.preview_running, true)
+            }
+            None => false,
+        };
         drop(state);
-        if let Some(side) = preview {
-            self.spawn(shared, move |ops| async move { ops.preview(side).await });
+        if start_worker {
+            self.spawn(shared, |ops| async move { ops.preview_worker().await });
         }
         for action in actions {
             self.act(action, shared);

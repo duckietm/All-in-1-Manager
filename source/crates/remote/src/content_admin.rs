@@ -428,7 +428,7 @@ pub fn calendar_day_problem(day: &str, total_days: i64) -> Option<String> {
 
 /// What a calendar reward gives: at least one of the furni, credits, pixels, points, badge or subscription.
 pub fn calendar_reward_problem(product: &str, item_id: &str, amounts: &[&str], badge: &str, subscription_days: &str) -> Option<String> {
-    let positive = |v: &str| v.trim().parse::<i64>().map_or(false, |n| n > 0);
+    let positive = |v: &str| v.trim().parse::<i64>().is_ok_and(|n| n > 0);
     let gives = !product.trim().is_empty() || positive(item_id) || amounts.iter().any(|a| positive(a)) || !badge.trim().is_empty() || positive(subscription_days);
     (!gives).then(|| "The reward gives nothing: give a furni, an amount, a badge or a subscription.".into())
 }

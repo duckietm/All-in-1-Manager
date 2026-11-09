@@ -1,12 +1,13 @@
 //! Builds the Polaris emulator and runs it as the "emulator" account with its own database account. (EmulatorStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::{config_dir, credentials, layout::ROOT_ACCOUNT};
 use aio_remote::emulator::{self, EmulatorState};
 use aio_remote::{fail, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -126,7 +127,7 @@ fn format_gb(ram_mb: i32) -> String {
 impl EmulatorStep {
     // Defaults: what is configured already, else Europe/Amsterdam and memory that fits the server's RAM.
     fn fill_options(&self, state: &EmulatorState, host: &str) {
-        let mut o = self.options.lock().unwrap();
+        let mut o = self.options.lock();
         let wanted = o.timezone.clone().or_else(|| state.configured_timezone.clone()).unwrap_or_else(|| DEFAULT_TIMEZONE.into());
         o.zones = zone_list(&state.timezones);
         o.timezone = o
@@ -215,7 +216,7 @@ impl InstallStep for EmulatorStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut guard = self.options.lock().unwrap();
+        let mut guard = self.options.lock();
         let o = &mut *guard;
         ui.add_space(8.0);
         ui.horizontal_top(|ui| {
@@ -310,7 +311,7 @@ impl InstallStep for EmulatorStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let o = self.options.lock().unwrap();
+        let o = self.options.lock();
         if o.timezone.as_ref().is_none_or(|z| !o.zones.contains(z)) {
             return Some(t("Choose a timezone for the emulator.").into());
         }
@@ -359,7 +360,7 @@ impl InstallStep for EmulatorStep {
         let server = server.as_ref();
         let host = server.login().host.clone();
         let (timezone, whitelist, memory_mb) = {
-            let o = self.options.lock().unwrap();
+            let o = self.options.lock();
             (
                 o.timezone.clone().unwrap_or_default(),
                 clean_whitelist(&o.whitelist),

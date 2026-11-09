@@ -40,6 +40,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --workspace
+      # Linux only: the lints do not depend on the platform, and the Windows job already carries the build.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build release
         run: cargo build --release -p aio-app
       - uses: actions/upload-artifact@v4

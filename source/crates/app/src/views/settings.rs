@@ -3,7 +3,7 @@
 //! stored in configuration/settings.json.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::config_dir;
 use aio_core::layout::{AtomCmsPresence, ROOT_ACCOUNT};
@@ -12,6 +12,7 @@ use aio_core::{InstallerSettings, ServerLayout};
 use aio_remote::server_users::{self, ServerUser};
 use aio_remote::{Server, ServerLogin};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::dashboard::COMPONENTS;
 use super::login::{import_private_key, is_valid_server, pick_key_file};
@@ -66,6 +67,14 @@ struct LayoutFields {
     atom_installed: usize,
     backups: String,
     database: String,
+    epicnext: String,
+    epicnext_source: String,
+    gitea: String,
+    traefik: String,
+    traefik_logs: String,
+    crowdsec: String,
+    nginx_site: String,
+    nginx_logs: String,
 }
 
 pub struct SettingsView {
@@ -182,6 +191,14 @@ impl SettingsView {
             },
             backups: layout.backups.clone(),
             database: layout.database.clone(),
+            epicnext: layout.epicnext.clone(),
+            epicnext_source: layout.epicnext_source.clone(),
+            gitea: layout.gitea.clone(),
+            traefik: layout.traefik.clone(),
+            traefik_logs: layout.traefik_logs.clone(),
+            crowdsec: layout.crowdsec.clone(),
+            nginx_site: layout.nginx_site.clone(),
+            nginx_logs: layout.nginx_logs.clone(),
         };
         self.account = layout.emulator_account.clone();
     }
@@ -203,12 +220,12 @@ impl SettingsView {
         let inbox = self.inbox.clone();
         shared.spawn(async move {
             let result = server_users::list(&*server).await.map_err(|e| e.to_string());
-            inbox.lock().unwrap().users = Some((id, result));
+            inbox.lock().users = Some((id, result));
         });
     }
 
     fn take_inbox(&mut self, shared: &Shared) {
-        let mut inbox = self.inbox.lock().unwrap();
+        let mut inbox = self.inbox.lock();
         if let Some((id, result)) = inbox.users.take() {
             if self.users_for == Some(id) {
                 match result {
@@ -504,7 +521,7 @@ impl SettingsView {
         let users = if self.users_for.is_some() && self.users_for == session_id(&session) { self.users.as_deref() } else { None };
         let items = account_items(users, connected, &self.account);
         let mut create = false;
-        let creating = self.inbox.lock().unwrap().creating;
+        let creating = self.inbox.lock().creating;
         ui.add_space(6.0);
         egui::Grid::new("settings-layout").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
             let layout = &mut self.layout;
@@ -551,6 +568,30 @@ impl SettingsView {
             row(ui, t("Database backups"), &mut layout.backups, "/var/backups/all-in-1");
             row(ui, t("Hotel database"), &mut layout.database, "habbo");
         });
+        ui.add_space(10.0);
+        ui.label(RichText::new(t("Web and other services")).size(13.5).strong());
+        widgets::muted(
+            ui,
+            palette,
+            t("Where the installer puts (and looks for) the web server, the other CMS, Gitea and CrowdSec. Change them only when your server keeps these somewhere else; a part that is already installed is not moved."),
+            12.0,
+        );
+        egui::Grid::new("settings-layout-services").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+            let layout = &mut self.layout;
+            let row = |ui: &mut egui::Ui, name: &str, value: &mut String, hint: &str| {
+                label(ui, palette, name);
+                ui.add(egui::TextEdit::singleline(value).hint_text(RichText::new(hint).color(palette.subtle)).font(egui::TextStyle::Monospace).desired_width(380.0));
+                ui.end_row();
+            };
+            row(ui, t("NGINX hotel site (file)"), &mut layout.nginx_site, "/etc/nginx/sites-available/hotel");
+            row(ui, t("NGINX hotel logs"), &mut layout.nginx_logs, "/var/log/nginx/hotel");
+            row(ui, "Traefik", &mut layout.traefik, "/opt/traefik");
+            row(ui, t("Traefik logs"), &mut layout.traefik_logs, "/var/log/traefik");
+            row(ui, "EpicNext CMS", &mut layout.epicnext, "/var/www/epicnext");
+            row(ui, t("EpicNext source"), &mut layout.epicnext_source, "/var/www/epicnext-src");
+            row(ui, "Gitea", &mut layout.gitea, "/opt/gitea");
+            row(ui, "CrowdSec", &mut layout.crowdsec, "/opt/crowdsec");
+        });
         // root works, but the emulator then has every right on the server.
         if self.account == ROOT_ACCOUNT {
             widgets::result_banner(
@@ -584,7 +625,7 @@ impl SettingsView {
         let taken: Vec<String> = self.users.iter().flatten().map(|u| u.name.clone()).collect();
         let dialogs = shared.dialogs.clone();
         let inbox = self.inbox.clone();
-        inbox.lock().unwrap().creating = true;
+        inbox.lock().creating = true;
         shared.spawn(async move {
             let message = match &session {
                 None => t("A service account (no login, home in /var/lib/<name>, member of www-data). You are not logged in, so the Emulator step creates it on the server.").to_string(),
@@ -602,7 +643,7 @@ impl SettingsView {
                 (None, _) => None,
                 (Some(name), Some(server)) => match server_users::create(&**server, &name).await {
                     Err(error) => {
-                        inbox.lock().unwrap().layout_result =
+                        inbox.lock().layout_result =
                             Some(banner(ResultKind::Error, &tf("Creating {name} failed", &[("name", &name)]), &error.to_string()));
                         None
                     }
@@ -626,7 +667,7 @@ impl SettingsView {
                     false,
                 )),
             };
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             inbox.creating = false;
             inbox.account = outcome;
         });
@@ -649,6 +690,14 @@ impl SettingsView {
             },
             backups: fields.backups.clone(),
             database: fields.database.clone(),
+            epicnext: fields.epicnext.clone(),
+            epicnext_source: fields.epicnext_source.clone(),
+            gitea: fields.gitea.clone(),
+            traefik: fields.traefik.clone(),
+            traefik_logs: fields.traefik_logs.clone(),
+            crowdsec: fields.crowdsec.clone(),
+            nginx_site: fields.nginx_site.clone(),
+            nginx_logs: fields.nginx_logs.clone(),
         };
         layout.normalize();
         if let Some(problem) = layout.validate() {
@@ -733,7 +782,7 @@ impl SettingsView {
         }
         ui.add_space(4.0);
         ui.label(RichText::new(t("Import a key")).size(13.5).strong());
-        let importing = self.inbox.lock().unwrap().importing;
+        let importing = self.inbox.lock().importing;
         ui.add_enabled_ui(!importing, |ui| {
             label(ui, palette, t("For server (the folder in configuration/keys)"));
             ui.add(egui::TextEdit::singleline(&mut self.import_for).hint_text(RichText::new(t("server, e.g. 203.0.113.10")).color(palette.subtle)).desired_width(260.0));
@@ -760,7 +809,7 @@ impl SettingsView {
         let folder = ServerLogin::parse_host(&self.import_for).0;
         let dialogs = shared.dialogs.clone();
         let inbox = self.inbox.clone();
-        inbox.lock().unwrap().importing = true;
+        inbox.lock().importing = true;
         shared.spawn(async move {
             let from_paste = pasted.is_some();
             let outcome = match pasted {
@@ -771,7 +820,7 @@ impl SettingsView {
                     Err(error) => Some((banner(ResultKind::Error, t("That key file cannot be used"), &error), false)),
                 },
             };
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             inbox.importing = false;
             if let Some((result, imported)) = outcome {
                 if result.is_some() {
@@ -811,7 +860,7 @@ impl View for SettingsView {
 
     /// Creating the emulator's account on the server runs.
     fn busy(&self) -> bool {
-        self.inbox.lock().unwrap().creating
+        self.inbox.lock().creating
     }
 
     fn session_changed(&mut self, shared: &Shared) {

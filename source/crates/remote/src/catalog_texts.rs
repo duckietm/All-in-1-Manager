@@ -46,7 +46,7 @@ pub async fn read(server: &dyn Server) -> Result<Vec<PageText>> {
 }
 
 fn unhex(hex: &str) -> Option<String> {
-    if hex == "NULL" || hex.len() % 2 != 0 {
+    if hex == "NULL" || !hex.len().is_multiple_of(2) {
         return None;
     }
     let bytes: Option<Vec<u8>> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect();

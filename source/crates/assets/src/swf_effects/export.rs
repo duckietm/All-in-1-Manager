@@ -315,11 +315,11 @@ pub fn export(swf: &Swf) -> Result<Export<'_>> {
 /// dropped), else UTF-8; invalid bytes become U+FFFD.
 pub fn text(data: &[u8]) -> String {
     let utf16 = |data: &[u8], le: bool| {
-        let units: Vec<u16> = data.chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+        let units: Vec<u16> = data.as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
         String::from_utf16_lossy(&units)
     };
     let utf32 = |data: &[u8], le: bool| {
-        data.chunks_exact(4)
+        data.as_chunks::<4>().0.iter()
             .map(|c| {
                 let v = if le { u32::from_le_bytes([c[0], c[1], c[2], c[3]]) } else { u32::from_be_bytes([c[0], c[1], c[2], c[3]]) };
                 char::from_u32(v).unwrap_or('\u{FFFD}')

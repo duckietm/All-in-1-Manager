@@ -9,6 +9,7 @@ pub mod dialogs;
 pub mod dry_run;
 pub mod flags;
 pub mod icons;
+pub mod image_loader;
 pub mod language_picker;
 pub mod log_view;
 pub mod scenes;
@@ -18,7 +19,7 @@ pub mod theme;
 pub mod widgets;
 pub mod wizard;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::Server;
 use eframe::egui::{self, Color32, RichText};
@@ -27,6 +28,7 @@ use crate::i18n::{t, tf};
 use crate::views;
 use dialogs::{Choice, Dialogs};
 use icons::Icon;
+use parking_lot::Mutex;
 use theme::{Fixed, Palette};
 use wizard::{Wizard, WizardAction};
 
@@ -59,6 +61,7 @@ pub enum Page {
     SqlEditor,
     CatalogManager,
     CatalogExplorer,
+    BuildersExplorer,
     Content,
     Logs,
     Players,
@@ -107,20 +110,20 @@ pub enum Request {
 impl Shared {
     /// The login while it is connected.
     pub fn session(&self) -> Option<Arc<dyn Server>> {
-        self.session.lock().unwrap().clone().filter(|s| s.is_connected())
+        self.session.lock().clone().filter(|s| s.is_connected())
     }
 
     pub fn set_status(&self, message: &str) {
-        *self.status.lock().unwrap() = message.to_string();
+        *self.status.lock() = message.to_string();
         self.ctx.request_repaint();
     }
 
     pub fn status(&self) -> String {
-        self.status.lock().unwrap().clone()
+        self.status.lock().clone()
     }
 
     pub fn request(&self, request: Request) {
-        self.requests.lock().unwrap().push(request);
+        self.requests.lock().push(request);
         self.ctx.request_repaint();
     }
 
@@ -225,6 +228,7 @@ pub struct App {
     sql: views::sql_editor::SqlEditorView,
     catalog: views::catalog_manager::CatalogManagerView,
     catalog_explorer: views::catalog_explorer::CatalogExplorerView,
+    builders_explorer: views::catalog_explorer::CatalogExplorerView,
     content: views::content_manager::ContentManagerView,
     logs: views::logs_view::LogsView,
     players: views::players_view::PlayersView,
@@ -275,6 +279,7 @@ impl App {
             sql: views::sql_editor::SqlEditorView::new(&shared),
             catalog: views::catalog_manager::CatalogManagerView::new(&shared),
             catalog_explorer: views::catalog_explorer::CatalogExplorerView::new(&shared),
+            builders_explorer: views::catalog_explorer::CatalogExplorerView::new_builders(&shared),
             content: views::content_manager::ContentManagerView::new(&shared),
             logs: views::logs_view::LogsView::new(&shared),
             players: views::players_view::PlayersView::new(&shared),
@@ -304,6 +309,7 @@ impl App {
             || self.sql.busy()
             || self.catalog.busy()
             || self.catalog_explorer.busy()
+            || self.builders_explorer.busy()
             || self.content.busy()
             || self.logs.busy()
             || self.players.busy()
@@ -327,7 +333,7 @@ impl App {
             self.shared.set_status(t("Wait until the running step has finished before disconnecting."));
             return;
         }
-        *self.shared.session.lock().unwrap() = None;
+        *self.shared.session.lock() = None;
         // A drop noticed while closing is not a lost connection: no login pops up.
         self.login_pending = false;
         let host = session.login().host.clone();
@@ -338,7 +344,7 @@ impl App {
     fn set_session(&mut self, server: Arc<dyn Server>) {
         let login = server.login().clone();
         let user = server.login_user();
-        let old = self.shared.session.lock().unwrap().replace(server);
+        let old = self.shared.session.lock().replace(server);
         if let Some(old) = old {
             self.shared.spawn(async move { old.disconnect().await });
         }
@@ -352,9 +358,9 @@ impl App {
             return;
         }
         self.last_watch = now;
-        let lost = self.shared.session.lock().unwrap().clone().filter(|s| !s.is_connected());
+        let lost = self.shared.session.lock().clone().filter(|s| !s.is_connected());
         if let Some(lost) = lost {
-            *self.shared.session.lock().unwrap() = None;
+            *self.shared.session.lock() = None;
             self.shared.set_status(&tf("The connection to {host} was lost.", &[("host", &lost.login().host)]));
             self.login_pending = true;
         }
@@ -372,6 +378,7 @@ impl App {
         self.sql.session_changed(&shared);
         self.catalog.session_changed(&shared);
         self.catalog_explorer.session_changed(&shared);
+        self.builders_explorer.session_changed(&shared);
         self.content.session_changed(&shared);
         self.logs.session_changed(&shared);
         self.players.session_changed(&shared);
@@ -534,6 +541,14 @@ impl App {
                     t("The hotel catalogue as the game shows it, in two windows: drag furni between pages.").into()
                 } else {
                     tf("The catalogue of {host} as the game shows it: drag furni between pages, then publish.", &[("host", &host)])
+                },
+            ),
+            Page::BuildersExplorer => (
+                t("Builders Club explorer").into(),
+                if session.is_none() {
+                    t("The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.").into()
+                } else {
+                    tf("The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.", &[("host", &host)])
                 },
             ),
             Page::CatalogManager => (
@@ -719,7 +734,7 @@ impl App {
                                 ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
                             ],
                         ),
-                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
+                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
                         ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
                         ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
                     ];
@@ -801,7 +816,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::Content | Page::Logs | Page::Players | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -872,7 +887,7 @@ impl App {
             Page::Debug => Some(t("Debug follows the logs on the server you are logged in to.").to_string()),
             Page::SqlEditor => Some(t("The SQL Editor reaches MariaDB through the login to the server.").to_string()),
             Page::CatalogManager => Some(t("The catalogue manager reaches the hotel database through the login to the server.").to_string()),
-            Page::CatalogExplorer => Some(t("The catalogue explorer reaches the hotel database through the login to the server.").to_string()),
+            Page::CatalogExplorer | Page::BuildersExplorer => Some(t("The catalogue explorer reaches the hotel database through the login to the server.").to_string()),
             Page::Content => Some(t("The content manager reaches the hotel database through the login to the server.").to_string()),
             Page::Logs => Some(t("The logs are read from the hotel database through the login to the server.").to_string()),
             Page::Players => Some(t("The players are read from the hotel database through the login to the server.").to_string()),
@@ -896,6 +911,7 @@ impl App {
             Page::SqlEditor => self.sql.show(ui, palette, &shared),
             Page::CatalogManager => self.catalog.show(ui, palette, &shared),
             Page::CatalogExplorer => self.catalog_explorer.show(ui, palette, &shared),
+            Page::BuildersExplorer => self.builders_explorer.show(ui, palette, &shared),
             Page::Content => self.content.show(ui, palette, &shared),
             Page::Logs => self.logs.show(ui, palette, &shared),
             Page::Players => self.players.show(ui, palette, &shared),
@@ -933,7 +949,7 @@ impl App {
     }
 
     fn handle_requests(&mut self) {
-        let requests: Vec<Request> = std::mem::take(&mut *self.shared.requests.lock().unwrap());
+        let requests: Vec<Request> = std::mem::take(&mut *self.shared.requests.lock());
         for request in requests {
             match request {
                 Request::Go(page) => self.go(page),

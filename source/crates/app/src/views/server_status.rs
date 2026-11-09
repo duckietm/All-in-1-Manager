@@ -4,11 +4,12 @@
 //! the size formats) are shared with the emulator monitor, as in the C#.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::server_status::{self, DiskUsage, LoggedInUser, RepositoryVersion, StatusSample};
 use aio_remote::Server;
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 
 use super::line_chart::LineChart;
 use crate::gui::icons::{self, Icon};
@@ -146,7 +147,7 @@ impl ServerStatusView {
     /// Restarts sampling, for example after a new login. (StartAsync)
     fn start(&mut self, shared: &Shared, now: f64) {
         let generation = {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock();
             s.previous = None;
             s.timer = true;
             s.generation
@@ -165,7 +166,7 @@ impl ServerStatusView {
     fn connection(&self, shared: &Shared) -> Option<Arc<dyn Server>> {
         let server = shared.session();
         if server.is_none() {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock();
             s.timer = false;
             s.figures.updated = t("Not connected.").into();
         }
@@ -175,21 +176,21 @@ impl ServerStatusView {
     fn tick(&mut self, shared: &Shared) {
         let Some(server) = self.connection(shared) else { return };
         let state = self.state.clone();
-        let generation = state.lock().unwrap().generation;
+        let generation = state.lock().generation;
         shared.spawn(async move { sample(&state, &server, generation).await });
     }
 }
 
 async fn sample(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, generation: u64) {
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         if s.sampling || s.generation != generation {
             return;
         }
         s.sampling = true;
     }
     let result = server_status::sample(server.as_ref()).await;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock();
     if s.generation != generation {
         return;
     }
@@ -254,7 +255,7 @@ fn show_sample(s: &mut State, sample: StatusSample) {
 
 async fn load_versions(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, generation: u64) {
     let result = server_status::versions(server.as_ref()).await;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock();
     if s.generation != generation {
         return;
     }
@@ -274,7 +275,7 @@ async fn load_versions(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, gene
 /// branches are refreshed, so the hotel is not touched.
 async fn load_updates(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, generation: u64) {
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         if s.checking_updates || s.cells.is_empty() || s.generation != generation {
             return;
         }
@@ -284,7 +285,7 @@ async fn load_updates(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, gener
         }
     }
     let result = server_status::updates(server.as_ref()).await;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock();
     if s.generation != generation {
         return;
     }
@@ -349,7 +350,7 @@ impl View for ServerStatusView {
             self.start(shared, now);
         }
         self.last_pass = Some(pass);
-        if self.state.lock().unwrap().timer {
+        if self.state.lock().timer {
             if now >= self.next_tick {
                 self.next_tick = now + INTERVAL;
                 self.tick(shared);
@@ -360,7 +361,7 @@ impl View for ServerStatusView {
         let mut refresh = false;
         let mut check = false;
         ui.vertical(|ui| {
-            let s = self.state.lock().unwrap();
+            let s = self.state.lock();
             let f = &s.figures;
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -405,7 +406,7 @@ impl View for ServerStatusView {
         if refresh || check {
             if let Some(server) = shared.session() {
                 let state = self.state.clone();
-                let generation = state.lock().unwrap().generation;
+                let generation = state.lock().generation;
                 shared.spawn(async move {
                     if refresh {
                         load_versions(&state, &server, generation).await;
@@ -417,7 +418,7 @@ impl View for ServerStatusView {
     }
 
     fn session_changed(&mut self, _shared: &Shared) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock();
         s.generation += 1;
         s.previous = None;
         s.sampling = false;

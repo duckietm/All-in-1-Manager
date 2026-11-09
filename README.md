@@ -72,6 +72,10 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 1. Download `all-in-1-manager-windows-x64.exe` or `all-in-1-manager-linux-x64` from the
    [releases](https://github.com/duckietm/All-in-1-Manager/releases) and start it (on Linux: `chmod +x` first).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
+   The login remembers the last server and the user of each server. With a password, **Remember the password on
+   this computer** fills it in next time: it is kept encrypted (AES-256-GCM, with a random key next to it) in the
+   configuration folder, readable by your account only; untick it and log in to forget it. SSH key logins never store
+   a password.
 3. **Install New Server** and follow the steps. Each one explains what it does; **Skip** leaves it out.
 4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Habbo assets** and
    **Deploy Assets** (sidebar → ASSETS) for the game's files.
@@ -1332,8 +1336,8 @@ page has the rest:
   thumbnails), what it opens (a page by internal name or id, with **Pick a page**, or an offer by product name) and
   when it stops showing (`YYYY-MM-DD HH:MM` in this computer's time zone; empty never). **Drag a tile onto another**,
   or use **◀ Earlier** / **Later ▶**, to swap their slots; **Add tile** and **Remove tile** add and take away one.
-  A tile whose end date passed is marked *Ended*: the emulator still sends it, as one that never ends, so clear the
-  date or remove it. **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails
+  A tile whose end date passed is marked *Ended*: the emulator no longer sends it (an emulator before that fix kept
+  showing it for good), so clear the date to show it again, or remove it. **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails
   halfway is not rolled back: save again.
 - **Limited** (the second tab) lists every limited series: its offer and page, and how many are sold of how many,
   with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
@@ -1351,7 +1355,26 @@ page has the rest:
   `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Tick
   copies (or **Tick all but the first of each**) and **Delete ticked** removes
   them after asking. Offers with sold limited numbers are never ticked or deleted.
-- **Backups** (the fifth tab): copies of the catalogue on the server, in `<backups>/catalogue` (Settings → server
+- **Checks** also runs the **health check** of the emulator's Catalog Studio over the catalogue and the Builders Club
+  warehouse: offers on a page that does not exist, furni ids that are wrong or not in `items_base`, negative prices or
+  no amount, points in a currency the hotel does not use (`users_currency`, `emulator_settings`), song offers without
+  their song, limited series smaller than what is sold, pages under a missing page, loops in the tree, layouts the
+  emulator does not know (it skips those pages), sibling pages with the same order number, wrong `includes`, and
+  visible pages under a hidden one (players never reach them). Fix them in the explorers (right-click, Edit).
+- **History** (the fifth tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
+  explorers, Checks, Limited, imports), newest first: the same history Octane shows (`catalog_manager_history`).
+  **Undo ...** puts what one operation changed back, in one go, when nothing changed those pages and offers since
+  (otherwise it says which one did); the undo is recorded too. The Manager writes its changes there as the emulator
+  does, raises `catalog_manager_state.revision` so Octane sees the catalogue changed, and takes the ids of new pages
+  and offers from `catalog_id_sequences`, so Octane never makes a page or offer at an id that is already used. An
+  emulator older than Catalog Studio has none of these tables: then nothing is recorded.
+- **Backups** (the sixth tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
+  file in the format of Octane's Catalog Studio, so a file exported there can be imported here and the other way
+  round. **Import a file ...** never runs the file as SQL: only `INSERT`, `UPDATE` and `DELETE` of `catalog_pages` and
+  `catalog_items` with plain values are read (anything else is refused), and you first see what would be new,
+  changed, moved or deleted; **Apply N changes** writes them in one transaction, when the catalogue is still as it was
+  at the preview, and records them in the history.
+  Under it, **Backups**: copies of the catalogue on the server, in `<backups>/catalogue` (Settings → server
   folders). **Make backup** dumps `catalog_pages`, `catalog_items`, `catalog_featured_pages`, `vouchers` and the
   Builders Club `catalog_pages_bc` / `catalog_items_bc` (those that exist) with `mariadb-dump` to a `.sql.gz`, with an
   optional name. **Roll back** first makes a `before-rollback` backup of the catalogue as it is, then puts the chosen
@@ -1415,6 +1438,17 @@ in fields of several lines ...). After a save the tree is read again; **Publish*
 server's images are fetched over the SSH connection as they come into view. A click writes the icon's number, or the
 image's name without `.gif` (the client adds it).
 
+The page editor's **Translate texts ...** translates the caption and page texts with Google Translate, as Octane's page
+editor does (the same free endpoint the emulator uses; the language they are in is found by itself): only the text
+between the HTML tags is translated, so links, images and formatting stay. The translations become changes in the
+editor, to check before **Save**.
+
+The offer and page editors keep the rules of Octane's catalogue admin before a save, and say which one is broken: an
+offer needs a name and furni ids like `123` or `123:2` that are in `items_base`, an amount of 1 to 10,000, no
+negative price, a limited size not below what is sold, a page that exists, and a song id with the soundtrack code for
+a `SONG ...` offer; a page needs a caption, a minimum rank of at least 1, a parent that exists and is not one of its
+own pages, and `includes` of existing page ids.
+
 The page texts (`page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`) have **HTML ...**: a small HTML
 editor with a toolbar (bold, italic, underline, line break, paragraph, link, image, text colours; it wraps the
 selection), the HTML, and a preview of what the client shows. Only the HTML both Octane (`SanitizeHtml`, DOMPurify)
@@ -1443,6 +1477,16 @@ offer** by name, with **Remove** for one of a bundle, and a search on the name, 
 Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
 catalogue again, as on the Catalogue page.
+
+### Builders Club explorer
+
+**HOTEL → Builders Club explorer** is the same explorer for the Builders Club warehouse: the pages and offers the
+emulator loads from `catalog_pages_bc` and `catalog_items_bc`, apart from the normal catalogue. Everything works as
+above (two windows, drag and drop of furni and pages, Ctrl to copy, Undo, **Without offer**, Build page, New / Delete
+page, Delete offer, Sort by name, and the right-click editors, which edit the `_bc` rows). Builders Club offers have
+no price: members place them for free, so the info box says *Builders Club* and there is no price to set for new
+offers. `builders_club_frontpage` is locked like a front page. **Publish** makes the emulator load both catalogues
+again.
 
 ### Content
 
@@ -1638,6 +1682,17 @@ afterwards so the row shows the new version.
   | AtomCMS, and **AtomCMS installed**: Detect / Installed / Not installed | `/var/www/atomcms`, Detect |
   | Database backups | `/var/backups/all-in-1` |
   | Hotel database (for new MariaDB passwords files) | `habbo` |
+
+  Under **Web and other services**, for a server that keeps these elsewhere (a part already installed is not moved):
+
+  | Setting | Default |
+  |---|---|
+  | NGINX hotel site (file; a file in `sites-available` is linked into `sites-enabled`, one elsewhere such as `conf.d` is read as it is) | `/etc/nginx/sites-available/hotel` |
+  | NGINX hotel logs | `/var/log/nginx/hotel` |
+  | Traefik (compose, `dynamic/` routes, certificates) / Traefik logs | `/opt/traefik`, `/var/log/traefik` |
+  | EpicNext CMS / EpicNext source | `/var/www/epicnext`, `/var/www/epicnext-src` |
+  | Gitea | `/opt/gitea` |
+  | CrowdSec | `/opt/crowdsec` |
 
   **Emulator account** is a list of the server's accounts once you are logged in: `root`, the people's accounts and
   the accounts in group `www-data` (where the emulator's account lives), each with a short note. **+ Create a new

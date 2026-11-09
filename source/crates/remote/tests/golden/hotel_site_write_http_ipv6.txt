@@ -1,4 +1,4 @@
-[ -d /etc/nginx/sites-available ] || fail "NGINX is not installed with sites-available. Run the NGINX step first."
+[ -d "$(dirname /etc/nginx/sites-available/hotel)" ] || fail "$(dirname /etc/nginx/sites-available/hotel) does not exist: run the NGINX step first, or fix the NGINX hotel site in Settings → Server layout."
 if [ -f /etc/nginx/sites-available/hotel ] && ! grep -qE 'All-in-1 (Manager|Installer)' /etc/nginx/sites-available/hotel; then
   cp /etc/nginx/sites-available/hotel "/etc/nginx/sites-available/hotel.bak-$(date +%Y%m%d-%H%M%S)"
   echo "  The old /etc/nginx/sites-available/hotel is saved as /etc/nginx/sites-available/hotel.bak-<time>"
@@ -163,7 +163,8 @@ server {
 }
 SITE
 sed -i "s#@ROOT@#$root#" /etc/nginx/sites-available/hotel
-ln -sfn /etc/nginx/sites-available/hotel /etc/nginx/sites-enabled/hotel
+# A site in sites-available is switched on with a link in sites-enabled; elsewhere (conf.d) NGINX reads it as it is.
+case /etc/nginx/sites-available/hotel in /etc/nginx/sites-available/*) ln -sfn /etc/nginx/sites-available/hotel "/etc/nginx/sites-enabled/$(basename /etc/nginx/sites-available/hotel)" ;; esac
 
 # Ports 80 and 443 belong to Traefik, so the default site and any other site must not listen there.
 if [ -L /etc/nginx/sites-enabled/default ] || [ -f /etc/nginx/sites-enabled/default ]; then

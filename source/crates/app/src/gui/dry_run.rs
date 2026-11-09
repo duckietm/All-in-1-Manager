@@ -1,10 +1,11 @@
 //! `--dry-run`: the login connects to a recorder instead of a server, and every command a step would send is shown
 //! in that step's log (prefixed with "[dry run]") instead of being run. Nothing reaches a server.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::recorder::Recorder;
 use aio_remote::{CommandResult, ServerLogin};
+use parking_lot::Mutex;
 
 type Sink = Box<dyn Fn(&str) + Send + Sync>;
 
@@ -12,11 +13,11 @@ static SINK: Mutex<Option<Sink>> = Mutex::new(None);
 
 /// Where the recorded commands go: the log of the step that runs now.
 pub fn set_sink(sink: impl Fn(&str) + Send + Sync + 'static) {
-    *SINK.lock().unwrap() = Some(Box::new(sink));
+    *SINK.lock() = Some(Box::new(sink));
 }
 
 fn write(text: &str) {
-    if let Some(sink) = SINK.lock().unwrap().as_ref() {
+    if let Some(sink) = SINK.lock().as_ref() {
         sink(text);
     }
 }

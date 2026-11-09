@@ -199,3 +199,33 @@ pub fn copy_field(ui: &mut egui::Ui, palette: &Palette, label: &str, value: &str
         }
     });
 }
+
+/// An indeterminate progress bar: a lozenge that sweeps back and forth over a track.
+///
+/// egui's own `ProgressBar::new(0.0).animate(true)` draws its animation as a small arc at the
+/// *right edge of the filled part*. With progress 0.0 that edge sits at the far left, and the arc's
+/// radius comes from the bar's corner radius, so on a thin bar it is a dot that looks static: a long
+/// step (git pull, build.sh) appears frozen. This draws the movement itself instead.
+pub fn indeterminate_bar(ui: &mut egui::Ui, height: f32, fill: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    // Keep the frames coming while the step runs; without this egui only repaints on input.
+    ui.ctx().request_repaint();
+
+    let radius = height / 2.0;
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, ui.visuals().extreme_bg_color);
+
+    // One sweep right and back every PERIOD seconds, slowing down at both ends.
+    const PERIOD: f64 = 2.4;
+    let phase = ui.input(|i| i.time).rem_euclid(PERIOD) / PERIOD;
+    let eased = (0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()) as f32;
+
+    let lozenge = (rect.width() * 0.3).clamp(24.0_f32.min(rect.width()), rect.width());
+    let left = rect.left() + (rect.width() - lozenge) * eased;
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(left, rect.top()), egui::vec2(lozenge, height)), radius, fill);
+
+    response
+}

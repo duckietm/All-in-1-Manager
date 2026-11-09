@@ -1,10 +1,11 @@
 //! Removes Gitea: the container, its network and the Traefik route; the data only when asked. (RemoveGiteaStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::{gitea, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -28,11 +29,11 @@ pub struct RemoveGiteaStep {
 
 impl RemoveGiteaStep {
     pub fn removed_domain(&self) -> Option<String> {
-        self.output.lock().unwrap().removed_domain.clone()
+        self.output.lock().removed_domain.clone()
     }
 
     pub fn data_deleted(&self) -> bool {
-        self.output.lock().unwrap().data_deleted
+        self.output.lock().data_deleted
     }
 }
 
@@ -42,11 +43,11 @@ fn result_message(domain: Option<&str>, deleted: bool) -> String {
         message += &tf("{domain} no longer reaches Gitea. ", &[("domain", domain)]);
     }
     message += &if deleted {
-        tf("{directory} is deleted.", &[("directory", gitea::DIRECTORY)])
+        tf("{directory} is deleted.", &[("directory", gitea::directory())])
     } else {
         tf(
             "Its repositories, accounts and settings stay in {directory}: Install Gitea brings them back.",
-            &[("directory", gitea::DIRECTORY)],
+            &[("directory", gitea::directory())],
         )
     };
     message += t(" Remove the domain's A record when you no longer need it.");
@@ -80,11 +81,11 @@ impl InstallStep for RemoveGiteaStep {
                 t("Stops and removes the Gitea container and its Docker network (docker compose down).").into(),
                 tf(
                     "Removes its Traefik route ({file}): Traefik no longer answers for Gitea's domain, and its port is free again.",
-                    &[("file", gitea::ROUTE_FILE)],
+                    &[("file", gitea::route_file())],
                 ),
                 tf(
                     "Keeps {directory} (the repositories, accounts and settings) unless you tick the box below: installing Gitea again then brings everything back.",
-                    &[("directory", gitea::DIRECTORY)],
+                    &[("directory", gitea::directory())],
                 ),
                 t("Remove the domain's A record from your DNS yourself when you no longer need it.").into(),
             ],
@@ -97,13 +98,13 @@ impl InstallStep for RemoveGiteaStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut delete = self.delete_data.lock().unwrap();
+        let mut delete = self.delete_data.lock();
         ui.add_space(8.0);
         ui.checkbox(
             &mut delete,
             tf(
                 "Also delete the repositories, accounts and settings ({directory}): this cannot be undone",
-                &[("directory", gitea::DIRECTORY)],
+                &[("directory", gitea::directory())],
             ),
         );
         ui.add(
@@ -141,7 +142,7 @@ impl InstallStep for RemoveGiteaStep {
         let server = server.as_ref();
         log("> Checking the server ...");
         let state = gitea::inspect(server).await?;
-        let delete = *self.delete_data.lock().unwrap();
+        let delete = *self.delete_data.lock();
         match &state.domain {
             None => log("  Gitea is not set up: removing what may be left"),
             Some(domain) => log(&format!("  Gitea {} on {domain} (port {})", state.version.as_deref().unwrap_or(""), state.port)),
@@ -160,7 +161,7 @@ impl InstallStep for RemoveGiteaStep {
         ui.done(state.domain.as_deref().unwrap_or("-"));
 
         {
-            let mut output = self.output.lock().unwrap();
+            let mut output = self.output.lock();
             output.removed_domain = state.domain.clone();
             output.data_deleted = delete;
         }

@@ -123,7 +123,8 @@ fn answer_text(action: &Rcon, name: &str, answer: &Answer) -> (String, bool) {
             tf("{action} for {name}: this emulator does not know the command {command}. Update Polaris to use it from here.", &[("action", &done), ("name", name), ("command", action.key())]),
             true,
         ),
-        rcon::USER_NOT_FOUND if matches!(action, Rcon::Unban) => (tf("{name} has no active ban.", &[("name", name)]), true),
+        // Polaris answers status 1 "no active ban"; the first console ban version answered status 2.
+        _ if matches!(action, Rcon::Unban) && (answer.status == rcon::USER_NOT_FOUND || answer.message == "no active ban") => (tf("{name} has no active ban.", &[("name", name)]), true),
         rcon::USER_NOT_FOUND if action.online_only() => (tf("{action} for {name}: the emulator did not find {name} online.", &[("action", &done), ("name", name)]), true),
         _ => {
             let message = if answer.message.is_empty() { tf("status {status}", &[("status", &answer.status.to_string())]) } else { answer.message.clone() };
@@ -994,6 +995,8 @@ mod tests {
         assert!(error && text.contains("ceiling"), "{text}");
         let (text, error) = answer_text(&Rcon::Unban, "bob", &Answer { status: rcon::USER_NOT_FOUND, message: "no active ban".into() });
         assert!(error && text.contains("no active ban"), "{text}");
+        let (text, error) = answer_text(&Rcon::Unban, "bob", &Answer { status: 1, message: "no active ban".into() });
+        assert!(error && text.contains("bob has no active ban"), "{text}");
         let (text, error) = answer_text(&Rcon::Ban(60, "x".into(), BanKind::Account), "bob", &Answer { status: 1, message: rcon::UNKNOWN_COMMAND.into() });
         assert!(error && text.contains("banuser"), "{text}");
     }

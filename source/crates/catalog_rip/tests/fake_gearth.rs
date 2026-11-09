@@ -1352,5 +1352,5 @@ async fn connects_again_when_gearth_drops_the_extension() {
         .unwrap_or_else(|e| panic!("{e:#}\n{}", calls.log_text()));
     server.await.unwrap();
     assert_eq!(report.pages, 6);
-    assert!(calls.log_text().contains("connecting again"), "{}", calls.log_text());
+    assert!(calls.log_text().contains("let the extension go before the hotel connection"), "{}", calls.log_text());
 }

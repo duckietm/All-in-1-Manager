@@ -355,13 +355,11 @@ async fn connect_gearth(
 }
 
 /// G-Earth let the extension go after accepting it, before any hotel connection: it was
-/// restarted, or its client mode (Flash / Nitro) changed. The rip connects again.
+/// restarted, or its client mode changed (in Nitro mode it lets extensions go at every Connect).
+/// The rip connects again, as long as the time to wait for the hotel lasts.
 #[derive(Debug, thiserror::Error)]
-#[error("G-Earth closed the connection: {0}")]
+#[error("{0}")]
 struct GearthDropped(String);
-
-/// How often the rip connects to G-Earth again after [`GearthDropped`].
-const RECONNECTS: usize = 5;
 
 async fn wait_for_hotel(
     session: &mut Session,
@@ -391,7 +389,7 @@ async fn wait_for_hotel(
         };
         match event {
             Err(_) => continue,
-            Ok(None) if accepted => return Err(GearthDropped("it ended".into()).into()),
+            Ok(None) if accepted => return Err(GearthDropped("the connection ended".into()).into()),
             Ok(None) => bail!("The connection to G-Earth ended."),
             Ok(Some(Event::Init { connected })) => {
                 accepted = true;
@@ -984,15 +982,14 @@ pub async fn rip_with(
         None => None,
     };
     log_instructions(options, &timing, log);
-    let mut reconnects = 0;
+    let reconnect_until = Instant::now() + timing.hotel_wait;
     let (mut session, connection) = loop {
         let mut session = connect_gearth(options, &timing, hooks, cancel).await?;
         match wait_for_hotel(&mut session, options, &timing, log, cancel).await {
             Ok(connection) => break (session, connection),
-            Err(e) if e.is::<GearthDropped>() && reconnects < RECONNECTS => {
-                reconnects += 1;
+            Err(e) if e.is::<GearthDropped>() && Instant::now() < reconnect_until => {
                 log(&format!(
-                    "{e} before the hotel connection (G-Earth restarted, or its client mode changed): connecting again ..."
+                    "G-Earth let the extension go before the hotel connection ({e}; G-Earth restarted, or Connect in Nitro mode): connecting again ..."
                 ));
                 drop(session);
                 sleep_or_cancel(Duration::from_millis(500), cancel).await?;

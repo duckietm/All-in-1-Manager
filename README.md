@@ -61,6 +61,9 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 - **Assets** (its own section in the sidebar): Habbo assets (Habbo's own furniture, clothes, effects, badges and
   game data as .hab and JSON), Nitro retro (a retro's custom furniture and clothes), Asset tools (decompile and
   compile .hab, SWF / NITRO to HAB), Deploy Assets and an Asset Explorer.
+- **Housekeeping**: the hotel's staff panel outside the hotel: dashboard, who is online, rooms, hotel alerts,
+  maintenance and lockdown, word filter, permissions, bans, support tickets and the soundboard, next to **Players**
+  (kick, trade lock, password reset, temporary rank, furni, Habbo Club, notes, clones and sanctions).
 - **Running the hotel**: restarts, updates of the emulator, Octane, AtomCMS and the containers, database backup and
   import (also PlusEMU), live server status, the emulator's wired CPU, an SSH terminal in the window, a **Health
   check** with a fix for each problem, and a **History** of every run with its log.
@@ -1590,6 +1593,42 @@ Catalogue; the changes go to the running emulator over RCON, the way the catalog
   offline player: the emulator writes them to the database. An alert and a disconnect only reach a player who is
   online. The emulator keeps its own limits: `rcon.grant.max_amount` (default 1,000,000 a grant) and
   `rcon.setrank.max_rank` (default 12) in its config, and it logs a rank change.
+- **Housekeeping on the player** (needs the emulator's `housekeeping` RCON command, see [Housekeeping](#housekeeping)):
+  kick with a reason, a trade lock (1 hour to 30 days), reset the password (a new random one, shown once), a
+  temporary rank (1 hour to a year; the rank before it comes back by itself), give furni (an `items_base` id, 1 to
+  100 of it) and set the Habbo Club days (0 ends it). Below the details: the running temporary rank, the
+  **sanctions** of the mod tools' ladder, the **accounts on the same IP** (registered or logged in from one of this
+  player's IPs; **Open** shows one), the **IP and mail** behind **Reveal**, and the **staff notes** (add and delete).
+
+### Housekeeping
+
+**HOTEL → Housekeeping** is the hotel's housekeeping panel (the one in the Octane client) outside the hotel. The lists
+come from the database over the same MariaDB login as Players; the actions go to the running emulator over RCON, as
+one `housekeeping` command with an `action` (the contract is in the emulator's `docs/rcon-housekeeping.md`). An
+emulator without that command says so at the top; the lists still work.
+
+- **Dashboard**: players online and in total, rooms with players and in total, open support tickets, the emulator's
+  uptime and version. Without the RCON command it falls back to the database counts.
+- **Online**: who is in the hotel now, their rank, the room they are in, IP and since when. A click on a room opens it.
+- **Rooms**: search by id, name or owner (without a search: the rooms with players, fullest first). For a room: open
+  or close it (doorbell off/on), kick everyone, mute and unmute it, give it to another player (name or id), delete
+  it, and change its name, description, maximum players, category, trading and two tags.
+- **Hotel**: an alert to everyone online, to staff only, to one player or to one room (signed "-All-in-1 Manager");
+  maintenance with a countdown of 0 to 120 minutes and a message, stop the countdown, end maintenance; the emergency
+  lockdown (only the highest rank can use the in-hotel panel); and reload content (catalogue, items, navigator,
+  permissions, word filter, texts, configuration).
+- **Word filter**: every filtered word and its replacement (empty: `bobba`); add, change and remove.
+- **Permissions**: every `permission_definitions` row against every rank, searchable; a click steps the value
+  (0, 1 and 2 = "in rooms with rights") in the running emulator and the database at once. The emulator refuses a
+  change that would lock everyone out of housekeeping.
+- **Bans**: the active bans (account, IP, machine) with who gave them, why and until when; **Revoke** lifts one.
+- **Support**: the open and picked-up help tickets; reply (and close) or close as resolved, useless or abusive.
+- **Soundboard**: the `soundboard_sounds` catalogue: add, edit, enable, order (up/down), delete, and tell the
+  emulator to load it again (`updatesoundboard`).
+
+Every action asks first and shows the emulator's answer. The emulator checks the staff rank, the limits and the
+permissions itself, and logs every action. The gameserver also gained the RCON commands `banuser`, `unbanuser` and
+`reloadcontent` for the CMS and other tools.
 
 ### Hotel view
 

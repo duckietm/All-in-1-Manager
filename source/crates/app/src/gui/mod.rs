@@ -65,6 +65,7 @@ pub enum Page {
     Content,
     Logs,
     Players,
+    Housekeeping,
     HotelView,
     Gamedata,
     Debug,
@@ -232,6 +233,7 @@ pub struct App {
     content: views::content_manager::ContentManagerView,
     logs: views::logs_view::LogsView,
     players: views::players_view::PlayersView,
+    housekeeping: views::housekeeping_view::HousekeepingView,
     hotel_view: views::hotel_view_manager::HotelViewManager,
     gamedata: views::gamedata_editor::GamedataEditor,
     debug: views::debug::DebugView,
@@ -283,6 +285,7 @@ impl App {
             content: views::content_manager::ContentManagerView::new(&shared),
             logs: views::logs_view::LogsView::new(&shared),
             players: views::players_view::PlayersView::new(&shared),
+            housekeeping: views::housekeeping_view::HousekeepingView::new(&shared),
             hotel_view: views::hotel_view_manager::HotelViewManager::new(&shared),
             gamedata: views::gamedata_editor::GamedataEditor::new(&shared),
             debug: views::debug::DebugView::new(&shared),
@@ -313,6 +316,7 @@ impl App {
             || self.content.busy()
             || self.logs.busy()
             || self.players.busy()
+            || self.housekeeping.busy()
             || self.hotel_view.busy()
             || self.gamedata.busy()
             || self.settings.busy()
@@ -382,6 +386,7 @@ impl App {
         self.content.session_changed(&shared);
         self.logs.session_changed(&shared);
         self.players.session_changed(&shared);
+        self.housekeeping.session_changed(&shared);
         self.hotel_view.session_changed(&shared);
         self.gamedata.session_changed(&shared);
         self.debug.session_changed(&shared);
@@ -567,6 +572,14 @@ impl App {
                     tf("The logs of {host}: commands, chat, currencies, purchases, permission changes and room visits.", &[("host", &host)])
                 },
             ),
+            Page::Housekeeping => (
+                t("Housekeeping").into(),
+                if session.is_none() {
+                    t("What the hotel's housekeeping panel does: the numbers, who is online, rooms, alerts, maintenance, the word filter, permissions, bans, support tickets and the soundboard.").into()
+                } else {
+                    tf("The housekeeping of {host}: lists from the database, actions to the emulator over RCON.", &[("host", &host)])
+                },
+            ),
             Page::Players => (
                 t("Players").into(),
                 if session.is_none() {
@@ -734,7 +747,7 @@ impl App {
                                 ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
                             ],
                         ),
-                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
+                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Housekeeping"), Icon::Shield, Page::Housekeeping), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
                         ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
                         ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
                     ];
@@ -816,7 +829,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -891,6 +904,7 @@ impl App {
             Page::Content => Some(t("The content manager reaches the hotel database through the login to the server.").to_string()),
             Page::Logs => Some(t("The logs are read from the hotel database through the login to the server.").to_string()),
             Page::Players => Some(t("The players are read from the hotel database through the login to the server.").to_string()),
+            Page::Housekeeping => Some(t("Housekeeping reaches the hotel database and the emulator through the login to the server.").to_string()),
             Page::HotelView => Some(t("The hotel view editor reaches the hotel database through the login to the server.").to_string()),
             Page::Gamedata => Some(t("The gamedata editor reads and writes the files on the server through the login to the server.").to_string()),
             _ => None,
@@ -915,6 +929,7 @@ impl App {
             Page::Content => self.content.show(ui, palette, &shared),
             Page::Logs => self.logs.show(ui, palette, &shared),
             Page::Players => self.players.show(ui, palette, &shared),
+            Page::Housekeeping => self.housekeeping.show(ui, palette, &shared),
             Page::HotelView => self.hotel_view.show(ui, palette, &shared),
             Page::Gamedata => self.gamedata.show(ui, palette, &shared),
             Page::Debug => self.debug.show(ui, palette, &shared),

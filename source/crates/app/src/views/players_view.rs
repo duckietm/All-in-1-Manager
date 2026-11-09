@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use aio_remote::housekeeping::{self as hk, Action as Hk};
 use aio_remote::players_admin::{self, Action as Rcon, BanKind, Player, PlayerRow, Problem, Rank, SearchPage};
 use aio_remote::rcon::{self, Answer};
 use aio_remote::sql_session::SqlSession;
@@ -51,6 +52,11 @@ const MUTE_DEFAULT: usize = 1;
 /// Ban lengths offered, in seconds; the last is "permanent".
 const BAN_LENGTHS: [i64; 7] = [60 * 60, 24 * 60 * 60, 3 * 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60, 365 * 24 * 60 * 60, players_admin::BAN_MAX_SECONDS];
 const BAN_DEFAULT: usize = 1;
+/// A temporary rank lasts one of these (seconds); a trade lock one of these (hours).
+const RANK_LENGTHS: [i64; 5] = [60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60, 30 * 24 * 60 * 60, 365 * 24 * 60 * 60];
+const RANK_DEFAULT: usize = 1;
+const TRADE_HOURS: [i64; 5] = [1, 24, 72, 168, 720];
+const TRADE_DEFAULT: usize = 1;
 
 fn length_name(seconds: i64) -> &'static str {
     match seconds {
@@ -153,6 +159,28 @@ struct Inputs {
     ban_length: Option<usize>,
     ban_reason: String,
     ban_kind: Option<BanKind>,
+    kick_reason: String,
+    /// Indexes into [`TRADE_HOURS`] and [`RANK_LENGTHS`].
+    trade_length: Option<usize>,
+    trade_reason: String,
+    temporary_rank: Option<i64>,
+    rank_length: Option<usize>,
+    item: String,
+    item_quantity: String,
+    club_days: String,
+    note: String,
+}
+
+/// What the housekeeping keeps about a player beside the account: read with the player, each empty when its table is
+/// not in the database (an emulator before housekeeping).
+#[derive(Default)]
+struct Extra {
+    notes: Vec<hk::Note>,
+    clones: Vec<hk::CloneAccount>,
+    sanctions: Vec<hk::Sanction>,
+    temporary_rank: Option<hk::TemporaryRank>,
+    /// The IPs and mail, only after "Reveal".
+    private: Option<hk::Private>,
 }
 
 #[derive(Default)]
@@ -165,6 +193,7 @@ struct State {
     ranks: Vec<Rank>,
     chosen: Option<i64>,
     player: Option<Player>,
+    extra: Extra,
     inputs: Inputs,
     generation: u64,
     session: Option<Arc<SqlSession>>,
@@ -368,6 +397,13 @@ impl Ctl {
             s.chosen = Some(id);
         });
         let loaded = players_admin::load(&session, &database, id).await;
+        let extra = Extra {
+            notes: hk::notes(&session, &database, id).await.unwrap_or_default(),
+            clones: hk::clones(&session, &database, id).await.unwrap_or_default(),
+            sanctions: hk::sanctions(&session, &database, id).await.unwrap_or_default(),
+            temporary_rank: hk::temporary_rank(&session, &database, id).await.ok().flatten(),
+            private: None,
+        };
         self.with(generation, |s| {
             s.busy = false;
             if s.chosen != Some(id) {
@@ -375,9 +411,13 @@ impl Ctl {
             }
             match loaded {
                 Ok(Some(player)) => {
-                    if s.player.as_ref().map(|p| p.id) != Some(id) {
+                    let same = s.player.as_ref().map(|p| p.id) == Some(id);
+                    if !same {
                         s.inputs = Inputs { rank: Some(player.rank), ..Inputs::default() };
                     }
+                    // A revealed IP stays revealed while the same player is open.
+                    let private = if same { s.extra.private.take() } else { None };
+                    s.extra = Extra { private, ..extra };
                     s.player = Some(player);
                 }
                 Ok(None) => {
@@ -459,6 +499,101 @@ impl Ctl {
     }
 }
 
+impl Ctl {
+    /// A housekeeping action (the emulator's `housekeeping` RCON command): asks first, sends it, shows the answer
+    /// (a new password in a dialog) and reads the player again.
+    async fn housekeeping(self, id: i64, name: String, action: Hk) {
+        let Some(server) = self.shared.session() else { return };
+        let Some((generation, _, _)) = self.session() else { return };
+        if let Some(problem) = action.problem() {
+            self.with(generation, |s| s.error(t(&problem).to_string()));
+            return;
+        }
+        let (what, message) = housekeeping_question(&action, &name, &self.lock());
+        let options = vec![Choice::new(what.clone(), t("Send it to the emulator now."), true).primary(), Choice::new(t("Cancel"), t("Do nothing."), false)];
+        if !self.shared.dialogs.choose(t("Are you sure?"), &tf("{action} for {name}?", &[("action", &what), ("name", &name)]), &message, false, options).await {
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let answer = hk::send(&*server, &action).await;
+        let password = answer.as_ref().ok().filter(|a| a.ok()).and_then(|a| hk::parse_password(&a.message));
+        let worked = self.with(generation, |s| {
+            s.busy = false;
+            match answer {
+                Ok(answer) if answer.ok() => {
+                    s.ok(tf("Done: {action} for {name}.", &[("action", &what), ("name", &name)]));
+                    match &action {
+                        Hk::Kick { .. } => s.inputs.kick_reason.clear(),
+                        Hk::TradeLock { .. } => s.inputs.trade_reason.clear(),
+                        Hk::GrantItem { .. } => s.inputs.item.clear(),
+                        Hk::AddNote { .. } => s.inputs.note.clear(),
+                        _ => {}
+                    }
+                    true
+                }
+                Ok(answer) if hk::unsupported(&answer) => {
+                    s.error(t("The emulator does not know the housekeeping RCON command yet: update the emulator (Polaris) to use this.").into());
+                    false
+                }
+                Ok(answer) => {
+                    s.error(super::housekeeping_view::error_text(&answer));
+                    false
+                }
+                Err(error) => {
+                    s.error(error.to_string());
+                    false
+                }
+            }
+        });
+        if worked != Some(true) {
+            return;
+        }
+        if let Some(password) = password {
+            let text = tf("The new password of {name}:\n\n{password}\n\nGive it to the player; it is not shown again.", &[("name", &name), ("password", &password)]);
+            self.shared.dialogs.choose(t("Password reset"), &tf("{name} has a new password", &[("name", &name)]), &text, (), vec![Choice::new(t("Close"), t("I have noted it."), ()).primary()]).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        self.load_player(id).await;
+    }
+
+    /// Reads the player's IPs and mail (hidden until asked, as in the hotel's panel).
+    async fn reveal(&self, id: i64) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let private = hk::private(&session, &database, id).await;
+        self.with(generation, |s| match private {
+            Ok(private) if s.chosen == Some(id) => s.extra.private = Some(private),
+            Ok(_) => {}
+            Err(error) => s.error(error.to_string()),
+        });
+    }
+}
+
+/// The confirm dialog's button and text for a housekeeping action.
+fn housekeeping_question(action: &Hk, name: &str, s: &State) -> (String, String) {
+    let n = ("name", name);
+    match action {
+        Hk::Kick { reason, .. } => (t("Kick").into(), tf("{name} is disconnected and sees the reason: {reason}", &[n, ("reason", reason.trim())])),
+        Hk::TradeLock { hours, reason, .. } => (
+            t("Trade lock").into(),
+            tf("{name} cannot trade for {length}. Reason: {reason}", &[n, ("length", length_name(hours * 3600)), ("reason", reason.trim())]),
+        ),
+        Hk::ResetPassword { .. } => (t("Reset password").into(), tf("{name} gets a new random password, shown once afterwards. An online player is disconnected.", &[n])),
+        Hk::TemporaryRank { rank, seconds, .. } => (
+            t("Temporary rank").into(),
+            tf("{name} gets the rank {rank} for {length}; then the rank before it comes back by itself.", &[n, ("rank", &s.rank_name(*rank)), ("length", length_name(*seconds))]),
+        ),
+        Hk::GrantItem { item, quantity, .. } => (
+            t("Give furni").into(),
+            tf("{name} gets {quantity} x furni {item} (items_base id) in the inventory.", &[n, ("quantity", &quantity.to_string()), ("item", &item.to_string())]),
+        ),
+        Hk::SetClub { days, .. } if *days == 0 => (t("End Habbo Club").into(), tf("The Habbo Club of {name} ends now.", &[n])),
+        Hk::SetClub { days, .. } => (t("Habbo Club").into(), tf("{name} has Habbo Club for {days} days from now.", &[n, ("days", &days.to_string())])),
+        Hk::AddNote { note, .. } => (t("Add note").into(), tf("Staff see this note on {name}:\n\n{note}", &[n, ("note", note.trim())])),
+        Hk::DeleteNote { .. } => (t("Delete note").into(), tf("The note on {name} is deleted.", &[n])),
+        other => (other.name().into(), tf("The emulator does this for {name} and logs it.", &[n])),
+    }
+}
+
 fn server_id(server: &Arc<dyn Server>) -> usize {
     Arc::as_ptr(server) as *const () as usize
 }
@@ -488,6 +623,13 @@ impl PlayersView {
                 state.chosen = Some(1);
                 state.inputs.rank = Some(1);
                 state.player = Some(Player { id: 1, name: "duckie".into(), rank: 1, rank_name: "Member".into(), online: true, credits: 2500, ..Player::default() });
+                state.extra = Extra {
+                    notes: vec![hk::Note { id: 3, note: "Warned about scamming in the trade room.".into(), author: "admin".into(), created_at: 1_762_600_000 }],
+                    clones: vec![hk::CloneAccount { id: 42, name: "duckie2".into(), last_online: 1_762_500_000, ip: String::new() }],
+                    sanctions: vec![hk::Sanction { level: 1, reason: "Scamming".into(), probation_until: 1_763_200_000, trade_locked_until: 0, mute_minutes: 0 }],
+                    temporary_rank: Some(hk::TemporaryRank { rank: 7, previous: 1, expires_at: 1_762_900_000, staff: "admin".into(), reason: String::new() }),
+                    private: None,
+                };
                 return;
             }
         }
@@ -501,6 +643,8 @@ enum Action {
     Search(i64, bool),
     Open(i64),
     Rcon(i64, String, bool, Rcon),
+    Housekeeping(i64, String, Hk),
+    Reveal(i64),
 }
 
 fn frame(palette: &Palette) -> egui::Frame {
@@ -554,6 +698,8 @@ impl View for PlayersView {
                 Action::Search(page, fresh) => ctl.spawn(move |c| async move { c.search(page, fresh).await }),
                 Action::Open(id) => ctl.spawn(move |c| async move { c.load_player(id).await }),
                 Action::Rcon(id, name, online, action) => ctl.spawn(move |c| c.act(id, name, online, action)),
+                Action::Housekeeping(id, name, action) => ctl.spawn(move |c| c.housekeeping(id, name, action)),
+                Action::Reveal(id) => ctl.spawn(move |c| async move { c.reveal(id).await }),
             }
         }
     }
@@ -839,7 +985,118 @@ fn detail(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
         widgets::muted(ui, palette, &tf("Not in this database: {tables}.", &[("tables", &p.missing.join(", "))]), 12.0);
     }
 
+    staff(ui, palette, s, actions);
     controls(ui, palette, s, actions);
+}
+
+/// What the housekeeping keeps on the player: temporary rank, sanctions, accounts on the same IP, the hidden IPs and
+/// mail, and the staff notes.
+fn staff(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let Some(p) = s.player.as_ref() else { return };
+    let (id, name) = (p.id, p.name.clone());
+    let ready = s.session.is_some() && !s.busy;
+    let row = |ui: &mut egui::Ui, text: String| ui.add(egui::Label::new(RichText::new(text).size(12.5)).wrap());
+
+    if let Some(temporary) = &s.extra.temporary_rank {
+        section(ui, t("Temporary rank"));
+        let mut text = tf(
+            "{rank} until {end}, then back to {previous}.",
+            &[("rank", &s.rank_name(temporary.rank)), ("end", &hk::when(temporary.expires_at)), ("previous", &s.rank_name(temporary.previous))],
+        );
+        if !temporary.staff.is_empty() {
+            text.push(' ');
+            text.push_str(&tf("Given by {staff}.", &[("staff", &temporary.staff)]));
+        }
+        row(ui, text);
+    }
+
+    section(ui, &tf("Sanctions ({count})", &[("count", &s.extra.sanctions.len().to_string())]));
+    if s.extra.sanctions.is_empty() {
+        widgets::muted(ui, palette, t("No sanctions (the mod tools' warning ladder)."), 12.5);
+    } else {
+        egui::Grid::new("players-sanctions").num_columns(5).spacing([16.0, 3.0]).striped(true).show(ui, |ui| {
+            for name in [t("Level"), t("Probation until"), t("Trade lock until"), t("Mute"), t("Reason")] {
+                ui.label(RichText::new(name).size(12.5).strong());
+            }
+            ui.end_row();
+            let time = |ts: i64| if ts > 0 { hk::when(ts) } else { "-".to_string() };
+            for sanction in &s.extra.sanctions {
+                ui.label(RichText::new(sanction.level.to_string()).size(12.5));
+                ui.label(RichText::new(time(sanction.probation_until)).size(12.5));
+                ui.label(RichText::new(time(sanction.trade_locked_until)).size(12.5));
+                ui.label(RichText::new(if sanction.mute_minutes > 0 { tf("{minutes} min", &[("minutes", &sanction.mute_minutes.to_string())]) } else { "-".into() }).size(12.5));
+                ui.add(egui::Label::new(RichText::new(&sanction.reason).size(12.5)).wrap());
+                ui.end_row();
+            }
+        });
+    }
+
+    section(ui, &tf("Accounts on the same IP ({count})", &[("count", &s.extra.clones.len().to_string())]));
+    if s.extra.clones.is_empty() {
+        widgets::muted(ui, palette, t("No other account registered or logs in from this player's IPs."), 12.5);
+    } else {
+        egui::Grid::new("players-clones").num_columns(3).spacing([16.0, 3.0]).striped(true).show(ui, |ui| {
+            for name in [t("Player"), t("Last online"), ""] {
+                ui.label(RichText::new(name).size(12.5).strong());
+            }
+            ui.end_row();
+            for clone in &s.extra.clones {
+                ui.label(RichText::new(format!("{} ({})", clone.name, clone.id)).size(12.5));
+                ui.label(RichText::new(if clone.last_online > 0 { hk::when(clone.last_online) } else { "-".into() }).size(12.5));
+                if ui.add_enabled(ready, small(t("Open"))).clicked() {
+                    actions.push(Action::Open(clone.id));
+                }
+                ui.end_row();
+            }
+        });
+    }
+
+    section(ui, t("IP and mail"));
+    match &s.extra.private {
+        Some(private) => {
+            egui::Grid::new("players-private").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                let dash = |v: &str| if v.is_empty() { "-".to_string() } else { v.to_string() };
+                pair(ui, palette, t("Current IP"), &dash(&private.ip_current));
+                pair(ui, palette, t("Registered from"), &dash(&private.ip_register));
+                pair(ui, palette, t("Mail"), &dash(&private.mail));
+            });
+        }
+        None => {
+            ui.horizontal(|ui| {
+                widgets::muted(ui, palette, t("Hidden, as in the hotel's panel."), 12.5);
+                if ui.add_enabled(ready, small(t("Reveal"))).clicked() {
+                    actions.push(Action::Reveal(id));
+                }
+            });
+        }
+    }
+
+    section(ui, &tf("Staff notes ({count})", &[("count", &s.extra.notes.len().to_string())]));
+    for note in &s.extra.notes {
+        widgets::card_frame(palette).inner_margin(8).corner_radius(8).show(ui, |ui| {
+            ui.set_width(ui.available_width().min(640.0));
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width((ui.available_width() - 80.0).max(120.0));
+                    ui.add(egui::Label::new(RichText::new(&note.note).size(12.5)).wrap());
+                    widgets::muted(ui, palette, &format!("{} · {}", note.author, hk::when(note.created_at)), 11.5);
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if ui.add_enabled(ready, small(t("Delete"))).clicked() {
+                        actions.push(Action::Housekeeping(id, name.clone(), Hk::DeleteNote { user: id, note: note.id }));
+                    }
+                });
+            });
+        });
+        ui.add_space(4.0);
+    }
+    ui.horizontal_top(|ui| {
+        let width = (ui.available_width() - 110.0).clamp(160.0, 530.0);
+        ui.add_sized([width, 48.0], egui::TextEdit::multiline(&mut s.inputs.note).hint_text(t("A note only staff see")));
+        if ui.add_enabled(ready && !s.inputs.note.trim().is_empty(), small(t("Add note"))).clicked() {
+            actions.push(Action::Housekeeping(id, name.clone(), Hk::AddNote { user: id, note: s.inputs.note.clone() }));
+        }
+    });
 }
 
 fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
@@ -854,7 +1111,10 @@ fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut V
     }
     kinds.sort();
     let ready = s.session.is_some() && !s.busy;
-    let mut send = |action: Rcon| actions.push(Action::Rcon(id, name.clone(), online, action));
+    // Both kinds of action go to one list; the closures share it.
+    let pending = std::cell::RefCell::new(Vec::new());
+    let send = |action: Rcon| pending.borrow_mut().push(Action::Rcon(id, name.clone(), online, action));
+    let hk_send = |action: Hk| pending.borrow_mut().push(Action::Housekeeping(id, name.clone(), action));
     let number = |text: &str| text.trim().parse::<i64>().unwrap_or(0);
     let inputs = &mut s.inputs;
 
@@ -1008,6 +1268,116 @@ fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut V
 
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Temp. rank"));
+            let chosen = inputs.temporary_rank.unwrap_or(0);
+            let length = inputs.rank_length.unwrap_or(RANK_DEFAULT).min(RANK_LENGTHS.len() - 1);
+            let text = s.ranks.iter().find(|r| r.id == chosen).map(|r| format!("{} ({})", r.name, r.id)).unwrap_or_else(|| t("Rank").to_string());
+            ui.horizontal(|ui| {
+                let length_width = 110.0;
+                egui::ComboBox::from_id_salt("players-temp-rank").selected_text(text).width(control - length_width - ui.spacing().item_spacing.x).height(300.0).show_ui(ui, |ui| {
+                    for rank in &s.ranks {
+                        if ui.selectable_label(chosen == rank.id, format!("{} ({})", rank.name, rank.id)).clicked() {
+                            inputs.temporary_rank = Some(rank.id);
+                        }
+                    }
+                });
+                egui::ComboBox::from_id_salt("players-temp-length").selected_text(length_name(RANK_LENGTHS[length])).width(length_width).show_ui(ui, |ui| {
+                    for (index, seconds) in RANK_LENGTHS.iter().enumerate() {
+                        if ui.selectable_label(length == index, length_name(*seconds)).clicked() {
+                            inputs.rank_length = Some(index);
+                        }
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                if ui.add_enabled(ready && chosen > 0, button(t("Give"))).on_hover_text(t("The rank for a while; the rank before it comes back by itself.")).clicked() {
+                    hk_send(Hk::TemporaryRank { user: id, rank: chosen, seconds: RANK_LENGTHS[length] });
+                }
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Furni"));
+            let enter = ui
+                .horizontal(|ui| {
+                    let quantity_width = 70.0;
+                    let a = field(ui, &mut inputs.item, t("items_base id"), control - quantity_width - ui.spacing().item_spacing.x);
+                    let b = field(ui, &mut inputs.item_quantity, "1", quantity_width);
+                    a || b
+                })
+                .inner;
+            ui.horizontal(|ui| {
+                if (ui.add_enabled(ready, button(t("Give"))).on_hover_text(t("1 to 100 of the furni, into the inventory.")).clicked() || enter) && ready {
+                    let quantity = if inputs.item_quantity.trim().is_empty() { 1 } else { number(&inputs.item_quantity) };
+                    hk_send(Hk::GrantItem { user: id, item: number(&inputs.item), quantity });
+                }
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Club"));
+            let enter = field(ui, &mut inputs.club_days, t("Days from now (0 ends it)"), control);
+            ui.horizontal(|ui| {
+                if (ui.add_enabled(ready && !inputs.club_days.trim().is_empty(), button(t("Set"))).clicked() || enter) && ready {
+                    hk_send(Hk::SetClub { user: id, days: number(&inputs.club_days) });
+                }
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Trade lock"));
+            let length = inputs.trade_length.unwrap_or(TRADE_DEFAULT).min(TRADE_HOURS.len() - 1);
+            let enter = ui
+                .horizontal(|ui| {
+                    let length_width = 110.0;
+                    egui::ComboBox::from_id_salt("players-trade-length").selected_text(length_name(TRADE_HOURS[length] * 3600)).width(length_width).show_ui(ui, |ui| {
+                        for (index, hours) in TRADE_HOURS.iter().enumerate() {
+                            if ui.selectable_label(length == index, length_name(hours * 3600)).clicked() {
+                                inputs.trade_length = Some(index);
+                            }
+                        }
+                    });
+                    field(ui, &mut inputs.trade_reason, t("Reason"), control - length_width - ui.spacing().item_spacing.x)
+                })
+                .inner;
+            ui.horizontal(|ui| {
+                if (ui.add_enabled(ready, button(t("Lock"))).clicked() || enter) && ready {
+                    hk_send(Hk::TradeLock { user: id, hours: TRADE_HOURS[length], reason: inputs.trade_reason.clone() });
+                }
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Kick"));
+            let enter = field(ui, &mut inputs.kick_reason, t("Reason the player sees"), control);
+            let hint = if online { "" } else { t("Only to a player who is online.") };
+            ui.horizontal(|ui| {
+                if (ui.add_enabled(ready && online, button(t("Kick"))).on_disabled_hover_text(hint).clicked() || (enter && online)) && ready {
+                    hk_send(Hk::Kick { user: id, reason: inputs.kick_reason.clone() });
+                }
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            action_label(ui, t("Password"));
+            ui.allocate_ui_with_layout(egui::vec2(control, ROW), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_min_size(egui::vec2(control, ROW));
+                widgets::muted(ui, palette, t("A new random password, shown once."), 12.5);
+            });
+            ui.horizontal(|ui| {
+                if ui.add_enabled(ready, button(t("Reset"))).clicked() {
+                    hk_send(Hk::ResetPassword { user: id });
+                }
+            });
+        });
+
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
             action_label(ui, t("Alert"));
             ui.add_sized([control, 64.0], egui::TextEdit::multiline(&mut inputs.alert).hint_text(t("The message the player sees")));
             ui.vertical(|ui| {
@@ -1027,6 +1397,7 @@ fn controls(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut V
             });
         });
     });
+    actions.extend(pending.into_inner());
 }
 
 /// The height of a row of the actions, the width of their value column and the least width of a button.

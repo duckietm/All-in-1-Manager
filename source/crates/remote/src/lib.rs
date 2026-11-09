@@ -44,6 +44,7 @@ pub mod habbo_assets;
 pub mod item_fix;
 pub mod harden;
 pub mod hotel_site;
+pub mod housekeeping;
 pub mod local_ports;
 pub mod mariadb;
 pub mod multiheight;

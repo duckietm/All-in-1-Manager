@@ -6,7 +6,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use aio_remote::catalog_admin::{self, CatalogBackup, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse, FEATURED_TYPES};
+mod front_page;
+
+use aio_remote::catalog_admin::{self, CatalogBackup, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
@@ -17,6 +19,7 @@ use crate::gui::dialogs::Choice;
 use crate::gui::theme::Palette;
 use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
 use crate::i18n::{t, tf};
+use front_page::{FrontHeader, FrontImages, FrontState};
 
 #[derive(Default, Clone)]
 struct Status {
@@ -64,6 +67,8 @@ struct State {
     /// The front page slots as loaded, and as edited (None until the tab is opened).
     featured: Option<Vec<FeaturedRow>>,
     featured_saved: Vec<FeaturedRow>,
+    /// The graphical front page: the tile edited, the image picker, the server's images and the page's header.
+    front: FrontState,
     /// The limited series (None until the tab is opened), the sizes typed per offer, and the search.
     limited: Option<Vec<LimitedSeries>>,
     limited_sizes: std::collections::HashMap<i64, i64>,
@@ -118,6 +123,7 @@ impl State {
 
 pub struct CatalogManagerView {
     state: Arc<Mutex<State>>,
+    images: FrontImages,
 }
 
 #[derive(Clone)]
@@ -272,13 +278,68 @@ impl Ctl {
             s.busy = false;
             match loaded {
                 Ok(slots) => {
-                    let rows: Vec<FeaturedRow> = slots.into_iter().map(FeaturedRow::new).collect();
+                    let mut rows: Vec<FeaturedRow> = slots.into_iter().map(FeaturedRow::new).collect();
+                    rows.sort_by_key(|row| row.slot.slot_id);
                     s.featured_saved = rows.clone();
                     s.featured = Some(rows);
+                    s.front.selected = None;
                 }
                 Err(error) => s.status = Status::error(error.to_string()),
             }
         });
+        self.load_front_header(generation, &session, &database).await;
+    }
+
+    /// The front page's own row: its caption, icon, headline image and the voucher box's text (page_text1).
+    async fn load_front_header(&self, generation: u64, session: &SqlSession, database: &str) {
+        let page = front_page::front_page_of(&self.lock().pages).cloned();
+        let Some(page) = page else {
+            self.with(generation, |s| s.front.header = None);
+            return;
+        };
+        let row = catalog_admin::load_row(session, database, "catalog_pages", page.id).await.unwrap_or_default();
+        let value = |name: &str| row.iter().find(|(column, _)| column == name).and_then(|(_, v)| v.clone()).unwrap_or_default();
+        let header = FrontHeader { caption: page.caption.clone(), icon: page.icon_image, headline: value("page_headline"), text1: value("page_text1") };
+        self.with(generation, |s| s.front.header = Some(header));
+    }
+
+    /// The image files under the server's c_images, for the picker.
+    async fn list_front_images(self) {
+        let Some(server) = self.shared.session() else { return };
+        let generation = self.lock().generation;
+        let result = server.run_as_root(&front_page::list_command()).await;
+        self.with(generation, |s| {
+            s.front.listing = false;
+            s.front.server_files = Some(match result {
+                Ok(result) => result.output.lines().map(str::trim).filter_map(front_page::clean_path).collect(),
+                Err(error) => {
+                    s.status = Status::error(error.to_string());
+                    Vec::new()
+                }
+            });
+        });
+    }
+
+    /// Fetches these files under the server's c_images for their preview, one after the other.
+    async fn fetch_front_images(self, files: Vec<String>) {
+        let Some(server) = self.shared.session() else { return };
+        let generation = self.lock().generation;
+        let folder = format!("{}/c_images", aio_remote::octane::gamedata());
+        for file in files {
+            let bytes = match front_page::clean_path(&file) {
+                Some(path) => server.read_file(&format!("{folder}/{path}"), 8 << 20).await.ok().flatten().map(Arc::new),
+                None => None,
+            };
+            if self
+                .with(generation, |s| {
+                    s.front.fetching.remove(&file);
+                    s.front.fetched.insert(file.clone(), bytes);
+                })
+                .is_none()
+            {
+                return;
+            }
+        }
     }
 
     async fn save_featured(self) {
@@ -660,7 +721,7 @@ impl Ctl {
 
 impl CatalogManagerView {
     pub fn new(_shared: &Shared) -> Self {
-        Self { state: Arc::new(Mutex::new(State::default())) }
+        Self { state: Arc::new(Mutex::new(State::default())), images: FrontImages::new() }
     }
 
     fn ctl(&self, shared: &Shared) -> Ctl {
@@ -677,6 +738,11 @@ impl CatalogManagerView {
             }
             state.close(shared);
             state.session_for = Some(id);
+            // The screenshot of the page shows a sample front page: the dry run has no database.
+            if server.is_dry_run() && std::env::var_os("AIO_SCREENSHOT").is_some() {
+                sample(&mut state);
+                return;
+            }
         }
         self.ctl(shared).spawn(|ctl| ctl.open(false));
     }
@@ -687,6 +753,8 @@ enum Action {
     Refresh,
     LoadFeatured,
     SaveFeatured,
+    ListFrontImages,
+    FetchFrontImages(Vec<String>),
     LoadLimited,
     ChangeLimited(i64, LimitedAction),
     LoadVouchers,
@@ -715,6 +783,7 @@ fn small(text: &str) -> egui::Button<'static> {
 impl View for CatalogManagerView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.connect_if_needed(shared);
+        self.images.new_frame();
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();
         {
@@ -729,7 +798,7 @@ impl View for CatalogManagerView {
                 ui.set_min_size(ui.available_size());
                 header(ui, palette, s, shared, &mut actions);
                 ui.add_space(10.0);
-                body(ui, palette, s, &mut actions);
+                body(ui, palette, s, &mut self.images, &mut actions);
             });
         }
         let ctl = self.ctl(shared);
@@ -739,6 +808,8 @@ impl View for CatalogManagerView {
                 Action::Refresh => ctl.spawn(|c| async move { c.load_pages().await }),
                 Action::LoadFeatured => ctl.spawn(|c| async move { c.load_featured().await }),
                 Action::SaveFeatured => ctl.spawn(|c| c.save_featured()),
+                Action::ListFrontImages => ctl.spawn(|c| c.list_front_images()),
+                Action::FetchFrontImages(files) => ctl.spawn(move |c| c.fetch_front_images(files)),
                 Action::LoadLimited => ctl.spawn(|c| async move { c.load_limited().await }),
                 Action::ChangeLimited(offer_id, action) => ctl.spawn(move |c| c.change_limited(offer_id, action)),
                 Action::LoadVouchers => ctl.spawn(|c| async move { c.load_vouchers(None).await }),
@@ -800,7 +871,7 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
     }
 }
 
-fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontImages, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
         for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::Backups, t("Backups"))] {
             if ui.selectable_label(s.tab == tab, RichText::new(label).size(15.0)).clicked() && s.tab != tab {
@@ -850,7 +921,7 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<A
     }
     // The front page slots (the first tab). Pages and offers are edited in the Catalogue explorer.
     egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
-        egui::ScrollArea::vertical().id_salt("catalog-front-page").auto_shrink([false, false]).show(ui, |ui| front_page(ui, palette, s, actions));
+        egui::ScrollArea::vertical().id_salt("catalog-front-page").auto_shrink([false, false]).show(ui, |ui| front_page::show(ui, palette, s, images, actions));
     });
 }
 
@@ -864,98 +935,6 @@ fn labelled(ui: &mut egui::Ui, palette: &Palette, label: &str) {
 
 fn number(ui: &mut egui::Ui, value: &mut i64, range: std::ops::RangeInclusive<i64>) {
     ui.add(egui::DragValue::new(value).range(range).speed(1));
-}
-
-fn front_page(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
-    ui.label(widgets::title_text(t("Front page"), 17.0));
-    widgets::muted(ui, palette, t("The promo tiles of the catalogue front page. Each opens a page (by internal name or id) or a product. The image is a path under the catalogue images (catalogue/...)."), 12.5);
-    ui.add_space(8.0);
-    let busy = s.busy;
-    if ui.add_enabled(s.session.is_some() && !busy, small(t("Reload"))).clicked() {
-        actions.push(Action::LoadFeatured);
-    }
-    ui.add_space(6.0);
-    let saved = s.featured_saved.clone();
-    let Some(rows) = s.featured.as_mut() else {
-        widgets::muted(ui, palette, t("Loading ..."), 12.5);
-        return;
-    };
-    let slots: Vec<Featured> = rows
-        .iter()
-        .map(|row| Featured { expire_timestamp: catalog_admin::parse_expiry(&row.expiry).unwrap_or(-2), ..row.slot.clone() })
-        .collect();
-    let bad_date = rows.iter().find(|row| catalog_admin::parse_expiry(&row.expiry).is_none()).map(|row| row.slot.slot_id);
-    let problem = match bad_date {
-        Some(id) => Some(tf("Slot {id}: the end date is not YYYY-MM-DD HH:MM.", &[("id", &id.to_string())])),
-        None => catalog_admin::featured_problem(&slots),
-    };
-    let changed = *rows != saved;
-
-    let mut remove = None;
-    if rows.is_empty() {
-        widgets::muted(ui, palette, t("No front page tiles yet."), 12.5);
-    }
-    for (index, row) in rows.iter_mut().enumerate() {
-        widgets::card_frame(palette).inner_margin(8).corner_radius(8).show(ui, |ui| {
-            egui::Grid::new(("catalog-featured", index)).num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-                labelled(ui, palette, t("Slot"));
-                number(ui, &mut row.slot.slot_id, 1..=99);
-                labelled(ui, palette, t("Caption"));
-                ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut row.slot.caption));
-                ui.end_row();
-
-                labelled(ui, palette, t("Image"));
-                ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut row.slot.image).hint_text("catalogue/feature_cata/....png"));
-                labelled(ui, palette, t("Opens"));
-                egui::ComboBox::from_id_salt(("catalog-featured-type", index)).selected_text(&row.slot.kind).show_ui(ui, |ui| {
-                    for kind in FEATURED_TYPES {
-                        ui.selectable_value(&mut row.slot.kind, kind.to_string(), *kind);
-                    }
-                });
-                ui.end_row();
-
-                labelled(ui, palette, t("Target"));
-                match row.slot.kind.as_str() {
-                    "page_id" => number(ui, &mut row.slot.page_id, 0..=i32::MAX as i64),
-                    "product_name" => {
-                        ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut row.slot.product_name));
-                    }
-                    _ => {
-                        ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut row.slot.page_name));
-                    }
-                }
-                labelled(ui, palette, t("Ends"));
-                ui.horizontal(|ui| {
-                    ui.add_sized([160.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut row.expiry).hint_text("YYYY-MM-DD HH:MM")).on_hover_text(t("Empty: it never ends. In the time zone of this computer."));
-                    if ui.add_enabled(!busy, small(t("Remove"))).clicked() {
-                        remove = Some(index);
-                    }
-                });
-                ui.end_row();
-            });
-        });
-        ui.add_space(6.0);
-    }
-    if let Some(index) = remove {
-        rows.remove(index);
-    }
-    ui.horizontal(|ui| {
-        if ui.add_enabled(!busy && rows.len() < catalog_admin::MAX_FEATURED_SLOTS, small(t("Add tile"))).clicked() {
-            let slots: Vec<Featured> = rows.iter().map(|row| row.slot.clone()).collect();
-            rows.push(FeaturedRow::new(catalog_admin::new_featured(&slots)));
-        }
-        if ui.add_enabled(changed && problem.is_none() && !busy, widgets::primary_button(t("Save front page"))).clicked() {
-            actions.push(Action::SaveFeatured);
-        }
-        if ui.add_enabled(changed && !busy, small(t("Undo changes"))).clicked() {
-            *rows = saved.clone();
-        }
-        if let Some(problem) = &problem {
-            ui.label(RichText::new(problem).size(12.0).color(palette.error_text));
-        } else if changed {
-            ui.label(RichText::new(t("Not saved yet.")).size(12.0).color(palette.muted));
-        }
-    });
 }
 
 fn limited(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
@@ -1327,4 +1306,31 @@ fn backups(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Ve
             ui.end_row();
         }
     });
+}
+
+/// The screenshot's front page (`AIO_SCREENSHOT_PAGE=catalogmanager`): four tiles, the second selected.
+fn sample(s: &mut State) {
+    let page = |id: i64, caption: &str, save: &str, layout: &str| Page { id, parent_id: -1, caption: caption.into(), caption_save: save.into(), layout: layout.into(), icon_image: 1, visible: true, enabled: true, ..Page::default() };
+    s.pages = vec![page(1, "Front page", "frontpage", "frontpage4"), page(2, "Furni", "furni", "default_3x3"), page(3, "HC", "hc_membership", "vip_buy"), page(4, "Clothes", "clothes", "default_3x3")];
+    let slot = |slot_id: i64, caption: &str, image: &str, page_name: &str, expire_timestamp: i64| {
+        FeaturedRow::new(Featured { slot_id, caption: caption.into(), image: image.into(), kind: "page_name".into(), expire_timestamp, page_name: page_name.into(), ..Featured::default() })
+    };
+    let rows = vec![
+        slot(1, "New clothes", "catalogue/feature_cata_vert_rainbow.png", "clothes", -1),
+        slot(2, "Become a member!", "catalogue/feature_cata_hort_hc.png", "hc_membership", -1),
+        slot(3, "Give HC as a gift", "catalogue/feature_cata_hort_gift.png", "hc_membership", 1_600_000_000),
+        slot(4, "Hotel furni", "catalogue/feature_cata_hort_furni.png", "furni", -1),
+    ];
+    s.featured_saved = rows.clone();
+    s.featured = Some(rows);
+    s.front.sample = true;
+    s.front.header = Some(FrontHeader { caption: "Front page".into(), icon: 1, headline: "catalog_frontpage_headline_shop_EN".into(), text1: "Redeem a <b>voucher</b> code here:".into() });
+    if std::env::var_os("AIO_SCREENSHOT_EDITOR").is_some() {
+        s.front.selected = Some(2);
+    }
+    if std::env::var_os("AIO_SCREENSHOT_PICKER").is_some() {
+        s.front.selected = Some(1);
+        s.front.picker = Some(String::new());
+    }
+    s.subtitle = "The catalogue of hotel on example.org, through the SSH tunnel.".into();
 }

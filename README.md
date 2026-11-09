@@ -1323,11 +1323,18 @@ through the same SSH tunnel and MariaDB login as the SQL Editor.
 The pages and their offers are edited in the **Catalogue explorer** (below; **Pages and offers →** goes there). This
 page has the rest:
 
-- **Front page** (the first tab) edits the promo tiles of the catalogue front page (`catalog_featured_pages`): the
-  slot number, caption, image (a path under the catalogue images, `catalogue/...`), what it opens (a page by internal
-  name or id, or a product) and when it stops showing (`YYYY-MM-DD HH:MM` in this computer's time zone; empty never).
-  **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails halfway is not rolled
-  back: save again.
+- **Front page** (the first tab) shows the catalogue front page (`catalog_featured_pages`) as the hotel draws it
+  (Octane's frontpage4 layout): the front page's header with its headline image, the first slot as the tall 184 × 460
+  picture, the other slots in the scrolling list beside it (356 × 126 each), and the voucher box with the page's
+  text 1. The images come from `c_images` on this computer (Habbo assets and the retro profiles), else from the
+  server's `gamedata/c_images` over SSH. **Click a tile** to edit it next to the picture: caption, image (**Choose
+  ...** shows the images of `c_images/catalogue`, `web_promo_small` and `web_promo` of this computer and the server as
+  thumbnails), what it opens (a page by internal name or id, with **Pick a page**, or an offer by product name) and
+  when it stops showing (`YYYY-MM-DD HH:MM` in this computer's time zone; empty never). **Drag a tile onto another**,
+  or use **◀ Earlier** / **Later ▶**, to swap their slots; **Add tile** and **Remove tile** add and take away one.
+  A tile whose end date passed is marked *Ended*: the emulator still sends it, as one that never ends, so clear the
+  date or remove it. **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails
+  halfway is not rolled back: save again.
 - **Limited** (the second tab) lists every limited series: its offer and page, and how many are sold of how many,
   with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
   the catalogue); a series never gets smaller, as its numbers already exist. **No longer limited** ends a series of

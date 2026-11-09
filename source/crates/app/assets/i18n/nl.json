@@ -3355,5 +3355,13 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Deze datum is voorbij. De emulator stuurt de tegel nog steeds (als een die nooit afloopt), dus het hotel blijft hem tonen: maak de datum leeg of verwijder de tegel.",
   "Tile {n} of {count}": "Tegel {n} van {count}",
   "{count} of at most {max} characters.": "{count} van maximaal {max} tekens.",
-  "◀ Earlier": "◀ Eerder"
+  "◀ Earlier": "◀ Eerder",
+  "Builders Club": "Builders Club",
+  "Builders Club explorer": "Builders Club-verkenner",
+  "Builders Club warehouse": "Builders Club Warenhuis",
+  "Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.": "Elke kolom van de catalog_items_bc-rij van de aanbieding: naam, meubels, pagina, volgorde en extra data (Builders Club-aanbiedingen hebben geen prijs). Gewijzigde waarden zijn gemarkeerd; Opslaan schrijft alleen die.",
+  "Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.": "Meubels waarvoor het Builders Club Warenhuis nog geen aanbieding heeft. Sleep ze naar een pagina in het andere venster (of een pagina in de boom): elk krijgt daar een aanbieding, gratis te plaatsen voor leden.",
+  "The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.": "Het Builders Club Warenhuis (catalog_pages_bc, catalog_items_bc) zoals het spel het toont, in twee vensters: sleep meubels tussen pagina's.",
+  "The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.": "Het Builders Club Warenhuis van {host} zoals het spel het toont: sleep meubels tussen pagina's en publiceer.",
+  "{count} furni got an offer on {page}. Publish to show it in the hotel.": "{count} meubels kregen een aanbieding op {page}. Publiceer om het in het hotel te tonen."
 }

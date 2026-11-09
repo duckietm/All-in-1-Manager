@@ -3355,5 +3355,13 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Questa data è passata. L'emulatore invia ancora il riquadro (come uno che non scade mai), quindi l'hotel continua a mostrarlo: svuota la data o rimuovi il riquadro.",
   "Tile {n} of {count}": "Riquadro {n} di {count}",
   "{count} of at most {max} characters.": "{count} di al massimo {max} caratteri.",
-  "◀ Earlier": "◀ Prima"
+  "◀ Earlier": "◀ Prima",
+  "Builders Club": "Builders Club",
+  "Builders Club explorer": "Esploratore Builders Club",
+  "Builders Club warehouse": "Magazzino del Builders Club",
+  "Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.": "Ogni colonna della riga catalog_items_bc dell'offerta: nome, furni, pagina, ordine e dati extra (le offerte Builders Club non hanno prezzo). I valori cambiati sono segnati; Salva scrive solo quelli.",
+  "Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.": "Furni per cui il magazzino del Builders Club non ha ancora un'offerta. Trascinali su una pagina nell'altra finestra (o una pagina del suo albero): ognuno riceve lì un'offerta, gratuita da piazzare per i membri.",
+  "The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.": "Il magazzino del Builders Club (catalog_pages_bc, catalog_items_bc) come lo mostra il gioco, in due finestre: trascina furni tra le pagine.",
+  "The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.": "Il magazzino del Builders Club di {host} come lo mostra il gioco: trascina furni tra le pagine, poi pubblica.",
+  "{count} furni got an offer on {page}. Publish to show it in the hotel.": "{count} furni hanno ricevuto un'offerta su {page}. Pubblica per mostrarlo nell'hotel."
 }

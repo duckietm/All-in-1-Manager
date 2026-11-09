@@ -121,6 +121,64 @@ const PAGE_COLUMNS: &str =
 const OFFER_COLUMNS: &str = "id, page_id, catalog_name, item_ids, cost_credits, cost_points, points_type, amount, \
      limited_stack, limited_sells, order_number, offer_id, club_only, have_offer, extradata";
 
+/// The Builders Club pages as [`page_from_row`] reads them, as the emulator reads them: no internal name of their own
+/// (the caption), every rank, never club only.
+const BC_PAGE_COLUMNS: &str =
+    "id, parent_id, caption, caption AS caption_save, page_layout, icon_image, 1 AS min_rank, order_num, visible, enabled, '0' AS club_only, 'BUILDER' AS catalog_mode";
+
+/// The Builders Club offers as [`offer_from_row`] reads them: free, one at a time, never limited.
+const BC_OFFER_COLUMNS: &str = "id, page_id, catalog_name, item_ids, 0 AS cost_credits, 0 AS cost_points, 0 AS points_type, 1 AS amount, \
+     0 AS limited_stack, 0 AS limited_sells, order_number, id AS offer_id, '0' AS club_only, '1' AS have_offer, extradata";
+
+/// Which catalogue: the normal one (`catalog_pages`, `catalog_items`) or the Builders Club warehouse
+/// (`catalog_pages_bc`, `catalog_items_bc`), which the emulator loads on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub enum Catalogue {
+    #[default]
+    Normal,
+    Builders,
+}
+
+impl Catalogue {
+    pub fn pages_table(self) -> &'static str {
+        match self {
+            Catalogue::Normal => "catalog_pages",
+            Catalogue::Builders => "catalog_pages_bc",
+        }
+    }
+
+    pub fn items_table(self) -> &'static str {
+        match self {
+            Catalogue::Normal => "catalog_items",
+            Catalogue::Builders => "catalog_items_bc",
+        }
+    }
+
+    fn page_columns(self) -> &'static str {
+        match self {
+            Catalogue::Normal => PAGE_COLUMNS,
+            Catalogue::Builders => BC_PAGE_COLUMNS,
+        }
+    }
+
+    fn offer_columns(self) -> &'static str {
+        match self {
+            Catalogue::Normal => OFFER_COLUMNS,
+            Catalogue::Builders => BC_OFFER_COLUMNS,
+        }
+    }
+
+    /// `db`.`catalog_pages(_bc)`
+    fn pages(self, database: &str) -> String {
+        format!("{}.{}", quote(database), self.pages_table())
+    }
+
+    /// `db`.`catalog_items(_bc)`
+    fn items(self, database: &str) -> String {
+        format!("{}.{}", quote(database), self.items_table())
+    }
+}
+
 fn int(value: Option<&SqlValue>) -> i64 {
     match value {
         Some(SqlValue::Int(v)) => *v,
@@ -328,24 +386,42 @@ pub fn offer_problem(offer: &Offer) -> Option<String> {
 }
 
 /// `SELECT` of every page of the hotel database.
-pub fn pages_sql(database: &str) -> String {
-    format!("SELECT {PAGE_COLUMNS} FROM {}.catalog_pages ORDER BY parent_id, order_num, id", quote(database))
+pub fn pages_sql(database: &str, cat: Catalogue) -> String {
+    format!("SELECT {} FROM {} ORDER BY parent_id, order_num, id", cat.page_columns(), cat.pages(database))
 }
 
 /// `SELECT` of the offers of one page (`?` = the page id).
-pub fn offers_sql(database: &str) -> String {
-    format!("SELECT {OFFER_COLUMNS} FROM {}.catalog_items WHERE page_id = ? ORDER BY order_number, id", quote(database))
+pub fn offers_sql(database: &str, cat: Catalogue) -> String {
+    format!("SELECT {} FROM {} WHERE page_id = ? ORDER BY order_number, id", cat.offer_columns(), cat.items(database))
 }
 
-pub fn update_page_sql(database: &str) -> String {
-    format!(
-        "UPDATE {}.catalog_pages SET parent_id = ?, caption = ?, caption_save = ?, page_layout = ?, icon_image = ?, min_rank = ?, \
-         order_num = ?, visible = ?, enabled = ?, club_only = ?, catalog_mode = ? WHERE id = ?",
-        quote(database)
-    )
+pub fn update_page_sql(database: &str, cat: Catalogue) -> String {
+    match cat {
+        Catalogue::Normal => format!(
+            "UPDATE {} SET parent_id = ?, caption = ?, caption_save = ?, page_layout = ?, icon_image = ?, min_rank = ?, \
+             order_num = ?, visible = ?, enabled = ?, club_only = ?, catalog_mode = ? WHERE id = ?",
+            cat.pages(database)
+        ),
+        Catalogue::Builders => format!(
+            "UPDATE {} SET parent_id = ?, caption = ?, page_layout = ?, icon_image = ?, order_num = ?, visible = ?, enabled = ? WHERE id = ?",
+            cat.pages(database)
+        ),
+    }
 }
 
-pub fn update_page_params(page: &Page) -> Vec<SqlValue> {
+pub fn update_page_params(page: &Page, cat: Catalogue) -> Vec<SqlValue> {
+    if cat == Catalogue::Builders {
+        return vec![
+            SqlValue::Int(page.parent_id),
+            SqlValue::Text(page.caption.trim().to_string()),
+            SqlValue::Text(page.layout.clone()),
+            SqlValue::Int(page.icon_image),
+            SqlValue::Int(page.order_num),
+            flag_value(page.visible),
+            flag_value(page.enabled),
+            SqlValue::Int(page.id),
+        ];
+    }
     vec![
         SqlValue::Int(page.parent_id),
         SqlValue::Text(page.caption.trim().to_string()),
@@ -362,15 +438,30 @@ pub fn update_page_params(page: &Page) -> Vec<SqlValue> {
     ]
 }
 
-pub fn update_offer_sql(database: &str) -> String {
-    format!(
-        "UPDATE {}.catalog_items SET page_id = ?, catalog_name = ?, item_ids = ?, cost_credits = ?, cost_points = ?, points_type = ?, \
-         amount = ?, limited_stack = ?, order_number = ?, offer_id = ?, club_only = ?, have_offer = ?, extradata = ? WHERE id = ?",
-        quote(database)
-    )
+pub fn update_offer_sql(database: &str, cat: Catalogue) -> String {
+    match cat {
+        Catalogue::Normal => format!(
+            "UPDATE {} SET page_id = ?, catalog_name = ?, item_ids = ?, cost_credits = ?, cost_points = ?, points_type = ?, \
+             amount = ?, limited_stack = ?, order_number = ?, offer_id = ?, club_only = ?, have_offer = ?, extradata = ? WHERE id = ?",
+            cat.items(database)
+        ),
+        Catalogue::Builders => {
+            format!("UPDATE {} SET page_id = ?, catalog_name = ?, item_ids = ?, order_number = ?, extradata = ? WHERE id = ?", cat.items(database))
+        }
+    }
 }
 
-pub fn update_offer_params(offer: &Offer) -> Vec<SqlValue> {
+pub fn update_offer_params(offer: &Offer, cat: Catalogue) -> Vec<SqlValue> {
+    if cat == Catalogue::Builders {
+        return vec![
+            SqlValue::Int(offer.page_id),
+            SqlValue::Text(offer.catalog_name.trim().to_string()),
+            SqlValue::Text(offer.item_ids.trim().to_string()),
+            SqlValue::Int(offer.order_number),
+            SqlValue::Text(offer.extradata.clone()),
+            SqlValue::Int(offer.id),
+        ];
+    }
     vec![
         SqlValue::Int(offer.page_id),
         SqlValue::Text(offer.catalog_name.trim().to_string()),
@@ -389,38 +480,49 @@ pub fn update_offer_params(offer: &Offer) -> Vec<SqlValue> {
     ]
 }
 
-pub fn insert_page_sql(database: &str) -> String {
-    format!(
-        "INSERT INTO {}.catalog_pages (parent_id, caption, caption_save, page_layout, icon_image, min_rank, order_num, visible, enabled, \
-         club_only, catalog_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        quote(database)
-    )
+pub fn insert_page_sql(database: &str, cat: Catalogue) -> String {
+    match cat {
+        Catalogue::Normal => format!(
+            "INSERT INTO {} (parent_id, caption, caption_save, page_layout, icon_image, min_rank, order_num, visible, enabled, \
+             club_only, catalog_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            cat.pages(database)
+        ),
+        Catalogue::Builders => format!(
+            "INSERT INTO {} (parent_id, caption, page_layout, icon_image, order_num, visible, enabled) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            cat.pages(database)
+        ),
+    }
 }
 
 /// The values of [`update_page_params`] without the id at the end.
-pub fn insert_page_params(page: &Page) -> Vec<SqlValue> {
-    let mut params = update_page_params(page);
+pub fn insert_page_params(page: &Page, cat: Catalogue) -> Vec<SqlValue> {
+    let mut params = update_page_params(page, cat);
     params.pop();
     params
 }
 
-pub fn insert_offer_sql(database: &str) -> String {
-    format!(
-        "INSERT INTO {}.catalog_items (page_id, catalog_name, item_ids, cost_credits, cost_points, points_type, amount, limited_stack, \
-         order_number, offer_id, club_only, have_offer, extradata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        quote(database)
-    )
+pub fn insert_offer_sql(database: &str, cat: Catalogue) -> String {
+    match cat {
+        Catalogue::Normal => format!(
+            "INSERT INTO {} (page_id, catalog_name, item_ids, cost_credits, cost_points, points_type, amount, limited_stack, \
+             order_number, offer_id, club_only, have_offer, extradata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            cat.items(database)
+        ),
+        Catalogue::Builders => {
+            format!("INSERT INTO {} (page_id, catalog_name, item_ids, order_number, extradata) VALUES (?, ?, ?, ?, ?)", cat.items(database))
+        }
+    }
 }
 
 /// The values of [`update_offer_params`] without the id at the end.
-pub fn insert_offer_params(offer: &Offer) -> Vec<SqlValue> {
-    let mut params = update_offer_params(offer);
+pub fn insert_offer_params(offer: &Offer, cat: Catalogue) -> Vec<SqlValue> {
+    let mut params = update_offer_params(offer, cat);
     params.pop();
     params
 }
 
 /// A new page under `parent_id` (-1: the top level), after the pages already there; not saved yet (id 0).
-pub fn new_page(pages: &[Page], parent_id: i64) -> Page {
+pub fn new_page(pages: &[Page], parent_id: i64, cat: Catalogue) -> Page {
     let order_num = pages.iter().filter(|p| p.parent_id == parent_id).map(|p| p.order_num).max().map_or(1, |o| o + 1);
     Page {
         id: 0,
@@ -434,7 +536,7 @@ pub fn new_page(pages: &[Page], parent_id: i64) -> Page {
         visible: false,
         enabled: true,
         club_only: false,
-        catalog_mode: "NORMAL".into(),
+        catalog_mode: if cat == Catalogue::Builders { "BUILDER" } else { "NORMAL" }.into(),
     }
 }
 
@@ -473,50 +575,49 @@ pub fn offer_delete_problem(offer: &Offer) -> Option<String> {
 }
 
 /// Every page of the hotel database.
-pub async fn load_pages(session: &SqlSession, database: &str) -> Result<Vec<Page>> {
-    let rows = session.select(&pages_sql(database), Vec::new()).await?;
+pub async fn load_pages(session: &SqlSession, database: &str, cat: Catalogue) -> Result<Vec<Page>> {
+    let rows = session.select(&pages_sql(database, cat), Vec::new()).await?;
     Ok(rows.iter().map(|row| page_from_row(row)).collect())
 }
 
 /// The offers of one page.
-pub async fn load_offers(session: &SqlSession, database: &str, page_id: i64) -> Result<Vec<Offer>> {
-    let rows = session.select(&offers_sql(database), vec![SqlValue::Int(page_id)]).await?;
+pub async fn load_offers(session: &SqlSession, database: &str, cat: Catalogue, page_id: i64) -> Result<Vec<Offer>> {
+    let rows = session.select(&offers_sql(database, cat), vec![SqlValue::Int(page_id)]).await?;
     Ok(rows.iter().map(|row| offer_from_row(row)).collect())
 }
 
 /// Saves the page; a new one (id 0) is added. Returns its id.
-pub async fn save_page(session: &SqlSession, database: &str, page: &Page) -> Result<i64> {
+pub async fn save_page(session: &SqlSession, database: &str, cat: Catalogue, page: &Page) -> Result<i64> {
     if page.id <= 0 {
-        let (_, id) = session.execute(&[(insert_page_sql(database), insert_page_params(page))]).await?;
+        let (_, id) = session.execute(&[(insert_page_sql(database, cat), insert_page_params(page, cat))]).await?;
         return Ok(id as i64);
     }
-    session.execute(&[(update_page_sql(database), update_page_params(page))]).await?;
+    session.execute(&[(update_page_sql(database, cat), update_page_params(page, cat))]).await?;
     Ok(page.id)
 }
 
 /// Saves the offer; a new one (id 0) is added. Returns its id.
-pub async fn save_offer(session: &SqlSession, database: &str, offer: &Offer) -> Result<i64> {
+pub async fn save_offer(session: &SqlSession, database: &str, cat: Catalogue, offer: &Offer) -> Result<i64> {
     if offer.id <= 0 {
-        let (_, id) = session.execute(&[(insert_offer_sql(database), insert_offer_params(offer))]).await?;
+        let (_, id) = session.execute(&[(insert_offer_sql(database, cat), insert_offer_params(offer, cat))]).await?;
         return Ok(id as i64);
     }
-    session.execute(&[(update_offer_sql(database), update_offer_params(offer))]).await?;
+    session.execute(&[(update_offer_sql(database, cat), update_offer_params(offer, cat))]).await?;
     Ok(offer.id)
 }
 
 /// Deletes the page with its offers, in one transaction. Check [`page_delete_problem`] first.
-pub async fn delete_page(session: &SqlSession, database: &str, id: i64) -> Result<u64> {
-    let db = quote(database);
+pub async fn delete_page(session: &SqlSession, database: &str, cat: Catalogue, id: i64) -> Result<u64> {
     let statements = vec![
-        (format!("DELETE FROM {db}.catalog_items WHERE page_id = ?"), vec![SqlValue::Int(id)]),
-        (format!("DELETE FROM {db}.catalog_pages WHERE id = ?"), vec![SqlValue::Int(id)]),
+        (format!("DELETE FROM {} WHERE page_id = ?", cat.items(database)), vec![SqlValue::Int(id)]),
+        (format!("DELETE FROM {} WHERE id = ?", cat.pages(database)), vec![SqlValue::Int(id)]),
     ];
     Ok(session.execute(&statements).await?.0)
 }
 
 /// Deletes the offer. Check [`offer_delete_problem`] first.
-pub async fn delete_offer(session: &SqlSession, database: &str, id: i64) -> Result<u64> {
-    let statements = vec![(format!("DELETE FROM {}.catalog_items WHERE id = ?", quote(database)), vec![SqlValue::Int(id)])];
+pub async fn delete_offer(session: &SqlSession, database: &str, cat: Catalogue, id: i64) -> Result<u64> {
+    let statements = vec![(format!("DELETE FROM {} WHERE id = ?", cat.items(database)), vec![SqlValue::Int(id)])];
     Ok(session.execute(&statements).await?.0)
 }
 
@@ -1018,12 +1119,12 @@ pub fn remove_furni_id(item_ids: &str, id: i64) -> String {
 // ---- Checks: duplicates and order ------------------------------------------------------------------------------
 
 /// Every offer of the hotel (the duplicate check).
-pub fn all_offers_sql(database: &str) -> String {
-    format!("SELECT {OFFER_COLUMNS} FROM {}.catalog_items ORDER BY page_id, order_number, id", quote(database))
+pub fn all_offers_sql(database: &str, cat: Catalogue) -> String {
+    format!("SELECT {} FROM {} ORDER BY page_id, order_number, id", cat.offer_columns(), cat.items(database))
 }
 
-pub async fn load_all_offers(session: &SqlSession, database: &str) -> Result<Vec<Offer>> {
-    let rows = session.select(&all_offers_sql(database), Vec::new()).await?;
+pub async fn load_all_offers(session: &SqlSession, database: &str, cat: Catalogue) -> Result<Vec<Offer>> {
+    let rows = session.select(&all_offers_sql(database, cat), Vec::new()).await?;
     Ok(rows.iter().map(|row| offer_from_row(row)).collect())
 }
 
@@ -1081,15 +1182,15 @@ pub fn sorted_by_name(offers: &[Offer]) -> Vec<(i64, i64)> {
 }
 
 /// Sets the order numbers in one transaction.
-pub async fn set_offer_order(session: &SqlSession, database: &str, order: &[(i64, i64)]) -> Result<u64> {
-    let sql = format!("UPDATE {}.catalog_items SET order_number = ? WHERE id = ?", quote(database));
+pub async fn set_offer_order(session: &SqlSession, database: &str, cat: Catalogue, order: &[(i64, i64)]) -> Result<u64> {
+    let sql = format!("UPDATE {} SET order_number = ? WHERE id = ?", cat.items(database));
     let statements: Vec<_> = order.iter().map(|(id, n)| (sql.clone(), vec![SqlValue::Int(*n), SqlValue::Int(*id)])).collect();
     Ok(session.execute(&statements).await?.0)
 }
 
 /// Deletes these offers in one transaction. Leave out offers with limited sales ([`offer_delete_problem`]).
-pub async fn delete_offers(session: &SqlSession, database: &str, ids: &[i64]) -> Result<u64> {
-    let sql = format!("DELETE FROM {}.catalog_items WHERE id = ?", quote(database));
+pub async fn delete_offers(session: &SqlSession, database: &str, cat: Catalogue, ids: &[i64]) -> Result<u64> {
+    let sql = format!("DELETE FROM {} WHERE id = ?", cat.items(database));
     let statements: Vec<_> = ids.iter().map(|id| (sql.clone(), vec![SqlValue::Int(*id)])).collect();
     Ok(session.execute(&statements).await?.0)
 }
@@ -1139,8 +1240,8 @@ pub fn offers_for(furni: &[Furni], page_id: i64, existing: &[Offer], credits: i6
 }
 
 /// Adds the offers in one transaction.
-pub async fn add_offers(session: &SqlSession, database: &str, offers: &[Offer]) -> Result<u64> {
-    let statements: Vec<_> = offers.iter().map(|o| (insert_offer_sql(database), insert_offer_params(o))).collect();
+pub async fn add_offers(session: &SqlSession, database: &str, cat: Catalogue, offers: &[Offer]) -> Result<u64> {
+    let statements: Vec<_> = offers.iter().map(|o| (insert_offer_sql(database, cat), insert_offer_params(o, cat))).collect();
     Ok(session.execute(&statements).await?.0)
 }
 
@@ -1426,8 +1527,8 @@ pub fn arranged(current: &[i64], dragged: &[i64], before: Option<i64>) -> Vec<i6
 }
 
 /// Puts the offers of `order` on `page_id`, numbered 1, 2, 3 ... in that order.
-pub fn arrange_statements(database: &str, page_id: i64, order: &[i64]) -> Vec<(String, Vec<SqlValue>)> {
-    let sql = format!("UPDATE {}.catalog_items SET page_id = ?, order_number = ? WHERE id = ?", quote(database));
+pub fn arrange_statements(database: &str, cat: Catalogue, page_id: i64, order: &[i64]) -> Vec<(String, Vec<SqlValue>)> {
+    let sql = format!("UPDATE {} SET page_id = ?, order_number = ? WHERE id = ?", cat.items(database));
     order.iter().enumerate().map(|(i, id)| (sql.clone(), vec![SqlValue::Int(page_id), SqlValue::Int(i as i64 + 1), SqlValue::Int(*id)])).collect()
 }
 
@@ -1441,31 +1542,31 @@ pub struct PlaceUndo {
 }
 
 /// The statements that undo a drop: the copies removed, every offer back on its page with its number.
-pub fn undo_statements(database: &str, undo: &PlaceUndo) -> Vec<(String, Vec<SqlValue>)> {
-    let db = quote(database);
+pub fn undo_statements(database: &str, cat: Catalogue, undo: &PlaceUndo) -> Vec<(String, Vec<SqlValue>)> {
+    let items = cat.items(database);
     let mut statements: Vec<(String, Vec<SqlValue>)> =
-        undo.inserted.iter().map(|id| (format!("DELETE FROM {db}.catalog_items WHERE id = ?"), vec![SqlValue::Int(*id)])).collect();
+        undo.inserted.iter().map(|id| (format!("DELETE FROM {items} WHERE id = ?"), vec![SqlValue::Int(*id)])).collect();
     statements.extend(undo.before.iter().map(|(id, page, number)| {
-        (format!("UPDATE {db}.catalog_items SET page_id = ?, order_number = ? WHERE id = ?"), vec![SqlValue::Int(*page), SqlValue::Int(*number), SqlValue::Int(*id)])
+        (format!("UPDATE {items} SET page_id = ?, order_number = ? WHERE id = ?"), vec![SqlValue::Int(*page), SqlValue::Int(*number), SqlValue::Int(*id)])
     }));
     statements
 }
 
 /// The offers of these ids.
-pub fn offers_by_ids_sql(database: &str, count: usize) -> String {
+pub fn offers_by_ids_sql(database: &str, cat: Catalogue, count: usize) -> String {
     let marks = vec!["?"; count.max(1)].join(", ");
-    format!("SELECT {OFFER_COLUMNS} FROM {}.catalog_items WHERE id IN ({marks}) ORDER BY id", quote(database))
+    format!("SELECT {} FROM {} WHERE id IN ({marks}) ORDER BY id", cat.offer_columns(), cat.items(database))
 }
 
 /// Moves `ids` (or, with `copy`, copies of them) onto `page_id` before the offer `before` (None: at the end), and
 /// numbers the page's offers again, in one transaction. The page and the offers are read again first, so what
 /// others changed meanwhile counts. Returns what undoes it.
-pub async fn place_offers(session: &SqlSession, database: &str, ids: &[i64], page_id: i64, before: Option<i64>, copy: bool) -> Result<PlaceUndo> {
+pub async fn place_offers(session: &SqlSession, database: &str, cat: Catalogue, ids: &[i64], page_id: i64, before: Option<i64>, copy: bool) -> Result<PlaceUndo> {
     if ids.is_empty() {
         return Ok(PlaceUndo::default());
     }
-    let target = load_offers(session, database, page_id).await?;
-    let rows = session.select(&offers_by_ids_sql(database, ids.len()), ids.iter().map(|id| SqlValue::Int(*id)).collect()).await?;
+    let target = load_offers(session, database, cat, page_id).await?;
+    let rows = session.select(&offers_by_ids_sql(database, cat, ids.len()), ids.iter().map(|id| SqlValue::Int(*id)).collect()).await?;
     let dragged: Vec<Offer> = rows.iter().map(|row| offer_from_row(row)).collect();
     // In the order they were dragged.
     let dragged: Vec<Offer> = ids.iter().filter_map(|id| dragged.iter().find(|o| o.id == *id).cloned()).collect();
@@ -1473,10 +1574,10 @@ pub async fn place_offers(session: &SqlSession, database: &str, ids: &[i64], pag
     let placed: Vec<i64> = if copy {
         for offer in &dragged {
             let copy = Offer { id: 0, page_id, ..offer.clone() };
-            match save_offer(session, database, &copy).await {
+            match save_offer(session, database, cat, &copy).await {
                 Ok(id) => inserted.push(id),
                 Err(error) => {
-                    let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+                    let _ = session.execute(&undo_statements(database, cat, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
                     return Err(error);
                 }
             }
@@ -1495,16 +1596,16 @@ pub async fn place_offers(session: &SqlSession, database: &str, ids: &[i64], pag
             undo.pages.push(offer.page_id);
         }
     }
-    if let Err(error) = session.execute(&arrange_statements(database, page_id, &order)).await {
-        let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+    if let Err(error) = session.execute(&arrange_statements(database, cat, page_id, &order)).await {
+        let _ = session.execute(&undo_statements(database, cat, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
         return Err(error);
     }
     Ok(undo)
 }
 
 /// Puts a drop back (see [`place_offers`]), in one transaction.
-pub async fn undo_place(session: &SqlSession, database: &str, undo: &PlaceUndo) -> Result<u64> {
-    Ok(session.execute(&undo_statements(database, undo)).await?.0)
+pub async fn undo_place(session: &SqlSession, database: &str, cat: Catalogue, undo: &PlaceUndo) -> Result<u64> {
+    Ok(session.execute(&undo_statements(database, cat, undo)).await?.0)
 }
 
 /// Gives `furni` (no offer sells them yet) an offer each on `page_id`, before the offer `before` (None: at the end):
@@ -1514,6 +1615,7 @@ pub async fn undo_place(session: &SqlSession, database: &str, undo: &PlaceUndo) 
 pub async fn place_new_furni(
     session: &SqlSession,
     database: &str,
+    cat: Catalogue,
     furni: &[Furni],
     page_id: i64,
     before: Option<i64>,
@@ -1523,22 +1625,22 @@ pub async fn place_new_furni(
 ) -> Result<PlaceUndo> {
     let mut inserted = Vec::new();
     for offer in offers_for(furni, page_id, &[], credits, points, points_type) {
-        match save_offer(session, database, &offer).await {
+        match save_offer(session, database, cat, &offer).await {
             Ok(id) => inserted.push(id),
             Err(error) => {
-                let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+                let _ = session.execute(&undo_statements(database, cat, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
                 return Err(error);
             }
         }
     }
-    match place_offers(session, database, &inserted, page_id, before, false).await {
+    match place_offers(session, database, cat, &inserted, page_id, before, false).await {
         Ok(mut undo) => {
             undo.before.retain(|(id, _, _)| !inserted.contains(id));
             undo.inserted = inserted;
             Ok(undo)
         }
         Err(error) => {
-            let _ = session.execute(&undo_statements(database, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
+            let _ = session.execute(&undo_statements(database, cat, &PlaceUndo { inserted, ..PlaceUndo::default() })).await;
             Err(error)
         }
     }
@@ -1559,15 +1661,15 @@ pub fn page_move_problem(pages: &[Page], page: i64, parent: i64) -> Option<Strin
 }
 
 /// Puts the pages of `order` under `parent`, numbered 1, 2, 3 ... in that order.
-pub fn page_order_statements(database: &str, parent: i64, order: &[i64]) -> Vec<(String, Vec<SqlValue>)> {
-    let sql = format!("UPDATE {}.catalog_pages SET parent_id = ?, order_num = ? WHERE id = ?", quote(database));
+pub fn page_order_statements(database: &str, cat: Catalogue, parent: i64, order: &[i64]) -> Vec<(String, Vec<SqlValue>)> {
+    let sql = format!("UPDATE {} SET parent_id = ?, order_num = ? WHERE id = ?", cat.pages(database));
     order.iter().enumerate().map(|(i, id)| (sql.clone(), vec![SqlValue::Int(parent), SqlValue::Int(i as i64 + 1), SqlValue::Int(*id)])).collect()
 }
 
 /// Moves `page` under `parent`, before the page `before` (None: last), and numbers the pages under `parent` again, in
 /// one transaction. The pages are read again first. Returns what undoes it.
-pub async fn move_page(session: &SqlSession, database: &str, page: i64, parent: i64, before: Option<i64>) -> Result<PageUndo> {
-    let pages = load_pages(session, database).await?;
+pub async fn move_page(session: &SqlSession, database: &str, cat: Catalogue, page: i64, parent: i64, before: Option<i64>) -> Result<PageUndo> {
+    let pages = load_pages(session, database, cat).await?;
     if let Some(problem) = page_move_problem(&pages, page, parent) {
         return Err(ServerError(problem).into());
     }
@@ -1575,13 +1677,13 @@ pub async fn move_page(session: &SqlSession, database: &str, page: i64, parent: 
     siblings.sort_by_key(|p| (p.order_num, p.id));
     let order = arranged(&siblings.iter().map(|p| p.id).collect::<Vec<_>>(), &[page], before);
     let before: Vec<(i64, i64, i64)> = order.iter().filter_map(|id| pages.iter().find(|p| p.id == *id)).map(|p| (p.id, p.parent_id, p.order_num)).collect();
-    session.execute(&page_order_statements(database, parent, &order)).await?;
+    session.execute(&page_order_statements(database, cat, parent, &order)).await?;
     Ok(PageUndo { before })
 }
 
 /// Puts a page move back, in one transaction.
-pub async fn undo_page_move(session: &SqlSession, database: &str, undo: &PageUndo) -> Result<u64> {
-    let sql = format!("UPDATE {}.catalog_pages SET parent_id = ?, order_num = ? WHERE id = ?", quote(database));
+pub async fn undo_page_move(session: &SqlSession, database: &str, cat: Catalogue, undo: &PageUndo) -> Result<u64> {
+    let sql = format!("UPDATE {} SET parent_id = ?, order_num = ? WHERE id = ?", cat.pages(database));
     let statements: Vec<_> = undo.before.iter().map(|(id, parent, order)| (sql.clone(), vec![SqlValue::Int(*parent), SqlValue::Int(*order), SqlValue::Int(*id)])).collect();
     Ok(session.execute(&statements).await?.0)
 }
@@ -1812,7 +1914,7 @@ mod tests {
         assert!(page_move_problem(&pages, 2, 3).is_some(), "under its own page");
         assert!(page_move_problem(&pages, 2, 2).is_some(), "under itself");
         assert_eq!(page_move_problem(&pages, 3, 4), None);
-        let statements = page_order_statements("hotel", 1, &[4, 2]);
+        let statements = page_order_statements("hotel", Catalogue::Normal, 1, &[4, 2]);
         assert_eq!(statements[0].0, "UPDATE `hotel`.catalog_pages SET parent_id = ?, order_num = ? WHERE id = ?");
         assert_eq!(statements[1].1, vec![SqlValue::Int(1), SqlValue::Int(2), SqlValue::Int(2)]);
     }
@@ -1862,12 +1964,12 @@ mod tests {
 
     #[test]
     fn a_drop_is_written_and_undone() {
-        let statements = arrange_statements("hotel", 7, &[3, 1]);
+        let statements = arrange_statements("hotel", Catalogue::Normal, 7, &[3, 1]);
         assert_eq!(statements.len(), 2);
         assert_eq!(statements[0].0, "UPDATE `hotel`.catalog_items SET page_id = ?, order_number = ? WHERE id = ?");
         assert_eq!(statements[1].1, vec![SqlValue::Int(7), SqlValue::Int(2), SqlValue::Int(1)]);
         let undo = PlaceUndo { before: vec![(3, 5, 4)], inserted: vec![40], pages: vec![7, 5] };
-        let back = undo_statements("hotel", &undo);
+        let back = undo_statements("hotel", Catalogue::Normal, &undo);
         assert_eq!(back[0].0, "DELETE FROM `hotel`.catalog_items WHERE id = ?");
         assert_eq!(back[1].1, vec![SqlValue::Int(5), SqlValue::Int(4), SqlValue::Int(3)]);
     }
@@ -1978,18 +2080,26 @@ mod tests {
         ];
         let p = page_from_row(&row);
         assert_eq!((p.id, p.parent_id, p.caption.as_str(), p.visible, p.enabled), (5, -1, "Rares", true, false));
-        assert_eq!(update_page_params(&p).len(), update_page_sql("hotel").matches('?').count());
-        assert_eq!(update_offer_params(&offer()).len(), update_offer_sql("hotel").matches('?').count());
-        assert!(pages_sql("my`db").contains("`my``db`.catalog_pages"));
+        for cat in [Catalogue::Normal, Catalogue::Builders] {
+            assert_eq!(update_page_params(&p, cat).len(), update_page_sql("hotel", cat).matches('?').count());
+            assert_eq!(update_offer_params(&offer(), cat).len(), update_offer_sql("hotel", cat).matches('?').count());
+            assert_eq!(insert_page_params(&p, cat).len(), insert_page_sql("hotel", cat).matches('?').count());
+            assert_eq!(insert_offer_params(&offer(), cat).len(), insert_offer_sql("hotel", cat).matches('?').count());
+        }
+        assert!(pages_sql("my`db", Catalogue::Normal).contains("`my``db`.catalog_pages "));
+        assert!(pages_sql("hotel", Catalogue::Builders).contains("`hotel`.catalog_pages_bc "));
+        assert!(offers_sql("hotel", Catalogue::Builders).contains("`hotel`.catalog_items_bc "));
+        assert!(update_offer_sql("hotel", Catalogue::Builders).starts_with("UPDATE `hotel`.catalog_items_bc SET"));
+        assert!(!insert_page_sql("hotel", Catalogue::Builders).contains("caption_save"));
     }
 
     #[test]
     fn new_pages_and_offers_go_after_the_others() {
         let pages = vec![page(1, -1, "Shop", 4), page(2, 1, "Rares", 7), page(3, 1, "Old", 2)];
-        let new = new_page(&pages, 1);
+        let new = new_page(&pages, 1, Catalogue::Normal);
         assert_eq!((new.id, new.parent_id, new.order_num, new.visible), (0, 1, 8, false));
-        assert_eq!(new_page(&pages, -1).order_num, 5);
-        assert_eq!(new_page(&[], -1).order_num, 1);
+        assert_eq!(new_page(&pages, -1, Catalogue::Normal).order_num, 5);
+        assert_eq!(new_page(&[], -1, Catalogue::Normal).order_num, 1);
         assert_eq!(page_problem(&new, &pages), None);
 
         let mut first = offer();
@@ -1997,8 +2107,8 @@ mod tests {
         let made = new_offer(&[first], 5);
         assert_eq!((made.id, made.page_id, made.order_number, made.amount), (0, 5, 4, 1));
         assert!(offer_problem(&made).is_some(), "the furni ids still have to be filled in");
-        assert_eq!(insert_page_params(&new).len(), insert_page_sql("hotel").matches('?').count());
-        assert_eq!(insert_offer_params(&made).len(), insert_offer_sql("hotel").matches('?').count());
+        assert_eq!(insert_page_params(&new, Catalogue::Normal).len(), insert_page_sql("hotel", Catalogue::Normal).matches('?').count());
+        assert_eq!(insert_offer_params(&made, Catalogue::Normal).len(), insert_offer_sql("hotel", Catalogue::Normal).matches('?').count());
     }
 
     #[test]

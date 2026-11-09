@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 mod front_page;
 
-use aio_remote::catalog_admin::{self, CatalogBackup, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse};
+use aio_remote::catalog_admin::{self, CatalogBackup, Catalogue, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
@@ -257,7 +257,7 @@ impl Ctl {
     async fn load_pages(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
-        let loaded = catalog_admin::load_pages(&session, &database).await;
+        let loaded = catalog_admin::load_pages(&session, &database, Catalogue::Normal).await;
         self.with(generation, |s| {
             s.busy = false;
             match loaded {
@@ -532,8 +532,8 @@ impl Ctl {
     async fn load_checks(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
-        let offers = catalog_admin::load_all_offers(&session, &database).await;
-        let pages = catalog_admin::load_pages(&session, &database).await;
+        let offers = catalog_admin::load_all_offers(&session, &database, Catalogue::Normal).await;
+        let pages = catalog_admin::load_pages(&session, &database, Catalogue::Normal).await;
         self.with(generation, |s| {
             s.busy = false;
             match (offers, pages) {
@@ -564,7 +564,7 @@ impl Ctl {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let deleted = catalog_admin::delete_offers(&session, &database, &ids).await;
+        let deleted = catalog_admin::delete_offers(&session, &database, Catalogue::Normal, &ids).await;
         self.with(generation, |s| {
             s.busy = false;
             match deleted {

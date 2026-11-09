@@ -3355,5 +3355,13 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Cette date est passée. L'émulateur envoie toujours la tuile (comme une qui ne finit jamais), donc l'hôtel continue de la montrer : videz la date ou retirez la tuile.",
   "Tile {n} of {count}": "Tuile {n} sur {count}",
   "{count} of at most {max} characters.": "{count} sur {max} caractères au plus.",
-  "◀ Earlier": "◀ Avant"
+  "◀ Earlier": "◀ Avant",
+  "Builders Club": "Builders Club",
+  "Builders Club explorer": "Explorateur Builders Club",
+  "Builders Club warehouse": "Entrepôt du Builders Club",
+  "Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.": "Toutes les colonnes de la ligne catalog_items_bc de l'offre : nom, mobis, page, ordre et données extra (les offres Builders Club n'ont pas de prix). Les valeurs modifiées sont marquées ; Enregistrer n'écrit que celles-ci.",
+  "Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.": "Mobis pour lesquels l'entrepôt du Builders Club n'a pas encore d'offre. Glissez-les sur une page de l'autre fenêtre (ou une page de son arbre) : chacun y reçoit une offre, gratuite à placer pour les membres.",
+  "The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.": "L'entrepôt du Builders Club (catalog_pages_bc, catalog_items_bc) tel que le jeu le montre, en deux fenêtres : glissez des mobis entre les pages.",
+  "The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.": "L'entrepôt du Builders Club de {host} tel que le jeu le montre : glissez des mobis entre les pages, puis publiez.",
+  "{count} furni got an offer on {page}. Publish to show it in the hotel.": "{count} mobis ont reçu une offre sur {page}. Publiez pour l'afficher dans l'hôtel."
 }

@@ -3355,5 +3355,13 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Bu tarih geçti. Emülatör karoyu hâlâ gönderiyor (hiç bitmeyen biri olarak), bu yüzden otel onu göstermeye devam eder: tarihi temizleyin ya da karoyu kaldırın.",
   "Tile {n} of {count}": "Karo {n} / {count}",
   "{count} of at most {max} characters.": "En fazla {max} karakterden {count}.",
-  "◀ Earlier": "◀ Önce"
+  "◀ Earlier": "◀ Önce",
+  "Builders Club": "Builders Club",
+  "Builders Club explorer": "Builders Club gezgini",
+  "Builders Club warehouse": "Builders Club Deposu",
+  "Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.": "Teklifin catalog_items_bc satırının her sütunu: ad, mobilyalar, sayfa, sıra ve ek veri (Builders Club tekliflerinin fiyatı yoktur). Değişen değerler işaretlenir; Kaydet yalnızca onları yazar.",
+  "Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.": "Builders Club Deposu'nun henüz teklifi olmayan mobilyalar. Onları diğer penceredeki bir sayfaya (ya da ağacındaki bir sayfaya) sürükleyin: her biri orada üyelerin ücretsiz yerleştirebileceği bir teklif alır.",
+  "The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.": "Builders Club Deposu (catalog_pages_bc, catalog_items_bc) oyunun gösterdiği gibi, iki pencerede: mobilyaları sayfalar arasında sürükleyin.",
+  "The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.": "{host} Builders Club Deposu oyunun gösterdiği gibi: mobilyaları sayfalar arasında sürükleyin, sonra yayınlayın.",
+  "{count} furni got an offer on {page}. Publish to show it in the hotel.": "{count} mobilya {page} sayfasında teklif aldı. Otelde göstermek için yayınlayın."
 }

@@ -3355,5 +3355,13 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Dieses Datum ist vorbei. Der Emulator sendet die Kachel weiterhin (als eine, die nie abläuft), also zeigt das Hotel sie weiter: leere das Datum oder entferne die Kachel.",
   "Tile {n} of {count}": "Kachel {n} von {count}",
   "{count} of at most {max} characters.": "{count} von höchstens {max} Zeichen.",
-  "◀ Earlier": "◀ Früher"
+  "◀ Earlier": "◀ Früher",
+  "Builders Club": "Builders Club",
+  "Builders Club explorer": "Builders-Club-Explorer",
+  "Builders Club warehouse": "Builders-Club-Lagerhaus",
+  "Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.": "Jede Spalte der catalog_items_bc-Zeile des Angebots: Name, Möbel, Seite, Reihenfolge und Extradaten (Builders-Club-Angebote haben keinen Preis). Geänderte Werte sind markiert; Speichern schreibt nur diese.",
+  "Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.": "Möbel, für die das Builders-Club-Lagerhaus noch kein Angebot hat. Ziehe sie auf eine Seite im anderen Fenster (oder eine Seite in dessen Baum): jedes bekommt dort ein Angebot, kostenlos für Mitglieder zum Platzieren.",
+  "The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.": "Das Builders-Club-Lagerhaus (catalog_pages_bc, catalog_items_bc), wie das Spiel es zeigt, in zwei Fenstern: ziehe Möbel zwischen Seiten.",
+  "The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.": "Das Builders-Club-Lagerhaus von {host}, wie das Spiel es zeigt: ziehe Möbel zwischen Seiten und veröffentliche.",
+  "{count} furni got an offer on {page}. Publish to show it in the hotel.": "{count} Möbel bekamen ein Angebot auf {page}. Veröffentliche, um es im Hotel zu zeigen."
 }

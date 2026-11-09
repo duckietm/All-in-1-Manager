@@ -3355,5 +3355,13 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Tämä päivä on mennyt. Emulaattori lähettää ruudun yhä (ikään kuin se ei koskaan päättyisi), joten hotelli näyttää sitä edelleen: tyhjennä päivä tai poista ruutu.",
   "Tile {n} of {count}": "Ruutu {n}/{count}",
   "{count} of at most {max} characters.": "{count} / enintään {max} merkkiä.",
-  "◀ Earlier": "◀ Aiemmin"
+  "◀ Earlier": "◀ Aiemmin",
+  "Builders Club": "Builders Club",
+  "Builders Club explorer": "Builders Club -selain",
+  "Builders Club warehouse": "Builders Clubin varasto",
+  "Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.": "Tarjouksen catalog_items_bc-rivin jokainen sarake: nimi, kalusteet, sivu, järjestys ja lisätiedot (Builders Club -tarjouksilla ei ole hintaa). Muutetut arvot on merkitty; Tallenna kirjoittaa vain ne.",
+  "Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.": "Kalusteet, joille Builders Clubin varastossa ei vielä ole tarjousta. Vedä ne toisen ikkunan sivulle (tai sen puun sivulle): kukin saa siellä tarjouksen, jäsenille ilmainen sijoittaa.",
+  "The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.": "Builders Clubin varasto (catalog_pages_bc, catalog_items_bc) niin kuin peli sen näyttää, kahdessa ikkunassa: vedä kalusteita sivujen välillä.",
+  "The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.": "Palvelimen {host} Builders Clubin varasto niin kuin peli sen näyttää: vedä kalusteita sivujen välillä ja julkaise.",
+  "{count} furni got an offer on {page}. Publish to show it in the hotel.": "{count} kalustetta sai tarjouksen sivulla {page}. Julkaise näyttääksesi sen hotellissa."
 }

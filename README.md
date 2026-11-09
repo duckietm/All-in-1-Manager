@@ -1444,6 +1444,16 @@ Ctrl-click and Shift-click select several. Every drop is saved at once in one tr
 numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
 catalogue again, as on the Catalogue page.
 
+### Builders Club explorer
+
+**HOTEL → Builders Club explorer** is the same explorer for the Builders Club warehouse: the pages and offers the
+emulator loads from `catalog_pages_bc` and `catalog_items_bc`, apart from the normal catalogue. Everything works as
+above (two windows, drag and drop of furni and pages, Ctrl to copy, Undo, **Without offer**, Build page, New / Delete
+page, Delete offer, Sort by name, and the right-click editors, which edit the `_bc` rows). Builders Club offers have
+no price: members place them for free, so the info box says *Builders Club* and there is no price to set for new
+offers. `builders_club_frontpage` is locked like a front page. **Publish** makes the emulator load both catalogues
+again.
+
 ### Content
 
 **HOTEL → Content** edits the hotel's plain content tables in the same database, through the same SSH tunnel and

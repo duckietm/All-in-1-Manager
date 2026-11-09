@@ -59,6 +59,7 @@ pub enum Page {
     SqlEditor,
     CatalogManager,
     CatalogExplorer,
+    BuildersExplorer,
     Content,
     Logs,
     Players,
@@ -225,6 +226,7 @@ pub struct App {
     sql: views::sql_editor::SqlEditorView,
     catalog: views::catalog_manager::CatalogManagerView,
     catalog_explorer: views::catalog_explorer::CatalogExplorerView,
+    builders_explorer: views::catalog_explorer::CatalogExplorerView,
     content: views::content_manager::ContentManagerView,
     logs: views::logs_view::LogsView,
     players: views::players_view::PlayersView,
@@ -275,6 +277,7 @@ impl App {
             sql: views::sql_editor::SqlEditorView::new(&shared),
             catalog: views::catalog_manager::CatalogManagerView::new(&shared),
             catalog_explorer: views::catalog_explorer::CatalogExplorerView::new(&shared),
+            builders_explorer: views::catalog_explorer::CatalogExplorerView::new_builders(&shared),
             content: views::content_manager::ContentManagerView::new(&shared),
             logs: views::logs_view::LogsView::new(&shared),
             players: views::players_view::PlayersView::new(&shared),
@@ -304,6 +307,7 @@ impl App {
             || self.sql.busy()
             || self.catalog.busy()
             || self.catalog_explorer.busy()
+            || self.builders_explorer.busy()
             || self.content.busy()
             || self.logs.busy()
             || self.players.busy()
@@ -372,6 +376,7 @@ impl App {
         self.sql.session_changed(&shared);
         self.catalog.session_changed(&shared);
         self.catalog_explorer.session_changed(&shared);
+        self.builders_explorer.session_changed(&shared);
         self.content.session_changed(&shared);
         self.logs.session_changed(&shared);
         self.players.session_changed(&shared);
@@ -534,6 +539,14 @@ impl App {
                     t("The hotel catalogue as the game shows it, in two windows: drag furni between pages.").into()
                 } else {
                     tf("The catalogue of {host} as the game shows it: drag furni between pages, then publish.", &[("host", &host)])
+                },
+            ),
+            Page::BuildersExplorer => (
+                t("Builders Club explorer").into(),
+                if session.is_none() {
+                    t("The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.").into()
+                } else {
+                    tf("The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.", &[("host", &host)])
                 },
             ),
             Page::CatalogManager => (
@@ -719,7 +732,7 @@ impl App {
                                 ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
                             ],
                         ),
-                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
+                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
                         ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
                         ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
                     ];
@@ -801,7 +814,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::Content | Page::Logs | Page::Players | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -872,7 +885,7 @@ impl App {
             Page::Debug => Some(t("Debug follows the logs on the server you are logged in to.").to_string()),
             Page::SqlEditor => Some(t("The SQL Editor reaches MariaDB through the login to the server.").to_string()),
             Page::CatalogManager => Some(t("The catalogue manager reaches the hotel database through the login to the server.").to_string()),
-            Page::CatalogExplorer => Some(t("The catalogue explorer reaches the hotel database through the login to the server.").to_string()),
+            Page::CatalogExplorer | Page::BuildersExplorer => Some(t("The catalogue explorer reaches the hotel database through the login to the server.").to_string()),
             Page::Content => Some(t("The content manager reaches the hotel database through the login to the server.").to_string()),
             Page::Logs => Some(t("The logs are read from the hotel database through the login to the server.").to_string()),
             Page::Players => Some(t("The players are read from the hotel database through the login to the server.").to_string()),
@@ -896,6 +909,7 @@ impl App {
             Page::SqlEditor => self.sql.show(ui, palette, &shared),
             Page::CatalogManager => self.catalog.show(ui, palette, &shared),
             Page::CatalogExplorer => self.catalog_explorer.show(ui, palette, &shared),
+            Page::BuildersExplorer => self.builders_explorer.show(ui, palette, &shared),
             Page::Content => self.content.show(ui, palette, &shared),
             Page::Logs => self.logs.show(ui, palette, &shared),
             Page::Players => self.players.show(ui, palette, &shared),

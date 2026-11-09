@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use aio_remote::catalog_admin::{self, FieldKind, Furni, FurniColumn, Offer, Page, PageUndo, PlaceUndo};
+use aio_remote::catalog_admin::{self, Catalogue, FieldKind, Furni, FurniColumn, Offer, Page, PageUndo, PlaceUndo};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
@@ -42,6 +42,7 @@ mod game {
     pub const DUCKETS: Color32 = Color32::from_rgb(196, 112, 220);
     pub const DIAMONDS: Color32 = Color32::from_rgb(91, 192, 235);
     pub const DROP: Color32 = Color32::from_rgb(255, 140, 0);
+    pub const BUILDERS: Color32 = Color32::from_rgb(242, 160, 30);
 }
 
 const TILE: f32 = 58.0;
@@ -76,6 +77,8 @@ struct Pane {
 
 #[derive(Default)]
 struct State {
+    /// The normal catalogue or the Builders Club warehouse (`catalog_pages_bc`, `catalog_items_bc`).
+    cat: Catalogue,
     generation: u64,
     session: Option<Arc<SqlSession>>,
     session_for: Option<usize>,
@@ -133,7 +136,7 @@ impl State {
                 }
             });
         }
-        *self = State { generation: self.generation, two: true, new_price: NEW_PRICE, ..State::default() };
+        *self = State { generation: self.generation, two: true, new_price: NEW_PRICE, cat: self.cat, ..State::default() };
     }
 
     fn page(&self, id: i64) -> Option<&Page> {
@@ -207,6 +210,15 @@ impl Editor {
                 (now != original[i]).then(|| (c.name.clone(), now))
             })
             .collect()
+    }
+}
+
+/// The table behind the editor's name for it: the `_bc` tables in the Builders Club explorer.
+fn real_table(cat: Catalogue, table: &'static str) -> &'static str {
+    match table {
+        "catalog_pages" => cat.pages_table(),
+        "catalog_items" => cat.items_table(),
+        other => other,
     }
 }
 
@@ -456,6 +468,17 @@ impl Ctl {
         result
     }
 
+    /// Which catalogue this explorer shows: the normal one or the Builders Club warehouse.
+    fn cat(&self) -> Catalogue {
+        self.lock().cat
+    }
+
+    /// The table of the editor's name for it: `catalog_pages` and `catalog_items` are the `_bc` tables in the
+    /// Builders Club explorer.
+    fn table(&self, table: &'static str) -> &'static str {
+        real_table(self.cat(), table)
+    }
+
     fn session(&self) -> Option<(u64, Arc<SqlSession>, String)> {
         let state = self.lock();
         state.session.clone().map(|s| (state.generation, s, state.database.clone()))
@@ -554,7 +577,7 @@ impl Ctl {
     async fn load_pages(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
-        let loaded = catalog_admin::load_pages(&session, &database).await;
+        let loaded = catalog_admin::load_pages(&session, &database, self.cat()).await;
         self.with(generation, |s| {
             s.busy = false;
             match loaded {
@@ -578,7 +601,7 @@ impl Ctl {
 
     async fn load_offers(&self, page: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let loaded = catalog_admin::load_offers(&session, &database, page).await;
+        let loaded = catalog_admin::load_offers(&session, &database, self.cat(), page).await;
         self.with(generation, |s| {
             s.loading.remove(&page);
             match loaded {
@@ -604,7 +627,7 @@ impl Ctl {
     async fn place(self, ids: Vec<i64>, page: i64, before: Option<i64>, copy: bool) {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
-        let result = catalog_admin::place_offers(&session, &database, &ids, page, before, copy).await;
+        let result = catalog_admin::place_offers(&session, &database, self.cat(), &ids, page, before, copy).await;
         let caption = self.lock().page(page).map(|p| p.caption.clone()).unwrap_or_default();
         let pages = match &result {
             Ok(undo) => undo.pages.clone(),
@@ -642,8 +665,8 @@ impl Ctl {
         let Some(undo) = self.lock().undo.take() else { return };
         self.with(generation, |s| s.busy = true);
         let result = match &undo {
-            Undo::Offers(undo) => catalog_admin::undo_place(&session, &database, undo).await,
-            Undo::Page(undo) => catalog_admin::undo_page_move(&session, &database, undo).await,
+            Undo::Offers(undo) => catalog_admin::undo_place(&session, &database, self.cat(), undo).await,
+            Undo::Page(undo) => catalog_admin::undo_page_move(&session, &database, self.cat(), undo).await,
         };
         self.with(generation, |s| {
             s.busy = false;
@@ -678,13 +701,13 @@ impl Ctl {
         }
         self.with(generation, |s| s.busy = true);
         let (credits, points, points_type) = self.lock().new_price;
-        let result = catalog_admin::place_new_furni(&session, &database, &furni, page, before, credits, points, points_type).await;
+        let result = catalog_admin::place_new_furni(&session, &database, self.cat(), &furni, page, before, credits, points, points_type).await;
         self.with(generation, |s| {
             s.busy = false;
             match result {
                 Ok(undo) => {
                     s.status = Status {
-                        text: tf("{count} furni got an offer on {page} (3 credits: set the price on the Catalogue page). Publish to show it in the hotel.", &[("count", &furni.len().to_string()), ("page", &caption)]),
+                        text: tf("{count} furni got an offer on {page}. Publish to show it in the hotel.", &[("count", &furni.len().to_string()), ("page", &caption)]),
                         error: false,
                     };
                     s.undo = Some(Undo::Offers(undo));
@@ -709,7 +732,7 @@ impl Ctl {
             (s.page(id).map(|p| p.caption.clone()).unwrap_or_default(), s.page(parent).map(|p| p.caption.clone()).unwrap_or_default())
         };
         self.with(generation, |s| s.busy = true);
-        let result = catalog_admin::move_page(&session, &database, id, parent, before).await;
+        let result = catalog_admin::move_page(&session, &database, self.cat(), id, parent, before).await;
         self.with(generation, |s| {
             s.busy = false;
             match result {
@@ -728,7 +751,7 @@ impl Ctl {
     async fn load_unoffered(&self) {
         let Some((generation, session, database)) = self.session() else { return };
         let furni = catalog_admin::load_sellable_furni(&session, &database).await;
-        let offers = catalog_admin::load_all_offers(&session, &database).await;
+        let offers = catalog_admin::load_all_offers(&session, &database, self.cat()).await;
         self.with(generation, |s| {
             s.unoffered_loading = false;
             match (furni, offers) {
@@ -751,9 +774,9 @@ impl Ctl {
         let cached = self.lock().columns.get(table).cloned();
         let columns = match cached {
             Some(columns) => Ok(columns),
-            None => catalog_admin::table_columns(&session, &database, table).await,
+            None => catalog_admin::table_columns(&session, &database, self.table(table)).await,
         };
-        let row = catalog_admin::load_row(&session, &database, table, id).await;
+        let row = catalog_admin::load_row(&session, &database, self.table(table), id).await;
         self.with(generation, |s| {
             let Some(editor) = s.editor.as_mut().filter(|e| e.id == id && e.table == table) else { return };
             match (columns, row) {
@@ -804,7 +827,7 @@ impl Ctl {
             editor.saving = true;
             (editor.table, editor.id, editor.page, changes, cleaned)
         };
-        let result = catalog_admin::save_row(&session, &database, table, id, &changes).await;
+        let result = catalog_admin::save_row(&session, &database, self.table(table), id, &changes).await;
         let ok = result.is_ok();
         self.with(generation, |s| {
             if result.is_ok() && table != "items_base" {
@@ -832,7 +855,7 @@ impl Ctl {
         });
         if ok {
             // The new values as the database has them, and the windows: the names of a furni, the page of an offer.
-            let row = catalog_admin::load_row(&session, &database, table, id).await;
+            let row = catalog_admin::load_row(&session, &database, self.table(table), id).await;
             let names = if table == "items_base" { catalog_admin::furni_by_ids(&session, &database, &[id]).await.ok() } else { None };
             let moved_to = row.as_ref().ok().and_then(|r| r.iter().find(|(n, _)| n == "page_id")).and_then(|(_, v)| v.as_deref()?.trim().parse::<i64>().ok());
             self.with(generation, |s| {
@@ -916,9 +939,9 @@ impl Ctl {
     /// A new page under `parent` (hidden until Visible is ticked), then its editor to name it.
     async fn new_page(self, parent: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let page = catalog_admin::new_page(&self.lock().pages, parent);
+        let page = catalog_admin::new_page(&self.lock().pages, parent, self.cat());
         self.with(generation, |s| s.busy = true);
-        let saved = catalog_admin::save_page(&session, &database, &page).await;
+        let saved = catalog_admin::save_page(&session, &database, self.cat(), &page).await;
         self.with(generation, |s| s.busy = false);
         match saved {
             Ok(id) => {
@@ -941,7 +964,7 @@ impl Ctl {
     /// Asks first, then deletes the page with its offers (never one with pages under it or sold limited offers).
     async fn delete_page(self, id: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let offers = match catalog_admin::load_offers(&session, &database, id).await {
+        let offers = match catalog_admin::load_offers(&session, &database, self.cat(), id).await {
             Ok(offers) => offers,
             Err(error) => {
                 self.with(generation, |s| s.status = Status { text: error.to_string(), error: true });
@@ -963,7 +986,7 @@ impl Ctl {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let deleted = catalog_admin::delete_page(&session, &database, id).await;
+        let deleted = catalog_admin::delete_page(&session, &database, self.cat(), id).await;
         self.with(generation, |s| {
             s.busy = false;
             match deleted {
@@ -1005,7 +1028,7 @@ impl Ctl {
         }
         self.with(generation, |s| s.busy = true);
         let ids: Vec<i64> = offers.iter().map(|o| o.id).collect();
-        let deleted = catalog_admin::delete_offers(&session, &database, &ids).await;
+        let deleted = catalog_admin::delete_offers(&session, &database, self.cat(), &ids).await;
         self.with(generation, |s| {
             s.busy = false;
             match deleted {
@@ -1041,7 +1064,7 @@ impl Ctl {
         let Some((prefix, only_new)) = self.lock().builder.as_ref().map(|b| (b.prefix.trim().to_string(), b.only_new)) else { return };
         self.with(generation, |s| s.busy = true);
         let furni = catalog_admin::furni_by_prefix(&session, &database, &prefix).await;
-        let offers = if only_new { catalog_admin::load_all_offers(&session, &database).await.map(Some) } else { Ok(None) };
+        let offers = if only_new { catalog_admin::load_all_offers(&session, &database, self.cat()).await.map(Some) } else { Ok(None) };
         self.with(generation, |s| {
             s.busy = false;
             match (furni, offers) {
@@ -1066,7 +1089,7 @@ impl Ctl {
             let s = self.lock();
             let Some(builder) = s.builder.as_ref() else { return };
             let Some(found) = builder.found.clone().filter(|f| !f.is_empty()) else { return };
-            let mut page = catalog_admin::new_page(&s.pages, builder.parent);
+            let mut page = catalog_admin::new_page(&s.pages, builder.parent, s.cat);
             page.caption = builder.caption.trim().to_string();
             (page, found, builder.price)
         };
@@ -1075,7 +1098,7 @@ impl Ctl {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let page_id = match catalog_admin::save_page(&session, &database, &page).await {
+        let page_id = match catalog_admin::save_page(&session, &database, self.cat(), &page).await {
             Ok(id) => id,
             Err(error) => {
                 self.with(generation, |s| {
@@ -1086,7 +1109,7 @@ impl Ctl {
             }
         };
         let offers = catalog_admin::offers_for(&found, page_id, &[], price.0, price.1, price.2);
-        let added = catalog_admin::add_offers(&session, &database, &offers).await;
+        let added = catalog_admin::add_offers(&session, &database, self.cat(), &offers).await;
         self.with(generation, |s| {
             s.busy = false;
             s.unpublished = true;
@@ -1149,7 +1172,17 @@ impl Ctl {
 
 impl CatalogExplorerView {
     pub fn new(_shared: &Shared) -> Self {
-        Self { state: Arc::new(Mutex::new(State { two: true, new_price: NEW_PRICE, ..State::default() })), images: Images::new() }
+        Self::with(Catalogue::Normal)
+    }
+
+    /// The Builders Club warehouse: its own pages and offers (`catalog_pages_bc`, `catalog_items_bc`), free, no
+    /// prices.
+    pub fn new_builders(_shared: &Shared) -> Self {
+        Self::with(Catalogue::Builders)
+    }
+
+    fn with(cat: Catalogue) -> Self {
+        Self { state: Arc::new(Mutex::new(State { cat, two: true, new_price: NEW_PRICE, ..State::default() })), images: Images::new() }
     }
 
     fn ctl(&self, shared: &Shared) -> Ctl {
@@ -1300,7 +1333,8 @@ impl View for CatalogExplorerView {
 /// A front page (layout frontpage, frontpage4, frontpage_featured ...): it shows promotions, never furni, so
 /// nothing can be dropped on it.
 fn is_front_page(page: &Page) -> bool {
-    page.layout.trim().to_lowercase().starts_with("frontpage")
+    let layout = page.layout.trim().to_lowercase();
+    layout.starts_with("frontpage") || layout == "builders_club_frontpage"
 }
 
 /// What was dropped on `response`, when it is a `P`. egui's `dnd_release_payload` takes the payload before it checks
@@ -1387,7 +1421,7 @@ fn title_bar(ui: &mut egui::Ui, s: &mut State, index: usize, width: f32) {
     painter.rect_filled(rect, CornerRadius { nw: 8, ne: 8, sw: 0, se: 0 }, game::TITLE);
     painter.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(1.0_f32, game::TITLE_DARK));
     let path = s.panes[index].page.map(|p| s.path(p).join(" › ")).unwrap_or_default();
-    painter.text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, t("Catalogue"), egui::FontId::proportional(14.0), Color32::WHITE);
+    painter.text(rect.left_center() + egui::vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, if s.cat == Catalogue::Builders { t("Builders Club warehouse") } else { t("Catalogue") }, egui::FontId::proportional(14.0), Color32::WHITE);
     let galley = painter.layout(path, egui::FontId::proportional(11.5), Color32::from_rgb(214, 234, 244), (rect.width() - 120.0).max(40.0));
     let at = egui::pos2(rect.right() - 10.0 - galley.size().x, rect.center().y - galley.size().y / 2.0);
     painter.galley(at, galley, Color32::WHITE);
@@ -1501,6 +1535,10 @@ fn navigation(ui: &mut egui::Ui, ctx: &egui::Context, s: &mut State, images: &mu
         if s.panes[index].root == Some(UNOFFERED) {
             ui.add(egui::TextEdit::singleline(&mut s.panes[index].furni_search).hint_text(RichText::new(t("Search furni")).italics()).desired_width(NAV_WIDTH - 12.0));
             ui.add_space(6.0);
+            if s.cat == Catalogue::Builders {
+                ui.add(egui::Label::new(RichText::new(t("Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.")).size(11.5).color(game::MUTED)).wrap());
+                return;
+            }
             ui.add(egui::Label::new(RichText::new(t("Furni no offer sells yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer at the price below there.")).size(11.5).color(game::MUTED)).wrap());
             ui.add_space(8.0);
             ui.label(RichText::new(t("Price of the new offers")).size(12.0).strong().color(game::TEXT));
@@ -1896,12 +1934,17 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
                 if editor.table == "catalog_pages" {
                     let caption = value("caption").unwrap_or_default();
                     ui.label(RichText::new(caption).size(17.0).strong());
-                    ui.label(RichText::new(format!("catalog_pages id {}", editor.id)).size(12.0).color(palette.muted));
+                    ui.label(RichText::new(format!("{} id {}", real_table(s.cat, "catalog_pages"), editor.id)).size(12.0).color(palette.muted));
                     ui.label(RichText::new(t("Every column of the page's catalog_pages row: caption, layout, icon, parent, order, rank, visible, texts and images ... Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
                 } else if editor.table == "catalog_items" {
                     ui.label(RichText::new(offer_name.clone().filter(|n| !n.is_empty()).unwrap_or(furni_name)).size(17.0).strong());
-                    ui.label(RichText::new(format!("catalog_items id {}", editor.id)).size(12.0).color(palette.muted));
-                    ui.label(RichText::new(t("Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.")).size(11.5).color(palette.muted));
+                    ui.label(RichText::new(format!("{} id {}", real_table(s.cat, "catalog_items"), editor.id)).size(12.0).color(palette.muted));
+                    let about = if s.cat == Catalogue::Builders {
+                        t("Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.")
+                    } else {
+                        t("Every column of the offer's catalog_items row: price, amount, page, order, limited series ... Changed values are marked; Save writes only those.")
+                    };
+                    ui.label(RichText::new(about).size(11.5).color(palette.muted));
                 } else {
                     ui.label(RichText::new(furni_name).size(17.0).strong());
                     ui.label(RichText::new(format!("{} · items_base id {}", furni.as_ref().map(|f| f.item_name.as_str()).unwrap_or(""), editor.id)).size(12.0).color(palette.muted));
@@ -2478,6 +2521,7 @@ fn page_menu(ui: &mut egui::Ui, s: &State, id: i64, on_bar: bool, actions: &mut 
 /// (class names that start with the prefix), at one price.
 fn builder_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
     let busy = s.busy;
+    let builders = s.cat == Catalogue::Builders;
     let parent = s.builder.as_ref().map(|b| b.parent).and_then(|p| s.page(p)).map(|p| p.caption.clone()).unwrap_or_default();
     let Some(builder) = s.builder.as_mut() else { return };
     let mut close = false;
@@ -2503,16 +2547,18 @@ fn builder_window(ctx: &egui::Context, palette: &Palette, s: &mut State, actions
             ui.label("");
             ui.checkbox(&mut builder.only_new, t("Only furni no offer sells yet"));
             ui.end_row();
-            ui.label(t("Credits"));
-            ui.add(egui::DragValue::new(&mut builder.price.0).range(0..=1_000_000_000));
-            ui.end_row();
-            ui.label(t("Points"));
-            ui.horizontal(|ui| {
-                ui.add(egui::DragValue::new(&mut builder.price.1).range(0..=1_000_000_000));
-                ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
-                ui.add(egui::DragValue::new(&mut builder.price.2).range(0..=1000));
-            });
-            ui.end_row();
+            if !builders {
+                ui.label(t("Credits"));
+                ui.add(egui::DragValue::new(&mut builder.price.0).range(0..=1_000_000_000));
+                ui.end_row();
+                ui.label(t("Points"));
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut builder.price.1).range(0..=1_000_000_000));
+                    ui.label(RichText::new(t("type")).size(12.0).color(palette.muted));
+                    ui.add(egui::DragValue::new(&mut builder.price.2).range(0..=1000));
+                });
+                ui.end_row();
+            }
         });
         ui.add_space(8.0);
         match &builder.found {
@@ -2619,6 +2665,12 @@ fn info_box(ui: &mut egui::Ui, ctx: &egui::Context, s: &State, images: &mut Imag
         painter.galley(egui::pos2(px + 18.0, y - galley.size().y / 2.0), galley, game::TEXT);
         px += 30.0 + w;
     };
+    if s.cat == Catalogue::Builders {
+        painter.circle_filled(egui::pos2(px + 7.0, y), 7.0, game::BUILDERS);
+        painter.circle_stroke(egui::pos2(px + 7.0, y), 7.0, Stroke::new(1.0_f32, Color32::from_black_alpha(90)));
+        painter.text(egui::pos2(px + 18.0, y), egui::Align2::LEFT_CENTER, t("Builders Club"), egui::FontId::proportional(13.0), game::TEXT);
+        return;
+    }
     coin(offer.cost_credits, game::CREDITS, t("credits"));
     let (color, label) = match offer.points_type {
         0 => (game::DUCKETS, t("duckets")),
@@ -2921,6 +2973,17 @@ mod tests {
         let job = html_preview("<p>A <b>bold</b> &amp; <a href=\"#x\">link</a></p>B<br>C<img src=\"https://h/a.png\">");
         assert_eq!(job.text, "A bold & link\nB\nC[image]");
         assert!(job.sections.iter().any(|s| s.format.underline.width > 0.0), "the link is underlined");
+    }
+
+    #[test]
+    fn the_builders_club_explorer_edits_the_bc_tables() {
+        assert_eq!(real_table(Catalogue::Normal, "catalog_pages"), "catalog_pages");
+        assert_eq!(real_table(Catalogue::Builders, "catalog_pages"), "catalog_pages_bc");
+        assert_eq!(real_table(Catalogue::Builders, "catalog_items"), "catalog_items_bc");
+        assert_eq!(real_table(Catalogue::Builders, "items_base"), "items_base");
+        let page = |layout: &str| Page { layout: layout.into(), ..Page::default() };
+        assert!(is_front_page(&page("builders_club_frontpage")) && is_front_page(&page("frontpage4")));
+        assert!(!is_front_page(&page("builders_club_addons")));
     }
 
     #[test]

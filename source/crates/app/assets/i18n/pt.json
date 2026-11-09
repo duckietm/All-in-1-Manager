@@ -3355,5 +3355,13 @@
   "This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile.": "Esta data já passou. O emulador continua a enviar o mosaico (como um que nunca termina), por isso o hotel continua a mostrá-lo: limpe a data ou remova o mosaico.",
   "Tile {n} of {count}": "Mosaico {n} de {count}",
   "{count} of at most {max} characters.": "{count} de no máximo {max} caracteres.",
-  "◀ Earlier": "◀ Antes"
+  "◀ Earlier": "◀ Antes",
+  "Builders Club": "Builders Club",
+  "Builders Club explorer": "Explorador do Builders Club",
+  "Builders Club warehouse": "Armazém do Builders Club",
+  "Every column of the offer's catalog_items_bc row: name, furni, page, order and extra data (Builders Club offers have no price). Changed values are marked; Save writes only those.": "Todas as colunas da linha catalog_items_bc da oferta: nome, mobis, página, ordem e dados extra (as ofertas do Builders Club não têm preço). Os valores alterados são marcados; Guardar só escreve esses.",
+  "Furni the Builders Club warehouse has no offer for yet. Drag them onto a page in the other window (or a page in its tree): each gets an offer there, free for members to place.": "Mobis para os quais o armazém do Builders Club ainda não tem oferta. Arraste-os para uma página da outra janela (ou uma página da sua árvore): cada um recebe aí uma oferta, grátis para os membros colocarem.",
+  "The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.": "O armazém do Builders Club (catalog_pages_bc, catalog_items_bc) como o jogo o mostra, em duas janelas: arraste mobis entre páginas.",
+  "The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.": "O armazém do Builders Club de {host} como o jogo o mostra: arraste mobis entre páginas e publique.",
+  "{count} furni got an offer on {page}. Publish to show it in the hotel.": "{count} mobis receberam uma oferta em {page}. Publique para o mostrar no hotel."
 }

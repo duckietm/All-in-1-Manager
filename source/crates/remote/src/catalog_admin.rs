@@ -621,6 +621,101 @@ pub async fn delete_offer(session: &SqlSession, database: &str, cat: Catalogue, 
     Ok(session.execute(&statements).await?.0)
 }
 
+// ---- The rules an offer or page row keeps (as Octane's catalogue admin and the emulator's check) ------------
+
+/// Why a whole offer or page row cannot be saved as it is: the rules Octane's catalogue admin keeps, so a row saved
+/// here passes the emulator's check too. The values are what is wrong, for the view to put in words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RowProblem {
+    OfferNameEmpty,
+    OfferItemIds,
+    OfferAmount(i64),
+    OfferNegativePrice,
+    OfferLimitedBelowSold { size: i64, sold: i64 },
+    OfferPageMissing(i64),
+    OfferSongMissing,
+    PageCaptionEmpty,
+    PageMinRank(i64),
+    PageNegative(&'static str),
+    PageParentMissing(i64),
+    PageParentLoop,
+    PageIncludeInvalid(String),
+    PageIncludeMissing(i64),
+}
+
+/// The first rule `row` (column name, value; None for NULL) breaks, or None. `table` is the editor's name for it
+/// (`catalog_items` or `catalog_pages`, also for the `_bc` tables); `id` is the row's own id; `pages` every page of
+/// its catalogue.
+pub fn row_problem(table: &str, id: i64, row: &[(String, Option<String>)], pages: &[Page]) -> Option<RowProblem> {
+    let get = |name: &str| row.iter().find(|(c, _)| c == name).map(|(_, v)| v.clone().unwrap_or_default());
+    let number = |name: &str| get(name).and_then(|v| v.trim().parse::<i64>().ok());
+    let page_exists = |page: i64| pages.iter().any(|p| p.id == page);
+    match table {
+        "catalog_items" => {
+            if get("catalog_name").is_some_and(|n| n.trim().is_empty()) {
+                return Some(RowProblem::OfferNameEmpty);
+            }
+            if get("item_ids").is_some_and(|ids| item_ids(&ids).is_none()) {
+                return Some(RowProblem::OfferItemIds);
+            }
+            if let Some(amount) = number("amount").filter(|a| !(1..=10_000).contains(a)) {
+                return Some(RowProblem::OfferAmount(amount));
+            }
+            if number("cost_credits").is_some_and(|v| v < 0) || number("cost_points").is_some_and(|v| v < 0) {
+                return Some(RowProblem::OfferNegativePrice);
+            }
+            if let (Some(size), Some(sold)) = (number("limited_stack"), number("limited_sells")) {
+                if size < sold {
+                    return Some(RowProblem::OfferLimitedBelowSold { size, sold });
+                }
+            }
+            if let Some(page) = number("page_id").filter(|p| !pages.is_empty() && !page_exists(*p)) {
+                return Some(RowProblem::OfferPageMissing(page));
+            }
+            let song = get("catalog_name").is_some_and(|n| n.starts_with("SONG "));
+            if song && (number("song_id").is_some_and(|s| s <= 0) || get("extradata").is_some_and(|e| e.trim().is_empty())) {
+                return Some(RowProblem::OfferSongMissing);
+            }
+            None
+        }
+        "catalog_pages" => {
+            if get("caption").is_some_and(|c| c.trim().is_empty()) {
+                return Some(RowProblem::PageCaptionEmpty);
+            }
+            if let Some(rank) = number("min_rank").filter(|r| *r < 1) {
+                return Some(RowProblem::PageMinRank(rank));
+            }
+            for column in ["room_id", "icon_image", "icon_color"] {
+                if number(column).is_some_and(|v| v < 0) {
+                    return Some(RowProblem::PageNegative(column));
+                }
+            }
+            if let Some(parent) = number("parent_id").filter(|p| *p > 0) {
+                if !page_exists(parent) {
+                    return Some(RowProblem::PageParentMissing(parent));
+                }
+                if id > 0 && page_move_problem(pages, id, parent).is_some() {
+                    return Some(RowProblem::PageParentLoop);
+                }
+            }
+            if let Some(includes) = get("includes").filter(|i| !i.trim().is_empty()) {
+                for raw in includes.split(';') {
+                    match raw.trim().parse::<i64>() {
+                        Ok(included) if included > 0 => {
+                            if !page_exists(included) {
+                                return Some(RowProblem::PageIncludeMissing(included));
+                            }
+                        }
+                        _ => return Some(RowProblem::PageIncludeInvalid(raw.trim().to_string())),
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 // ---- Front page featured slots (catalog_featured_pages) ------------------------------------------------------
 
 /// What a front page slot opens (`catalog_featured_pages.type`).
@@ -2359,5 +2454,42 @@ mod tests {
         assert!(reload_succeeded("{ \"status\" : 0 }"));
         assert!(!reload_succeeded(r#"{"status":1,"message":"invalid request"}"#));
         assert!(!reload_succeeded(""));
+    }
+
+    #[test]
+    fn offer_and_page_rows_keep_octanes_rules() {
+        let pages = vec![page(1, -1, "Shop", 1), page(2, 1, "Rares", 1), page(3, 2, "Old", 1)];
+        let row = |pairs: &[(&str, &str)]| pairs.iter().map(|(c, v)| (c.to_string(), Some(v.to_string()))).collect::<Vec<_>>();
+        let offer = |extra: &[(&str, &str)]| {
+            let mut r = row(&[("catalog_name", "chair"), ("item_ids", "5;6:2"), ("amount", "1"), ("cost_credits", "3"), ("cost_points", "0"), ("limited_stack", "0"), ("limited_sells", "0"), ("page_id", "2")]);
+            for (c, v) in extra {
+                r.retain(|(n, _)| n != c);
+                r.push((c.to_string(), Some(v.to_string())));
+            }
+            r
+        };
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[]), &pages), None);
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[("catalog_name", " ")]), &pages), Some(RowProblem::OfferNameEmpty));
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[("item_ids", "5;x")]), &pages), Some(RowProblem::OfferItemIds));
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[("amount", "0")]), &pages), Some(RowProblem::OfferAmount(0)));
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[("cost_points", "-1")]), &pages), Some(RowProblem::OfferNegativePrice));
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[("limited_stack", "2"), ("limited_sells", "5")]), &pages), Some(RowProblem::OfferLimitedBelowSold { size: 2, sold: 5 }));
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[("page_id", "77")]), &pages), Some(RowProblem::OfferPageMissing(77)));
+        assert_eq!(row_problem("catalog_items", 9, &offer(&[("catalog_name", "SONG x"), ("song_id", "0"), ("extradata", "")]), &pages), Some(RowProblem::OfferSongMissing));
+        let page_row = |extra: &[(&str, &str)]| {
+            let mut r = row(&[("caption", "Rares"), ("parent_id", "1"), ("min_rank", "1"), ("includes", "")]);
+            for (c, v) in extra {
+                r.retain(|(n, _)| n != c);
+                r.push((c.to_string(), Some(v.to_string())));
+            }
+            r
+        };
+        assert_eq!(row_problem("catalog_pages", 2, &page_row(&[]), &pages), None);
+        assert_eq!(row_problem("catalog_pages", 2, &page_row(&[("min_rank", "0")]), &pages), Some(RowProblem::PageMinRank(0)));
+        assert_eq!(row_problem("catalog_pages", 2, &page_row(&[("parent_id", "40")]), &pages), Some(RowProblem::PageParentMissing(40)));
+        assert_eq!(row_problem("catalog_pages", 2, &page_row(&[("parent_id", "3")]), &pages), Some(RowProblem::PageParentLoop));
+        assert_eq!(row_problem("catalog_pages", 2, &page_row(&[("includes", "1;a")]), &pages), Some(RowProblem::PageIncludeInvalid("a".into())));
+        assert_eq!(row_problem("catalog_pages", 2, &page_row(&[("includes", "1;99")]), &pages), Some(RowProblem::PageIncludeMissing(99)));
+        assert_eq!(row_problem("catalog_pages", 2, &page_row(&[("room_id", "-1")]), &pages), Some(RowProblem::PageNegative("room_id")));
     }
 }

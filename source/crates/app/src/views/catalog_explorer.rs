@@ -247,6 +247,21 @@ struct Editor {
 }
 
 impl Editor {
+    /// Every column with its value as typed (None: NULL), for the row's rules.
+    fn row(&self, columns: &[FurniColumn]) -> Vec<(String, Option<String>)> {
+        columns
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i < self.values.len())
+            .map(|(i, c)| (c.name.clone(), (!self.nulls[i]).then(|| self.values[i].trim().to_string())))
+            .collect()
+    }
+
+    /// The first rule of Octane's catalogue admin the row breaks, in words.
+    fn row_problem(&self, columns: &[FurniColumn], pages: &[Page]) -> Option<String> {
+        catalog_admin::row_problem(self.table, self.id, &self.row(columns), pages).map(|p| row_problem_text(&p))
+    }
+
     /// The columns whose value differs from what was loaded.
     fn changes(&self, columns: &[FurniColumn]) -> Vec<(String, Option<String>)> {
         let Some(original) = &self.original else { return Vec::new() };
@@ -873,9 +888,33 @@ impl Ctl {
                 editor.status = Status { text: t("Nothing changed.").into(), error: false };
                 return;
             }
+            let pages = s.pages.clone();
+            let Some(editor) = s.editor.as_mut() else { return };
+            if let Some(problem) = editor.row_problem(&columns, &pages) {
+                editor.status = Status { text: problem, error: true };
+                return;
+            }
             editor.saving = true;
             (editor.table, editor.id, editor.page, changes, cleaned)
         };
+        // Every furni of the offer must be in items_base, or the emulator leaves the offer out.
+        if table == "catalog_items" {
+            if let Some(Some(ids)) = changes.iter().find(|(c, _)| c == "item_ids").map(|(_, v)| v.as_deref().and_then(catalog_admin::item_ids)) {
+                let missing = match catalog_admin::furni_by_ids(&session, &database, &ids).await {
+                    Ok(found) => ids.iter().copied().find(|id| !found.iter().any(|f| f.id == *id)),
+                    Err(_) => None,
+                };
+                if let Some(id) = missing {
+                    self.with(generation, |s| {
+                        if let Some(editor) = s.editor.as_mut() {
+                            editor.saving = false;
+                            editor.status = Status { text: tf("Furni {id} is not in items_base.", &[("id", &id.to_string())]), error: true };
+                        }
+                    });
+                    return;
+                }
+            }
+        }
         let result = catalog_admin::save_row(&session, &database, self.table(table), id, &changes).await;
         let ok = result.is_ok();
         self.with(generation, |s| {
@@ -1964,6 +2003,7 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
     let offer_name = columns.iter().position(|c| c.name == "catalog_name").and_then(|i| editor.values.get(i).cloned());
     let mut close = false;
     let changed = editor.changes(&columns).len();
+    let row_issue = if editor.original.is_some() { editor.row_problem(&columns, &s.pages) } else { None };
     egui::Modal::new(egui::Id::new("catalog-furni-editor")).frame(widgets::card_frame(palette).inner_margin(egui::Margin::symmetric(22, 18))).show(ctx, |ui| {
         ui.set_width(640.0);
         ui.horizontal(|ui| {
@@ -2161,9 +2201,13 @@ fn editor_window(ctx: &egui::Context, palette: &Palette, s: &mut State, images: 
             ui.add(egui::Label::new(RichText::new(&editor.status.text).size(12.0).color(color)).wrap());
             ui.add_space(6.0);
         }
+        if let Some(issue) = &row_issue {
+            ui.add(egui::Label::new(RichText::new(issue).size(12.0).color(palette.error_text)).wrap());
+            ui.add_space(6.0);
+        }
         ui.horizontal(|ui| {
             let label = if changed > 0 { tf("Save changes ({count})", &[("count", &changed.to_string())]) } else { t("Save").to_string() };
-            if ui.add_enabled(changed > 0 && !editor.saving && !s.sample, widgets::primary_button(&label)).clicked() {
+            if ui.add_enabled(changed > 0 && row_issue.is_none() && !editor.saving && !s.sample, widgets::primary_button(&label)).clicked() {
                 actions.push(Action::SaveRow);
             }
             if ui.add_enabled(changed > 0 && !editor.saving, widgets::secondary_button(t("Undo changes"))).clicked() {
@@ -3061,5 +3105,26 @@ mod tests {
         let (page, offers) = frame(&ctx, at + egui::vec2(20.0, 20.0), Some(false), None);
         assert!(!offers, "the payload is a page, not offers");
         assert_eq!(page, Some(42), "the page arrives although the offers were asked for first");
+    }
+}
+
+/// A broken rule of an offer or page row, in words.
+fn row_problem_text(problem: &catalog_admin::RowProblem) -> String {
+    use catalog_admin::RowProblem as P;
+    match problem {
+        P::OfferNameEmpty => t("The offer needs a name (catalog_name).").into(),
+        P::OfferItemIds => t("item_ids must be furni ids like 123 or 123:2, separated by ;.").into(),
+        P::OfferAmount(amount) => tf("The amount must be 1 to 10,000, not {amount}.", &[("amount", &amount.to_string())]),
+        P::OfferNegativePrice => t("Credits and points cannot be negative.").into(),
+        P::OfferLimitedBelowSold { size, sold } => tf("The limited size {size} is below the {sold} already sold.", &[("size", &size.to_string()), ("sold", &sold.to_string())]),
+        P::OfferPageMissing(page) => tf("Page {page} does not exist.", &[("page", &page.to_string())]),
+        P::OfferSongMissing => t("A song offer (SONG ...) needs a song_id and the soundtrack code in extradata.").into(),
+        P::PageCaptionEmpty => t("The page needs a caption.").into(),
+        P::PageMinRank(rank) => tf("min_rank must be at least 1, not {rank}.", &[("rank", &rank.to_string())]),
+        P::PageNegative(column) => tf("{column} cannot be negative.", &[("column", column)]),
+        P::PageParentMissing(page) => tf("The parent page {page} does not exist.", &[("page", &page.to_string())]),
+        P::PageParentLoop => t("A page cannot go under itself or one of its own pages.").into(),
+        P::PageIncludeInvalid(token) => tf("\"{token}\" in includes is not a page id: write page ids separated by ;.", &[("token", token)]),
+        P::PageIncludeMissing(page) => tf("includes names page {page}, which does not exist.", &[("page", &page.to_string())]),
     }
 }

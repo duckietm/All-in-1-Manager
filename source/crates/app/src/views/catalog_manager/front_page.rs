@@ -685,7 +685,7 @@ fn editor(
                 });
                 if ended(row) {
                     ui.label(
-                        RichText::new(t("This date has passed. The emulator still sends the tile (as one that never ends), so the hotel keeps showing it: clear the date or remove the tile."))
+                        RichText::new(t("This date has passed: the emulator no longer sends the tile, so the hotel does not show it. Clear the date to show it again, or remove the tile."))
                             .size(11.5)
                             .color(palette.error_text),
                     );

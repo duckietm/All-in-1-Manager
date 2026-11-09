@@ -9,6 +9,7 @@ pub mod ssh;
 
 pub mod asset_sync;
 pub mod catalog_admin;
+pub mod catalog_health;
 pub mod content_admin;
 pub mod hotel_view_admin;
 pub mod logs_admin;

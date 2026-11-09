@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 mod front_page;
 
 use aio_remote::catalog_admin::{self, CatalogBackup, Catalogue, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse};
+use aio_remote::catalog_health::{self, Kind};
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
 use eframe::egui::{self, RichText};
@@ -85,6 +86,8 @@ struct State {
     generate_count: usize,
     /// The Checks tab: every offer (None until it is run) and the duplicate offers ticked for deleting.
     all_offers: Option<Vec<Offer>>,
+    /// The health check of both catalogues (None until it is run).
+    health: Option<Vec<catalog_health::Problem>>,
     duplicates_ticked: std::collections::HashSet<i64>,
     /// The Backups tab: the backups on the server (None until it is opened) and the label for a new one.
     backups: Option<Vec<CatalogBackup>>,
@@ -534,8 +537,13 @@ impl Ctl {
         self.with(generation, |s| s.busy = true);
         let offers = catalog_admin::load_all_offers(&session, &database, Catalogue::Normal).await;
         let pages = catalog_admin::load_pages(&session, &database, Catalogue::Normal).await;
+        let health = catalog_health::check(&session, &database).await;
         self.with(generation, |s| {
             s.busy = false;
+            match health {
+                Ok(found) => s.health = Some(found),
+                Err(error) => s.status = Status::error(error.to_string()),
+            }
             match (offers, pages) {
                 (Ok(offers), Ok(pages)) => {
                     s.pages = pages;
@@ -1175,6 +1183,8 @@ fn checks(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
     let page_name = |id: i64| s.pages.iter().find(|p| p.id == id).map(|p| format!("{} #{}", p.caption, p.id)).unwrap_or_else(|| format!("#{id}"));
 
     ui.add_space(6.0);
+    health(ui, palette, s.health.as_deref().unwrap_or(&[]), s.health.is_some());
+    ui.add_space(12.0);
     let page_groups = catalog_admin::duplicate_page_groups(&s.pages);
     ui.label(RichText::new(tf("Pages with the same internal name ({count})", &[("count", &page_groups.len().to_string())])).size(14.0).strong());
     widgets::muted(ui, palette, t("The client opens a page by its internal name: of these, links reach only one. Give each its own name."), 12.0);
@@ -1333,4 +1343,93 @@ fn sample(s: &mut State) {
         s.front.picker = Some(String::new());
     }
     s.subtitle = "The catalogue of hotel on example.org, through the SSH tunnel.".into();
+}
+
+/// What a health problem is, as a heading.
+fn kind_title(kind: Kind) -> &'static str {
+    match kind {
+        Kind::OfferPageMissing => t("Offers on a page that does not exist"),
+        Kind::OfferItemInvalid => t("Offers with wrong furni ids"),
+        Kind::OfferItemMissing => t("Offers with furni that is not in items_base"),
+        Kind::OfferSongMissing => t("Song offers without their song"),
+        Kind::OfferPriceInvalid => t("Offers with a negative price or no amount"),
+        Kind::OfferCurrencyUnknown => t("Offers in a currency the hotel does not use"),
+        Kind::OfferLimitedBelowSales => t("Limited series smaller than what is sold"),
+        Kind::PageParentMissing => t("Pages under a page that does not exist"),
+        Kind::PageCycle => t("Pages in a loop"),
+        Kind::PageLayoutUnknown => t("Pages with a layout the emulator does not know"),
+        Kind::PageOrderTwice => t("Pages that share their order number"),
+        Kind::PageIncludeInvalid => t("Pages with wrong includes"),
+        Kind::PageIncludeMissing => t("Pages that include a page that does not exist"),
+        Kind::PageUnreachable => t("Visible pages players never reach"),
+    }
+}
+
+/// What is wrong with this one, in words.
+fn problem_text(problem: &catalog_health::Problem) -> String {
+    let v = problem.value.as_str();
+    match problem.kind {
+        Kind::OfferPageMissing => tf("Its page {page} does not exist.", &[("page", v)]),
+        Kind::OfferItemInvalid if v.is_empty() => t("It has no furni ids.").into(),
+        Kind::OfferItemInvalid => tf("\"{token}\" is not a furni id: write 123 or 123:2, separated by ;.", &[("token", v)]),
+        Kind::OfferItemMissing => tf("Furni {id} is not in items_base.", &[("id", v)]),
+        Kind::OfferSongMissing => t("A song offer needs a song id and the soundtrack code in its extra data.").into(),
+        Kind::OfferPriceInvalid => t("Credits and points cannot be negative, and the amount is at least 1.").into(),
+        Kind::OfferCurrencyUnknown => tf("Points type {type} is not a currency of this hotel.", &[("type", v)]),
+        Kind::OfferLimitedBelowSales => {
+            let (size, sold) = v.split_once('/').unwrap_or((v, ""));
+            tf("Limited size {size}, but {sold} are sold.", &[("size", size), ("sold", sold)])
+        }
+        Kind::PageParentMissing => tf("Its parent page {page} does not exist.", &[("page", v)]),
+        Kind::PageCycle => t("The page tree goes round in a loop here: give one of these pages another parent.").into(),
+        Kind::PageLayoutUnknown => tf("Layout {layout}: the emulator skips the page.", &[("layout", v)]),
+        Kind::PageOrderTwice => tf("Order number {order} is used more than once under the same parent.", &[("order", v)]),
+        Kind::PageIncludeInvalid => tf("\"{token}\" in includes is not a page id.", &[("token", v)]),
+        Kind::PageIncludeMissing => tf("It includes page {page}, which does not exist.", &[("page", v)]),
+        Kind::PageUnreachable => tf("Page {page} above it is hidden.", &[("page", v)]),
+    }
+}
+
+/// The health check: the problems the emulator's own catalogue check finds, in both catalogues.
+fn health(ui: &mut egui::Ui, palette: &Palette, problems: &[catalog_health::Problem], ran: bool) {
+    ui.label(RichText::new(tf("Health check ({count})", &[("count", &problems.len().to_string())])).size(14.0).strong());
+    widgets::muted(
+        ui,
+        palette,
+        t("What the emulator's catalogue check (Catalog Studio in Octane) finds, in the catalogue and the Builders Club warehouse. Fix them in the Catalogue explorer or the Builders Club explorer (right-click, Edit)."),
+        12.0,
+    );
+    if !ran {
+        widgets::muted(ui, palette, t("Loading ..."), 12.0);
+        return;
+    }
+    if problems.is_empty() {
+        ui.label(RichText::new(t("No problems found.")).size(12.5).color(palette.success_text));
+        return;
+    }
+    let mut kinds: Vec<Kind> = problems.iter().map(|p| p.kind).collect();
+    kinds.sort();
+    kinds.dedup();
+    for kind in kinds {
+        let these: Vec<&catalog_health::Problem> = problems.iter().filter(|p| p.kind == kind).collect();
+        egui::CollapsingHeader::new(RichText::new(format!("{} ({})", kind_title(kind), these.len())).size(13.0).strong())
+            .id_salt(("catalog-health", kind.code()))
+            .default_open(these.len() <= 8)
+            .show(ui, |ui| {
+                ui.label(RichText::new(kind.code()).size(11.0).monospace().color(palette.muted));
+                for problem in these.iter().take(200) {
+                    ui.horizontal_wrapped(|ui| {
+                        if problem.cat == Catalogue::Builders {
+                            ui.label(RichText::new("BC").size(11.0).strong().color(egui::Color32::from_rgb(226, 132, 10)));
+                        }
+                        let what = if kind.is_page() { t("Page") } else { t("Offer") };
+                        ui.label(RichText::new(format!("{what} #{} {}", problem.id, problem.name)).size(12.5).strong());
+                        ui.label(RichText::new(problem_text(problem)).size(12.5));
+                    });
+                }
+                if these.len() > 200 {
+                    widgets::muted(ui, palette, &tf("... and {count} more.", &[("count", &(these.len() - 200).to_string())]), 12.0);
+                }
+            });
+    }
 }

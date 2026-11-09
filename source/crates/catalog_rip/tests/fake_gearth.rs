@@ -1322,3 +1322,35 @@ async fn rips_repeatedly_until_cancelled() {
     let turns = calls.log.lock().unwrap().iter().filter(|l| l.contains("this turn's rip failed")).count();
     assert!(turns >= 2, "{}", calls.log_text());
 }
+
+
+#[tokio::test]
+async fn connects_again_when_gearth_drops_the_extension() {
+    // G-Earth accepts the extension, then lets it go (switched to Nitro mode, restarted); the
+    // next time it is the full session.
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let seen2 = seen.clone();
+    let server = tokio::spawn(async move {
+        let (mut s, _) = listener.accept().await.unwrap();
+        s.write_all(&Writer::new(ids::INFO_REQUEST).to_bytes()).await.unwrap();
+        read_frame(&mut s).await.unwrap();
+        let init = Writer::new(ids::INIT).bool(false).string_latin1("G-Earth").string_latin1("1").i32(0);
+        s.write_all(&init.to_bytes()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        drop(s);
+        fake_gearth(listener, seen2, official()).await;
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let mut opts = options(port, dir.path());
+    opts.builders_club = false;
+    opts.rip_extras = false;
+    let calls = Calls::default();
+    let report = run(&opts, detect(), None, &calls, None)
+        .await
+        .unwrap_or_else(|e| panic!("{e:#}\n{}", calls.log_text()));
+    server.await.unwrap();
+    assert_eq!(report.pages, 6);
+    assert!(calls.log_text().contains("connecting again"), "{}", calls.log_text());
+}

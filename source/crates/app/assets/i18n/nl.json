@@ -3750,5 +3750,12 @@
   "{room} is deleted for good: everyone in it is sent out and the furni goes back to the owner's inventory, as the emulator deletes rooms. This cannot be undone.": "{room} wordt voorgoed verwijderd: iedereen erin wordt eruit gestuurd en de meubi gaat terug naar de inventaris van de eigenaar, zoals de emulator kamers verwijdert. Dit kan niet ongedaan worden gemaakt.",
   "{room} is locked: only the owner and staff can enter.": "{room} is vergrendeld: alleen de eigenaar en staff kunnen erin.",
   "{room} opens: everyone can enter again.": "{room} gaat open: iedereen kan er weer in.",
-  "{to} get this alert:\n\n{text}": "{to} krijgen deze melding:\n\n{text}"
+  "{to} get this alert:\n\n{text}": "{to} krijgen deze melding:\n\n{text}",
+  "Convert SWF and NITRO to HAB": "SWF en NITRO naar HAB omzetten",
+  "Convert everything": "Alles omzetten",
+  "Convert to .hab from other folders": "Naar .hab omzetten vanuit andere mappen",
+  "Open compiled": "Compiled openen",
+  "Open import": "Import openen",
+  "Put .swf and .nitro files in {import} (one folder per type: furni, clothes, pets, effects). The .hab files come in {compiled}, with everything the client needs (the JSON and the sprite sheet). A .nitro and a .swf of the same name: the .nitro is used.": "Zet .swf- en .nitro-bestanden in {import} (een map per soort: furni, clothes, pets, effects). De .hab-bestanden komen in {compiled}, met alles wat de client nodig heeft (de JSON en de spritesheet). Een .nitro en een .swf met dezelfde naam: de .nitro wordt gebruikt.",
+  "Replace .hab files that are already there": "Vervang .hab-bestanden die er al staan"
 }

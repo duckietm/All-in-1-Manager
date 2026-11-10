@@ -60,7 +60,7 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
   tunnel.
 - **Assets** (its own section in the sidebar): Habbo assets (Habbo's own furniture, clothes, effects, badges and
   game data as .hab and JSON), Nitro retro (a retro's custom furniture and clothes), Asset tools (decompile and
-  compile .hab, SWF / NITRO to HAB), Deploy Assets and an Asset Explorer.
+  compile .hab, SWF / NITRO to HAB, and a Convert/import → Convert/compiled drop folder), Deploy Assets and an Asset Explorer.
 - **Housekeeping**: the hotel's staff panel outside the hotel: dashboard, who is online, rooms, hotel alerts,
   maintenance and lockdown, word filter, permissions, bans, support tickets and the soundboard, next to **Players**
   (kick, trade lock, password reset, temporary rank, furni, Habbo Club, notes, clones and sanctions).
@@ -1178,6 +1178,20 @@ converted is kept in `custom/<name>/source/`; **Convert the kept .swf files** tr
 installer can use them too.
 
 ### Asset tools
+
+**Convert SWF and NITRO to HAB**, at the top of **Asset tools**, is the converter's drop folder (like its
+`SWFCompiler/import/<type>`), in the assets folder:
+
+```text
+Habbo_Assets/Convert/
+  import/<type>/      put .swf and .nitro files here, side by side (type: furni, clothes, pets, effects)
+  compiled/<type>/    the .hab of each, with its JSON and sprite sheet, ready for the Asset Explorer or Deploy Assets
+```
+
+**Convert everything** does every type, or a button does one type. A .nitro is repacked as it is; a .swf is rebuilt
+(the furniture, clothes, pet or effect converter). With both a .nitro and a .swf of one name, the .nitro is used. A
+.hab that is already in compiled is skipped unless **Replace .hab files that are already there** is ticked; a broken
+file fails alone and the log says why. **Open import** and **Open compiled** open the folders (they are made for you).
 
 **Asset tools** (sidebar → ASSETS) works on files on this computer, in `Habbo_Assets/Assets_tools`, the All-in-1
 converter's Hotel Tools for bundles with one clear folder layout (the folders are made for you):

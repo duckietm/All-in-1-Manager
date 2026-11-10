@@ -12,6 +12,14 @@
 //!   Decompiled_HAB_Files/<type>/<name>/   the files of a .hab (its JSON and image), to edit
 //!   Compiled_HAB_Files/<type>/      the edited folders packed as .hab
 //! ```
+//!
+//! And the converter's own drop folder, in the assets folder (All-in-1 Converter: SWFCompiler/import/<type>):
+//!
+//! ```text
+//! Convert/
+//!   import/<type>/      .swf and .nitro side by side
+//!   compiled/<type>/    their .hab
+//! ```
 
 use std::path::{Path, PathBuf};
 
@@ -25,6 +33,10 @@ pub const CONVERTED: &str = "converted";
 pub const DECOMPILED_SWF: &str = "Decompiled_SWF_Files";
 pub const DECOMPILED_HAB: &str = "Decompiled_HAB_Files";
 pub const COMPILED_HAB: &str = "Compiled_HAB_Files";
+/// The drop folder (in the assets folder, beside Assets_tools) and its two halves.
+pub const CONVERT: &str = "Convert";
+pub const IMPORT: &str = "import";
+pub const COMPILED: &str = "compiled";
 
 /// The asset types, with their folder name below every tool folder.
 pub const TYPES: [(AssetKind, &str); 4] = [(AssetKind::Furniture, "furni"), (AssetKind::Clothes, "clothes"), (AssetKind::Pets, "pets"), (AssetKind::Effects, "effects")];
@@ -38,6 +50,16 @@ pub fn create_layout(root: &Path) -> std::io::Result<()> {
     for top in [ORIGINAL_SWF, ORIGINAL_NITRO, CONVERTED, DECOMPILED_SWF, DECOMPILED_HAB, COMPILED_HAB] {
         for (_, folder) in TYPES {
             std::fs::create_dir_all(root.join(top).join(folder))?;
+        }
+    }
+    Ok(())
+}
+
+/// The import and compiled folder of every type below `root` (the Convert folder).
+pub fn create_convert_layout(root: &Path) -> std::io::Result<()> {
+    for half in [IMPORT, COMPILED] {
+        for (_, folder) in TYPES {
+            std::fs::create_dir_all(root.join(half).join(folder))?;
         }
     }
     Ok(())
@@ -217,6 +239,40 @@ pub fn convert_folder(
     })
 }
 
+/// Convert/import/<type> to Convert/compiled/<type>: every .swf and .nitro of `source` into `output`/<name>.hab. With
+/// both a .nitro and a .swf of one name, the .nitro is taken (it is repacked as it is; a .swf is rebuilt), and the
+/// .swf is reported as skipped. A .hab that is there already is skipped unless `overwrite`.
+pub fn convert_import_folder(
+    source: &Path,
+    output: &Path,
+    kind: AssetKind,
+    overwrite: bool,
+    stopped: &(dyn Fn() -> bool + Sync),
+    progress: &(dyn Fn(&str) + Sync),
+) -> Outcome {
+    let all = files(source, &["swf", "nitro"]);
+    let is = |path: &Path, extension: &str| path.extension().is_some_and(|x| x.eq_ignore_ascii_case(extension));
+    let nitro_names: std::collections::HashSet<String> = all.iter().filter(|p| is(p, "nitro")).map(|p| stem(p).to_lowercase()).collect();
+    let (items, doubles): (Vec<PathBuf>, Vec<PathBuf>) = all.into_iter().partition(|p| !(is(p, "swf") && nitro_names.contains(&stem(p).to_lowercase())));
+    for double in &doubles {
+        progress(&format!("{}: skipped, the .nitro of the same name is used", double.file_name().unwrap_or_default().to_string_lossy()));
+    }
+    let mut outcome = run_all(&items, stopped, progress, &|path| {
+        let name = stem(path);
+        let file = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+        let target = output.join(format!("{name}.hab"));
+        if target.is_file() && !overwrite {
+            return Ok(None);
+        }
+        let data = std::fs::read(path)?;
+        let hab = crate::bundle::to_hab(&name, kind, &data).map_err(|e| anyhow!("{file}: {e}"))?;
+        write(&target, &hab)?;
+        Ok(Some(format!("{file} → {name}.hab ({} KB)", hab.len().div_ceil(1024))))
+    });
+    outcome.skipped += doubles.len();
+    outcome
+}
+
 /// Decompile HAB files: every .hab (or .nitro) of `source` into `output`/<name>/ (its JSON and image).
 pub fn decompile_hab_folder(source: &Path, output: &Path, stopped: &(dyn Fn() -> bool + Sync), progress: &(dyn Fn(&str) + Sync)) -> Outcome {
     let items = files(source, &["hab", "nitro"]);
@@ -285,6 +341,30 @@ mod tests {
         let back = crate::hab::read(&std::fs::read(compiled.join("chair.hab")).unwrap()).unwrap();
         assert_eq!(back[0], ("chair.json".to_string(), b"{\"name\":\"edited\"}".to_vec()));
         assert_eq!(back[1], files[1]);
+    }
+
+    #[test]
+    fn the_import_folder_takes_swf_and_nitro_together() {
+        let root = tempfile::tempdir().unwrap();
+        create_convert_layout(root.path()).unwrap();
+        let import = root.path().join(IMPORT).join("furni");
+        let compiled = root.path().join(COMPILED).join("furni");
+        let files = vec![("lamp.json".to_string(), b"{}".to_vec())];
+        std::fs::write(import.join("lamp.nitro"), crate::nitro::write(&files)).unwrap();
+        // The same name as .swf: the .nitro wins, the .swf is not read (it is not even a real one).
+        std::fs::write(import.join("lamp.swf"), b"not read").unwrap();
+        std::fs::write(import.join("broken.swf"), b"not a swf").unwrap();
+        let never = || false;
+        let lines = std::sync::Mutex::new(Vec::new());
+        let log = |l: &str| lines.lock().unwrap().push(l.to_string());
+        let o = convert_import_folder(&import, &compiled, AssetKind::Furniture, false, &never, &log);
+        assert_eq!((o.done, o.skipped, o.failed), (1, 1, 1), "{o:?}");
+        assert_eq!(crate::hab::read(&std::fs::read(compiled.join("lamp.hab")).unwrap()).unwrap(), files);
+        assert!(!compiled.join("broken.hab").exists());
+        assert!(lines.lock().unwrap().iter().any(|l| l.starts_with("! broken.swf:")));
+        // Again: the .hab is there, so it is skipped; with overwrite it is made again.
+        assert_eq!(convert_import_folder(&import, &compiled, AssetKind::Furniture, false, &never, &|_| {}).done, 0);
+        assert_eq!(convert_import_folder(&import, &compiled, AssetKind::Furniture, true, &never, &|_| {}).done, 1);
     }
 
     #[test]

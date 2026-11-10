@@ -3750,5 +3750,12 @@
   "{room} is deleted for good: everyone in it is sent out and the furni goes back to the owner's inventory, as the emulator deletes rooms. This cannot be undone.": "{room} kalıcı olarak silinir: içindeki herkes dışarı gönderilir ve mobiler, emülatörün oda silme biçimiyle sahibin envanterine geri döner. Bu geri alınamaz.",
   "{room} is locked: only the owner and staff can enter.": "{room} kilitli: yalnızca sahibi ve yetkililer girebilir.",
   "{room} opens: everyone can enter again.": "{room} açılıyor: herkes yeniden girebilir.",
-  "{to} get this alert:\n\n{text}": "{to} şu uyarıyı alır:\n\n{text}"
+  "{to} get this alert:\n\n{text}": "{to} şu uyarıyı alır:\n\n{text}",
+  "Convert SWF and NITRO to HAB": "SWF ve NITRO'yu HAB'a dönüştür",
+  "Convert everything": "Hepsini dönüştür",
+  "Convert to .hab from other folders": "Diğer klasörlerden .hab'a dönüştür",
+  "Open compiled": "Compiled'ı aç",
+  "Open import": "Import'u aç",
+  "Put .swf and .nitro files in {import} (one folder per type: furni, clothes, pets, effects). The .hab files come in {compiled}, with everything the client needs (the JSON and the sprite sheet). A .nitro and a .swf of the same name: the .nitro is used.": ".swf ve .nitro dosyalarını {import} içine koy (her tür için bir klasör: furni, clothes, pets, effects). .hab dosyaları, istemcinin ihtiyaç duyduğu her şeyle (JSON ve sprite sayfası) birlikte {compiled} içine gelir. Aynı adlı bir .nitro ve .swf varsa .nitro kullanılır.",
+  "Replace .hab files that are already there": "Zaten var olan .hab dosyalarını değiştir"
 }

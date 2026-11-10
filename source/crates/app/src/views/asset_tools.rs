@@ -68,6 +68,9 @@ pub struct AssetToolsView {
     /// None: Original_SWF_Files; Some(name): the .swf a Nitro retro profile kept.
     swf_source: Option<String>,
     overwrite: bool,
+    /// The assets folder the folders were made in: they are made when the page first shows (and again when the
+    /// assets folder changes in Settings), so the user sees where to put files before pressing anything.
+    made_in: Option<PathBuf>,
 }
 
 fn open_folder(path: &Path) {
@@ -80,7 +83,7 @@ fn open_folder(path: &Path) {
 
 impl AssetToolsView {
     pub fn new(_shared: &Shared) -> Self {
-        Self { state: Arc::new(Mutex::new(State { log: LogLines::with_limit(4000), ..State::default() })), swf_source: None, overwrite: false }
+        Self { state: Arc::new(Mutex::new(State { log: LogLines::with_limit(4000), ..State::default() })), swf_source: None, overwrite: false, made_in: None }
     }
 
     fn root() -> PathBuf {
@@ -222,6 +225,11 @@ impl View for AssetToolsView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         let running = self.state.lock().running;
         let root = Self::root();
+        if self.made_in.as_ref() != Some(&root) {
+            let _ = workshop::create_layout(&root);
+            let _ = workshop::create_convert_layout(&Self::convert_root());
+            self.made_in = Some(root.clone());
+        }
         let margin = egui::Margin::symmetric(24, 20);
         let mut start = None;
 

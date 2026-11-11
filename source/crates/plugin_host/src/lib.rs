@@ -16,6 +16,6 @@ pub mod permissions;
 
 pub use manifest::{Manifest, Tile};
 #[cfg(feature = "test-hooks")]
-pub use package::{install_failing_after_move_aside, install_failing_with_data_restore_failure};
+pub use package::{install_failing_after_move_aside, install_failing_with_data_restore_failure, install_with_fault, Fault, Step};
 pub use package::{inspect, install, installed, remove, Package};
 pub use permissions::Permission;

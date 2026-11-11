@@ -386,7 +386,7 @@ pub fn parse_tickets(message: &str) -> Vec<Ticket> {
 
 // ---- Lists from the hotel database -----------------------------------------------------------------------------
 
-fn int(value: Option<&SqlValue>) -> i64 {
+pub(crate) fn int(value: Option<&SqlValue>) -> i64 {
     match value {
         Some(SqlValue::Int(v)) => *v,
         Some(SqlValue::UInt(v)) => *v as i64,
@@ -397,7 +397,7 @@ fn int(value: Option<&SqlValue>) -> i64 {
     }
 }
 
-fn text(value: Option<&SqlValue>) -> String {
+pub(crate) fn text(value: Option<&SqlValue>) -> String {
     match value {
         Some(SqlValue::Text(t)) | Some(SqlValue::Decimal(t)) | Some(SqlValue::Date(t)) | Some(SqlValue::DateTime(t)) | Some(SqlValue::Time(t)) => t.clone(),
         Some(SqlValue::Int(v)) => v.to_string(),

@@ -1247,6 +1247,27 @@ pub async fn search_furni(session: &SqlSession, database: &str, text: &str) -> R
     Ok(rows.iter().map(|row| furni_from_row(row)).collect())
 }
 
+/// The most furni [`furni_with_prefix`] lists.
+pub const MAX_PREFIX_FURNI: i64 = 2000;
+
+/// Every furni whose class name starts with `prefix` (`hc_` for the club furni), by class name; `%` and `_` in the
+/// prefix are matched as themselves.
+pub fn furni_prefix_sql(database: &str) -> String {
+    format!(
+        "SELECT id, item_name, public_name, type, sprite_id FROM {}.items_base WHERE item_name LIKE ? ORDER BY item_name, id LIMIT {MAX_PREFIX_FURNI}",
+        quote(database)
+    )
+}
+
+pub fn furni_prefix_param(prefix: &str) -> SqlValue {
+    SqlValue::Text(format!("{}%", prefix.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")))
+}
+
+pub async fn furni_with_prefix(session: &SqlSession, database: &str, prefix: &str) -> Result<Vec<Furni>> {
+    let rows = session.select(&furni_prefix_sql(database), vec![furni_prefix_param(prefix)]).await?;
+    Ok(rows.iter().map(|row| furni_from_row(row)).collect())
+}
+
 pub async fn furni_by_ids(session: &SqlSession, database: &str, ids: &[i64]) -> Result<Vec<Furni>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -2120,9 +2141,100 @@ pub fn safe_page_html(html: &str) -> String {
         .to_string()
 }
 
+// ---- Club gifts -------------------------------------------------------------------------------------------------
+
+/// The page layout of the club gifts: its offers are the gifts HC members choose (CatalogSelectClubGiftEvent).
+pub const CLUB_GIFT_LAYOUT: &str = "club_gift";
+/// The most HC days a gift can ask for in the editor (ten years).
+pub const MAX_CLUB_GIFT_DAYS: i64 = 3650;
+
+/// The club gift pages, in id order.
+pub fn club_gift_pages(pages: &[Page]) -> Vec<&Page> {
+    let mut list: Vec<&Page> = pages.iter().filter(|p| p.layout.trim().eq_ignore_ascii_case(CLUB_GIFT_LAYOUT)).collect();
+    list.sort_by_key(|p| p.id);
+    list
+}
+
+/// Why the emulator does not use this club gift page, or None: it only takes one that is visible, enabled and open to
+/// every rank (CatalogReadIndex: `pagesByLayout`).
+pub fn club_gift_page_problem(page: &Page) -> Option<&'static str> {
+    if !page.visible {
+        Some("hidden")
+    } else if !page.enabled {
+        Some("disabled")
+    } else if page.min_rank >= 2 {
+        Some("staff only")
+    } else {
+        None
+    }
+}
+
+/// The HC days a gift asks for, as the emulator reads its extradata: a whole number, anything else is 0.
+pub fn club_gift_days(extradata: &str) -> i64 {
+    extradata.trim().parse::<i32>().map_or(0, i64::from)
+}
+
+/// A gift's name: `club_gift_<item_name>`, made unique on the page (the client sends it back to choose the gift, and
+/// the emulator finds the gift by it, upper and lower case alike).
+pub fn club_gift_name(item_name: &str, taken: &[&str]) -> String {
+    let base: String = format!("club_gift_{}", item_name.trim()).chars().filter(|c| !c.is_control()).take(MAX_CATALOG_NAME - 4).collect();
+    let free = |name: &str| !taken.iter().any(|t| t.trim().eq_ignore_ascii_case(name));
+    if free(&base) {
+        return base;
+    }
+    (2..).map(|n| format!("{base}_{n}")).find(|name| free(name)).unwrap_or(base)
+}
+
+/// A new gift of `furni` on the page, after the gifts there: free, one of it, with the VIP mark, straight away.
+pub fn new_club_gift(furni: &Furni, page_id: i64, gifts: &[Offer]) -> Offer {
+    let taken: Vec<&str> = gifts.iter().map(|g| g.catalog_name.as_str()).collect();
+    Offer {
+        catalog_name: club_gift_name(&furni.item_name, &taken),
+        item_ids: furni.id.to_string(),
+        cost_credits: 0,
+        cost_points: 0,
+        points_type: 0,
+        club_only: true,
+        have_offer: false,
+        extradata: "0".into(),
+        ..new_offer(gifts, page_id)
+    }
+}
+
+/// A new club gift page at the top level, as the emulator uses it: visible, enabled, every rank.
+pub fn new_club_gift_page(pages: &[Page]) -> Page {
+    Page { caption: "Club gifts".into(), caption_save: "club_gifts".into(), layout: CLUB_GIFT_LAYOUT.into(), visible: true, ..new_page(pages, -1, Catalogue::Normal) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn club_gifts_follow_the_emulator() {
+        let page = |id: i64, layout: &str, visible: bool, min_rank: i64| Page { id, layout: layout.into(), visible, enabled: true, min_rank, ..Page::default() };
+        let pages = vec![page(9, "club_gift", true, 1), page(3, "Club_Gift", false, 1), page(4, "default_3x3", true, 1)];
+        assert_eq!(club_gift_pages(&pages).iter().map(|p| p.id).collect::<Vec<_>>(), vec![3, 9]);
+        assert_eq!(club_gift_page_problem(&pages[1]), Some("hidden"));
+        assert_eq!(club_gift_page_problem(&page(1, "club_gift", true, 2)), Some("staff only"));
+        assert_eq!(club_gift_page_problem(&pages[0]), None);
+        for (text, days) in [("31", 31), (" 365 ", 365), ("", 0), ("1 month", 0), ("31d", 0), ("-5", -5)] {
+            assert_eq!(club_gift_days(text), days, "{text}");
+        }
+        assert_eq!(club_gift_name("hc_chr", &[]), "club_gift_hc_chr");
+        assert_eq!(club_gift_name("hc_chr", &["CLUB_GIFT_HC_CHR", "club_gift_hc_chr_2"]), "club_gift_hc_chr_3");
+        let gifts = vec![Offer { catalog_name: "club_gift_hc_chr".into(), order_number: 4, ..Offer::default() }];
+        let furni = Furni { id: 4501, item_name: "hc_chr".into(), ..Furni::default() };
+        let gift = new_club_gift(&furni, 212, &gifts);
+        assert_eq!((gift.catalog_name.as_str(), gift.item_ids.as_str(), gift.page_id, gift.order_number), ("club_gift_hc_chr_2", "4501", 212, 5));
+        assert_eq!((gift.cost_credits, gift.cost_points, gift.amount, gift.club_only, gift.have_offer, gift.extradata.as_str()), (0, 0, 1, true, false, "0"));
+        assert_eq!(offer_problem(&gift), None);
+        assert_eq!(furni_prefix_param("hc_"), SqlValue::Text("hc\\_%".into()));
+        assert!(furni_prefix_sql("hotel").contains("item_name LIKE ?"));
+        let made = new_club_gift_page(&pages);
+        assert_eq!((made.layout.as_str(), made.parent_id, made.visible, made.enabled), ("club_gift", -1, true, true));
+        assert_eq!(club_gift_page_problem(&made), None);
+    }
 
     #[test]
     fn offers_are_arranged_like_a_drop() {

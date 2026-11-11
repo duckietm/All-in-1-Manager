@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/app"]
+members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/plugin_host", "source/crates/app"]
 
 [workspace.package]
 version = "2.0.20"
@@ -12,6 +12,7 @@ aio-core = { path = "source/crates/core" }
 aio-assets = { path = "source/crates/assets" }
 aio-remote = { path = "source/crates/remote" }
 aio-terminal = { path = "source/crates/terminal" }
+aio-plugin-host = { path = "source/crates/plugin_host" }
 
 anyhow = "1"
 thiserror = "2"
@@ -49,6 +50,8 @@ image = { version = "0.25.10", default-features = false, features = ["png", "gif
 rfd = "0.15.4"
 sys-locale = "0.3"
 tempfile = "3"
+wasmtime = { version = "50.0.1", default-features = false, features = ["component-model", "async", "cranelift", "runtime"] }
+wit-parser = "0.263"
 
 [profile.release]
 opt-level = 3

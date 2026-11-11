@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 aio-assets.workspace = true
+aio-catalog-rip.workspace = true
 aio-core.workspace = true
 aio-remote.workspace = true
 aio-terminal.workspace = true
@@ -34,7 +35,6 @@ sys-locale.workspace = true
 zip.workspace = true
 
 [build-dependencies]
-zip = { workspace = true }
 embed-resource = "3"
 
 [dev-dependencies]

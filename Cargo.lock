@@ -123,6 +123,7 @@ name = "aio-app"
 version = "2.0.20"
 dependencies = [
  "aio-assets",
+ "aio-catalog-rip",
  "aio-core",
  "aio-remote",
  "aio-terminal",
@@ -159,6 +160,27 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "zip",
+]
+
+[[package]]
+name = "aio-catalog-rip"
+version = "2.0.20"
+dependencies = [
+ "aio-remote",
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "flate2",
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
  "zip",
 ]
 

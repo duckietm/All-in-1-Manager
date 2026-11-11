@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/app"]
+members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/catalog_rip", "source/crates/app"]
 
 [workspace.package]
 version = "2.0.20"
@@ -12,6 +12,7 @@ aio-core = { path = "source/crates/core" }
 aio-assets = { path = "source/crates/assets" }
 aio-remote = { path = "source/crates/remote" }
 aio-terminal = { path = "source/crates/terminal" }
+aio-catalog-rip = { path = "source/crates/catalog_rip" }
 
 anyhow = "1"
 thiserror = "2"

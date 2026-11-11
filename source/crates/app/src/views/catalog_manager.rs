@@ -75,6 +75,8 @@ struct Transfer {
 
 #[derive(Default)]
 struct State {
+    /// A file to preview as an import once the database is open (the Catalogue ripper's "Import into the hotel").
+    pending_import: Option<std::path::PathBuf>,
     tab: Tab,
     /// The front page slots as loaded, and as edited (None until the tab is opened).
     featured: Option<Vec<FeaturedRow>>,
@@ -788,12 +790,20 @@ impl Ctl {
 
     /// Reads an SQL file (Octane's Catalog Studio format) and shows what it would change; nothing is written yet.
     async fn import_catalogue(self) {
-        let Some((generation, session, database)) = self.session() else { return };
+        if self.session().is_none() {
+            return;
+        }
         let Some(file) = rfd::AsyncFileDialog::new().set_title(t("Import a catalogue file")).add_filter(t("SQL files"), &["sql", "txt"]).add_filter(t("All files"), &["*"]).pick_file().await else {
             return;
         };
-        let name = file.file_name();
-        let text = match tokio::fs::read(file.path()).await {
+        self.import_path(file.path().to_path_buf()).await;
+    }
+
+    /// Reads the SQL file and shows what it would change; nothing is written yet.
+    async fn import_path(self, path: std::path::PathBuf) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let text = match tokio::fs::read(&path).await {
             Ok(bytes) => String::from_utf8_lossy(bytes.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(&bytes)).into_owned(),
             Err(error) => {
                 self.with(generation, |s| s.status = Status::error(error.to_string()));
@@ -910,6 +920,11 @@ impl CatalogManagerView {
         Ctl { state: self.state.clone(), shared: shared.clone() }
     }
 
+    /// Previews `path` as an import as soon as the hotel database is open; nothing is written until Apply.
+    pub fn import_file(&mut self, path: std::path::PathBuf) {
+        self.state.lock().pending_import = Some(path);
+    }
+
     fn connect_if_needed(&mut self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         let id = server_id(&server);
@@ -970,6 +985,13 @@ fn small(text: &str) -> egui::Button<'static> {
 impl View for CatalogManagerView {
     fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.connect_if_needed(shared);
+        let pending = {
+            let mut state = self.state.lock();
+            if state.session.is_some() && !state.busy && !state.opening { state.pending_import.take() } else { None }
+        };
+        if let Some(path) = pending {
+            self.ctl(shared).spawn(|ctl| ctl.import_path(path));
+        }
         self.images.new_frame(ui.ctx());
         let ctx = ui.ctx().clone();
         let mut actions = Vec::new();

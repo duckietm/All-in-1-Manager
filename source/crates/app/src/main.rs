@@ -7,6 +7,7 @@
 
 mod gui;
 mod i18n;
+mod plugins;
 mod update;
 mod views;
 

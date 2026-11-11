@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const REPOSITORY: &str = "duckietm/All-in-1-Manager";
-const TAG_PREFIX: &str = "rust-v";
+pub(crate) const TAG_PREFIX: &str = "rust-v";
 
 #[cfg(windows)]
 pub const ASSET_NAME: &str = "all-in-1-manager-windows-x64.exe";
@@ -64,7 +64,7 @@ struct GithubAsset {
     size: u64,
 }
 
-fn client() -> reqwest::Client {
+pub(crate) fn client() -> reqwest::Client {
     reqwest::Client::builder()
         // The GitHub API refuses requests without a user agent.
         .user_agent(format!("All-in-1-Manager/{CURRENT_VERSION}"))
@@ -163,13 +163,13 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// The SHA-256 of `bytes` as lowercase hex.
-fn sha256_of(bytes: &[u8]) -> String {
+pub(crate) fn sha256_of(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The digest from a published checksum file: "<hex>" or the `sha256sum` form "<hex>  <file name>".
-fn checksum_in(text: &str) -> Option<String> {
+pub(crate) fn checksum_in(text: &str) -> Option<String> {
     let digest = text.split_whitespace().next()?.trim().to_ascii_lowercase();
     (digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())).then_some(digest)
 }

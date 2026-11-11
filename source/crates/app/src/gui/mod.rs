@@ -59,6 +59,7 @@ pub enum Page {
     AssetTools,
     AssetExplorer,
     SqlEditor,
+    CatalogRip,
     CatalogManager,
     CatalogExplorer,
     BuildersExplorer,
@@ -76,6 +77,7 @@ pub enum Page {
     Doctor,
     History,
     Settings,
+    Plugins,
     About,
 }
 
@@ -239,6 +241,8 @@ pub struct App {
     debug: views::debug::DebugView,
     history: views::history::HistoryView,
     about: views::about::AboutView,
+    plugins: views::plugins::PluginsView,
+    catalog_rip: views::catalog_rip::CatalogRipView,
     dashboard: views::dashboard::Dashboard,
     /// The connection was lost: the login opens again as soon as nothing runs any more.
     login_pending: bool,
@@ -291,6 +295,8 @@ impl App {
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
             about: views::about::AboutView::new(&shared),
+            plugins: views::plugins::PluginsView,
+            catalog_rip: views::catalog_rip::CatalogRipView::new(&shared),
             dashboard: views::dashboard::Dashboard::new(&shared),
             shared,
             login_pending: false,
@@ -320,6 +326,8 @@ impl App {
             || self.hotel_view.busy()
             || self.gamedata.busy()
             || self.settings.busy()
+            || self.catalog_rip.busy()
+            || views::plugins::busy()
     }
 
     /// Opens the login (at startup, from a Log in button, or after a lost connection).
@@ -404,6 +412,8 @@ impl App {
         if self.any_busy() && page != self.page {
             return;
         }
+        // A page of a plugin that is switched off (a request from a card, a saved link): the dashboard instead.
+        let page = if crate::plugins::page_visible(page) { page } else { Page::Dashboard };
         self.page = page;
         let session = self.shared.session();
         if let Some(wizard) = self.wizards.get(page) {
@@ -656,6 +666,11 @@ impl App {
             ),
             Page::History => (t("History").into(), t("What ran on which server, with its log: every install step and tool.").into()),
             Page::About => (t("About").into(), "All-in-1 Manager".into()),
+            Page::Plugins => (t("Plugins").into(), t("Switch the optional parts of the program on or off, and download the data they need.").into()),
+            Page::CatalogRip => (
+                t("Catalogue ripper").into(),
+                t("Copies the catalogue of Habbo or a retro hotel through G-Earth, as files and ready to import.").into(),
+            ),
             Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, and your own SSH keys.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
@@ -711,6 +726,7 @@ impl App {
                             | Page::RemoveCrowdSec
                             | Page::DefaultCatalog
                             | Page::SqlEditor
+                            | Page::CatalogRip
                     ),
                     Page::Tools => matches!(current, Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor),
                     other => current == other,
@@ -749,9 +765,14 @@ impl App {
                         ),
                         ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Housekeeping"), Icon::Shield, Page::Housekeeping), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
                         ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
-                        ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
+                        ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("Plugins"), Icon::Puzzle, Page::Plugins), (t("About"), Icon::Info, Page::About)]),
                     ];
-                    for (key, heading, items) in groups {
+                    for (key, heading, mut items) in groups {
+                        // The pages of switched-off plugins are not in the menu; Addons goes when every addon is off.
+                        items.retain(|(_, _, page)| if *page == Page::Addons { crate::plugins::any_addon_visible() } else { crate::plugins::page_visible(*page) });
+                        if items.is_empty() {
+                            continue;
+                        }
                         ui.add_space(14.0);
                         let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
                         ui.add_space(2.0);
@@ -829,7 +850,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History | Page::Plugins | Page::CatalogRip => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -881,6 +902,14 @@ impl App {
         let shared = self.shared.clone();
         let session = shared.session();
         let page = self.page;
+        // A plugin page whose data pack is missing (and not running) shows how to download it first.
+        let pack_missing = crate::plugins::plugin_for(page).and_then(|p| p.pack).is_some_and(|p| !p.is_installed());
+        if pack_missing && !self.wizards.get(page).is_some_and(|w| w.is_busy()) {
+            scroll(ui, |ui| {
+                views::plugins::pack_ready(ui, palette, &shared, page);
+            });
+            return;
+        }
         if let Some(wizard) = self.wizards.get(page) {
             let mut action = None;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -944,6 +973,23 @@ impl App {
                 scroll(ui, |ui| self.settings.show_with(ui, palette, &shared, |ui| tools.settings_backup_card(ui, palette, &shared)))
             }
             Page::About => scroll(ui, |ui| self.about.show(ui, palette, &shared)),
+            Page::Plugins => {
+                let mut open = None;
+                scroll(ui, |ui| open = self.plugins.show(ui, palette, &shared));
+                if let Some(page) = open {
+                    self.navigate(page);
+                }
+            }
+            Page::CatalogRip => {
+                let mut click = None;
+                scroll(ui, |ui| click = self.catalog_rip.show(ui, palette, &shared));
+                if let Some(views::catalog_rip::Click::Import(path)) = click {
+                    self.go(Page::CatalogManager);
+                    if self.page == Page::CatalogManager {
+                        self.catalog.import_file(path);
+                    }
+                }
+            }
             Page::Addons => {
                 let mut clicked = None;
                 scroll(ui, |ui| clicked = views::addons::show(ui, palette));

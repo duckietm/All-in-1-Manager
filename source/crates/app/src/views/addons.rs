@@ -30,6 +30,7 @@ pub fn entries() -> Vec<Entry> {
         entry("Fail2Ban", t("Bans addresses that guess SSH passwords; a whitelist for your own IPs (Tools → Fail2Ban).").into(), Icon::Shield, "#DC2626", Scene::Bricks, Page::Fail2Ban),
         entry("CrowdSec", t("Blocks attackers on every route through Traefik, with the community's blocklist. Cloudflare aware.").into(), Icon::Shield, "#7C3AED", Scene::Space, Page::CrowdSec),
         entry(t("Default catalogue"), t("A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.").into(), Icon::Shopping, "#D97706", Scene::Disco, Page::DefaultCatalog),
+        entry(t("Catalogue ripper"), t("The catalogue of Habbo or a retro hotel, copied through G-Earth: files to keep, or straight into the catalogue manager.").into(), Icon::Download, "#2563EB", Scene::Sky, Page::CatalogRip),
         entry("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Scene::Snow, Page::SqlEditor),
     ]
 }
@@ -113,6 +114,12 @@ pub fn asset_entries() -> Vec<Entry> {
     ]
 }
 
+/// Only the buttons of plugins that are switched on (the Plugins page).
+pub fn visible(mut entries: Vec<Entry>) -> Vec<Entry> {
+    entries.retain(|e| crate::plugins::page_visible(e.page));
+    entries
+}
+
 /// Picture buttons in columns (1, 2 or 4; never 3). `outside` is the colour around them. Returns the page clicked.
 pub fn grid(ui: &mut egui::Ui, palette: &Palette, entries: &[Entry], height: f32, outside: Color32) -> Option<Page> {
     let width = ui.available_width();
@@ -153,5 +160,10 @@ pub fn grid(ui: &mut egui::Ui, palette: &Palette, entries: &[Entry], height: f32
 /// The Addons page.
 pub fn show(ui: &mut egui::Ui, palette: &Palette) -> Option<Page> {
     ui.add_space(4.0);
-    grid(ui, palette, &entries(), 140.0, palette.surface)
+    let entries = visible(entries());
+    if entries.is_empty() {
+        crate::gui::widgets::muted(ui, palette, t("Every addon is switched off: switch them on again on the Plugins page."), 13.5);
+        return None;
+    }
+    grid(ui, palette, &entries, 140.0, palette.surface)
 }

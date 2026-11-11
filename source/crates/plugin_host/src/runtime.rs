@@ -5,7 +5,10 @@
 //! * its own linear memory, at most [`MAX_MEMORY`] in total over all its memories (a `ResourceLimiter`
 //!   refuses to grow past it, so the guest's allocator fails and the guest traps; the host never aborts);
 //! * time: each call into the guest (and the instantiation) may take [`CALL_LIMIT`], not counting the time
-//!   spent waiting for the user in a host dialog. Two mechanisms enforce it: epoch interruption stops wasm
+//!   spent waiting for the user in a host dialog or on host I/O (`sql-select`, `http-get`, `tcp-connect`,
+//!   `recv`; each has its own limit: [`SQL_TIMEOUT`], [`HTTP_TIMEOUT`], [`TCP_CONNECT_TIMEOUT`],
+//!   [`TCP_RECV_TIMEOUT`], and a timeout there is an error for the guest, not a poisoned instance). Two
+//!   mechanisms enforce it: epoch interruption stops wasm
 //!   code (a ticker thread advances the engine's epoch every [`TICK`]; a call gets [`CALL_TICKS`] ticks and
 //!   the epoch callback extends the deadline only by the dialog time), and a wall-clock watchdog stops a
 //!   call parked in a host wait where no wasm runs (a WASI clock sleep or poll). Past the limit the call
@@ -241,12 +244,16 @@ impl CallClock {
     }
 }
 
-/// Replaces control characters (C0, DEL, C1; tab excepted) and bidi overrides / isolates with U+FFFD and
+/// Replaces control characters (C0, DEL, C1; tab excepted), bidi overrides / isolates and invisible
+/// characters (U+200B-U+200F zero-width and direction marks, U+2028/U+2029 separators, U+FEFF) with U+FFFD and
 /// cuts the text to [`MAX_LOG_ENTRY`] bytes.
 pub(crate) fn sanitise(text: &str) -> String {
     let mut out = String::with_capacity(text.len().min(MAX_LOG_ENTRY));
     for c in text.chars() {
-        let bidi = matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+        let bidi = matches!(
+            c,
+            '\u{200B}'..='\u{200F}' | '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+        );
         let c = if (c.is_control() && c != '\t') || bidi { '\u{FFFD}' } else { c };
         if out.len() + c.len_utf8() > MAX_LOG_ENTRY {
             break;
@@ -325,8 +332,38 @@ pub struct TcpConnection {
     id: u64,
 }
 
-/// How long `tcp-connect` waits for the local port to answer.
-const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+/// Longest wait for `sql-select` (host I/O time does not count against [`CALL_LIMIT`]).
+pub const SQL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest wait for a whole `http-get`.
+pub const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest wait for `tcp-connect`.
+pub const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest wait for one `recv`.
+pub const TCP_RECV_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// While alive, the call clock is paused (a dialog or host I/O); ends the pause on drop, also when the
+/// call is cancelled mid-wait.
+struct Paused(Arc<CallClock>);
+
+impl Paused {
+    fn begin(clock: &Arc<CallClock>) -> Paused {
+        clock.begin_wait();
+        Paused(clock.clone())
+    }
+}
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        self.0.end_wait();
+    }
+}
+
+/// Runs host I/O with its own time limit; a timeout is an error for the guest, not a poisoned instance.
+async fn limited<T>(what: &str, limit: Duration, io: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    tokio::time::timeout(limit, io)
+        .await
+        .unwrap_or_else(|_| Err(format!("{what} timed out after {} s", limit.as_secs())))
+}
 
 /// The store data of one plugin instance.
 pub struct HostState {
@@ -354,10 +391,8 @@ impl WasiView for HostState {
 impl HostState {
     /// Awaits a host service that waits for the user, excluding that time from the call's time limit.
     async fn waiting<F: std::future::Future>(&mut self, fut: F) -> F::Output {
-        self.clock.begin_wait();
-        let out = fut.await;
-        self.clock.end_wait();
-        out
+        let _paused = Paused::begin(&self.clock);
+        fut.await
     }
 
     fn picked(&self, file: &Resource<PickedFile>) -> Result<&PickedFile, String> {
@@ -571,7 +606,8 @@ impl Host for HostState {
 
     async fn sql_select(&mut self, query: Select) -> Result<WitRows, String> {
         let (sql, params) = build_select(&query, &self.granted).map_err(|e| self.refused(e))?;
-        let rows = self.services.sql_select(sql, params).await?;
+        let services = self.services.clone();
+        let rows = self.waiting(limited("the query", SQL_TIMEOUT, services.sql_select(sql, params))).await?;
         Ok(WitRows {
             columns: rows.columns,
             rows: rows.rows.into_iter().map(|r| r.into_iter().map(to_wit).collect()).collect(),
@@ -588,7 +624,8 @@ impl Host for HostState {
 
     async fn http_get(&mut self, url: String) -> Result<Vec<u8>, String> {
         let url = check_http(&url, &self.granted).map_err(|e| self.refused(e))?;
-        let body = self.services.http_get(&url).await?;
+        let services = self.services.clone();
+        let body = self.waiting(limited("the request", HTTP_TIMEOUT, services.http_get(&url))).await?;
         if body.len() > MAX_HTTP_BODY {
             return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
         }
@@ -603,11 +640,8 @@ impl Host for HostState {
             )));
         }
         let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-        let stream = match tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
-            Ok(Ok(s)) => s,
-            Ok(Err(e)) => return Err(format!("connecting to port {port} failed ({:?})", e.kind())),
-            Err(_) => return Err(format!("connecting to port {port} timed out")),
-        };
+        let connect = async { TcpStream::connect(addr).await.map_err(|e| format!("connecting to port {port} failed ({:?})", e.kind())) };
+        let stream = self.waiting(limited("connecting", TCP_CONNECT_TIMEOUT, connect)).await?;
         let id = self.next_tcp;
         self.next_tcp += 1;
         let handle = self.table.push(TcpConnection { id }).map_err(|_| "too many handles".to_string())?;
@@ -752,9 +786,11 @@ impl HostTcpConnection for HostState {
         if max == 0 {
             return Err("max must be at least 1".into());
         }
+        let _paused = Paused::begin(&self.clock);
         let stream = self.stream(&conn)?;
         let mut buf = vec![0u8; (max as usize).min(MAX_TCP_RECV)];
-        let n = stream.read(&mut buf).await.map_err(|e| io_text(&e))?;
+        let read = async { stream.read(&mut buf).await.map_err(|e| io_text(&e)) };
+        let n = limited("recv", TCP_RECV_TIMEOUT, read).await?;
         buf.truncate(n);
         Ok(buf)
     }

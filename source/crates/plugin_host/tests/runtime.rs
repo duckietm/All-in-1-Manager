@@ -343,6 +343,10 @@ async fn log_text_is_sanitised() {
     assert_eq!(logs[3].1.len(), 4096);
     assert_eq!(logs.len(), 4);
     assert_eq!(fake.statuses.lock().unwrap().clone(), vec!["one\u{fffd}two\u{fffd}".to_string()]);
+    // Invisible characters (zero-width, direction marks, line / paragraph separators, BOM) too.
+    host.log(LogLevel::Info, "a\u{200b}b\u{200c}c\u{200d}d\u{200e}e\u{200f}f\u{2028}g\u{2029}h\u{feff}i".into()).await;
+    let last = fake.logs().last().unwrap().1.clone();
+    assert_eq!(last, "a\u{fffd}b\u{fffd}c\u{fffd}d\u{fffd}e\u{fffd}f\u{fffd}g\u{fffd}h\u{fffd}i");
 }
 
 #[tokio::test(flavor = "multi_thread")]

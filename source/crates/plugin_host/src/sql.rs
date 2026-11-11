@@ -36,6 +36,8 @@ pub const MAX_COLUMNS: usize = 256;
 pub const MAX_CONDITIONS: usize = 64;
 /// Characters of a text value shown in a summary line.
 const SUMMARY_TEXT: usize = 80;
+/// Bytes of a non UTF-8 value shown (in hex) in a summary line.
+const SUMMARY_BYTES: usize = 32;
 
 /// Private columns of the Arcturus schema, `(table, column)`, lower case.
 const PRIVATE_COLUMNS: &[(&str, &str)] = &[
@@ -46,6 +48,8 @@ const PRIVATE_COLUMNS: &[(&str, &str)] = &[
     ("users", "auth_ticket"),
     ("users", "machine_id"),
 ];
+/// A column with exactly one of these names (any case) is private on every table (`bans.ip`, ...).
+const PRIVATE_NAMES: &[&str] = &["ip", "machine_id"];
 /// A column whose name contains one of these (any case) is private on every table.
 const PRIVATE_PARTS: &[&str] = &["password", "token", "secret", "ip_"];
 
@@ -78,11 +82,13 @@ fn identifier<'a>(kind: &str, s: &'a str) -> Result<&'a str, String> {
     }
 }
 
-/// True for a column the Manager treats as private: the list above or a name containing
-/// `password`, `token`, `secret` or `ip_`. Case is ignored for both table and column.
+/// True for a column the Manager treats as private: the list above, a column named `ip` or
+/// `machine_id`, or a name containing `password`, `token`, `secret` or `ip_`. Case is ignored for both table and column.
 pub fn is_private(table: &str, column: &str) -> bool {
     let (t, c) = (table.to_ascii_lowercase(), column.to_ascii_lowercase());
-    PRIVATE_COLUMNS.iter().any(|(pt, pc)| *pt == t && *pc == c) || PRIVATE_PARTS.iter().any(|p| c.contains(p))
+    PRIVATE_COLUMNS.iter().any(|(pt, pc)| *pt == t && *pc == c)
+        || PRIVATE_NAMES.contains(&c.as_str())
+        || PRIVATE_PARTS.iter().any(|p| c.contains(p))
 }
 
 /// `table` must be listed exactly (case included) in one of the plugin's `sql:read` or `sql:write`
@@ -133,23 +139,34 @@ fn value(v: &WitValue) -> Result<SqlValue, String> {
     })
 }
 
-/// A value as the user reads it in a preview: text in quotes (clipped, sanitised), bytes by size.
+/// Text in quotes, clipped to [`SUMMARY_TEXT`] characters (with the real length) and sanitised.
+fn shown_text(s: &str) -> String {
+    let total = s.chars().count();
+    let clipped: String = s.chars().take(SUMMARY_TEXT).collect();
+    let text = sanitise(&clipped.replace('\'', "''"));
+    if total > SUMMARY_TEXT {
+        format!("'{text}\u{2026}' ({total} chars)")
+    } else {
+        format!("'{text}'")
+    }
+}
+
+/// A value as the user reads it in a preview. Bytes end up in text columns too, so UTF-8 bytes are
+/// shown as text; other bytes as hex (the first [`SUMMARY_BYTES`]) with their length.
 fn shown(v: &SqlValue) -> String {
     match v {
         SqlValue::Null => "NULL".into(),
         SqlValue::Int(i) => i.to_string(),
         SqlValue::Float(f) => f.to_string(),
-        SqlValue::Bytes(b) => format!("<{} bytes>", b.len()),
-        SqlValue::Text(s) => {
-            let total = s.chars().count();
-            let clipped: String = s.chars().take(SUMMARY_TEXT).collect();
-            let text = sanitise(&clipped.replace('\'', "''"));
-            if total > SUMMARY_TEXT {
-                format!("'{text}\u{2026}' ({total} chars)")
-            } else {
-                format!("'{text}'")
+        SqlValue::Text(s) => shown_text(s),
+        SqlValue::Bytes(b) => match std::str::from_utf8(b) {
+            Ok(s) => shown_text(s),
+            Err(_) => {
+                let hex: String = b.iter().take(SUMMARY_BYTES).map(|x| format!("{x:02x}")).collect();
+                let more = if b.len() > SUMMARY_BYTES { "\u{2026}" } else { "" };
+                format!("0x{hex}{more} ({} bytes)", b.len())
             }
-        }
+        },
     }
 }
 

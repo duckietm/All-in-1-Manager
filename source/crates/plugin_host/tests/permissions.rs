@@ -286,7 +286,7 @@ fn summary_clips_and_sanitises_values() {
         values: vec![
             ("name".into(), WitValue::Text(sneaky.clone())),
             ("quote".into(), WitValue::Text("it's".into())),
-            ("data".into(), WitValue::Bytes(vec![1, 2, 3])),
+            ("data".into(), WitValue::Bytes(vec![0xff, 0, 1])),
             ("score".into(), WitValue::Float(1.5)),
             ("gone".into(), WitValue::Null),
         ],
@@ -296,7 +296,7 @@ fn summary_clips_and_sanitises_values() {
     assert!(!line.contains('\n') && !line.contains('\u{202E}'), "{line:?}");
     assert!(line.contains("'ok\u{FFFD}evil\u{FFFD}DROP"), "{line:?}");
     assert!(line.contains("(212 chars)"), "a clipped value says how long it really is: {line:?}");
-    assert!(line.contains("'it''s'") && line.contains("<3 bytes>") && line.contains("1.5") && line.contains("NULL"), "{line:?}");
+    assert!(line.contains("'it''s'") && line.contains("0xff0001 (3 bytes)") && line.contains("1.5") && line.contains("NULL"), "{line:?}");
     // The statement keeps the full value.
     assert_eq!(batch.statements[0].1[0], SqlValue::Text(sneaky));
 }
@@ -570,4 +570,131 @@ async fn tcp_connections_close_when_poisoned() {
     let mut buf = [0u8; 1];
     let n = tokio::time::timeout(std::time::Duration::from_secs(5), peer.read(&mut buf)).await.unwrap().unwrap_or(0);
     assert_eq!(n, 0, "the peer sees the connection closed");
+}
+#[test]
+fn bytes_values_are_visible_in_summary() {
+    // MariaDB stores bytes in text columns: what a plugin writes as bytes must be readable in the preview.
+    let granted = perms(&["sql:write:emulator_settings"]);
+    let url = b"https://evil.example/payload\xe2\x80\x8b".to_vec();
+    let upd = WriteOp::Update(UpdateOp {
+        table: "emulator_settings".into(),
+        set: vec![("value".into(), WitValue::Bytes(url))],
+        conditions: vec![cond("key", CompareOp::Eq, WitValue::Bytes(b"camera.url".to_vec()))],
+    });
+    let batch = build_writes(&[upd], &granted).unwrap();
+    assert_eq!(
+        batch.summary[0],
+        "UPDATE emulator_settings SET value = 'https://evil.example/payload\u{fffd}' WHERE key = 'camera.url'"
+    );
+    // Long UTF-8 bytes are clipped like text.
+    let long = WriteOp::Insert(InsertOp {
+        table: "emulator_settings".into(),
+        values: vec![("value".into(), WitValue::Bytes(vec![b'a'; 100]))],
+    });
+    let line = &build_writes(&[long], &granted).unwrap().summary[0];
+    assert!(line.contains(&format!("'{}\u{2026}' (100 chars)", "a".repeat(80))), "{line}");
+    // Not UTF-8: hex of the first 32 bytes and the length.
+    let mut raw = vec![0xffu8, 0xfe];
+    raw.extend(std::iter::repeat_n(0xabu8, 38));
+    let bin = WriteOp::Insert(InsertOp { table: "emulator_settings".into(), values: vec![("value".into(), WitValue::Bytes(raw))] });
+    let line = &build_writes(&[bin], &granted).unwrap().summary[0];
+    assert!(line.contains(&format!("0xfffe{}\u{2026} (40 bytes)", "ab".repeat(30))), "{line}");
+}
+
+#[test]
+fn bans_ip_is_private() {
+    let granted = perms(&["sql:read:bans"]);
+    for col in ["ip", "IP", "Ip", "machine_id", "MACHINE_ID"] {
+        denied(build_select(&select("bans", &["id", col]), &granted));
+        let mut q = select("bans", &["id"]);
+        q.conditions = vec![cond(col, CompareOp::Eq, WitValue::Text("1.2.3.4".into()))];
+        denied(build_select(&q, &granted));
+    }
+    // Only the exact name: `zip` or `ipv` are not private by this rule.
+    assert!(build_select(&select("bans", &["zip", "ipv"]), &granted).is_ok());
+    let ok = perms(&["sql:read:bans", "sql:read-private:bans.ip"]);
+    assert!(build_select(&select("bans", &["ip"]), &ok).is_ok());
+}
+
+// ---- Host I/O timeouts (Ruling 12) ------------------------------------------------------------
+
+/// `sql_select` sleeps `delay` (tokio time), or never answers when `None`.
+struct Slow {
+    delay: Option<std::time::Duration>,
+}
+
+#[aio_plugin_host::async_trait]
+impl HostServices for Slow {
+    async fn ask(&self, _q: String) -> bool {
+        true
+    }
+    fn log(&self, _level: Level, _text: &str) {}
+    fn status(&self, _text: &str) {}
+    async fn run_script(&self, _req: ScriptRequest) -> Result<ScriptResult, String> {
+        unreachable!()
+    }
+    async fn sql_select(&self, _sql: String, _params: Vec<SqlValue>) -> Result<Rows, String> {
+        match self.delay {
+            Some(d) => tokio::time::sleep(d).await,
+            None => std::future::pending::<()>().await,
+        }
+        Ok(Rows { columns: vec!["id".into()], rows: vec![] })
+    }
+    async fn sql_write(&self, _batch: WriteBatch) -> Result<u64, String> {
+        unreachable!()
+    }
+    async fn http_get(&self, _url: &str) -> Result<Vec<u8>, String> {
+        match self.delay {
+            Some(d) => tokio::time::sleep(d).await,
+            None => std::future::pending::<()>().await,
+        }
+        Ok(vec![])
+    }
+    async fn prompt_text(&self, _t: String, _l: String, d: String) -> Option<String> {
+        Some(d)
+    }
+    async fn pick_open_file(&self, _t: String, _e: Vec<String>) -> Option<PathBuf> {
+        None
+    }
+    async fn pick_save_file(&self, _t: String, _s: String, _e: Vec<String>) -> Option<PathBuf> {
+        None
+    }
+    fn open_import_preview(&self, _name: String, _bytes: Vec<u8>) {}
+}
+
+async fn slow_hello(root: &Path, delay: Option<std::time::Duration>) -> PluginInstance {
+    let pkg = inspect(&support::hello_aiop(), &[]).unwrap();
+    let dir = install(&pkg, root).unwrap();
+    let mut manifest = pkg.manifest.clone();
+    manifest.permissions = perms(&["sql:read:rooms", "http:api.example.com"]);
+    PluginInstance::load(&engine(), &dir, manifest, Arc::new(Slow { delay })).await.unwrap()
+}
+
+#[tokio::test]
+async fn slow_sql_is_not_cut_by_the_call_budget() {
+    let root = tempfile::tempdir().unwrap();
+    let mut inst = slow_hello(root.path(), Some(std::time::Duration::from_secs(7))).await;
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    assert!(inst.host_for_tests().sql_select(select("rooms", &["id"])).await.is_ok());
+    assert!(started.elapsed() >= std::time::Duration::from_secs(7));
+}
+
+#[tokio::test]
+async fn hung_host_io_times_out_without_poisoning() {
+    use aio_plugin_host::runtime::{HTTP_TIMEOUT, SQL_TIMEOUT, TCP_CONNECT_TIMEOUT, TCP_RECV_TIMEOUT};
+    assert_eq!([SQL_TIMEOUT, HTTP_TIMEOUT, TCP_CONNECT_TIMEOUT, TCP_RECV_TIMEOUT].map(|d| d.as_secs()), [30, 60, 5, 30]);
+    let root = tempfile::tempdir().unwrap();
+    let mut inst = slow_hello(root.path(), None).await;
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let e = inst.host_for_tests().sql_select(select("rooms", &["id"])).await.unwrap_err();
+    assert!(e.contains("timed out"), "{e}");
+    assert_eq!(started.elapsed().as_secs(), 30);
+    let started = tokio::time::Instant::now();
+    let e = inst.host_for_tests().http_get("https://api.example.com/".into()).await.unwrap_err();
+    assert!(e.contains("timed out"), "{e}");
+    assert_eq!(started.elapsed().as_secs(), 60);
+    // The instance is still usable.
+    assert!(inst.render().await.is_ok());
 }

@@ -78,7 +78,7 @@ impl Manifest {
             bail!("Invalid version (expected MAJOR.MINOR.PATCH): {}", raw.version);
         }
         match numbers(&raw.api, 2, 3).as_deref() {
-            Some([1, minor, ..]) if *minor <= HOST_API_MINOR => {}
+            Some([1, minor, ..]) if (0..=HOST_API_MINOR).contains(minor) => {}
             _ => bail!("Unsupported plugin API: {}", raw.api),
         }
         if raw.name.trim().is_empty() || raw.page_title.trim().is_empty() {

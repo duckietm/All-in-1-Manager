@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "aio-app"
-version = "2.0.22"
+version = "2.0.23"
 dependencies = [
  "aio-assets",
  "aio-core",
@@ -164,7 +164,7 @@ dependencies = [
 
 [[package]]
 name = "aio-core"
-version = "2.0.22"
+version = "2.0.23"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -193,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "aio-remote"
-version = "2.0.22"
+version = "2.0.23"
 dependencies = [
  "aio-assets",
  "aio-core",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "aio-terminal"
-version = "2.0.22"
+version = "2.0.23"
 
 [[package]]
 name = "allocator-api2"

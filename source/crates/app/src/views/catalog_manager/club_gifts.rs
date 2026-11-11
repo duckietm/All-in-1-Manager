@@ -542,8 +542,8 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
         .id(egui::Id::new("club-gift-picker"))
         .open(&mut open)
         .collapsible(false)
-        .resizable(true)
-        .default_size([760.0, 560.0])
+        .resizable(false)
+        .default_width(560.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             let Some(list) = picker.furni.as_ref() else {
@@ -572,13 +572,13 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
                 }
             });
             ui.add_space(4.0);
-            let footer = 46.0;
-            egui::ScrollArea::vertical().max_height((ui.available_height() - footer).max(120.0)).auto_shrink([false, false]).show(ui, |ui| {
+            // A fixed height: the list scrolls inside a window of about 560 x 440, whatever the screen.
+            egui::ScrollArea::vertical().max_height(290.0).min_scrolled_height(290.0).auto_shrink([false, false]).show(ui, |ui| {
                 if shown.is_empty() {
                     widgets::muted(ui, palette, t("No furni found."), 12.5);
                     return;
                 }
-                let tile = egui::vec2(112.0, 118.0);
+                let tile = egui::vec2(100.0, 106.0);
                 let gap = 6.0;
                 let per_row = (((ui.available_width() + gap) / (tile.x + gap)).floor() as usize).max(1);
                 for row in shown.chunks(per_row) {
@@ -600,7 +600,7 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
                             if gift {
                                 inner.set_opacity(0.45);
                             }
-                            icon_sized(&mut inner, palette, images, Some(furni), 64.0);
+                            icon_sized(&mut inner, palette, images, Some(furni), 56.0);
                             let name = if furni.public_name.trim().is_empty() { furni.item_name.as_str() } else { furni.public_name.trim() };
                             inner.add(egui::Label::new(RichText::new(name).size(11.5)).truncate());
                             inner.add(egui::Label::new(RichText::new(if gift { t("Already a gift").to_string() } else { furni.item_name.clone() }).size(10.5).color(palette.muted)).truncate());

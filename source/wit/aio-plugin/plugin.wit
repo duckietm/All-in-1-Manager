@@ -222,9 +222,28 @@ interface host {
     /// Writes a file of the plugin's private data folder.
     file-write: func(path: string, data: list<u8>) -> result<_, string>;
 
-    /// Hands a file to the Manager's import preview (used by the catalog ripper). The user
-    /// reviews it there before anything is changed.
-    open-import-preview: func(file-path: string) -> result<_, string>;
+    /// Asks the user for a line of text. `none` means the user cancelled.
+    prompt-text: func(title: string, label: string, default-value: string) -> option<string>;
+
+    /// A file the user picked in a dialog. The plugin never sees its path, only its name and
+    /// its content.
+    resource picked-file {
+        /// The file name without folders.
+        name: func() -> string;
+        read: func() -> result<list<u8>, string>;
+        write: func(data: list<u8>) -> result<_, string>;
+    }
+
+    /// Shows an open-file dialog. `extensions` has no dots (for example "sql"); an empty list
+    /// allows every file. `none` means the user cancelled.
+    pick-open-file: func(title: string, extensions: list<string>) -> option<picked-file>;
+
+    /// Shows a save-file dialog. `none` means the user cancelled.
+    pick-save-file: func(title: string, suggested-name: string, extensions: list<string>) -> option<picked-file>;
+
+    /// Hands a user-picked file to the Manager's import preview (used by the catalog ripper).
+    /// The user reviews it there before anything is changed.
+    open-import-preview: func(file: borrow<picked-file>) -> result<_, string>;
 }
 
 world plugin {

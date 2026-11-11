@@ -18,4 +18,26 @@ fn wit_package_parses() {
             "world plugin must export {export}"
         );
     }
+
+    let host = world
+        .imports
+        .values()
+        .find_map(|item| match item {
+            WorldItem::Interface { id, .. } if resolve.interfaces[*id].name.as_deref() == Some("host") => Some(*id),
+            _ => None,
+        })
+        .expect("world plugin imports interface host");
+    let host = &resolve.interfaces[host];
+    for func in [
+        "prompt-text",
+        "pick-open-file",
+        "pick-save-file",
+        "open-import-preview",
+        "[method]picked-file.name",
+        "[method]picked-file.read",
+        "[method]picked-file.write",
+    ] {
+        assert!(host.functions.contains_key(func), "host must import {func}");
+    }
+    assert!(host.types.contains_key("picked-file"), "host must define resource picked-file");
 }

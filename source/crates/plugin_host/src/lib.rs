@@ -7,12 +7,21 @@ pub mod bindings {
         path: "../../wit/aio-plugin",
         imports: { default: async },
         exports: { default: async },
+        // The resources are host structs in `runtime`, kept in the store's `ResourceTable`.
+        with: {
+            "aio:plugin/host.picked-file": crate::runtime::PickedFile,
+            "aio:plugin/host.tcp-connection": crate::runtime::TcpConnection,
+        },
     });
 }
 
 pub mod manifest;
 pub mod package;
 pub mod permissions;
+pub mod runtime;
+pub mod services;
+
+pub use async_trait::async_trait;
 
 pub use manifest::{Manifest, Tile};
 #[cfg(feature = "test-hooks")]

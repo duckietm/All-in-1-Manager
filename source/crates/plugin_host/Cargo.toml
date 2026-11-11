@@ -11,6 +11,10 @@ serde.workspace = true
 serde_json.workspace = true
 zip.workspace = true
 wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 
 [features]
 # Failure-injection hooks for the tests only.

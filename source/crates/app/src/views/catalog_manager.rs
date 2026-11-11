@@ -357,7 +357,7 @@ impl Ctl {
             return;
         };
         let generation = self.lock().generation;
-        let folder = format!("{}/c_images", aio_remote::octane::gamedata());
+        let folder = aio_remote::octane::gamedata_path("images");
         let temp = std::env::temp_dir().join(format!("all-in-1-front-page-{}", std::process::id()));
         loop {
             let batch: Vec<String> = {

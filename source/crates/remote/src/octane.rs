@@ -16,6 +16,34 @@ pub fn gamedata() -> String {
     ServerLayout::current().gamedata.clone()
 }
 
+/// The server path of a gamedata file or folder (Settings → Gamedata layout): `furnidata`, `external_texts`,
+/// `furniture`, `icons`, ...
+pub fn gamedata_path(key: &str) -> String {
+    ServerLayout::current().gamedata_path(key)
+}
+
+/// The web path of a gamedata folder (served on /gamedata): `/gamedata/<place>` for a place inside gamedata. A place
+/// outside it has no web path of its own, so the standard one is given.
+pub fn gamedata_url(key: &str) -> String {
+    let value = ServerLayout::current().gamedata_layout.get(key).to_string();
+    let place = if value.starts_with('/') { aio_core::GamedataLayout::standard(key) } else { value };
+    format!("/gamedata/{}", place.trim_matches('/'))
+}
+
+/// FurnitureData.json on the server.
+pub fn furnidata() -> String {
+    gamedata_path("furnidata")
+}
+
+/// The folder a gamedata file is in (its parent).
+pub fn parent_folder(path: &str) -> String {
+    match path.rsplit_once('/') {
+        Some(("", _)) => "/".into(),
+        Some((folder, _)) => folder.into(),
+        None => ".".into(),
+    }
+}
+
 pub fn dist() -> String {
     format!("{}/dist", octane())
 }

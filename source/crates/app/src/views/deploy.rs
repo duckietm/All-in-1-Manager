@@ -419,7 +419,7 @@ impl InstallStep for UiTextsStep {
                     "Takes UITexts_<language>.jsonc.example from {directory} (the Octane clone), or downloads it from github.com/duckietm/Octane when the clone is not there.",
                     &[("directory", &octane::configuration_directory())],
                 ),
-                tf("Installs it as UITexts.jsonc in {gamedata}/config, readable by NGINX.", &[("gamedata", &octane::gamedata())]),
+                tf("Installs it as {file}, readable by NGINX.", &[("file", &octane::gamedata_path("ui_texts"))]),
                 t("A UITexts.jsonc of your own (one that is none of Octane's languages) is kept as UITexts.jsonc.bak-<time>, so your changes are not lost.").into(),
             ],
             footnote: Some(t("Players see the new texts after reloading the hotel. The game's own texts (furniture names, badges) are in ExternalTexts.json.").into()),

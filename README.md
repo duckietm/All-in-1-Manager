@@ -1779,6 +1779,22 @@ afterwards so the row shows the new version.
   | Gitea | `/opt/gitea` |
   | CrowdSec | `/opt/crowdsec` |
 
+  **Gamedata layout**, for a hotel whose gamedata has its own structure: where each file and folder is, as a path
+  inside gamedata or a full path starting with `/`. The full server path is shown beside each one, and ↺ puts one back.
+
+  | Setting | Standard |
+  |---|---|
+  | FurnitureData.json, ProductData.json, FigureData.json, FigureMap.json, EffectMap.json, ExternalTexts.json, HabboAvatarActions.json | `config/<name>` |
+  | UITexts.jsonc | `config/UITexts.jsonc` |
+  | Furniture, furniture icons, clothes, pets, effects, sounds | `furniture`, `icons`, `clothes`, `pets`, `effects`, `sounds` |
+  | Images, badges | `c_images`, `c_images/album1584` |
+
+  The editors (gamedata, catalogue images), the imports (custom furniture, default catalogue), the language switches,
+  the UI texts, the emulator's badge folders, AtomCMS's badge and texts settings and **Deploy Assets** use these places:
+  Deploy Assets sends each downloaded folder (laid out the standard way on this computer) to the folder the layout gives
+  it, and each config file to its own place, under its own name. Your client's `renderer-config.json` must point to the
+  same places (the Octane step only writes the standard ones).
+
   **Emulator account** is a list of the server's accounts once you are logged in: `root`, the people's accounts and
   the accounts in group `www-data` (where the emulator's account lives), each with a short note. **+ Create a new
   user ...** at the bottom asks for a name and creates it on the server right away as a service account (no login,

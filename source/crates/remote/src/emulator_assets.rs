@@ -127,8 +127,10 @@ fn server_source(f: &EmulatorAssetFolder) -> String {
     format!("{}/{}", server_assets(), f.source)
 }
 
+/// Where a folder goes on the server: its standard place inside gamedata, or where the gamedata layout puts it.
 fn target(f: &EmulatorAssetFolder) -> String {
-    format!("{}/{}", crate::octane::gamedata(), f.target)
+    let layout = &aio_core::ServerLayout::current().gamedata_layout;
+    aio_core::GamedataLayout::resolve(&crate::octane::gamedata(), &crate::asset_sync::server_folder(layout, &f.target))
 }
 
 fn local_source(local: &Path, f: &EmulatorAssetFolder) -> PathBuf {

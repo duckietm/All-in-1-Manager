@@ -217,7 +217,7 @@ impl InstallStep for DefaultCatalogStep {
             ),
             bullets: vec![
                 t("Replaces the catalogue tables and items_base in the hotel database (Catalog_Export.sql).").into(),
-                tf("Puts FurnitureData.json in {folder}; an existing one is kept next to it as .bak-<time>.", &[("folder", &format!("{}/config", aio_remote::octane::gamedata()))]),
+                tf("Puts FurnitureData.json in {folder}; an existing one is kept next to it as .bak-<time>.", &[("folder", &aio_remote::octane::parent_folder(&aio_remote::octane::furnidata()))]),
                 tf("A backup of the database comes first ({folder}). If the import or the emulator's start fails, everything goes back.", &[("folder", &server_tools::backup_directory())]),
                 t("The emulator is stopped during the import and started again: the players are disconnected for a moment.").into(),
                 t("Meant for a new hotel: furniture players already own keeps its number, so on a hotel with a different furniture list it would turn into other furniture.").into(),

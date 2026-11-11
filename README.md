@@ -1611,6 +1611,9 @@ Catalogue; the changes go to the running emulator over RCON, the way the catalog
   100 of it) and set the Habbo Club days (0 ends it). Below the details: the running temporary rank, the
   **sanctions** of the mod tools' ladder, the **accounts on the same IP** (registered or logged in from one of this
   player's IPs; **Open** shows one), the **IP and mail** behind **Reveal**, and the **staff notes** (add and delete).
+- **Habbo Club** on the player: how many club gifts they took (the count the emulator uses), which gift and when (from
+  `club_gift_claims`, which the gameserver fills since it keeps that record; older gifts are only in the count), and
+  their latest HC paydays.
 
 ### Housekeeping
 
@@ -1637,6 +1640,15 @@ emulator without that command says so at the top; the lists still work.
 - **Support**: the open and picked-up help tickets; reply (and close) or close as resolved, useless or abusive.
 - **Soundboard**: the `soundboard_sounds` catalogue: add, edit, enable, order (up/down), delete, and tell the
   emulator to load it again (`updatesoundboard`).
+- **Habbo Club**: the **HC payday**. On every payday each HC member gets back a percentage of the credits spent in the
+  catalogue since the last one, plus a **streak bonus** for days of HC in a row (the highest step reached counts); an
+  offline member gets it at the next login. Set it on or off, the next payday (`YYYY-MM-DD HH:MM:SS`, server time), how
+  often (every week, 2 weeks, month, or any `<number> <unit>`), the percentage, the currency (credits, diamonds,
+  duckets or a points type), the streak steps, whether spending counts from the start of a new membership, and the
+  message (`%amount%` is the payout). A worked example shows what a member would get. **Save** writes
+  `emulator_settings` (`subscriptions.hc.payday.*`) and `emulator_texts`, and has the emulator read them again
+  (`reloadcontent` config and texts). Under it, the latest paydays (`logs_hc_payday`): who, how long HC, spent, paid,
+  and whether it is paid out or waits for the next login.
 
 Every action asks first and shows the emulator's answer. The emulator checks the staff rank, the limits and the
 permissions itself, and logs every action. The gameserver also gained the RCON commands `banuser`, `unbanuser` and

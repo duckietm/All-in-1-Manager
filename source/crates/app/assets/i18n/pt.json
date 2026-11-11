@@ -3846,10 +3846,10 @@
   "Choose HC furni": "Escolher mobis HC",
   "Choose HC furni ...": "Escolher mobis HC ...",
   "Each gift is free, can be chosen straight away and has the VIP mark.": "Cada presente é grátis, pode ser escolhido na hora e tem a marca VIP.",
-  "Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.": "Todos os mobis cujo nome de classe começa com hc_, em imagens: marque os que você quer e adicione todos de uma vez.",
   "Filter by name": "Filtrar por nome",
   "Reading the HC furni ...": "Lendo os mobis HC ...",
   "{count} club gifts added. Publish to put them in the hotel.": "{count} presentes do clube adicionados. Publique para levá-los ao hotel.",
-  "{count} furni start with hc_": "{count} mobis começam com hc_",
-  "{count} gifts added, then: {error}": "{count} presentes adicionados, depois: {error}"
+  "{count} gifts added, then: {error}": "{count} presentes adicionados, depois: {error}",
+  "Every furni whose class name starts with hc, as pictures: tick the ones you want and add them at once.": "Todos os mobis cujo nome de classe começa com hc, em imagens: marque os que você quer e adicione todos de uma vez.",
+  "{count} furni start with hc": "{count} mobis começam com hc"
 }

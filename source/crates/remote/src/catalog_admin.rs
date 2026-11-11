@@ -2230,6 +2230,7 @@ mod tests {
         assert_eq!((gift.cost_credits, gift.cost_points, gift.amount, gift.club_only, gift.have_offer, gift.extradata.as_str()), (0, 0, 1, true, false, "0"));
         assert_eq!(offer_problem(&gift), None);
         assert_eq!(furni_prefix_param("hc_"), SqlValue::Text("hc\\_%".into()));
+        assert_eq!(furni_prefix_param("hc"), SqlValue::Text("hc%".into()));
         assert!(furni_prefix_sql("hotel").contains("item_name LIKE ?"));
         let made = new_club_gift_page(&pages);
         assert_eq!((made.layout.as_str(), made.parent_id, made.visible, made.enabled), ("club_gift", -1, true, true));

@@ -3846,10 +3846,10 @@
   "Choose HC furni": "HC mobilerini seç",
   "Choose HC furni ...": "HC mobilerini seç ...",
   "Each gift is free, can be chosen straight away and has the VIP mark.": "Her hediye ücretsizdir, hemen seçilebilir ve VIP işareti vardır.",
-  "Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.": "Sınıf adı hc_ ile başlayan tüm mobiler, resim olarak: istediklerini işaretle ve hepsini bir kerede ekle.",
   "Filter by name": "Ada göre süz",
   "Reading the HC furni ...": "HC mobileri okunuyor ...",
   "{count} club gifts added. Publish to put them in the hotel.": "{count} kulüp hediyesi eklendi. Otele koymak için yayınla.",
-  "{count} furni start with hc_": "{count} mobi hc_ ile başlıyor",
-  "{count} gifts added, then: {error}": "{count} hediye eklendi, sonra: {error}"
+  "{count} gifts added, then: {error}": "{count} hediye eklendi, sonra: {error}",
+  "Every furni whose class name starts with hc, as pictures: tick the ones you want and add them at once.": "Sınıf adı hc ile başlayan tüm mobiler, resim olarak: istediklerini işaretle ve hepsini bir kerede ekle.",
+  "{count} furni start with hc": "{count} mobi hc ile başlıyor"
 }

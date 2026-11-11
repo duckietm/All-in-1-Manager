@@ -63,7 +63,7 @@ pub(super) struct Picker {
 }
 
 /// The club furni: their class names start with this.
-const PICKER_PREFIX: &str = "hc_";
+const PICKER_PREFIX: &str = "hc";
 
 /// The waiting times offered in the list, in days.
 fn presets() -> [(i64, &'static str); 6] {
@@ -500,7 +500,7 @@ pub(super) fn show(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: 
             actions.push(Action::SearchGiftFurni);
         }
         ui.add_space(8.0);
-        if ui.add_enabled(ready, widgets::primary_button(t("Choose HC furni ..."))).on_hover_text(t("Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.")).clicked() {
+        if ui.add_enabled(ready, widgets::primary_button(t("Choose HC furni ..."))).on_hover_text(t("Every furni whose class name starts with hc, as pictures: tick the ones you want and add them at once.")).clicked() {
             actions.push(Action::OpenGiftPicker);
         }
     });
@@ -530,7 +530,7 @@ pub(super) fn show(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: 
     }
 }
 
-/// The club furni window: a grid of every `hc_` furni with its icon and name; a click ticks one, and **Add** makes the
+/// The club furni window: a grid of every `hc` furni (hc_chr, hc2_..., hcsohva ...) with its icon and name; a click ticks one, and **Add** makes the
 /// ticked ones gifts. Furni that already is a gift is shown, greyed out.
 fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut FrontImages, taken: &[String], actions: &mut Vec<Action>) {
     let ready = s.session.is_some() && !s.busy;
@@ -555,7 +555,7 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
             };
             ui.horizontal(|ui| {
                 ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut picker.filter).hint_text(t("Filter by name")).vertical_align(egui::Align::Center));
-                widgets::muted(ui, palette, &tf("{count} furni start with hc_", &[("count", &list.len().to_string())]), 12.0);
+                widgets::muted(ui, palette, &tf("{count} furni start with hc", &[("count", &list.len().to_string())]), 12.0);
             });
             let filter = picker.filter.trim().to_lowercase();
             let shown: Vec<&Furni> = list

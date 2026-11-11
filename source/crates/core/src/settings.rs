@@ -60,6 +60,9 @@ pub struct InstallerSettings {
     /// The sections folded in the window (the sidebar's groups, the Tools page's sections). New in the Rust port.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub collapsed: Vec<String>,
+    /// The plugins switched off on the Plugins page (their ids); their pages leave the menus. New in the Rust port.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub disabled_plugins: Vec<String>,
 }
 
 /// A branch to choose from, with the line the lists show behind its name.
@@ -339,6 +342,16 @@ mod tests {
         let layout = settings.layout.clone().unwrap();
         assert_eq!(layout.emulator_repository, "/srv/emu");
         assert_eq!(layout.gamedata, "/var/www/gamedata");
+    }
+
+    #[test]
+    fn disabled_plugins_round_trip_and_default_to_none() {
+        let old: InstallerSettings = serde_json::from_str(r#"{"Servers":[]}"#).unwrap();
+        assert!(old.disabled_plugins.is_empty());
+        let settings = InstallerSettings { disabled_plugins: vec!["gitea".into()], ..Default::default() };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(r#""DisabledPlugins":["gitea"]"#));
+        assert_eq!(serde_json::from_str::<InstallerSettings>(&json).unwrap().disabled_plugins, vec!["gitea"]);
     }
 
     #[test]

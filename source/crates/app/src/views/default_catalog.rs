@@ -1,5 +1,5 @@
-//! The Default catalogue addon: the catalogue that comes with the installer (assets/catalog/Full_Catalog.zip:
-//! Catalog_Export.sql and FurnitureData.json) into the hotel database and gamedata/config.
+//! The Default catalogue addon: the catalogue of the default-catalog pack (Full_Catalog.zip: Catalog_Export.sql and
+//! FurnitureData.json, downloaded on the Plugins page) into the hotel database and gamedata/config.
 
 use std::io::Read;
 use std::sync::Arc;
@@ -20,8 +20,7 @@ use crate::gui::wizard::Wizard;
 use crate::gui::Shared;
 use crate::i18n::{t, tf};
 
-/// The catalogue, packed into the program.
-const CATALOG_ZIP: &[u8] = include_bytes!("../../assets/catalog/Full_Catalog.zip");
+use crate::plugins::packs::CATALOG;
 
 /// The two files of the catalogue ZIP.
 struct Catalog {
@@ -32,7 +31,8 @@ struct Catalog {
 
 /// Opens the packed catalogue and checks it: an export with its date, and FurnitureData.json that is JSON.
 fn open_catalog() -> Result<Catalog, String> {
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(CATALOG_ZIP)).map_err(|e| e.to_string())?;
+    let bytes = CATALOG.read_file().map_err(|e| e.to_string())?;
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?;
     let mut read = |name: &str| -> Result<Vec<u8>, String> {
         let mut file = archive.by_name(name).map_err(|_| format!("{name} is missing in the catalogue."))?;
         let mut bytes = Vec::new();
@@ -67,17 +67,24 @@ fn problem(state: &default_catalog::CatalogState) -> Option<String> {
 /// Read once, from the first line of the SQL only: the page asks for it on every frame, and unpacking the whole
 /// catalogue (22 MB) each time made the window crawl.
 pub fn packed_version() -> String {
-    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    VERSION
-        .get_or_init(|| {
-            let mut head = [0u8; 512];
-            let read = zip::ZipArchive::new(std::io::Cursor::new(CATALOG_ZIP))
-                .ok()
-                .and_then(|mut archive| archive.by_name("Catalog_Export.sql").ok().and_then(|mut file| file.read(&mut head).ok()))
-                .unwrap_or(0);
-            default_catalog::version_of(&String::from_utf8_lossy(&head[..read])).unwrap_or_default()
-        })
-        .clone()
+    // Kept once found; while the pack is missing it is looked for again, so a download shows up at once.
+    static VERSION: Mutex<Option<String>> = Mutex::new(None);
+    let mut version = VERSION.lock();
+    if let Some(known) = version.as_ref() {
+        return known.clone();
+    }
+    let Some(path) = CATALOG.location() else { return String::new() };
+    let mut head = [0u8; 512];
+    let read = std::fs::File::open(path)
+        .ok()
+        .and_then(|file| zip::ZipArchive::new(file).ok())
+        .and_then(|mut archive| archive.by_name("Catalog_Export.sql").ok().and_then(|mut file| file.read(&mut head).ok()))
+        .unwrap_or(0);
+    let found = default_catalog::version_of(&String::from_utf8_lossy(&head[..read])).unwrap_or_default();
+    if !found.is_empty() {
+        *version = Some(found.clone());
+    }
+    found
 }
 
 /// The translations of the catalogue's page texts (Dutch text -> text), per language, maintained with
@@ -296,6 +303,9 @@ impl InstallStep for DefaultCatalogStep {
     }
 
     fn validate(&self) -> Option<String> {
+        if !CATALOG.is_installed() {
+            return Some(t("The default catalogue is not on this computer yet: download it on the Plugins page (Default catalogue → Download).").to_string());
+        }
         let form = self.form.lock();
         if let Some(problem) = default_catalog::hotel_name_problem(&form.hotel_name) {
             return Some(t(problem).to_string());

@@ -21,8 +21,7 @@ use crate::gui::wizard::Wizard;
 use crate::gui::Shared;
 use crate::i18n::{n, t, tf};
 
-/// The client images of Assets/, packed into the binary by build.rs (entries relative to Assets/).
-static CLIENT_ASSETS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ClientAssets.zip"));
+use crate::plugins::packs::CLIENT_ASSETS;
 
 /// "1.2 GB", "15 MB", "300 KB". (ServerStatusView.Bytes)
 fn bytes(bytes: i64) -> String {
@@ -514,32 +513,18 @@ impl InstallStep for UiTextsStep {
 // ---------------------------------------------------------------------------------------------------------------
 // The emulator's images and group badge parts (EmulatorAssetsStep.cs)
 //
-// The remote `emulator_assets` module reads only Assets/ next to the exe. The images packed into the binary and that
+// The remote `emulator_assets` module reads only Assets/ next to the exe. The client images pack (Plugins page) and that
 // folder are merged into a temporary Assets folder, and the module's inspect/install are repeated here for that
 // folder (same scripts, same log lines).
 
-/// Extracts the packed images into `into` (emptied first), then copies `beside_exe` over them: images of your own win.
-fn prepare_assets(packed: &[u8], beside_exe: &Path, into: &Path) -> std::io::Result<()> {
+/// Copies the client images pack into `into` (emptied first), then `beside_exe` over it: images of your own win.
+fn prepare_assets(pack: &Path, beside_exe: &Path, into: &Path) -> std::io::Result<()> {
     if into.exists() {
         std::fs::remove_dir_all(into)?;
     }
     std::fs::create_dir_all(into)?;
-    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(packed)).map_err(std::io::Error::other)?;
-    for i in 0..archive.len() {
-        let mut entry = archive.by_index(i).map_err(std::io::Error::other)?;
-        let Some(relative) = entry.enclosed_name() else { continue };
-        let path = into.join(relative);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&path)?;
-            continue;
-        }
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let mut file = std::fs::File::create(&path)?;
-        std::io::copy(&mut entry, &mut file)?;
-    }
-    if beside_exe.is_dir() {
+    copy_tree(pack, into)?;
+    if beside_exe.is_dir() && beside_exe != pack {
         copy_tree(beside_exe, into)?;
     }
     Ok(())
@@ -564,7 +549,10 @@ async fn local_assets() -> anyhow::Result<PathBuf> {
     let into = std::env::temp_dir().join(format!("all-in-1-manager-{}", std::process::id())).join("Assets");
     let beside = emulator_assets::local_assets();
     let target = into.clone();
-    tokio::task::spawn_blocking(move || prepare_assets(CLIENT_ASSETS, &beside, &target)).await??;
+    let Some(pack) = CLIENT_ASSETS.location() else {
+        anyhow::bail!("{}", t("The client images are not on this computer: download them on the Plugins page (Deploy Assets → Download)."));
+    };
+    tokio::task::spawn_blocking(move || prepare_assets(&pack, &beside, &target)).await??;
     Ok(into)
 }
 
@@ -831,12 +819,11 @@ mod tests {
         let beside = dir.path().join("beside");
         std::fs::create_dir_all(beside.join("extra")).unwrap();
         std::fs::write(beside.join("extra").join("mine.png"), b"x").unwrap();
-        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
-        zip.start_file("images/loading_icon.png", zip::write::SimpleFileOptions::default()).unwrap();
-        std::io::Write::write_all(&mut zip, b"png").unwrap();
-        let packed = zip.finish().unwrap().into_inner();
+        let pack = dir.path().join("pack");
+        std::fs::create_dir_all(pack.join("images")).unwrap();
+        std::fs::write(pack.join("images").join("loading_icon.png"), b"png").unwrap();
         let into = dir.path().join("Assets");
-        prepare_assets(&packed, &beside, &into).unwrap();
+        prepare_assets(&pack, &beside, &into).unwrap();
         assert!(into.join("images").join("loading_icon.png").is_file());
         assert!(into.join("extra").join("mine.png").is_file());
         let folders = emulator_assets::folders_in(&into);
@@ -846,9 +833,9 @@ mod tests {
     }
 
     #[test]
-    fn the_binary_carries_the_client_images() {
-        let archive = zip::ZipArchive::new(std::io::Cursor::new(CLIENT_ASSETS)).unwrap();
-        assert!(archive.file_names().any(|n| n.starts_with("images/")));
+    fn the_client_images_pack_has_the_images() {
+        let pack = CLIENT_ASSETS.location().expect("a debug build finds the pack in the source tree");
+        assert!(pack.join("images").is_dir());
     }
 
 }

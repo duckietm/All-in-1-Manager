@@ -60,7 +60,10 @@ fn numbers(s: &str, min: usize, max: usize) -> Option<Vec<u32>> {
 /// `^[a-z0-9][a-z0-9-]{1,39}$`
 pub fn valid_id(id: &str) -> bool {
     let b = id.as_bytes();
-    (2..=40).contains(&b.len())
+    let reserved = matches!(id, "con" | "prn" | "aux" | "nul")
+        || ((id.starts_with("com") || id.starts_with("lpt")) && id.len() == 4 && matches!(b[3], b'1'..=b'9'));
+    !reserved
+        && (2..=40).contains(&b.len())
         && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }

@@ -120,9 +120,20 @@ fn write_all(pkg: &Package, dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Installs into `root/<id>`. Atomic: written to a `.partial` folder, then renamed; the previous version is moved
-/// aside and put back if the rename fails. The plugin's private `data/` folder survives an upgrade.
+/// Installs into `root/<id>`. Atomic: written to a `.partial` folder (private `data/` moved in, so the new version is
+/// complete before anything is swapped), then renamed; the previous version is moved aside and put back, data
+/// included, if anything fails. A `.old` left by a crash is recovered, not deleted.
 pub fn install(pkg: &Package, root: &Path) -> Result<PathBuf> {
+    install_inner(pkg, root, false)
+}
+
+/// Test hook: behaves like `install` but fails the final rename, after the old version was moved aside.
+#[doc(hidden)]
+pub fn install_failing_after_move_aside(pkg: &Package, root: &Path) -> Result<PathBuf> {
+    install_inner(pkg, root, true)
+}
+
+fn install_inner(pkg: &Package, root: &Path, fail_final_rename: bool) -> Result<PathBuf> {
     let id = &pkg.manifest.id;
     if !valid_id(id) {
         bail!("Invalid plugin id: {id}");
@@ -131,35 +142,58 @@ pub fn install(pkg: &Package, root: &Path) -> Result<PathBuf> {
     let into = root.join(id);
     let partial = root.join(format!(".{id}.partial"));
     let old = root.join(format!(".{id}.old"));
+    // A crash between "move aside" and "put in place" leaves only `.old`: bring it back, data included.
+    if old.exists() && !into.exists() {
+        std::fs::rename(&old, &into).context("Could not recover the previous version")?;
+    }
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::create_dir(&partial).with_context(|| format!("Could not create {}", partial.display()))?;
     if let Err(error) = write_all(pkg, &partial) {
         let _ = std::fs::remove_dir_all(&partial);
         return Err(error);
     }
-    let _ = std::fs::remove_dir_all(&old);
     let had_old = into.exists();
+    let data = into.join("data");
+    let mut data_moved = false;
+    if had_old && data.is_dir() {
+        let step = std::fs::remove_dir_all(partial.join("data")).and_then(|_| std::fs::rename(&data, partial.join("data")));
+        if let Err(error) = step {
+            let _ = std::fs::remove_dir_all(&partial);
+            return Err(error).context("Could not carry the plugin data over");
+        }
+        data_moved = true;
+    }
+    // Undo: put the data back where the live version expects it and drop the half-built one.
+    let give_back = |data_moved: bool| {
+        if data_moved {
+            let _ = std::fs::rename(partial.join("data"), &data);
+        }
+        let _ = std::fs::remove_dir_all(&partial);
+    };
+    let _ = std::fs::remove_dir_all(&old);
     if had_old {
         if let Err(error) = std::fs::rename(&into, &old) {
-            let _ = std::fs::remove_dir_all(&partial);
+            give_back(data_moved);
             return Err(error).with_context(|| format!("Could not move {} aside", into.display()));
         }
     }
-    if let Err(error) = std::fs::rename(&partial, &into) {
-        let _ = std::fs::remove_dir_all(&partial);
+    let put = if fail_final_rename {
+        Err(std::io::Error::other("injected failure"))
+    } else {
+        std::fs::rename(&partial, &into)
+    };
+    if let Err(error) = put {
         if had_old {
-            let _ = std::fs::rename(&old, &into);
+            if std::fs::rename(&old, &into).is_ok() {
+                give_back(data_moved);
+            }
+            // If even the restore failed, `.old` and `.partial` stay on disk and the next install recovers.
+        } else {
+            give_back(data_moved);
         }
         return Err(error).with_context(|| format!("Could not put the plugin in {}", into.display()));
     }
-    if had_old {
-        let kept = old.join("data");
-        if kept.is_dir() {
-            let _ = std::fs::remove_dir_all(into.join("data"));
-            let _ = std::fs::rename(&kept, into.join("data"));
-        }
-        let _ = std::fs::remove_dir_all(&old);
-    }
+    let _ = std::fs::remove_dir_all(&old);
     Ok(into)
 }
 

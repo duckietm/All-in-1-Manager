@@ -3750,12 +3750,5 @@
   "{room} is deleted for good: everyone in it is sent out and the furni goes back to the owner's inventory, as the emulator deletes rooms. This cannot be undone.": "{room} est supprimée définitivement : tout le monde dedans est renvoyé et les mobis retournent dans l'inventaire du propriétaire, comme l'émulateur supprime les salles. Cette action est irréversible.",
   "{room} is locked: only the owner and staff can enter.": "{room} est verrouillée : seuls le propriétaire et le staff peuvent entrer.",
   "{room} opens: everyone can enter again.": "{room} ouvre : tout le monde peut de nouveau entrer.",
-  "{to} get this alert:\n\n{text}": "{to} reçoivent cette alerte :\n\n{text}",
-  "Convert SWF and NITRO to HAB": "Convertir SWF et NITRO en HAB",
-  "Convert everything": "Tout convertir",
-  "Convert to .hab from other folders": "Convertir en .hab depuis d'autres dossiers",
-  "Open compiled": "Ouvrir compiled",
-  "Open import": "Ouvrir import",
-  "Put .swf and .nitro files in {import} (one folder per type: furni, clothes, pets, effects). The .hab files come in {compiled}, with everything the client needs (the JSON and the sprite sheet). A .nitro and a .swf of the same name: the .nitro is used.": "Mets les fichiers .swf et .nitro dans {import} (un dossier par type : furni, clothes, pets, effects). Les fichiers .hab arrivent dans {compiled}, avec tout ce dont le client a besoin (le JSON et la feuille de sprites). Un .nitro et un .swf du même nom : le .nitro est utilisé.",
-  "Replace .hab files that are already there": "Remplacer les fichiers .hab déjà présents"
+  "{to} get this alert:\n\n{text}": "{to} reçoivent cette alerte :\n\n{text}"
 }

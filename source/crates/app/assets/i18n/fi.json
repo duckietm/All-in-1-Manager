@@ -3750,12 +3750,5 @@
   "{room} is deleted for good: everyone in it is sent out and the furni goes back to the owner's inventory, as the emulator deletes rooms. This cannot be undone.": "{room} poistetaan lopullisesti: kaikki siellä olevat lähetetään ulos ja kalusteet palaavat omistajan inventaarioon, kuten emulaattori poistaa huoneet. Tätä ei voi perua.",
   "{room} is locked: only the owner and staff can enter.": "{room} on lukittu: vain omistaja ja henkilökunta pääsevät sisään.",
   "{room} opens: everyone can enter again.": "{room} aukeaa: kaikki pääsevät taas sisään.",
-  "{to} get this alert:\n\n{text}": "{to} saavat tämän ilmoituksen:\n\n{text}",
-  "Convert SWF and NITRO to HAB": "Muunna SWF ja NITRO HAB-muotoon",
-  "Convert everything": "Muunna kaikki",
-  "Convert to .hab from other folders": "Muunna .hab-muotoon muista kansioista",
-  "Open compiled": "Avaa compiled",
-  "Open import": "Avaa import",
-  "Put .swf and .nitro files in {import} (one folder per type: furni, clothes, pets, effects). The .hab files come in {compiled}, with everything the client needs (the JSON and the sprite sheet). A .nitro and a .swf of the same name: the .nitro is used.": "Laita .swf- ja .nitro-tiedostot kansioon {import} (yksi kansio tyyppiä kohden: furni, clothes, pets, effects). .hab-tiedostot tulevat kansioon {compiled}, ja niissä on kaikki mitä asiakasohjelma tarvitsee (JSON ja sprite-arkki). Jos .nitro ja .swf ovat samannimisiä, käytetään .nitroa.",
-  "Replace .hab files that are already there": "Korvaa jo olemassa olevat .hab-tiedostot"
+  "{to} get this alert:\n\n{text}": "{to} saavat tämän ilmoituksen:\n\n{text}"
 }

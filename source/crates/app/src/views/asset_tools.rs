@@ -1,6 +1,5 @@
 //! Asset tools: decompile SWF files (debugging), decompile and compile HAB files (editing), and SWF / NITRO to HAB
-//! per asset type, all in Habbo_Assets/Assets_tools on this computer. (All-in-1 Converter: Hotel Tools) And the
-//! converter's drop folder: .swf and .nitro in Habbo_Assets/Convert/import/<type>, their .hab in Convert/compiled/<type>.
+//! per asset type, all in Habbo_Assets/Assets_tools on this computer. (All-in-1 Converter: Hotel Tools)
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -26,8 +25,6 @@ enum Tool {
     DecompileHab,
     CompileHab,
     Convert(AssetKind, Source),
-    /// Convert/import to Convert/compiled: one type, or None for every type.
-    Import(Option<AssetKind>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,11 +87,6 @@ impl AssetToolsView {
         aio_core::InstallerSettings::load().assets_folder().join(TOOLS_FOLDER)
     }
 
-    /// The drop folder: Convert/import and Convert/compiled.
-    fn convert_root() -> PathBuf {
-        aio_core::InstallerSettings::load().assets_folder().join(workshop::CONVERT)
-    }
-
     fn title(tool: Tool) -> String {
         match tool {
             Tool::DecompileSwf => t("Decompile SWF files").into(),
@@ -102,8 +94,6 @@ impl AssetToolsView {
             Tool::CompileHab => t("Compile HAB files").into(),
             Tool::Convert(kind, Source::Swf) => tf("SWF {type} to HAB", &[("type", t(kind_title(kind)))]),
             Tool::Convert(kind, Source::Nitro) => tf("NITRO {type} to HAB", &[("type", t(kind_title(kind)))]),
-            Tool::Import(None) => t("Convert everything").into(),
-            Tool::Import(Some(kind)) => t(kind_title(kind)).into(),
         }
     }
 
@@ -121,8 +111,6 @@ impl AssetToolsView {
         }
         let root = Self::root();
         let _ = workshop::create_layout(&root);
-        let convert_root = Self::convert_root();
-        let _ = workshop::create_convert_layout(&convert_root);
         let assets = aio_core::InstallerSettings::load().assets_folder();
         let retro = self.swf_source.clone().and_then(|name| {
             aio_core::InstallerSettings::load().retro_profiles().into_iter().find(|p| p.name == name)
@@ -187,15 +175,6 @@ impl AssetToolsView {
                         add(workshop::convert_folder(&input, &output, kind, extension, overwrite, &stopped, &log));
                         n("converted to .hab")
                     }
-                    Tool::Import(only) => {
-                        for (kind, folder) in workshop::TYPES.into_iter().filter(|(k, _)| only.is_none_or(|o| o == *k)) {
-                            let input = convert_root.join(workshop::IMPORT).join(folder);
-                            let output = convert_root.join(workshop::COMPILED).join(folder);
-                            log(&format!("  {} → {}", input.display(), output.display()));
-                            add(workshop::convert_import_folder(&input, &output, kind, overwrite, &stopped, &log));
-                        }
-                        n("converted to .hab")
-                    }
                 };
                 (what.to_string(), total)
             })
@@ -227,52 +206,10 @@ impl View for AssetToolsView {
         let root = Self::root();
         if self.made_in.as_ref() != Some(&root) {
             let _ = workshop::create_layout(&root);
-            let _ = workshop::create_convert_layout(&Self::convert_root());
             self.made_in = Some(root.clone());
         }
         let margin = egui::Margin::symmetric(24, 20);
         let mut start = None;
-
-        let convert_root = Self::convert_root();
-        widgets::card(ui, palette, margin, |ui| {
-            ui.spacing_mut().item_spacing.y = 8.0;
-            ui.label(widgets::title_text(t("Convert SWF and NITRO to HAB"), 15.0));
-            widgets::muted(
-                ui,
-                palette,
-                &tf(
-                    "Put .swf and .nitro files in {import} (one folder per type: furni, clothes, pets, effects). The .hab files come in {compiled}, with everything the client needs (the JSON and the sprite sheet). A .nitro and a .swf of the same name: the .nitro is used.",
-                    &[
-                        ("import", &convert_root.join(workshop::IMPORT).join("<type>").display().to_string()),
-                        ("compiled", &convert_root.join(workshop::COMPILED).join("<type>").display().to_string()),
-                    ],
-                ),
-                12.5,
-            );
-            ui.add_enabled_ui(!running, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    if ui.add(widgets::primary_button(&Self::title(Tool::Import(None)))).clicked() {
-                        start = Some(Tool::Import(None));
-                    }
-                    for (kind, _) in workshop::TYPES {
-                        let tool = Tool::Import(Some(kind));
-                        if ui.add(widgets::secondary_button(&Self::title(tool)).min_size(egui::vec2(110.0, 34.0))).clicked() {
-                            start = Some(tool);
-                        }
-                    }
-                });
-                ui.checkbox(&mut self.overwrite, t("Replace .hab files that are already there"));
-            });
-            ui.horizontal(|ui| {
-                for (half, label) in [(workshop::IMPORT, t("Open import")), (workshop::COMPILED, t("Open compiled"))] {
-                    if ui.add(widgets::secondary_button(label)).clicked() {
-                        let _ = workshop::create_convert_layout(&convert_root);
-                        open_folder(&convert_root.join(half));
-                    }
-                }
-            });
-        });
-        ui.add_space(18.0);
 
         widgets::card(ui, palette, margin, |ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
@@ -320,7 +257,7 @@ impl View for AssetToolsView {
 
         widgets::card(ui, palette, margin, |ui| {
             ui.spacing_mut().item_spacing.y = 8.0;
-            ui.label(widgets::title_text(t("Convert to .hab from other folders"), 15.0));
+            ui.label(widgets::title_text(t("Convert to .hab"), 15.0));
             widgets::muted(ui, palette, t("The .hab files go to converted\\<type>. The .swf can come from Original_SWF_Files or from a Nitro retro profile (the .swf it kept)."), 12.5);
             let profiles = aio_core::InstallerSettings::load().retro_profiles();
             ui.add_enabled_ui(!running, |ui| {
@@ -334,7 +271,7 @@ impl View for AssetToolsView {
                 if self.swf_source.as_ref().is_some_and(|name| !profiles.iter().any(|p| &p.name == name)) {
                     self.swf_source = None;
                 }
-                ui.checkbox(&mut self.overwrite, t("Replace .hab files that are already there"));
+                ui.checkbox(&mut self.overwrite, t("Replace .hab files that are already in converted"));
             });
             egui::Grid::new("asset_tools_convert").num_columns(3).spacing(egui::vec2(12.0, 8.0)).show(ui, |ui| {
                 for (kind, _) in workshop::TYPES {

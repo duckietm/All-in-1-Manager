@@ -2,6 +2,7 @@
 rem All-in-1 Manager: build it on Windows.
 rem   build             a menu (also when you double-click this file)
 rem   build release     the program to hand out  -> public\release\all-in-1-manager.exe (with Assets\)
+rem                     Release and dev also leave a shortcut to the program next to this file.
 rem   build dev         a debug build            -> public\dev\all-in-1-manager.exe
 rem   build run         a debug build, and start it
 rem   build test        all tests
@@ -56,8 +57,10 @@ if errorlevel 8 (
   echo Copying source\Assets to public\release\Assets failed.
   goto :failed
 )
+call :shortcut "public\release" "All-in-1 Manager"
 echo.
 echo Ready: %CD%\public\release\%EXE%
+echo        and the shortcut "All-in-1 Manager" in %CD%
 goto :done
 
 :dev
@@ -67,6 +70,7 @@ if errorlevel 1 goto :failed
 if not exist "public\dev" mkdir "public\dev"
 copy /y "target\debug\%EXE%" "public\dev\%EXE%" >nul
 if errorlevel 1 goto :inuse
+call :shortcut "public\dev" "All-in-1 Manager (dev)"
 echo.
 echo Ready: %CD%\public\dev\%EXE%
 if /i "%CHOICE%"=="run" start "" /d "%CD%\public\dev" "%CD%\public\dev\%EXE%"
@@ -77,6 +81,13 @@ echo ^> cargo test --workspace
 cargo test --workspace
 if errorlevel 1 goto :failed
 goto :done
+
+:shortcut
+rem A shortcut next to this file that starts the program in its own folder, so it keeps its own configuration\.
+rem %1 = the folder of the program, %2 = the name of the shortcut. A failure only warns: the build itself worked.
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; $d=(Resolve-Path '%~1').Path; $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path (Get-Location) '%~2.lnk')); $s.TargetPath=(Join-Path $d '%EXE%'); $s.WorkingDirectory=$d; $s.IconLocation=(Join-Path $d '%EXE%')+',0'; $s.Description='All-in-1 Manager'; $s.Save()" >nul 2>nul
+if errorlevel 1 echo Note: the shortcut "%~2" could not be made; the program is in %~1.
+exit /b 0
 
 :inuse
 echo.

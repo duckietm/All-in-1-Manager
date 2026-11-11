@@ -1921,6 +1921,11 @@ python source/tools/build.py dev --run         # and start it
 cargo test --workspace                         # all tests, including the parity tests
 ```
 
+Release and dev also leave a **shortcut** to the program next to the build script: on Windows `All-in-1 Manager.lnk`
+(and `All-in-1 Manager (dev).lnk`); on Linux and macOS a link `./all-in-1-manager` (`./all-in-1-manager-dev`), and
+on Linux a launcher `All-in-1 Manager.desktop` to double-click in the file manager. The shortcut starts the program
+in its own folder in `public/`, so it uses that folder's configuration. Git ignores them.
+
 `public/dev` and `public/release` are where you run the program while developing and the copy you hand out; each
 keeps its own `configuration/` (keys, passwords, history) next to the program, and git ignores both. Plain
 `cargo build` / `cargo run -p aio-app` work too and leave the program in `target/`.

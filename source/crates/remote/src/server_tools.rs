@@ -206,7 +206,7 @@ ss -Hltn 'sport = :80' | grep -q . || { docker logs --tail 20 traefik 2>&1 | sed
 echo "  $(docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print "Traefik " $2}') is running""#;
 
 pub async fn restart_traefik(server: &dyn Server, log: Log<'_>) -> Result<()> {
-    let body = fill(RESTART_TRAEFIK, &[("TraefikDirectory", web_access::TRAEFIK_DIRECTORY)]);
+    let body = fill(RESTART_TRAEFIK, &[("TraefikDirectory", web_access::traefik_directory())]);
     script::run(server, &script::with_prelude(&body), log, "Restarting Traefik failed", None).await
 }
 
@@ -216,7 +216,7 @@ pub async fn update_traefik(server: &dyn Server, log: Log<'_>) -> Result<()> {
     update_image(
         server,
         "Traefik",
-        web_access::TRAEFIK_DIRECTORY,
+        web_access::traefik_directory(),
         "traefik",
         "docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print $2}'",
         "ss -Hltn 'sport = :80' | grep -q .",
@@ -415,7 +415,7 @@ impl DebugLogSource {
 /// The emulator, NGINX, Traefik, the firewall, Fail2Ban and CrowdSec, in the order of the Debug page's buttons.
 pub fn debug_log_sources() -> Vec<DebugLogSource> {
     let logs = emulator::log_directory();
-    let nginx = hotel_site::LOG_DIRECTORY;
+    let nginx = hotel_site::log_directory();
     let ufw = UFW_LOG;
     let fail2ban = FAIL2BAN_LOG;
     let source = |name: &str, description: String, follows: String, command: String| DebugLogSource {

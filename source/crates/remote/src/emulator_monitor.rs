@@ -294,7 +294,7 @@ pub fn parse_wired_log(output: &str) -> WiredLogSummary {
         }
     }
     // Most total time first (a stable sort, like LINQ's OrderByDescending).
-    rows.sort_by(|a, b| b.3.cmp(&a.3));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.3));
     let rooms = rows
         .into_iter()
         .map(|(id, count, max, sum, last, shards)| SlowWiredRoom {

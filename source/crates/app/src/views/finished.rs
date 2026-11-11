@@ -452,7 +452,7 @@ pub fn epicnext(site: Option<WebAccessSettings>, atom_tables: bool, steps: Steps
                 ui,
                 &tf(
                     "More settings (mail, Valkey, Turnstile, OAuth ...) are in {directory}/.env; afterwards: systemctl restart {service}.",
-                    &[("directory", epicnext::DIRECTORY), ("service", epicnext::SERVICE)],
+                    &[("directory", epicnext::directory()), ("service", epicnext::SERVICE)],
                 ),
                 13.0,
             );
@@ -524,13 +524,13 @@ pub fn gitea(settings: Option<GiteaSettings>, result: Option<GiteaResult>, login
                 ui,
                 &tf(
                     "Update Gitea: run this addon again. Its repositories, accounts and settings are in {directory}/data: include it in your backups.",
-                    &[("directory", gitea::DIRECTORY)],
+                    &[("directory", gitea::directory())],
                 ),
                 13.0,
             );
             colored(
                 ui,
-                &tf("Settings beyond these: {directory}/data/gitea/conf/app.ini (docs.gitea.com).", &[("directory", gitea::DIRECTORY)]),
+                &tf("Settings beyond these: {directory}/data/gitea/conf/app.ini (docs.gitea.com).", &[("directory", gitea::directory())]),
                 12.0,
                 palette.subtle,
             );
@@ -547,9 +547,9 @@ pub fn remove_gitea(domain: Option<String>, data_deleted: bool, steps: Steps) ->
         } else {
             let mut text = domain.as_deref().map(|d| format!("{} ", tf("{domain} no longer reaches Gitea.", &[("domain", d)]))).unwrap_or_default();
             text.push_str(&if data_deleted {
-                tf("{directory} is deleted.", &[("directory", gitea::DIRECTORY)])
+                tf("{directory} is deleted.", &[("directory", gitea::directory())])
             } else {
-                tf("Its repositories, accounts and settings stay in {directory}.", &[("directory", gitea::DIRECTORY)])
+                tf("Its repositories, accounts and settings stay in {directory}.", &[("directory", gitea::directory())])
             });
             text
         };
@@ -806,7 +806,7 @@ pub fn crowdsec(site: Option<WebAccessSettings>, name: Option<String>, enrolled_
                 ui,
                 &tf(
                     "If CrowdSec stops, the hotel stays reachable (nobody is blocked until it runs again). Traefik's access log: {log} (a week kept).",
-                    &[("log", crowdsec::ACCESS_LOG)],
+                    &[("log", crowdsec::access_log())],
                 ),
                 12.0,
                 palette.subtle,
@@ -824,7 +824,7 @@ pub fn crowdsec(site: Option<WebAccessSettings>, name: Option<String>, enrolled_
                 ui,
                 &tf(
                     "Update CrowdSec: run this addon again (its data and enrollment stay). Your own compose additions go in {directory}/compose.override.yaml.",
-                    &[("directory", crowdsec::DIRECTORY)],
+                    &[("directory", crowdsec::directory())],
                 ),
                 12.0,
                 palette.subtle,
@@ -844,9 +844,9 @@ pub fn remove_crowdsec(data_deleted: bool, steps: Steps) -> Box<dyn FinishPage> 
                 "{} {}",
                 t("Traefik no longer checks visitors with CrowdSec."),
                 if data_deleted {
-                    tf("{directory} is deleted.", &[("directory", crowdsec::DIRECTORY)])
+                    tf("{directory} is deleted.", &[("directory", crowdsec::directory())])
                 } else {
-                    tf("Its data and enrollment stay in {directory}.", &[("directory", crowdsec::DIRECTORY)])
+                    tf("Its data and enrollment stay in {directory}.", &[("directory", crowdsec::directory())])
                 }
             )
         };
@@ -941,27 +941,9 @@ pub fn deploy(site: Option<WebAccessSettings>, summaries: Vec<Option<String>>, s
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn clean_steps() {
-        assert!(clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::AlreadyInstalled)]));
-        assert!(!clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::Skipped)]));
-        assert!(clean(&[]));
-    }
-
-    #[test]
-    fn asset_table_complete() {
-        assert_eq!(ASSETS.len(), 19);
-        assert!(ASSETS.iter().all(|(folder, contents)| !folder.is_empty() && !contents.is_empty()));
-    }
-}
-
 /// Import Assets' finish page: where the furniture went, how to move it, and the way back.
 pub fn import_assets(imported: super::import_assets::Imported, steps: Steps, shared: crate::gui::Shared) -> Box<dyn FinishPage> {
-    let upload = std::sync::Arc::new(std::sync::Mutex::new(super::import_assets::FileUpload::default()));
+    let upload = std::sync::Arc::new(parking_lot::Mutex::new(super::import_assets::FileUpload::default()));
     Page::boxed(move |ui, palette| {
         let ok = clean(&steps);
         let heading = match (&imported.result, ok) {
@@ -998,7 +980,7 @@ pub fn import_assets(imported: super::import_assets::Imported, steps: Steps, sha
                     ),
                     13.0,
                 );
-                let state = upload.lock().unwrap();
+                let state = upload.lock();
                 let (running, sent, result) = (state.running, state.sent, state.result.clone());
                 drop(state);
                 match (&result, running) {
@@ -1119,4 +1101,22 @@ pub fn item_fix(rows: usize, changes: usize, safety_backup: Option<String>, step
             });
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_steps() {
+        assert!(clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::AlreadyInstalled)]));
+        assert!(!clean(&[("a".into(), StepSummary::Done), ("b".into(), StepSummary::Skipped)]));
+        assert!(clean(&[]));
+    }
+
+    #[test]
+    fn asset_table_complete() {
+        assert_eq!(ASSETS.len(), 19);
+        assert!(ASSETS.iter().all(|(folder, contents)| !folder.is_empty() && !contents.is_empty()));
+    }
 }

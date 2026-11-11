@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use aio_remote::asset_sync::{self, AssetPlan};
@@ -11,6 +11,7 @@ use aio_remote::emulator_assets::{self, EmulatorAssetState};
 use aio_remote::{fail, octane, ui_texts, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -106,11 +107,11 @@ fn upload_text(plan: &AssetPlan) -> String {
 
 impl AssetSyncStep {
     fn summary(&self) -> Option<String> {
-        self.summary.lock().unwrap().clone()
+        self.summary.lock().clone()
     }
 
     fn show_plans(&self, sources: &[asset_sync::Source], plans: &[AssetPlan]) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         form.source = tf("From {source} to {gamedata} on the server:", &[("source", &source_list(sources)), ("gamedata", &octane::gamedata())]);
         form.rows = plans
             .iter()
@@ -173,7 +174,7 @@ impl InstallStep for AssetSyncStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(2.0);
         if !form.source.is_empty() {
@@ -205,7 +206,7 @@ impl InstallStep for AssetSyncStep {
         let sources = sources();
         if sources.is_empty() {
             {
-                let mut form = self.form.lock().unwrap();
+                let mut form = self.form.lock();
                 form.source.clear();
                 form.rows.clear();
             }
@@ -216,7 +217,7 @@ impl InstallStep for AssetSyncStep {
             );
             return Ok(false);
         }
-        let overwrite = self.form.lock().unwrap().overwrite_config;
+        let overwrite = self.form.lock().overwrite_config;
         let plans = asset_sync::plan_sources(server.as_ref(), &sources, overwrite).await?;
         self.show_plans(&sources, &plans);
         let count: usize = plans.iter().map(|p| p.upload_count()).sum();
@@ -247,7 +248,7 @@ impl InstallStep for AssetSyncStep {
         }
         log(&format!("> Comparing {} with {} ...", source_list(&sources), octane::gamedata()));
         let (overwrite, selected) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             (form.overwrite_config, form.selected.clone())
         };
         let plans = asset_sync::plan_sources(server, &sources, overwrite).await?;
@@ -272,7 +273,7 @@ impl InstallStep for AssetSyncStep {
             ui.done(t("nothing to send"));
             ui.done(t("not needed"));
             let summary = t("Nothing to upload: the server already has every file.").to_string();
-            *self.summary.lock().unwrap() = Some(summary.clone());
+            *self.summary.lock() = Some(summary.clone());
             return Ok(ui.succeeded(t("The server is up to date"), &summary));
         }
 
@@ -305,7 +306,7 @@ impl InstallStep for AssetSyncStep {
             let progress = |sent: u64| {
                 let so_far = before + sent as i64;
                 let percent = so_far * 100 / total.max(1);
-                let mut last = last.lock().unwrap();
+                let mut last = last.lock();
                 if percent == last.0 || (last.1.elapsed().as_secs_f64() < 3.0 && percent < 100) {
                     return;
                 }
@@ -329,7 +330,7 @@ impl InstallStep for AssetSyncStep {
             tf("{count} files ({size}) uploaded: ", &[("count", &files.to_string()), ("size", &bytes(total))]),
             per_folder.join(", ")
         );
-        *self.summary.lock().unwrap() = Some(summary.clone());
+        *self.summary.lock() = Some(summary.clone());
         Ok(ui.succeeded(
             t("The assets are on the server"),
             &format!(
@@ -382,7 +383,7 @@ pub struct UiTextsStep {
 
 impl UiTextsStep {
     fn summary(&self) -> Option<String> {
-        self.summary.lock().unwrap().clone()
+        self.summary.lock().clone()
     }
 }
 
@@ -430,7 +431,7 @@ impl InstallStep for UiTextsStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(2.0);
         super::atom_cms::field_label(ui, palette, t("Language"));
@@ -446,14 +447,14 @@ impl InstallStep for UiTextsStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let form = self.form.lock().unwrap();
+        let form = self.form.lock();
         form.selected.filter(|&i| i < form.codes.len()).is_none().then(|| t("Choose a language.").to_string())
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = ui_texts::inspect(server.as_ref()).await?;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             let select = state.current.as_deref().filter(|c| *c != "custom");
             form.set_languages(state.languages.clone(), select);
             form.note = if state.from_clone {
@@ -492,7 +493,7 @@ impl InstallStep for UiTextsStep {
 
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let code = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             form.selected.and_then(|i| form.codes.get(i)).cloned()
         };
         let Some(code) = code else { fail!("{}", t("Choose a language.")) };
@@ -505,7 +506,7 @@ impl InstallStep for UiTextsStep {
         if let Some(backup) = backup {
             summary.push_str(&format!(" {}", tf("The previous file is {backup}.", &[("backup", &backup)])));
         }
-        *self.summary.lock().unwrap() = Some(summary.clone());
+        *self.summary.lock() = Some(summary.clone());
         Ok(ui.succeeded(t("The UI texts are installed"), &format!("{summary} {}", t("Players see them after reloading the hotel."))))
     }
 }
@@ -622,11 +623,11 @@ pub struct EmulatorAssetsStep {
 
 impl EmulatorAssetsStep {
     fn summary(&self) -> Option<String> {
-        self.summary.lock().unwrap().clone()
+        self.summary.lock().clone()
     }
 
     fn show_states(&self, states: &[EmulatorAssetState]) {
-        *self.rows.lock().unwrap() = asset_rows(states);
+        *self.rows.lock() = asset_rows(states);
     }
 }
 
@@ -681,7 +682,7 @@ impl InstallStep for EmulatorAssetsStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let rows = self.rows.lock().unwrap().clone();
+        let rows = self.rows.lock().clone();
         if rows.is_empty() {
             return;
         }
@@ -771,7 +772,7 @@ impl InstallStep for EmulatorAssetsStep {
         } else {
             tf("{count} of the emulator's images and badge parts copied into gamedata.", &[("count", &added.to_string())])
         };
-        *self.summary.lock().unwrap() = Some(summary.clone());
+        *self.summary.lock() = Some(summary.clone());
         Ok(ui.succeeded(
             if added == 0 { t("Nothing was missing") } else { t("The emulator's assets are in gamedata") },
             &format!("{summary} {}", t("Reload the hotel (Ctrl+F5) to start the client with them.")),

@@ -1,9 +1,10 @@
 //! Questions the steps ask while they run (ChoiceDialog, PasswordDialog, NameDialog, ...). A step's task asks and
 //! awaits the answer; the window shows the newest question as a modal over everything and sends the answer back.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 use super::icons::{self, Icon};
@@ -67,11 +68,11 @@ impl Dialogs {
     }
 
     pub fn is_open(&self) -> bool {
-        !self.queue.lock().unwrap().is_empty()
+        !self.queue.lock().is_empty()
     }
 
     fn push(&self, dialog: Dialog) {
-        self.queue.lock().unwrap().push(dialog);
+        self.queue.lock().push(dialog);
         self.ctx.request_repaint();
     }
 
@@ -127,7 +128,7 @@ impl Dialogs {
 
     /// Draws the newest question; the others wait behind it.
     pub fn show(&self, ctx: &egui::Context) {
-        let mut queue = self.queue.lock().unwrap();
+        let mut queue = self.queue.lock();
         let depth = queue.len();
         let Some(dialog) = queue.last_mut() else { return };
         let palette = Palette::current(ctx);

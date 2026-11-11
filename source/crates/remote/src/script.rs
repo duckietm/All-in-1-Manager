@@ -16,11 +16,28 @@ pub fn with_prelude(body: &str) -> String {
 
 /// Fills `{{name}}` placeholders in a script template. The templates are the C# installer's `$$"""` scripts with
 /// their interpolations named, so the text stays the same and bash's own braces need no escaping.
+///
+/// The template is walked once, so a value is never searched for placeholders itself, exactly like a C#
+/// interpolation. Replacing the names one after another instead would let a value that happens to contain
+/// `{{name}}` be filled in by a later name, which makes the result depend on the order the values are listed in.
+/// A placeholder with no value keeps its own text.
 pub fn fill(template: &str, values: &[(&str, &str)]) -> String {
-    let mut text = template.to_string();
-    for (name, value) in values {
-        text = text.replace(&format!("{{{{{name}}}}}"), value);
+    let mut text = String::with_capacity(template.len());
+    let mut rest = template;
+    'outer: while let Some(start) = rest.find("{{") {
+        for (name, value) in values {
+            let placeholder = format!("{{{{{name}}}}}");
+            if rest[start..].starts_with(&placeholder) {
+                text.push_str(&rest[..start]);
+                text.push_str(value);
+                rest = &rest[start + placeholder.len()..];
+                continue 'outer;
+            }
+        }
+        text.push_str(&rest[..start + 2]);
+        rest = &rest[start + 2..];
     }
+    text.push_str(rest);
     text
 }
 
@@ -163,6 +180,17 @@ mod tests {
         assert_eq!(v.get("d"), Some("2=3"));
         assert_eq!(v.int("a"), 1);
         assert_eq!(v.int("c"), 0);
+    }
+
+    #[test]
+    fn a_filled_in_value_is_not_filled_in_again() {
+        // The value of {{a}} looks like a placeholder; it has to survive as it is, whatever order the values are in.
+        assert_eq!(fill("{{a}}{{b}}", &[("a", "{{b}}"), ("b", "1")]), "{{b}}1");
+        assert_eq!(fill("{{a}}{{b}}", &[("b", "1"), ("a", "{{b}}")]), "{{b}}1");
+        // A name with no value keeps its own text.
+        assert_eq!(fill("a {{x}} {{y}} {{z}}", &[("x", "{{y}}"), ("y", "2")]), "a {{y}} 2 {{z}}");
+        // Braces that are not a placeholder are left alone.
+        assert_eq!(fill("${x} {{ }} {}", &[("x", "1")]), "${x} {{ }} {}");
     }
 
     #[test]

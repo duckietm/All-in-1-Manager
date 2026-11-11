@@ -3,15 +3,17 @@
 //! without a server. The update question at startup (update_dialog.rs) is drawn from here too, before the login.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::config_dir;
 use aio_core::keys::AuthorizedKey;
+use aio_core::saved_logins::SavedLogins;
 use aio_core::InstallerSettings;
 use aio_remote::server::ConnectStage;
 use aio_remote::ssh::{self, KeyReadError};
 use aio_remote::{Server, ServerError, ServerLogin};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::update_dialog::UpdatePrompt;
 use crate::gui::dialogs::Dialogs;
@@ -35,12 +37,12 @@ pub struct LoginOpener(Arc<Mutex<OpenerState>>);
 
 impl LoginOpener {
     pub fn open(&self) {
-        self.0.lock().unwrap().open = true;
+        self.0.lock().open = true;
     }
 
     /// Shows "A new version is available"; the login opens when it is answered with Later.
     pub(crate) fn offer_update(&self, prompt: UpdatePrompt) {
-        self.0.lock().unwrap().update = Some(prompt);
+        self.0.lock().update = Some(prompt);
     }
 }
 
@@ -73,6 +75,13 @@ struct Form {
     password: String,
     key_password: String,
     use_key: bool,
+    /// Remember the password on this computer (password logins only).
+    remember_password: bool,
+    /// What this computer remembers: the last server, its user and maybe its password.
+    saved: SavedLogins,
+    /// The server, user and password (None for a key login, or when it is not to be remembered) of the login under
+    /// way, remembered once it succeeds.
+    pending: Option<(String, String, Option<String>, bool)>,
     browsed: Vec<PathBuf>,
     picked: Option<PathBuf>,
     keys: Vec<PathBuf>,
@@ -114,7 +123,7 @@ impl LoginDialog {
 
     /// True once after a task asked for the login.
     pub fn take_open_request(&mut self) -> bool {
-        std::mem::take(&mut self.request.lock().unwrap().open)
+        std::mem::take(&mut self.request.lock().open)
     }
 
     pub fn is_open(&self) -> bool {
@@ -126,7 +135,7 @@ impl LoginDialog {
             return;
         }
         self.open = true;
-        *self.inbox.lock().unwrap() = Inbox::default();
+        *self.inbox.lock() = Inbox::default();
         let mut form = Form::new(self.last_login.as_ref());
         if let Some(notice) = notice {
             form.banner = Some((ResultKind::Warning, notice, t("Log in again to go on, or choose Not now.").into()));
@@ -147,24 +156,24 @@ impl LoginDialog {
     pub fn show(&mut self, ctx: &egui::Context, shared: &Shared) {
         // The update question comes first: when the installer replaces itself there is nothing to log in to.
         let update_closed = {
-            let mut state = self.request.lock().unwrap();
+            let mut state = self.request.lock();
             match state.update.as_mut() {
                 Some(prompt) => super::update_dialog::show(ctx, shared, prompt),
                 None => false,
             }
         };
         if update_closed {
-            let mut state = self.request.lock().unwrap();
+            let mut state = self.request.lock();
             state.update = None;
             state.open = true;
         }
-        if self.request.lock().unwrap().update.is_some() || !self.open {
+        if self.request.lock().update.is_some() || !self.open {
             return;
         }
         let palette = Palette::current(ctx);
         self.take_inbox(shared);
         let Some(form) = self.form.as_mut() else { return };
-        let picking = self.inbox.lock().unwrap().picking;
+        let picking = self.inbox.lock().picking;
         let mut action = None;
         egui::Modal::new(egui::Id::new("login-dialog"))
             .frame(widgets::card_frame(&palette).inner_margin(egui::Margin::symmetric(28, 24)))
@@ -201,7 +210,7 @@ impl LoginDialog {
     /// What the tasks finished since the last frame.
     fn take_inbox(&mut self, shared: &Shared) {
         let Some(form) = self.form.as_mut() else { return };
-        let mut inbox = self.inbox.lock().unwrap();
+        let mut inbox = self.inbox.lock();
         for line in inbox.log.drain(..) {
             form.log.push(line);
         }
@@ -232,6 +241,15 @@ impl LoginDialog {
         drop(inbox);
         match outcome {
             Some(Ok(server)) => {
+                if let Some((host, user, password, key)) = form.pending.take() {
+                    if !shared.dry_run || std::env::var_os("AIO_SCREENSHOT").is_none() {
+                        if key {
+                            SavedLogins::remember_user(&host, &user);
+                        } else {
+                            SavedLogins::remember(&host, &user, password.as_deref());
+                        }
+                    }
+                }
                 let login = server.login();
                 self.last_login = Some(Prefill {
                     host: host_text(&login.host, login.port),
@@ -264,6 +282,7 @@ impl LoginDialog {
         form.error.clear();
         let (host, port) = ServerLogin::parse_host(&form.host);
         let account = form.user.trim().to_string();
+        form.pending = Some((form.host.trim().to_string(), account.clone(), (!form.use_key && form.remember_password).then(|| form.password.clone()), form.use_key));
         let login = if form.use_key {
             let key = form.keys[form.selected_key.unwrap_or(0)].to_string_lossy().into_owned();
             ServerLogin::key(&host, port, &account, vec![key], &form.key_password)
@@ -277,7 +296,7 @@ impl LoginDialog {
         form.failed = false;
         form.log.clear();
         {
-            let mut inbox = self.inbox.lock().unwrap();
+            let mut inbox = self.inbox.lock();
             inbox.stage = 0;
             inbox.log.clear();
             inbox.outcome = None;
@@ -289,13 +308,13 @@ impl LoginDialog {
             let log_inbox = inbox.clone();
             let log_ctx = ctx.clone();
             let log = move |line: &str| {
-                log_inbox.lock().unwrap().log.push(line.to_string());
+                log_inbox.lock().log.push(line.to_string());
                 log_ctx.request_repaint();
             };
             let stage_inbox = inbox.clone();
             let stage_ctx = ctx.clone();
             let stage = move |reached: ConnectStage| {
-                let mut inbox = stage_inbox.lock().unwrap();
+                let mut inbox = stage_inbox.lock();
                 inbox.stage = inbox.stage.max(stage_index(reached));
                 stage_ctx.request_repaint();
             };
@@ -315,7 +334,7 @@ impl LoginDialog {
                     Err(error) => Err(error_text(&error)),
                 }
             };
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             if result.is_ok() {
                 inbox.stage = 3;
             }
@@ -324,11 +343,11 @@ impl LoginDialog {
     }
 
     fn browse(&mut self, shared: &Shared) {
-        self.inbox.lock().unwrap().picking = true;
+        self.inbox.lock().picking = true;
         let inbox = self.inbox.clone();
         shared.spawn(async move {
             let file = rfd::AsyncFileDialog::new().set_title(t("Select your private SSH key")).pick_file().await;
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             inbox.picking = false;
             if let Some(file) = file {
                 inbox.browsed = Some(file.path().to_path_buf());
@@ -344,7 +363,7 @@ impl LoginDialog {
             form.focus_pending = true;
             return;
         }
-        self.inbox.lock().unwrap().picking = true;
+        self.inbox.lock().picking = true;
         let inbox = self.inbox.clone();
         let dialogs = shared.dialogs.clone();
         shared.spawn(async move {
@@ -359,7 +378,7 @@ impl LoginDialog {
                 Ok(import_private_key(&dialogs, &text, &name, &server).await?.map(|(path, key)| (path, key.key_type)))
             }
             .await;
-            let mut inbox = inbox.lock().unwrap();
+            let mut inbox = inbox.lock();
             inbox.picking = false;
             match result {
                 Ok(Some(imported)) => inbox.imported = Some(Ok(imported)),
@@ -387,15 +406,30 @@ impl Form {
                 servers.insert(0, earlier.to_string());
             }
         }
-        let host = prefill.map(|p| p.host.clone()).or_else(|| settings.default_server.clone()).unwrap_or_default();
-        let use_key = prefill.map(|p| p.use_key).unwrap_or_else(|| settings.default_key_path().is_some() || !config_dir::all_private_keys().is_empty());
+        let saved = SavedLogins::load();
+        let host = prefill
+            .map(|p| p.host.clone())
+            .or_else(|| saved.last_server.clone().filter(|s| !s.is_empty()))
+            .or_else(|| settings.default_server.clone())
+            .unwrap_or_default();
+        if !host.is_empty() && !servers.iter().any(|s| s.eq_ignore_ascii_case(&host)) {
+            servers.insert(0, host.clone());
+        }
+        let user = prefill.map(|p| p.user.clone()).or_else(|| saved.user(&host)).unwrap_or_else(|| "root".into());
+        let remembered = saved.password(&host, &user);
+        let use_key = prefill
+            .map(|p| p.use_key)
+            .unwrap_or_else(|| remembered.is_none() && (settings.default_key_path().is_some() || !config_dir::all_private_keys().is_empty()));
         let mut form = Self {
             servers,
             host,
-            user: prefill.map(|p| p.user.clone()).unwrap_or_else(|| "root".into()),
-            password: String::new(),
+            user,
+            password: remembered.clone().unwrap_or_default(),
             key_password: String::new(),
             use_key,
+            remember_password: remembered.is_some(),
+            saved,
+            pending: None,
             browsed: Vec::new(),
             picked: prefill.and_then(|p| p.key_path.clone()),
             keys: Vec::new(),
@@ -421,6 +455,25 @@ impl Form {
         let picked = self.picked.clone().filter(|p| p.is_file());
         self.keys = key_paths(&self.browsed, &config_dir::all_private_keys(), preset.as_deref(), picked.as_deref());
         self.selected_key = choose_key(&self.keys, self.picked.as_deref(), preset.as_deref(), &server);
+    }
+
+    /// Another server was chosen or typed: its remembered user, and its password when one is remembered.
+    fn server_changed(&mut self) {
+        if let Some(user) = self.saved.user(&self.host) {
+            self.user = user;
+        }
+        match self.saved.password(&self.host, &self.user) {
+            Some(password) => {
+                self.password = password;
+                self.remember_password = true;
+            }
+            None => {
+                if self.remember_password {
+                    self.password.clear();
+                }
+                self.remember_password = false;
+            }
+        }
     }
 
     fn validate(&self) -> Option<String> {
@@ -470,8 +523,11 @@ impl Form {
                 if response.changed() {
                     self.error.clear();
                 }
-                if response.lost_focus() && self.picked.is_none() {
-                    self.refresh_keys();
+                if response.lost_focus() {
+                    self.server_changed();
+                    if self.picked.is_none() {
+                        self.refresh_keys();
+                    }
                 }
                 let mut chosen = None;
                 egui::ComboBox::from_id_salt("login-servers").selected_text("").width(28.0).show_ui(ui, |ui| {
@@ -487,6 +543,7 @@ impl Form {
                 if let Some(server) = chosen {
                     self.host = server;
                     self.error.clear();
+                    self.server_changed();
                     // Choosing another server from the list also picks its key.
                     if self.picked.is_none() && self.use_key {
                         self.refresh_keys();
@@ -518,6 +575,9 @@ impl Form {
                 if ui.add(field(palette, &mut self.password, t("Password of the account")).password(true).id(password_id).desired_width(f32::INFINITY)).changed() {
                     self.error.clear();
                 }
+                ui.checkbox(&mut self.remember_password, RichText::new(t("Remember the password on this computer")).size(12.5)).on_hover_text(t(
+                    "Kept encrypted in the configuration folder of this computer, readable by your account only, and filled in the next time you log in to this server as this user. Untick it and log in to forget it. SSH key logins never store a password.",
+                ));
             } else {
                 label(ui, palette, t("Private key"));
                 ui.horizontal(|ui| {
@@ -821,7 +881,7 @@ mod tests {
         let a = PathBuf::from("/c/keys/10.0.0.1/id_ed25519");
         let b = PathBuf::from("/c/keys/hotel.example.com/id_ed25519");
         let browsed = PathBuf::from("/home/me/.ssh/id_rsa");
-        let paths = key_paths(&[browsed.clone()], &[a.clone(), b.clone(), browsed.clone()], None, None);
+        let paths = key_paths(std::slice::from_ref(&browsed), &[a.clone(), b.clone(), browsed.clone()], None, None);
         assert_eq!(paths, vec![browsed.clone(), a.clone(), b.clone()]);
         assert_eq!(choose_key(&paths, None, None, "hotel.example.com"), Some(2));
         assert_eq!(choose_key(&paths, None, None, "example"), Some(2));
@@ -830,7 +890,7 @@ mod tests {
         assert_eq!(choose_key(&paths, None, None, ""), Some(0));
         assert_eq!(choose_key(&[], None, None, "x"), None);
         let preset = PathBuf::from("/c/keys/x/default");
-        assert_eq!(key_paths(&[], &[a.clone()], Some(&preset), None), vec![preset, a]);
+        assert_eq!(key_paths(&[], std::slice::from_ref(&a), Some(&preset), None), vec![preset, a]);
     }
 
     #[test]

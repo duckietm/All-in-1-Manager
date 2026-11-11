@@ -81,7 +81,7 @@ if command -v docker >/dev/null 2>&1; then
   echo "crowdsec=$(docker inspect -f '{{.State.Running}}' crowdsec 2>/dev/null)"
 fi
 echo "fail2ban=$(unit fail2ban)"
-if [ -e /etc/nginx/sites-enabled/hotel ]; then
+if [ -e {{HotelSiteFile}} ]; then
   echo "hotel=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:{{HotelPort}}/ 2>/dev/null)"
 fi
 df -P / 2>/dev/null | awk 'NR==2 {gsub("%", "", $5); print "disk_used=" $5; print "disk_free=" $4 * 1024}'
@@ -115,7 +115,8 @@ true"#;
 pub fn script() -> String {
     SCRIPT
         .replace("{{HotelPort}}", web_access::NGINX_PORT)
-        .replace("{{TraefikDirectory}}", web_access::TRAEFIK_DIRECTORY)
+        .replace("{{TraefikDirectory}}", web_access::traefik_directory())
+        .replace("{{HotelSiteFile}}", crate::hotel_site::file())
         .replace("{{Backups}}", &server_tools::backup_directory())
 }
 

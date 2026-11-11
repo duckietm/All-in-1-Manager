@@ -14,6 +14,7 @@ use russh::{ChannelMsg, Disconnect};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 
+use crate::known_hosts;
 use crate::server::{
     first_line, root_command_line, shell_quote, CommandResult, ConnectStage, Elevation, Log, OnLine, OsInfo, PortForward, Progress,
     Result, Server, ServerError, ServerLogin, ShellChannel, ShellInput,
@@ -250,7 +251,16 @@ pub async fn connect(login: ServerLogin, log: Log<'_>, stage: &(dyn Fn(ConnectSt
         }
     }
 
+    // The key this server showed last time, so a different server on the same address is noticed.
+    let remembered = known_hosts::trusted(&login.host, login.port);
     let (mut handle, connected, host_key) = open_session(&login.host, login.port, None).await?;
+    if let Some(expected) = &remembered {
+        if *expected != host_key {
+            // Nothing has been sent yet: the login details go out only after this point.
+            let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+            return Err(ServerError(known_hosts::changed_message(&login.host, login.port, expected, &host_key)).into());
+        }
+    }
     let authenticated = if login.uses_key() {
         let mut ok = false;
         for key in private_keys {
@@ -275,7 +285,13 @@ pub async fn connect(login: ServerLogin, log: Log<'_>, stage: &(dyn Fn(ConnectSt
         })
         .into());
     }
-    log(&format!("  Connected. Host key {host_key}"));
+    match &remembered {
+        Some(_) => log(&format!("  Connected. Host key {host_key} (the same as last time)")),
+        None => {
+            known_hosts::remember(&login.host, login.port, &host_key);
+            log(&format!("  Connected. Host key {host_key} (remembered for the next login)"));
+        }
+    }
 
     let login_user = exec(&handle, "id -un", None).await?.output.trim().to_string();
     let uid = exec(&handle, "id -u", None).await?.output.trim().to_string();

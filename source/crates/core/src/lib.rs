@@ -7,6 +7,7 @@ pub mod credentials;
 pub mod history;
 pub mod keys;
 pub mod layout;
+pub mod saved_logins;
 pub mod settings;
 
 pub use credentials::DatabaseCredentials;

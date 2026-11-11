@@ -3,13 +3,14 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::offer_fix::{self, CatalogRow, OfferPlan};
 use super::item_fix::{furnidata_for, Source};
 use aio_remote::{fail, furni_import, server_tools, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -208,7 +209,7 @@ impl InstallStep for OfferFixStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         let Some(_) = form.plan.clone() else { return };
         ui.add_space(8.0);
@@ -303,7 +304,7 @@ impl InstallStep for OfferFixStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let form = self.form.lock().unwrap();
+        let form = self.form.lock();
         if form.reloading {
             return Some(t("Still reading the database: wait a moment.").into());
         }
@@ -315,10 +316,10 @@ impl InstallStep for OfferFixStep {
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
-        self.form.lock().unwrap().plan = None;
+        self.form.lock().plan = None;
         let (_, databases) = super::item_fix::choose_database(server.as_ref(), &ui).await?;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.databases = databases;
             form.server = Some(server.clone());
             form.runtime = Some(tokio::runtime::Handle::current());
@@ -329,7 +330,7 @@ impl InstallStep for OfferFixStep {
         let catalog = Arc::new(catalog);
         // The chosen FurnitureData.json; when it is not there, the first of the others that is.
         let server_furnidata = download_furnidata(server.as_ref()).await.map(Arc::new).map_err(|e| format!("{}: {e}", offer_fix::furniture_data_path()));
-        let chosen = self.form.lock().unwrap().choice;
+        let chosen = self.form.lock().choice;
         let (picked, local, reasons) = tokio::task::spawn_blocking({
             let server_furnidata = server_furnidata.clone();
             move || {
@@ -361,7 +362,7 @@ impl InstallStep for OfferFixStep {
         let plan = tokio::task::spawn_blocking(move || offer_fix::plan_new(&furnidata, &for_plan)).await?;
         let (updates, generated, nothing) = (plan.updates.len(), plan.generated.len(), plan.updates.is_empty() && !plan.furnidata_changes());
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             form.database = database.clone();
             form.plan = Some(Arc::new(plan));
             form.source = Some(source);
@@ -388,7 +389,7 @@ impl InstallStep for OfferFixStep {
         let log = ui.logger();
         let server = server.as_ref();
         let (plan, source, restart, backup, choice) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             let (Some(plan), Some(source)) = (form.plan.clone(), form.source.clone()) else { fail!("Nothing to fix.") };
             (plan, source, form.restart, form.backup, form.choice)
         };
@@ -441,7 +442,7 @@ impl InstallStep for OfferFixStep {
         } else {
             ui.done(t("unchanged"));
         }
-        *self.output.lock().unwrap() = output.clone();
+        *self.output.lock() = output.clone();
 
         if restart {
             let stopped = server_tools::stop_emulator(server, &log).await?;
@@ -478,7 +479,7 @@ fn reload(locked: &mut Form, form: Arc<Mutex<Form>>, database: String, ctx: egui
             anyhow::Ok((plan, catalog))
         }
         .await;
-        let mut f = form.lock().unwrap();
+        let mut f = form.lock();
         f.reloading = false;
         match result {
             Ok((plan, catalog)) => {
@@ -504,7 +505,7 @@ pub fn wizard(shared: &Shared) -> Wizard {
         vec![step as Arc<dyn InstallStep>],
         false,
         Arc::new(move |info| {
-            let output = finish_step.output.lock().unwrap().clone();
+            let output = finish_step.output.lock().clone();
             super::finished::offer_fix(output.updated, output.generated, output.safety_backup, output.furnidata, info.steps)
         }),
         t("Offer IDs fixed"),

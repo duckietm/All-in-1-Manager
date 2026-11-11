@@ -3,7 +3,7 @@ resolver = "2"
 members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/app"]
 
 [workspace.package]
-version = "2.0.19"
+version = "2.0.20"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -24,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 regex = "1"
 chrono = "0.4"
+parking_lot = "0.12"
 rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"

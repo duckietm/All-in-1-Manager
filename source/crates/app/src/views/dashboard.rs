@@ -1,12 +1,13 @@
 //! The dashboard (InstallerWindow.ShowDashboard): the hotel banner, Log in, Install New Server, the components card
 //! with the versions on the server and the updates on GitHub, and the addon and tool tiles.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::layout::AtomCmsPresence;
 use aio_core::ServerLayout;
 use aio_remote::server_status::{self, RepositoryUpdate, RepositoryVersion};
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 
 use super::addons;
 use super::tools::{Component, ToolsView};
@@ -50,14 +51,14 @@ impl Dashboard {
     }
 
     pub fn session_changed(&mut self, _shared: &Shared) {
-        *self.versions.lock().unwrap() = Versions::default();
+        *self.versions.lock() = Versions::default();
     }
 
     /// Loads the installed versions (no network) once per login and after every update check.
     pub fn reload_versions(&self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         {
-            let mut versions = self.versions.lock().unwrap();
+            let mut versions = self.versions.lock();
             if versions.loading {
                 return;
             }
@@ -67,7 +68,7 @@ impl Dashboard {
         let (versions, status) = (self.versions.clone(), shared.clone());
         shared.spawn(async move {
             let result = server_status::versions(server.as_ref()).await;
-            let mut v = versions.lock().unwrap();
+            let mut v = versions.lock();
             v.loading = false;
             match result {
                 Ok(list) => v.list = Some(list),
@@ -83,7 +84,7 @@ impl Dashboard {
         let mut click = None;
         let session = shared.session();
         if let Some(server) = &session {
-            let stale = self.versions.lock().unwrap().for_session != Some(id(server));
+            let stale = self.versions.lock().for_session != Some(id(server));
             if stale {
                 self.reload_versions(shared);
             }
@@ -158,7 +159,7 @@ impl Dashboard {
     // on each other: one row, updated together (the renderer first). Traefik, Gitea and CrowdSec follow from their images.
     fn components_card(&self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared, tools: &ToolsView) {
         let session = shared.session();
-        let versions = self.versions.lock().unwrap().list.clone();
+        let versions = self.versions.lock().list.clone();
         let updates = session.as_ref().and_then(|_| tools.last_updates());
         let images = session.as_ref().and_then(|_| tools.last_images()).unwrap_or_default();
         let rows: [(String, String, String, Icon, &str, String, Option<String>, Component); 3] = [

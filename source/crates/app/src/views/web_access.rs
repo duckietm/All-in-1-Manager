@@ -1,11 +1,12 @@
 //! Docker + Traefik in front of NGINX (port 85) and Polaris (/ws and /api on port 2096). (WebAccessStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use aio_remote::web_access::{self, WebAccessSettings, NGINX_PORT, POLARIS_PORT, TRAEFIK_DIRECTORY};
+use aio_remote::web_access::{self, WebAccessSettings, NGINX_PORT, POLARIS_PORT};
 use aio_remote::{emulator, fail, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::dialogs::Choice;
 use crate::gui::icons::Icon;
@@ -110,7 +111,7 @@ fn preview(s: &WebAccessSettings) -> String {
 
 impl WebAccessStep {
     fn settings(&self) -> WebAccessSettings {
-        let o = self.options.lock().unwrap();
+        let o = self.options.lock();
         settings_from(&o.address, o.https, o.cloudflare)
     }
 }
@@ -151,7 +152,7 @@ impl InstallStep for WebAccessStep {
             description: t("How visitors reach the hotel: Traefik answers on ports 80 and 443 and passes everything on.").into(),
             bullets: vec![
                 t("Installs Docker Engine from the official Docker repository (docs.docker.com/engine/install); its signing key is checked.").into(),
-                t("Runs Traefik v3 in Docker (/opt/traefik). With https it gets and renews a Let's Encrypt certificate.").into(),
+                tf("Runs Traefik v3 in Docker ({directory}). With https it gets and renews a Let's Encrypt certificate.", &[("directory", web_access::traefik_directory())]),
                 tf("NGINX now only listens on localhost:{port}: Traefik sends the site there.", &[("port", NGINX_PORT)]),
                 tf(
                     "/ws (the game websocket) and /api go straight to Polaris on localhost:{port}; the address is added to the emulator's whitelist.",
@@ -176,7 +177,7 @@ impl InstallStep for WebAccessStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut guard = self.options.lock().unwrap();
+        let mut guard = self.options.lock();
         let o = &mut *guard;
         ui.add_space(8.0);
         ui.spacing_mut().item_spacing.y = 14.0;
@@ -198,7 +199,7 @@ impl InstallStep for WebAccessStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let mut o = self.options.lock().unwrap();
+        let mut o = self.options.lock();
         let s = settings_from(&o.address, o.https, o.cloudflare);
         if let Some(problem) = settings_problem(&o.address, &s) {
             return Some(problem);
@@ -212,7 +213,7 @@ impl InstallStep for WebAccessStep {
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = web_access::inspect(server.as_ref()).await?;
         if let Some(configured) = &state.configured {
-            let mut o = self.options.lock().unwrap();
+            let mut o = self.options.lock();
             if o.address.trim().is_empty() {
                 o.address = configured.address.clone();
                 o.https = configured.https;
@@ -230,7 +231,7 @@ impl InstallStep for WebAccessStep {
                     "{} {}",
                     tf(
                         "Docker {docker}, Traefik in {traefik}, NGINX on localhost:{port}.",
-                        &[("docker", &docker), ("traefik", TRAEFIK_DIRECTORY), ("port", NGINX_PORT)]
+                        &[("docker", &docker), ("traefik", web_access::traefik_directory()), ("port", NGINX_PORT)]
                     ),
                     t("You can skip this step, or set it up again (for example with another address).")
                 ),
@@ -368,7 +369,7 @@ impl InstallStep for WebAccessStep {
         let renew = if settings.https { format!(" {}", t("The certificate renews automatically.")) } else { String::new() };
         Ok(ui.succeeded(
             &tf("The hotel answers on {url}", &[("url", &url)]),
-            &format!("{routes}{renew} {}", tf("Settings: {directory}.", &[("directory", TRAEFIK_DIRECTORY)])),
+            &format!("{routes}{renew} {}", tf("Settings: {directory}.", &[("directory", web_access::traefik_directory())])),
         ))
     }
 }

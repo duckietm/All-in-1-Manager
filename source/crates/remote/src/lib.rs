@@ -44,6 +44,7 @@ pub mod habbo_assets;
 pub mod item_fix;
 pub mod harden;
 pub mod hotel_site;
+pub mod bundle_admin;
 pub mod club_admin;
 pub mod housekeeping;
 pub mod local_ports;

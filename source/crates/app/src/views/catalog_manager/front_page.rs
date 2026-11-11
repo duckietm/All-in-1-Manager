@@ -137,7 +137,7 @@ impl FrontImages {
 
     /// An image under c_images: from this computer, else what was fetched from the server. The second value is true
     /// when it still has to be fetched (it is not on this computer).
-    fn image(&mut self, _ctx: &egui::Context, path: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
+    pub(super) fn image(&mut self, _ctx: &egui::Context, path: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
         let Some(path) = clean_path(path) else { return (None, false) };
         let local = format!("local:{path}");
         match self.loader.state(&local) {
@@ -177,7 +177,7 @@ impl FrontImages {
     }
 
     /// The image files of this computer's c_images/catalogue (two levels deep) and web_promo folders.
-    fn local_files(&mut self) -> Vec<String> {
+    pub(super) fn local_files(&mut self) -> Vec<String> {
         if self.local.is_none() {
             let mut files = Vec::new();
             for root in &self.roots {

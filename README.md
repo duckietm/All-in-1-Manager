@@ -1357,18 +1357,37 @@ page has the rest:
   names and a filter: click to tick (or **Tick all shown**) and **Add N gifts** adds them all at once, in that order.
   Furni that already is a gift is greyed out.
   Every change is in the History tab. Publish afterwards; to try it, give a player Habbo Club on the Players page.
-- **Limited** (the third tab) lists every limited series: its offer and page, and how many are sold of how many,
+- **Bundles** (the third tab): bundles (several furni for one price; room bundles too) on pages with the
+  `single_bundle` layout, without SQL. On the left the bundle pages (hidden ones greyed out) and **Make the bundle
+  page** (a name and under which page; it starts hidden). On the right the chosen bundle **as the game shows it**
+  (Octane's single bundle layout: the header picture, the description, the big picture with the price, the special
+  text over a grid of what is in it with the counts, and the bottom text), and its settings:
+  - **What is in it**: furni (**Add furni ...**: by name, class name or id) and **catalogue offers** the bundle
+    follows (**Add an offer ...**: the `@1234` entries of Polaris' bundle references), each with how many (×),
+    ↑ ↓ and ✕. Under it **The buyer gets ...**, worked out as the emulator does (the same furni adds up, a lone furni
+    counts the offer's amount, offers naming offers up to 5 deep, at most 1000 of one furni), and which offers the
+    emulator would leave out (missing, or naming itself).
+  - **Price**: credits, points and their type, HC only, and the offer's name.
+  - **Pictures and texts**: the big picture and the header picture (`c_images/catalogue/<name>.gif`; **Choose ...**
+    shows the pictures of this computer and the server), and the description, special text, bottom text and header
+    text (simple HTML; the rest is taken out on Save).
+
+  **Save** writes the page, its texts and the bundle's offer (made on the first save), all in the History tab;
+  publish afterwards. The `@` entries need an emulator with bundle references (Polaris-Emulator, November 2026); the
+  Catalogue explorer and the health check accept them too, and the health check reports an `@` entry whose offer does
+  not exist.
+- **Limited** (the fourth tab) lists every limited series: its offer and page, and how many are sold of how many,
   with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
   the catalogue); a series never gets smaller, as its numbers already exist. **No longer limited** ends a series of
   which nothing is sold; **Remove with its sales** ends one that sold, after asking, and deletes its numbers and the
   record of who has which one for good (the furni players have keeps its number).
-- **Vouchers** (the fourth tab): the codes players type in the catalogue, with what each gives (credits, points of a
+- **Vouchers** (the fifth tab): the codes players type in the catalogue, with what each gives (credits, points of a
   type, an offer), how often it was used of how many uses (0: without end) and how often one player may use it (-1:
   without end), and a search. **New voucher**, **Save voucher**, **Delete voucher** (with the record of its uses, after
   asking); a code is 1 to 10 letters, digits, `-` or `_` and is never used twice, as the emulator matches it exactly.
   **Make codes** adds up to 500 vouchers with random codes (an optional prefix, then at least 4 easy-to-read letters and
   digits) that each give what the form shows. A voucher's **Used by** lists who used it and when.
-- **Checks** (the fifth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
+- **Checks** (the sixth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
   of them) and **offers that sell the same furni** (the same furni ids in any order, with the same extra data; for `wallpaper_single`, `floor_single` and
   `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Tick
   copies (or **Tick all but the first of each**) and **Delete ticked** removes
@@ -1379,14 +1398,14 @@ page has the rest:
   their song, limited series smaller than what is sold, pages under a missing page, loops in the tree, layouts the
   emulator does not know (it skips those pages), sibling pages with the same order number, wrong `includes`, and
   visible pages under a hidden one (players never reach them). Fix them in the explorers (right-click, Edit).
-- **History** (the sixth tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
+- **History** (the seventh tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
   explorers, Checks, Limited, imports), newest first: the same history Octane shows (`catalog_manager_history`).
   **Undo ...** puts what one operation changed back, in one go, when nothing changed those pages and offers since
   (otherwise it says which one did); the undo is recorded too. The Manager writes its changes there as the emulator
   does, raises `catalog_manager_state.revision` so Octane sees the catalogue changed, and takes the ids of new pages
   and offers from `catalog_id_sequences`, so Octane never makes a page or offer at an id that is already used. An
   emulator older than Catalog Studio has none of these tables: then nothing is recorded.
-- **Backups** (the seventh tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
+- **Backups** (the eighth tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
   file in the format of Octane's Catalog Studio, so a file exported there can be imported here and the other way
   round. **Import a file ...** never runs the file as SQL: only `INSERT`, `UPDATE` and `DELETE` of `catalog_pages` and
   `catalog_items` with plain values are read (anything else is refused), and you first see what would be new,

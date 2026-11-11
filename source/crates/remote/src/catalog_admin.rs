@@ -343,17 +343,15 @@ pub fn page_problem(page: &Page, pages: &[Page]) -> Option<String> {
     None
 }
 
-/// The furni ids of an offer's `item_ids` ("1;2;3" or "1:2" for a bundle with amounts), or None when it is not that.
+/// The furni ids an offer's `item_ids` names directly ("1;2;3", "1:2" for a bundle with amounts), or None when it is not
+/// an item list. Entries naming another offer (`@1234`, `@1234:2`, Polaris' bundle references) are valid but bring no
+/// furni id here: [`crate::bundle_admin`] expands them.
 pub fn item_ids(value: &str) -> Option<Vec<i64>> {
-    let mut ids = Vec::new();
-    for part in value.split(';').map(str::trim).filter(|p| !p.is_empty()) {
-        let id = part.split(':').next().unwrap_or("").trim().parse::<i64>().ok().filter(|id| *id > 0)?;
-        if let Some(amount) = part.split(':').nth(1) {
-            amount.trim().parse::<i64>().ok().filter(|a| *a > 0)?;
-        }
-        ids.push(id);
+    let entries = crate::bundle_admin::parse(value)?;
+    if entries.is_empty() {
+        return None;
     }
-    (!ids.is_empty()).then_some(ids)
+    Some(crate::bundle_admin::furni_ids(value))
 }
 
 /// Why the offer cannot be saved as it is, or None. Selling fewer than already sold of a limited series is refused,
@@ -2386,6 +2384,9 @@ mod tests {
         assert_eq!(item_ids("abc"), None);
         assert_eq!(item_ids("0"), None);
         assert_eq!(item_ids("5:0"), None);
+        assert_eq!(item_ids("@1234;@1240:2;4501"), Some(vec![4501]));
+        assert_eq!(item_ids("@1234"), Some(vec![]));
+        assert_eq!(item_ids("@x"), None);
     }
 
     #[test]

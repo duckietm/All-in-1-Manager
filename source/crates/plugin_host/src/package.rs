@@ -124,16 +124,28 @@ fn write_all(pkg: &Package, dir: &Path) -> Result<()> {
 /// complete before anything is swapped), then renamed; the previous version is moved aside and put back, data
 /// included, if anything fails. A `.old` left by a crash is recovered, not deleted.
 pub fn install(pkg: &Package, root: &Path) -> Result<PathBuf> {
-    install_inner(pkg, root, false)
+    install_inner(pkg, root, Inject::default())
+}
+
+#[derive(Default, Clone, Copy)]
+struct Inject {
+    fail_final_rename: bool,
+    fail_data_restore: bool,
 }
 
 /// Test hook: behaves like `install` but fails the final rename, after the old version was moved aside.
 #[cfg(feature = "test-hooks")]
 pub fn install_failing_after_move_aside(pkg: &Package, root: &Path) -> Result<PathBuf> {
-    install_inner(pkg, root, true)
+    install_inner(pkg, root, Inject { fail_final_rename: true, fail_data_restore: false })
 }
 
-fn install_inner(pkg: &Package, root: &Path, fail_final_rename: bool) -> Result<PathBuf> {
+/// Test hook: like the above, and moving the data back to the restored version fails too.
+#[cfg(feature = "test-hooks")]
+pub fn install_failing_with_data_restore_failure(pkg: &Package, root: &Path) -> Result<PathBuf> {
+    install_inner(pkg, root, Inject { fail_final_rename: true, fail_data_restore: true })
+}
+
+fn install_inner(pkg: &Package, root: &Path, inject: Inject) -> Result<PathBuf> {
     let id = &pkg.manifest.id;
     if !valid_id(id) {
         bail!("Invalid plugin id: {id}");
@@ -171,21 +183,42 @@ fn install_inner(pkg: &Package, root: &Path, fail_final_rename: bool) -> Result<
         }
         data_moved = true;
     }
-    // Undo: put the data back where the live version expects it and drop the half-built one.
-    let give_back = |data_moved: bool| {
+    // Undo: put the data back where the live version expects it, then drop the half-built version. If the data
+    // cannot be moved back, `.partial` is KEPT (it holds the only copy; the next install recovers it).
+    let give_back = |data_moved: bool| -> Result<()> {
         if data_moved {
-            let _ = std::fs::rename(partial.join("data"), &data);
+            let back = if inject.fail_data_restore {
+                Err(std::io::Error::other("injected failure"))
+            } else {
+                std::fs::rename(partial.join("data"), &data)
+            };
+            if let Err(error) = back {
+                return Err(error).with_context(|| {
+                    format!("Could not move the plugin data back; it is kept in {}", partial.join("data").display())
+                });
+            }
         }
+        // Data is back in place (or was never moved): `.partial` only holds the half-built new version.
         let _ = std::fs::remove_dir_all(&partial);
+        Ok(())
     };
+    // A leftover `.old` next to a live folder: keep its data if the live folder has none, then drop it.
+    if old.join("data").is_dir() && !data.exists() && !data_moved {
+        if let Err(error) = std::fs::rename(old.join("data"), &data) {
+            let _ = give_back(false);
+            return Err(error).context("Could not recover the plugin data from the previous version");
+        }
+    }
+    // Safe: the data is in the live folder, in `.partial` (moved above) or `.old` holds nothing we need.
     let _ = std::fs::remove_dir_all(&old);
     if had_old {
         if let Err(error) = std::fs::rename(&into, &old) {
-            give_back(data_moved);
-            return Err(error).with_context(|| format!("Could not move {} aside", into.display()));
+            let kept = give_back(data_moved);
+            let error = anyhow::Error::from(error).context(format!("Could not move {} aside", into.display()));
+            return Err(kept.err().map_or(error, |k| k.context("also failed to restore data")));
         }
     }
-    let put = if fail_final_rename {
+    let put = if inject.fail_final_rename {
         Err(std::io::Error::other("injected failure"))
     } else {
         std::fs::rename(&partial, &into)
@@ -193,11 +226,11 @@ fn install_inner(pkg: &Package, root: &Path, fail_final_rename: bool) -> Result<
     if let Err(error) = put {
         if had_old {
             if std::fs::rename(&old, &into).is_ok() {
-                give_back(data_moved);
+                give_back(data_moved)?;
             }
             // If even the restore failed, `.old` and `.partial` stay on disk and the next install recovers.
         } else {
-            give_back(data_moved);
+            give_back(data_moved)?;
         }
         return Err(error).with_context(|| format!("Could not put the plugin in {}", into.display()));
     }

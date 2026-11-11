@@ -129,24 +129,27 @@ async fn ui_texts_scripts() {
 
 #[tokio::test]
 async fn asset_sync_scripts() {
+    // What Assets → Habbo assets downloads: <assets>/gamedata, laid out like the server's gamedata.
     let dir = tempfile::tempdir().unwrap();
-    let downloader: PathBuf = dir.path().join("downloader");
-    let hab = downloader.join("Habbo_Default").join("hof_furni").join("hab");
-    let json = downloader.join("Habbo_Default").join("files").join("json");
-    write_file(&hab.join("chair.hab"), 10);
-    write_file(&hab.join("table.hab"), 600);
-    write_file(&hab.join("notes.txt"), 3);
-    write_file(&json.join("FurnitureData.json"), 50);
-    write_file(&json.join("Other.json"), 5);
-    const LISTING: &str = "== 0\nchair.hab\t10\t1704164645.0\n== 12\nFurnitureData.json\t5\t1.0\n";
+    let assets: PathBuf = dir.path().join("assets");
+    let furniture = assets.join("gamedata").join("furniture");
+    let config = assets.join("gamedata").join("config");
+    write_file(&furniture.join("chair.hab"), 10);
+    write_file(&furniture.join("table.hab"), 600);
+    write_file(&config.join("FurnitureData.json"), 50);
+    write_file(&config.join("Other.json"), 5);
+    // The mappings are config (0) and furniture (1), in name order.
+    const LISTING: &str = "== 1\nchair.hab\t10\t1704164645.0\n== 0\nFurnitureData.json\t5\t1.0\n";
     for overwrite in [false, true] {
         let name = if overwrite { "asset_sync_plan_upload_overwrite" } else { "asset_sync_plan_upload" };
-        let folder = downloader.clone();
+        let folder = assets.clone();
         check(name, by_kind(LISTING, "", "OK 2", 0), |s| async move {
-            let plans = asset_sync::plan(&*s, &folder, overwrite).await?;
-            assert_eq!(plans[0].local_count, 2);
-            assert_eq!(plans[0].new.len(), 1);
-            assert_eq!(plans[12].changed.len(), usize::from(overwrite));
+            let sources = asset_sync::sources(&folder);
+            let plans = asset_sync::plan_sources(&*s, &sources, overwrite).await?;
+            assert_eq!(plans[1].local_count, 2);
+            assert_eq!(plans[1].new.len(), 1, "table.hab");
+            assert_eq!(plans[0].new.len(), 1, "Other.json: config only adds what is missing");
+            assert_eq!(plans[0].changed.len(), usize::from(overwrite), "FurnitureData.json only when overwriting");
             for plan in plans.iter().filter(|p| p.upload_count() > 0) {
                 asset_sync::upload(&*s, plan, &|_| {}).await?;
             }
@@ -154,9 +157,9 @@ async fn asset_sync_scripts() {
         })
         .await;
     }
-    let folder = downloader.clone();
+    let folder = assets.clone();
     check("asset_sync_upload_failed", None, |s| async move {
-        let plans = asset_sync::plan(&*s, &folder, false).await?;
+        let plans = asset_sync::plan_sources(&*s, &asset_sync::sources(&folder), false).await?;
         asset_sync::upload(&*s, &plans[0], &|_| {}).await
     })
     .await;

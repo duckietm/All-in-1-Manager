@@ -32,18 +32,41 @@ pub fn title_text(text: &str, size: f32) -> RichText {
     if theme::hotel() { text } else { text.strong() }
 }
 
+/// An on/off switch (a pill with a knob); true when it was flipped.
+pub fn switch(ui: &mut egui::Ui, palette: &Palette, on: &mut bool) -> egui::Response {
+    let size = egui::vec2(40.0, 22.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let t = ui.ctx().animate_bool_responsive(response.id, *on);
+    let enabled = ui.is_enabled();
+    let track = if *on { Fixed::go() } else { palette.card_border_strong };
+    let track = if enabled { track } else { theme::with_alpha(track, 110) };
+    let painter = ui.painter();
+    painter.rect_filled(rect, rect.height() / 2.0, track);
+    let x = egui::lerp(rect.left() + 11.0..=rect.right() - 11.0, t);
+    painter.circle_filled(egui::pos2(x, rect.center().y), 8.0, Color32::WHITE);
+    if response.hovered() && enabled {
+        painter.rect_stroke(rect, rect.height() / 2.0, egui::Stroke::new(1.5_f32, palette.outline), egui::StrokeKind::Outside);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
 /// The main action: the hotel's green "go" button with a darker edge, or the brand colour.
 pub fn primary_button(text: &str) -> egui::Button<'static> {
     let button = egui::Button::new(RichText::new(text.to_string()).strong().color(Color32::WHITE)).min_size(egui::vec2(0.0, 32.0));
     if theme::hotel() {
-        button.fill(Fixed::go()).stroke(egui::Stroke::new(2.0_f32, Fixed::go_edge())).corner_radius(6)
+        button.fill(Fixed::go()).stroke(egui::Stroke::new(2.0_f32, Fixed::go_edge())).corner_radius(6).min_size(egui::vec2(0.0, 34.0))
     } else {
-        button.fill(Fixed::brand()).corner_radius(8)
+        button.fill(Fixed::brand()).corner_radius(8).min_size(egui::vec2(0.0, 34.0))
     }
 }
 
+/// Any other action: the tinted button face of the theme, with bold text.
 pub fn secondary_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text.to_string())).corner_radius(if theme::hotel() { 6 } else { 8 }).min_size(egui::vec2(0.0, 32.0))
+    egui::Button::new(RichText::new(text.to_string()).strong()).corner_radius(if theme::hotel() { 6 } else { 8 }).min_size(egui::vec2(0.0, 34.0))
 }
 
 /// A wide button with a bold title and a description under it (the answers of a question).
@@ -175,4 +198,34 @@ pub fn copy_field(ui: &mut egui::Ui, palette: &Palette, label: &str, value: &str
             ui.ctx().copy_text(value.to_string());
         }
     });
+}
+
+/// An indeterminate progress bar: a lozenge that sweeps back and forth over a track.
+///
+/// egui's own `ProgressBar::new(0.0).animate(true)` draws its animation as a small arc at the
+/// *right edge of the filled part*. With progress 0.0 that edge sits at the far left, and the arc's
+/// radius comes from the bar's corner radius, so on a thin bar it is a dot that looks static: a long
+/// step (git pull, build.sh) appears frozen. This draws the movement itself instead.
+pub fn indeterminate_bar(ui: &mut egui::Ui, height: f32, fill: Color32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), height), egui::Sense::hover());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+    // Keep the frames coming while the step runs; without this egui only repaints on input.
+    ui.ctx().request_repaint();
+
+    let radius = height / 2.0;
+    let painter = ui.painter();
+    painter.rect_filled(rect, radius, ui.visuals().extreme_bg_color);
+
+    // One sweep right and back every PERIOD seconds, slowing down at both ends.
+    const PERIOD: f64 = 2.4;
+    let phase = ui.input(|i| i.time).rem_euclid(PERIOD) / PERIOD;
+    let eased = (0.5 - 0.5 * (phase * std::f64::consts::TAU).cos()) as f32;
+
+    let lozenge = (rect.width() * 0.3).clamp(24.0_f32.min(rect.width()), rect.width());
+    let left = rect.left() + (rect.width() - lozenge) * eased;
+    painter.rect_filled(egui::Rect::from_min_size(egui::pos2(left, rect.top()), egui::vec2(lozenge, height)), radius, fill);
+
+    response
 }

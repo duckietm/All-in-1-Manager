@@ -188,7 +188,7 @@ fn minutes(value: Option<&str>) -> Option<i32> {
     }
 }
 
-const CONFIG: &str = r#"# Written by All-in-1 Installer (Addons -> Fail2Ban; the whitelist also in Tools -> Fail2Ban).
+const CONFIG: &str = r#"# Written by All-in-1 Manager (Addons -> Fail2Ban; the whitelist also in Tools -> Fail2Ban).
 # Changes here are overwritten by the next run of the addon or the whitelist tool.
 
 [DEFAULT]

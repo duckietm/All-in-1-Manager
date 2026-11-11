@@ -439,6 +439,19 @@ async fn kill_query(opts: &Opts, id: u32) {
     }
 }
 
+/// A value of the binary protocol (a prepared statement's row) as a [`SqlValue`]: bytes are text.
+fn param_value(value: Value) -> SqlValue {
+    match value {
+        Value::NULL => SqlValue::Null,
+        Value::Bytes(bytes) => SqlValue::Text(String::from_utf8_lossy(&bytes).into_owned()),
+        Value::Int(v) => SqlValue::Int(v),
+        Value::UInt(v) => SqlValue::UInt(v),
+        Value::Float(v) => SqlValue::Float(v),
+        Value::Double(v) => SqlValue::Double(v),
+        other => SqlValue::Text(value_text(&other).unwrap_or_default()),
+    }
+}
+
 fn row_values(row: Row, kinds: &[ColumnKind]) -> Vec<SqlValue> {
     row.unwrap()
         .into_iter()
@@ -654,6 +667,34 @@ impl SqlSession {
         }
         transaction.commit().await?;
         Ok(deleted)
+    }
+
+    /// Runs one query with `?` parameters on the browse connection and returns its rows. Text comes back as
+    /// [`SqlValue::Text`], numbers as numbers. For tools that read tables themselves (the catalogue manager).
+    pub async fn select(&self, sql: &str, params: Vec<SqlValue>) -> Result<Vec<Vec<SqlValue>>> {
+        let params: Vec<Value> = params.iter().map(SqlValue::to_param).collect();
+        let mut conn = self.browse.lock().await;
+        let rows: Vec<Row> = conn.exec(sql, params).await?;
+        Ok(rows.into_iter().map(|row| row.unwrap().into_iter().map(param_value).collect()).collect())
+    }
+
+    /// Runs statements with `?` parameters in one transaction on the browse connection: all of them or none.
+    /// Returns the rows changed and the last inserted id.
+    pub async fn execute(&self, statements: &[(String, Vec<SqlValue>)]) -> Result<(u64, u64)> {
+        let mut conn = self.browse.lock().await;
+        let mut transaction = conn.start_transaction(TxOpts::default()).await?;
+        let mut changed = 0;
+        let mut last_id = 0;
+        for (sql, params) in statements {
+            let params: Vec<Value> = params.iter().map(SqlValue::to_param).collect();
+            transaction.exec_drop(sql.as_str(), params).await?;
+            changed += transaction.affected_rows();
+            if let Some(id) = transaction.last_insert_id() {
+                last_id = id;
+            }
+        }
+        transaction.commit().await?;
+        Ok((changed, last_id))
     }
 
     /// The database the query editor uses (changed by USE).

@@ -2,7 +2,10 @@
 //!
 //! PORTING: the items above the line are used by other modules; keep their names and signatures.
 
-pub const DIRECTORY: &str = "/opt/crowdsec";
+/// CrowdSec's folder (Settings → Server layout).
+pub fn directory() -> &'static str {
+    &aio_core::ServerLayout::current().crowdsec
+}
 pub const CONTAINER: &str = "crowdsec";
 pub const IMAGE: &str = "crowdsecurity/crowdsec:latest";
 pub const CONSOLE_URL: &str = "https://app.crowdsec.net";
@@ -12,14 +15,21 @@ pub const MIDDLEWARE: &str = "crowdsec";
 pub const PLUGIN: &str = "crowdsec";
 pub const PLUGIN_MODULE: &str = "github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin";
 pub const PLUGIN_VERSION: &str = "v1.8.1";
-pub const ACCESS_LOG_DIRECTORY: &str = "/var/log/traefik";
-pub const ACCESS_LOG: &str = "/var/log/traefik/access.log";
+/// Traefik's access log folder and file (Settings → Server layout).
+pub fn access_log_directory() -> &'static str {
+    &aio_core::ServerLayout::current().traefik_logs
+}
+
+pub fn access_log() -> &'static str {
+    static LOG: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    LOG.get_or_init(|| format!("{}/access.log", access_log_directory()))
+}
 pub const COLLECTIONS: &str = "crowdsecurity/traefik crowdsecurity/http-cve crowdsecurity/whitelist-good-actors";
 /// The version that runs: "v1.8.1".
 pub const VERSION_COMMAND: &str = "docker exec crowdsec cscli version 2>&1 | awk '/^version:/ {print $2}' | cut -d- -f1";
 
 pub fn middleware_file() -> String {
-    format!("{}/dynamic/crowdsec.yml", crate::web_access::TRAEFIK_DIRECTORY)
+    format!("{}/dynamic/crowdsec.yml", crate::web_access::traefik_directory())
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -95,7 +105,7 @@ fn matches_pattern(text: &str, min: usize, max: usize, allowed: impl Fn(char) ->
 /// The enrollment key from a paste: the key alone, or the whole command the console shows
 /// ("sudo cscli console enroll -e context cm1abc..."). None when there is none.
 pub fn key_from(text: &str) -> Option<String> {
-    let word = text.split([' ', '\t', '\r', '\n']).filter(|w| !w.is_empty()).filter(|w| !w.starts_with('-')).next_back()?;
+    let word = text.split([' ', '\t', '\r', '\n']).filter(|w| !w.is_empty()).rfind(|w| !w.starts_with('-'))?;
     let key = word.trim_matches(['"', '\'']);
     matches_pattern(key, 16, 64, |c| c.is_ascii_alphanumeric()).then(|| key.to_string())
 }
@@ -154,8 +164,8 @@ pub async fn inspect(server: &dyn Server) -> Result<CrowdSecState> {
     let body = fill(
         INSPECT,
         &[
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
-            ("Directory", DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
+            ("Directory", directory()),
             ("MiddlewareFile", &middleware_file()),
             ("Container", CONTAINER),
             ("GoRunning", GO_RUNNING),
@@ -228,7 +238,7 @@ key=$(sed -n 's/^BOUNCER_KEY=//p' "$c/.env" 2>/dev/null) || key=
 enrolled=$(sed -n 's/^ENROLLED=//p' "$c/.env" 2>/dev/null) || enrolled=
 umask 077
 cat > "$c/.env" <<EOF
-# CrowdSec (written by All-in-1 Installer, Addons → CrowdSec).
+# CrowdSec (written by All-in-1 Manager, Addons → CrowdSec).
 LAPI_PORT=$port
 BOUNCER_KEY=$key
 INSTANCE={{InstanceName}}
@@ -239,7 +249,7 @@ umask 022
 echo "> $c/.env: CrowdSec's API on 127.0.0.1:$port"
 
 cat > "$c/acquis.yaml" <<'EOF'
-# What CrowdSec reads (written by All-in-1 Installer): Traefik's access log, every request to the hotel.
+# What CrowdSec reads (written by All-in-1 Manager): Traefik's access log, every request to the hotel.
 filenames:
   - {{AccessLog}}
 labels:
@@ -247,7 +257,7 @@ labels:
 EOF
 
 cat > "$c/parsers/hotel-assets.yaml" <<'EOF'
-# The hotel's own files are not suspicious (written by All-in-1 Installer): a room loads hundreds of furniture
+# The hotel's own files are not suspicious (written by All-in-1 Manager): a room loads hundreds of furniture
 # files at once, and missing ones answer 404. Without this, players would look like crawlers or scanners.
 name: all-in-1/hotel-assets
 description: "Requests for the hotel's assets (gamedata, client) are never counted"
@@ -258,7 +268,7 @@ whitelist:
 EOF
 
 cat > "$c/compose.yaml" <<'EOF'
-# CrowdSec for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# CrowdSec for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 services:
   crowdsec:
     image: {{Image}}
@@ -326,9 +336,9 @@ pub async fn install_engine(server: &dyn Server, settings: &CrowdSecSettings, lo
     let body = fill(
         INSTALL_ENGINE,
         &[
-            ("Directory", DIRECTORY),
-            ("AccessLogDirectory", ACCESS_LOG_DIRECTORY),
-            ("AccessLog", ACCESS_LOG),
+            ("Directory", directory()),
+            ("AccessLogDirectory", access_log_directory()),
+            ("AccessLog", access_log()),
             ("InstanceName", &settings.instance_name),
             ("Whitelist", &settings.whitelist.join(" ")),
             ("assets", &assets),
@@ -345,7 +355,7 @@ pub async fn install_engine(server: &dyn Server, settings: &CrowdSecSettings, lo
 
 const ALLOWLIST: &str = r#"cs() { docker exec {{Container}} cscli "$@"; }
 cs allowlists delete {{AllowlistName}} >/dev/null 2>&1 || true
-cs allowlists create {{AllowlistName}} -d "Never banned (All-in-1 Installer)" >/dev/null || fail "Could not make CrowdSec's allowlist."
+cs allowlists create {{AllowlistName}} -d "Never banned (All-in-1 Manager)" >/dev/null || fail "Could not make CrowdSec's allowlist."
 for e in {{entries}}; do
   cs allowlists add {{AllowlistName}} "$e" >/dev/null || fail "CrowdSec does not take $e for the allowlist."
   case "$e" in */*) cs decisions delete -r "$e" >/dev/null 2>&1 ;; *) cs decisions delete -i "$e" >/dev/null 2>&1 ;; esac
@@ -382,7 +392,7 @@ pub async fn enroll(server: &dyn Server, key: &str, name: &str, log: Log<'_>) ->
     let body = fill(
         ENROLL,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("Container", CONTAINER),
             ("quotedName", &shell_quote(name)),
             ("clean", &clean),
@@ -402,7 +412,7 @@ if [ {{cloudflare}} = yes ]; then
 fi
 umask 077
 cat > {{MiddlewareFile}} <<EOF
-# CrowdSec's bouncer on every route (written by All-in-1 Installer, Addons → CrowdSec; Tools → CrowdSec).
+# CrowdSec's bouncer on every route (written by All-in-1 Manager, Addons → CrowdSec; Tools → CrowdSec).
 http:
   middlewares:
     {{Middleware}}:
@@ -437,7 +447,7 @@ fn middleware_script(port: i64, whitelist: &[String], cloudflare: bool) -> Strin
     fill(
         MIDDLEWARE_SCRIPT,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("cloudflare", if cloudflare { "yes" } else { "no" }),
             ("MiddlewareFile", &middleware_file()),
             ("Middleware", MIDDLEWARE),
@@ -513,8 +523,8 @@ pub async fn configure_traefik(server: &dyn Server, site: &WebAccessSettings, wh
     let body = fill(
         CONFIGURE_TRAEFIK,
         &[
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
-            ("Directory", DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
+            ("Directory", directory()),
             ("MiddlewareFile", &middleware_file()),
             ("probe", &probe_function(site)),
             ("middleware", &middleware),
@@ -551,7 +561,7 @@ true"#;
 pub async fn test(server: &dyn Server, site: &WebAccessSettings, log: Log<'_>) -> Result<CrowdSecResult> {
     let body = fill(
         TEST,
-        &[("Container", CONTAINER), ("BouncerName", BOUNCER_NAME), ("AccessLog", ACCESS_LOG), ("probe", &probe_function(site))],
+        &[("Container", CONTAINER), ("BouncerName", BOUNCER_NAME), ("AccessLog", access_log()), ("probe", &probe_function(site))],
     );
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Testing CrowdSec failed", &["BOUNCER", "LOGREAD"], None).await?;
     Ok(CrowdSecResult { bouncer_connected: values.yes("BOUNCER"), log_read: values.yes("LOGREAD") })
@@ -571,7 +581,7 @@ pub async fn save_whitelist(server: &dyn Server, site: &WebAccessSettings, port:
         &[
             ("Container", CONTAINER),
             ("whitelist", &whitelist.join(" ")),
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("MiddlewareFile", &middleware_file()),
             ("allowlist", &allowlist_script(whitelist)),
             ("middleware", &middleware_script(port, whitelist, site.cloudflare)),
@@ -621,13 +631,13 @@ fi"#;
 /// restarts the bouncer keeps its ban list and the hotel stays reachable.
 pub async fn update(server: &dyn Server, log: Log<'_>) -> Result<()> {
     let ready = format!("docker exec {CONTAINER} cscli lapi status >/dev/null 2>&1");
-    server_tools::update_image(server, "CrowdSec", DIRECTORY, CONTAINER, VERSION_COMMAND, &ready, log).await?;
+    server_tools::update_image(server, "CrowdSec", directory(), CONTAINER, VERSION_COMMAND, &ready, log).await?;
     let body = fill(
         UPDATE_RULES,
         &[
             ("Container", CONTAINER),
             ("Plugin", PLUGIN),
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
             ("PluginVersion", PLUGIN_VERSION),
         ],
     );
@@ -667,7 +677,7 @@ pub async fn remove(server: &dyn Server, site: Option<&WebAccessSettings>, delet
         Some(site) => fill(
             REMOVE_TRAEFIK,
             &[
-                ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+                ("TraefikDirectory", web_access::traefik_directory()),
                 ("MiddlewareFile", &middleware_file()),
                 ("waitForTraefik", &web_access::wait_for_traefik_script()),
                 ("staticConfig", &web_access::static_config_script(site)),
@@ -677,7 +687,7 @@ pub async fn remove(server: &dyn Server, site: Option<&WebAccessSettings>, delet
     let body = fill(
         REMOVE,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("Container", CONTAINER),
             ("deleteData", if delete_data { "yes" } else { "no" }),
             ("Image", IMAGE),

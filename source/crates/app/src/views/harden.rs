@@ -1,13 +1,14 @@
 //! Firewall, Polaris' websocket whitelist and visitor IP, MariaDB over SSH tunnels, and SYN flood protection.
 //! (HardenStep.cs)
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::config_dir;
 use aio_remote::harden::{self, HardenState, UFW_LOG, UFW_RSYSLOG};
 use aio_remote::{fail, mariadb, web_access, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{error_message, InstallStep, Intro, StepOutcome, StepUi};
@@ -93,7 +94,7 @@ impl InstallStep for HardenStep {
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
         ui.add_space(8.0);
         ui.spacing_mut().item_spacing.y = 6.0;
-        let note = self.firewall_note.lock().unwrap().clone();
+        let note = self.firewall_note.lock().clone();
         if !note.is_empty() {
             ui.add(egui::Label::new(RichText::new(note).size(12.0).color(palette.subtle)).wrap());
         }
@@ -119,7 +120,7 @@ impl InstallStep for HardenStep {
             );
             return Ok(false);
         };
-        *self.firewall_note.lock().unwrap() = firewall_note(&state, site.cloudflare, server.login().port);
+        *self.firewall_note.lock() = firewall_note(&state, site.cloudflare, server.login().port);
 
         if state.is_complete() {
             ui.detected(

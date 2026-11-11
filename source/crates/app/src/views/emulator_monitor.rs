@@ -2,11 +2,12 @@
 //! rooms from the log's slow-wired warnings. Samples every two seconds, only while it is on screen.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::emulator_monitor::{self, EmulatorSample, JvmThread, SlowWiredRoom};
 use aio_remote::Server;
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 
 use super::line_chart::LineChart;
 use super::server_status::{bar, bold, bytes, fixed, legend, live_text, mono, panel, tile, uptime, INTERVAL};
@@ -124,7 +125,7 @@ impl EmulatorMonitorView {
 
     fn start(&mut self, shared: &Shared, now: f64) {
         {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock();
             s.previous = None;
             s.ticks = 0;
             s.timer = true;
@@ -135,27 +136,27 @@ impl EmulatorMonitorView {
 
     fn tick(&mut self, shared: &Shared) {
         let Some(server) = shared.session() else {
-            let mut s = self.state.lock().unwrap();
+            let mut s = self.state.lock();
             s.timer = false;
             s.figures.updated = t("Not connected.").into();
             return;
         };
         let state = self.state.clone();
-        let generation = state.lock().unwrap().generation;
+        let generation = state.lock().generation;
         shared.spawn(async move { sample(&state, &server, generation).await });
     }
 }
 
 async fn sample(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, generation: u64) {
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         if s.sampling || s.generation != generation {
             return;
         }
         s.sampling = true;
     }
     let result = sample_once(state, server, generation).await;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock();
     if s.generation != generation {
         return;
     }
@@ -172,7 +173,7 @@ async fn sample(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, generation:
 async fn sample_once(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, generation: u64) -> aio_remote::Result<()> {
     let sample = emulator_monitor::sample(server.as_ref()).await?;
     let need_names = {
-        let s = state.lock().unwrap();
+        let s = state.lock();
         sample.running() && (sample.pid != s.names_pid || sample.threads.iter().any(|t| !s.names.contains_key(&t.id)))
     };
     if need_names {
@@ -182,7 +183,7 @@ async fn sample_once(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, genera
         for thread in &sample.threads {
             names.entry(thread.id).or_insert_with(|| thread.name.clone());
         }
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         if s.generation != generation {
             return Ok(());
         }
@@ -190,7 +191,7 @@ async fn sample_once(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, genera
         s.names_pid = sample.pid;
     }
     let read_log = {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         if s.generation != generation {
             return Ok(());
         }
@@ -214,7 +215,7 @@ async fn sample_once(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, genera
 
 async fn read_log_into(state: &Arc<Mutex<State>>, server: &Arc<dyn Server>, generation: u64) {
     let result = emulator_monitor::wired_log(server.as_ref()).await;
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock();
     if s.generation != generation {
         return;
     }
@@ -364,7 +365,7 @@ impl View for EmulatorMonitorView {
             self.start(shared, now);
         }
         self.last_pass = Some(pass);
-        if self.state.lock().unwrap().timer {
+        if self.state.lock().timer {
             if now >= self.next_tick {
                 self.next_tick = now + INTERVAL;
                 self.tick(shared);
@@ -374,7 +375,7 @@ impl View for EmulatorMonitorView {
 
         let mut read_log = false;
         ui.vertical(|ui| {
-            let s = self.state.lock().unwrap();
+            let s = self.state.lock();
             let f = &s.figures;
             ui.horizontal(|ui| {
                 ui.label(
@@ -433,14 +434,14 @@ impl View for EmulatorMonitorView {
         if read_log {
             if let Some(server) = shared.session() {
                 let state = self.state.clone();
-                let generation = state.lock().unwrap().generation;
+                let generation = state.lock().generation;
                 shared.spawn(async move { read_log_into(&state, &server, generation).await });
             }
         }
     }
 
     fn session_changed(&mut self, _shared: &Shared) {
-        let mut s = self.state.lock().unwrap();
+        let mut s = self.state.lock();
         s.generation += 1;
         s.figures = Figures::default();
         s.chart.clear();
@@ -527,7 +528,7 @@ mod tests {
 
     #[test]
     fn wired_order_and_labels() {
-        let mut threads = vec![thread(9, "WiredTickHeavy-0"), thread(5, "WiredTickShard-1"), thread(7, "WiredTickCoordinator"), thread(4, "WiredTickShard-0")];
+        let mut threads = [thread(9, "WiredTickHeavy-0"), thread(5, "WiredTickShard-1"), thread(7, "WiredTickCoordinator"), thread(4, "WiredTickShard-0")];
         threads.sort_by_key(wired_order);
         let ids: Vec<i32> = threads.iter().map(|t| t.id).collect();
         assert_eq!(ids, [7, 4, 5, 9]);

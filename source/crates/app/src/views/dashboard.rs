@@ -1,12 +1,13 @@
 //! The dashboard (InstallerWindow.ShowDashboard): the hotel banner, Log in, Install New Server, the components card
 //! with the versions on the server and the updates on GitHub, and the addon and tool tiles.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::layout::AtomCmsPresence;
 use aio_core::ServerLayout;
 use aio_remote::server_status::{self, RepositoryUpdate, RepositoryVersion};
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 
 use super::addons;
 use super::tools::{Component, ToolsView};
@@ -50,14 +51,14 @@ impl Dashboard {
     }
 
     pub fn session_changed(&mut self, _shared: &Shared) {
-        *self.versions.lock().unwrap() = Versions::default();
+        *self.versions.lock() = Versions::default();
     }
 
     /// Loads the installed versions (no network) once per login and after every update check.
     pub fn reload_versions(&self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         {
-            let mut versions = self.versions.lock().unwrap();
+            let mut versions = self.versions.lock();
             if versions.loading {
                 return;
             }
@@ -67,7 +68,7 @@ impl Dashboard {
         let (versions, status) = (self.versions.clone(), shared.clone());
         shared.spawn(async move {
             let result = server_status::versions(server.as_ref()).await;
-            let mut v = versions.lock().unwrap();
+            let mut v = versions.lock();
             v.loading = false;
             match result {
                 Ok(list) => v.list = Some(list),
@@ -83,7 +84,7 @@ impl Dashboard {
         let mut click = None;
         let session = shared.session();
         if let Some(server) = &session {
-            let stale = self.versions.lock().unwrap().for_session != Some(id(server));
+            let stale = self.versions.lock().for_session != Some(id(server));
             if stale {
                 self.reload_versions(shared);
             }
@@ -124,11 +125,16 @@ impl Dashboard {
             click = Some(Click::Page(page));
         }
         ui.add_space(6.0);
+        section(ui, palette, t("ASSETS"));
+        if let Some(page) = entry_grid(ui, palette, &addons::asset_entries()) {
+            click = Some(Click::Page(page));
+        }
+        ui.add_space(6.0);
         section(ui, palette, t("TOOLS"));
         let tool_tiles = vec![
             addons::Entry {
                 title: t("Tools").into(),
-                description: t("Restarts, database backup and import, updates, settings backup.").into(),
+                description: t("Restarts, database backup and import, updates.").into(),
                 icon: Icon::Wrench,
                 color: hex("#0E9F9E"),
                 scene: Scene::Parquet,
@@ -153,7 +159,7 @@ impl Dashboard {
     // on each other: one row, updated together (the renderer first). Traefik, Gitea and CrowdSec follow from their images.
     fn components_card(&self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared, tools: &ToolsView) {
         let session = shared.session();
-        let versions = self.versions.lock().unwrap().list.clone();
+        let versions = self.versions.lock().list.clone();
         let updates = session.as_ref().and_then(|_| tools.last_updates());
         let images = session.as_ref().and_then(|_| tools.last_images()).unwrap_or_default();
         let rows: [(String, String, String, Icon, &str, String, Option<String>, Component); 3] = [
@@ -284,8 +290,24 @@ impl Dashboard {
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.add_space(12.0);
-                        if image.has_update() {
-                            let component = if traefik { Component::Traefik } else if crowdsec { Component::CrowdSec } else { Component::Gitea };
+                        let component = if traefik { Component::Traefik } else if crowdsec { Component::CrowdSec } else { Component::Gitea };
+                        if traefik && image.not_restarted && !image.newer_on_hub {
+                            // The newer image is already on the server: a restart is all it takes, Docker Hub is not needed.
+                            if ui
+                                .add(widgets::primary_button(t("Restart")))
+                                .on_hover_text(tf(
+                                    "Recreates the Traefik container with the newer {image} that is already downloaded: the players are disconnected for a few seconds. Docker Hub is not needed.",
+                                    &[("image", &image.image)],
+                                ))
+                                .clicked()
+                            {
+                                shared.request(Request::Restart(component));
+                            }
+                            chip(ui, t("NEW IMAGE WAITING"), palette.warning_back, palette.warning_text).on_hover_text(tf(
+                                "A newer {image} is downloaded, but the container still runs the old one. Restart starts the new one.",
+                                &[("image", &image.image)],
+                            ));
+                        } else if image.has_update() {
                             if ui.add(widgets::primary_button(t("Update"))).on_hover_text(if traefik {
                                 t("Pulls the newest image and restarts Traefik: the players are disconnected for a few seconds.")
                             } else if crowdsec {

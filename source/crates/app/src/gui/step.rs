@@ -2,11 +2,12 @@
 //! check list, the result and the live log. A step only detects and installs; it runs as a task on the runtime and
 //! talks to the window through its [`StepUi`].
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::{Server, ServerError};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use super::dialogs::{Choice, Dialogs};
 use super::icons::{self, Icon};
@@ -79,12 +80,17 @@ impl StepUi {
         Self { state: Arc::new(Mutex::new(state)), ctx, dialogs, status, title: title.into() }
     }
 
-    pub fn state(&self) -> std::sync::MutexGuard<'_, StepState> {
-        self.state.lock().unwrap()
+    pub fn state(&self) -> parking_lot::MutexGuard<'_, StepState> {
+        self.state.lock()
     }
 
     fn changed(&self) {
         self.ctx.request_repaint();
+    }
+
+    /// The window's context (for a thread that has to draw it again when it is done).
+    pub fn context(&self) -> egui::Context {
+        self.ctx.clone()
     }
 
     /// Asks the window to draw again (after a task reported something).
@@ -141,7 +147,7 @@ impl StepUi {
     }
 
     pub fn set_status(&self, message: &str) {
-        *self.status.lock().unwrap() = message.to_string();
+        *self.status.lock() = message.to_string();
         self.changed();
     }
 
@@ -376,7 +382,7 @@ fn show_intro(ui: &mut egui::Ui, palette: &Palette, step: &dyn InstallStep, step
 pub fn show_run(ui: &mut egui::Ui, palette: &Palette, step_ui: &StepUi, log_height: f32) {
     let mut state = step_ui.state();
     if state.busy {
-        ui.add(egui::ProgressBar::new(0.0).animate(true).desired_height(3.0).fill(super::theme::Fixed::brand()));
+        widgets::indeterminate_bar(ui, 3.0, super::theme::Fixed::brand());
     } else {
         ui.add_space(3.0);
     }

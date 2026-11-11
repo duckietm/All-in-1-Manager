@@ -119,12 +119,12 @@ pub async fn inspect(server: &dyn Server) -> Result<OctaneState> {
         INSPECT,
         &[
             ("Environment", ENVIRONMENT),
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
             ("Octane", &octane()),
             ("Renderer", &renderer()),
             ("ConfigurationDirectory", &configuration_directory()),
             ("Dist", &dist()),
-            ("SiteFile", web_access::SITE_FILE),
+            ("SiteFile", web_access::site_file()),
             ("Gamedata", &gamedata()),
             ("EmulatorDirectory", &crate::emulator::directory()),
             ("ImagerKeysSql", &crate::emulator::imager_keys_sql()),
@@ -251,7 +251,7 @@ pub async fn configure(server: &dyn Server, site: &WebAccessSettings, log: Log<'
 }
 
 const PERMISSIONS_SCRIPT_CONTENT: &str = r#"#!/bin/sh
-# Read/write access to {{Gamedata}} for the www-data group (written by All-in-1 Installer).
+# Read/write access to {{Gamedata}} for the www-data group (written by All-in-1 Manager).
 # The emulator (a member of www-data) writes custom badges to c_images/album1584 and edits config/*.json;
 # NGINX reads everything. The default ACLs give files and folders created later the same rights, also when
 # they are copied in as root or another user. Run this again when an upload changed the permissions.
@@ -337,6 +337,27 @@ const parse = (file, text) => {
     try { return JSON.parse(stripped); } catch (e) { throw new Error(`${file} is not valid JSON(C): ${e.message}`); }
 };
 
+// The settings files follow their .example: keys a newer Octane (or you, in the .example) added come in with the
+// example's value, in the example's order; keys only the .json has stay after them. A value already in the .json is
+// never changed, and a list stays as it is. The data files (news, hotlooks, ...) are left alone: their entries
+// are the hotel's own.
+const FOLLOW_EXAMPLE = new Set(['renderer-config', 'ui-config', 'client-mode']);
+const isObject = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+const followExample = (example, current, added, prefix = '') => {
+    if (!isObject(example) || !isObject(current)) return current;
+    const out = {};
+    for (const [key, value] of Object.entries(example)) {
+        if (Object.prototype.hasOwnProperty.call(current, key)) {
+            out[key] = isObject(value) && isObject(current[key]) ? followExample(value, current[key], added, `${prefix}${key}.`) : current[key];
+        } else {
+            out[key] = value;
+            added.push(`${prefix}${key}`);
+        }
+    }
+    for (const [key, value] of Object.entries(current)) if (!(key in out)) out[key] = value;
+    return out;
+};
+
 const configs = {};
 for (const name of process.env.FILES.split(' ')) {
     const file = path.join(dir, `${name}.json`);
@@ -347,9 +368,18 @@ for (const name of process.env.FILES.split(' ')) {
     else { console.log(`  ${name}.json: no ${name}.example in this Octane version, skipped`); continue; }
 
     const changes = [];
+    let layout = false;
+    if (!created && FOLLOW_EXAMPLE.has(name) && fs.existsSync(example)) {
+        const added = [];
+        const before = JSON.stringify(config);
+        config = followExample(parse(example, fs.readFileSync(example, 'utf8')), config, added);
+        for (const key of added) changes.push(`${key} added from ${name}.example`);
+        layout = added.length === 0 && JSON.stringify(config) !== before;
+    }
     for (const [key, value] of Object.entries({ ...(created ? defaults[name] : {}), ...urls[name] })) {
         if (config[key] !== value) { changes.push(`${key} = ${JSON.stringify(value)}`); config[key] = value; }
     }
+    if (layout) changes.push(`keys put in the order of ${name}.example`);
     if (created || changes.length > 0) {
         if (!created) fs.copyFileSync(file, `${file}.bak-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`);
         fs.writeFileSync(file, JSON.stringify(config, null, 4) + '\n');
@@ -393,7 +423,7 @@ const BUILD: &str = r#"{{Environment}}
 set -o pipefail
 cat > {{Octane}}/build.sh <<'BUILD'
 #!/bin/sh
-# Builds the Octane client into dist/ (written by All-in-1 Installer). Run it after changing
+# Builds the Octane client into dist/ (written by All-in-1 Manager). Run it after changing
 # public/configuration or after a git pull of Octane or Octane-Renderer.
 set -e
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1

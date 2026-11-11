@@ -64,9 +64,15 @@ pub struct GiteaResult {
     pub certificate_valid: bool,
 }
 
-pub const DIRECTORY: &str = "/opt/gitea";
-/// `web_access::TRAEFIK_DIRECTORY` + "/dynamic/gitea.yml".
-pub const ROUTE_FILE: &str = "/opt/traefik/dynamic/gitea.yml";
+/// Gitea's folder (Settings → Server layout).
+pub fn directory() -> &'static str {
+    &aio_core::ServerLayout::current().gitea
+}
+/// `web_access::traefik_directory()` + "/dynamic/gitea.yml".
+pub fn route_file() -> &'static str {
+    static FILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    FILE.get_or_init(|| format!("{}/dynamic/gitea.yml", web_access::traefik_directory()))
+}
 
 // Names Gitea keeps for itself (models/user: reservedUsernames), the ones someone would pick.
 const RESERVED: [&str; 15] =
@@ -133,7 +139,7 @@ echo "running=$(docker inspect -f '{{.State.Running}}' {{Container}} 2>/dev/null
 echo "version=$(docker exec {{Container}} gitea --version 2>/dev/null | awk '{print $3}')""#;
 
 pub async fn inspect(server: &dyn Server) -> Result<GiteaState> {
-    let script = fill(INSPECT, &[("TraefikDirectory", web_access::TRAEFIK_DIRECTORY), ("Directory", DIRECTORY), ("Container", CONTAINER)]);
+    let script = fill(INSPECT, &[("TraefikDirectory", web_access::traefik_directory()), ("Directory", directory()), ("Container", CONTAINER)]);
     let values = ScriptValues::parse(&server.run_as_root(&script).await?.output);
     Ok(GiteaState {
         site: WebAccessSettings::from_hotel_env(&values),
@@ -197,7 +203,7 @@ echo "> Gitea on 127.0.0.1:$port"
 trusted=$(sed -n 's/^TRUSTED=//p' "$g/.env" 2>/dev/null) || trusted=
 write_env() {
   cat > "$g/.env" <<EOF
-# Gitea (written by All-in-1 Installer, Addons → Gitea).
+# Gitea (written by All-in-1 Manager, Addons → Gitea).
 DOMAIN={{Domain}}
 ROOT_URL={{Url}}/
 CLOUDFLARE={{cloudflare}}
@@ -210,7 +216,7 @@ EOF
 write_env
 echo "> $g/compose.yaml"
 cat > "$g/compose.yaml" <<'EOF'
-# Gitea for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# Gitea for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 # Its own network, not the host's: the image always starts an SSH server (port 22 inside), which must not
 # meet the server's SSH. Only the web port is published, on 127.0.0.1, for Traefik.
 services:
@@ -277,7 +283,7 @@ echo "  $(docker exec {{Container}} gitea --version 2>/dev/null | awk '{print "G
 
 echo "> {{RouteFile}}: {{Url}} to Gitea"
 cat > {{RouteFile}} <<EOF
-# Gitea (written by All-in-1 Installer, Addons → Gitea). Traefik picks it up without a restart.
+# Gitea (written by All-in-1 Manager, Addons → Gitea). Traefik picks it up without a restart.
 http:
   routers:
     gitea:
@@ -321,15 +327,15 @@ pub async fn install(server: &dyn Server, settings: &GiteaSettings, log: Log<'_>
     let body = fill(
         &body,
         &[
-            ("Directory", DIRECTORY),
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+            ("Directory", directory()),
+            ("TraefikDirectory", web_access::traefik_directory()),
             ("Container", CONTAINER),
             ("Domain", &settings.domain),
             ("Url", &url),
             ("cloudflare", if settings.cloudflare { "yes" } else { "no" }),
             ("limit", if settings.cloudflare { "2" } else { "1" }),
             ("Image", IMAGE),
-            ("RouteFile", ROUTE_FILE),
+            ("RouteFile", route_file()),
             ("entryPoint", entry_point),
             ("middleware", middleware),
             ("tls", tls),
@@ -353,8 +359,8 @@ pub async fn install(server: &dyn Server, settings: &GiteaSettings, log: Log<'_>
 /// Pulls the newest gitea/gitea:1 and recreates the container when it changed; the data stays.
 pub async fn update(server: &dyn Server, log: Log<'_>) -> Result<()> {
     let version = format!("docker exec {CONTAINER} gitea --version 2>/dev/null | awk '{{print $3}}'");
-    let ready = format!("curl -fs --noproxy '*' --max-time 3 \"http://127.0.0.1:$(sed -n 's/^PORT=//p' {DIRECTORY}/.env)/api/healthz\" >/dev/null 2>&1");
-    server_tools::update_image(server, "Gitea", DIRECTORY, CONTAINER, &version, &ready, log).await
+    let ready = format!("curl -fs --noproxy '*' --max-time 3 \"http://127.0.0.1:$(sed -n 's/^PORT=//p' {}/.env)/api/healthz\" >/dev/null 2>&1", directory());
+    server_tools::update_image(server, "Gitea", directory(), CONTAINER, &version, &ready, log).await
 }
 
 const REMOVE_CHECK: &str = r#"echo "> {{scheme}}://{{domain}}/ (through Traefik)"
@@ -404,14 +410,14 @@ pub async fn remove(server: &dyn Server, domain: Option<&str>, https: bool, dele
         None => String::new(),
         Some(domain) => fill(
             REMOVE_CHECK,
-            &[("scheme", scheme), ("domain", domain), ("port", port), ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY)],
+            &[("scheme", scheme), ("domain", domain), ("port", port), ("TraefikDirectory", web_access::traefik_directory())],
         ),
     };
     let body = fill(
         REMOVE,
         &[
-            ("Directory", DIRECTORY),
-            ("RouteFile", ROUTE_FILE),
+            ("Directory", directory()),
+            ("RouteFile", route_file()),
             ("domain", domain.unwrap_or("Gitea's domain")),
             ("Container", CONTAINER),
             ("deleteData", if delete_data { "yes" } else { "no" }),
@@ -464,7 +470,7 @@ pub async fn test(server: &dyn Server, settings: &GiteaSettings, log: Log<'_>) -
             ),
             ("insecure", insecure),
             ("valid", if settings.https { ", and the certificate is valid" } else { "" }),
-            ("RouteFile", ROUTE_FILE),
+            ("RouteFile", route_file()),
             ("certYes", if settings.https { "" } else { "cert=yes" }),
         ],
     );
@@ -478,7 +484,7 @@ mod tests {
 
     #[test]
     fn route_file_is_in_traefik() {
-        assert_eq!(ROUTE_FILE, format!("{}/dynamic/gitea.yml", web_access::TRAEFIK_DIRECTORY));
+        assert_eq!(route_file(), format!("{}/dynamic/gitea.yml", web_access::traefik_directory()));
     }
 
     #[test]

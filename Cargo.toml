@@ -1,14 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["source/crates/core", "source/crates/remote", "source/crates/terminal", "source/crates/app"]
+members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/app"]
 
 [workspace.package]
-version = "2.0.6"
+version = "2.0.20"
 edition = "2021"
 license = "GPL-3.0-only"
 
 [workspace.dependencies]
 aio-core = { path = "source/crates/core" }
+aio-assets = { path = "source/crates/assets" }
 aio-remote = { path = "source/crates/remote" }
 aio-terminal = { path = "source/crates/terminal" }
 
@@ -23,6 +24,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 regex = "1"
 chrono = "0.4"
+parking_lot = "0.12"
 rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
@@ -41,7 +43,7 @@ russh = { version = "0.65", default-features = false, features = ["ring", "flate
 russh-sftp = "2"
 mysql_async = { version = "0.35.1", default-features = false, features = ["minimal", "rustls-tls"] }
 vte = "0.15"
-eframe = { version = "0.31.1", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
+eframe = { version = "0.31.1", default-features = false, features = ["glow", "wgpu", "default_fonts", "x11", "wayland"] }
 egui_extras = { version = "0.31.1", features = ["image"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "gif", "jpeg", "ico", "webp", "bmp"] }
 rfd = "0.15.4"

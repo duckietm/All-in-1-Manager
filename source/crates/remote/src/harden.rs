@@ -143,11 +143,11 @@ pub async fn inspect(server: &dyn Server) -> Result<HardenState> {
     let script = fill(
         INSPECT,
         &[
-            ("TraefikDirectory", web_access::TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", web_access::traefik_directory()),
             ("sysctlCheck", &sysctl_check),
             ("UfwRsyslog", UFW_RSYSLOG),
             ("RealIpFile", hotel_site::REAL_IP_FILE),
-            ("HotelSiteFile", hotel_site::FILE),
+            ("HotelSiteFile", hotel_site::file()),
             ("EmulatorDirectory", &emulator_directory),
         ],
     );
@@ -211,7 +211,7 @@ echo "  MariaDB (3306) and the emulator's ports stay closed (use an SSH tunnel f
 
 echo "> ufw enable"
 ufw --force enable
-printf 'Firewall set up by the All-in-1 Installer harden step on %s.\nThe other steps no longer open ports; run the harden step again to change the rules.\n' "$(date)" > {{Marker}}
+printf 'Firewall set up by the All-in-1 Manager harden step on %s.\nThe other steps no longer open ports; run the harden step again to change the rules.\n' "$(date)" > {{Marker}}
 ufw status verbose | sed 's/^/  /' | grep -v '^  $' | grep -v 'Cloudflare' || true
 [ -z "$ranges" ] || echo "  (+ $(ufw status | grep -c Cloudflare) Cloudflare rules for 80,443)"
 {{FirewallLogScript}}"#;
@@ -285,7 +285,7 @@ pub async fn disable_firewall(server: &dyn Server, log: Log<'_>) -> Result<()> {
 const SYSCTL_LINE: &str = r#"if grep -Eq '^[[:space:]]*#?[[:space:]]*{{Key}}[[:space:]]*=' /etc/sysctl.conf; then
   sed -i -E 's|^[[:space:]]*#?[[:space:]]*{{Key}}[[:space:]]*=.*|{{Key}}={{Value}}|' /etc/sysctl.conf
 else
-  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Installer)\n' >> /etc/sysctl.conf
+  [ -n "$added" ] || printf '\n# SYN flood protection (All-in-1 Manager)\n' >> /etc/sysctl.conf
   added=yes
   echo '{{Key}}={{Value}}' >> /etc/sysctl.conf
 fi

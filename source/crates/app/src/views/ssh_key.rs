@@ -5,7 +5,7 @@
 //! The wizard's key step (index 0): `Done` means the key was installed, then `Failed` and `Aborted`.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::config_dir;
 use aio_core::keys::{self, AuthorizedKey, SshKeyType};
@@ -13,6 +13,7 @@ use aio_remote::root_authorized_keys::{self, AuthorizedKeysMode, FILE_PATH};
 use aio_remote::{fail, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::dialogs::Choice;
 use crate::gui::icons::{self, Icon};
@@ -143,7 +144,7 @@ fn browse(form: Arc<Mutex<Form>>, ctx: egui::Context) {
             }
         }
         let Some(path) = dialog.pick_file() else { return };
-        let mut form_state = form.lock().unwrap();
+        let mut form_state = form.lock();
         if std::fs::metadata(&path).is_ok_and(|m| m.len() > 64 * 1024) {
             form_state.browse_problem = Some(t("That file is too large to be a public key.").into());
         } else {
@@ -187,7 +188,7 @@ fn labelled(ui: &mut egui::Ui, palette: &Palette, label: &str, add: impl FnOnce(
 
 impl SshKeyStep {
     fn clear_passwords(&self) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         form.passphrase.clear();
         form.passphrase_repeat.clear();
     }
@@ -373,9 +374,9 @@ impl InstallStep for SshKeyStep {
 
     /// Back to the choice between generating a key and providing one. (ShowOptions)
     fn enter(&self, server: &dyn Server) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         if form.comment.trim().is_empty() {
-            form.comment = format!("all-in-1-installer@{}", server.login().host);
+            form.comment = format!("all-in-1-manager@{}", server.login().host);
         }
         form.browse_problem = None;
     }
@@ -390,7 +391,7 @@ impl InstallStep for SshKeyStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(4.0);
         option_label(
@@ -504,7 +505,7 @@ impl InstallStep for SshKeyStep {
     }
 
     fn validate(&self) -> Option<String> {
-        validate_form(&self.form.lock().unwrap())
+        validate_form(&self.form.lock())
     }
 
     /// True when a key this installer saved for the host (configuration/keys/<host>) is in authorized_keys.
@@ -563,7 +564,7 @@ impl InstallStep for SshKeyStep {
 
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let source = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             if form.generate {
                 KeySource::Generate {
                     key_type: if form.key_type == 1 { SshKeyType::Rsa4096 } else { SshKeyType::Ed25519 },

@@ -102,7 +102,7 @@ t=/opt/traefik
 [ -d "$t/dynamic" ] || fail "Traefik is not set up in $t. Run the Web access step first."
 echo "> $t/dynamic/hotel.yml: https://hotel.example.com/ws and Polaris' /api paths to Polaris, the rest (mycms, /client) to NGINX"
 cat > "$t/dynamic/hotel.yml" <<'EOF'
-# The hotel's routes (written by All-in-1 Installer).
+# The hotel's routes (written by All-in-1 Manager).
 http:
   routers:
     polaris:

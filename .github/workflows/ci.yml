@@ -26,8 +26,8 @@ jobs:
         run: cargo build --release -p aio-app
       - uses: actions/upload-artifact@v4
         with:
-          name: all-in-1-installer-windows-x64
-          path: target/release/all-in-1-installer.exe
+          name: all-in-1-manager-windows-x64
+          path: target/release/all-in-1-manager.exe
 
   linux:
     name: Linux x64
@@ -40,9 +40,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Test
         run: cargo test --workspace
+      # Linux only: the lints do not depend on the platform, and the Windows job already carries the build.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Build release
         run: cargo build --release -p aio-app
       - uses: actions/upload-artifact@v4
         with:
-          name: all-in-1-installer-linux-x64
-          path: target/release/all-in-1-installer
+          name: all-in-1-manager-linux-x64
+          path: target/release/all-in-1-manager

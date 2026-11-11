@@ -49,7 +49,7 @@ impl DatabaseCredentials {
 
     pub fn to_file_text(&self) -> String {
         format!(
-            "# MariaDB accounts on {host}, created by All-in-1 Installer.\n\
+            "# MariaDB accounts on {host}, created by All-in-1 Manager.\n\
              # Keep this file safe: root can change every database on the server.\n\
              host={host}\nport={port}\ndatabase={database}\nroot_user={root_user}\nroot_password={root_password}\n\
              cms_user={cms_user}\ncms_password={cms_password}\nemulator_user={emulator_user}\nemulator_password={emulator_password}\n",
@@ -101,7 +101,7 @@ mod tests {
         let text = c.to_file_text();
         assert_eq!(
             text,
-            "# MariaDB accounts on 192.168.0.155, created by All-in-1 Installer.\n# Keep this file safe: root can change every database on the server.\nhost=192.168.0.155\nport=3306\ndatabase=habbo\nroot_user=root\nroot_password=R\ncms_user=cms\ncms_password=C\nemulator_user=emulator\nemulator_password=E\n"
+            "# MariaDB accounts on 192.168.0.155, created by All-in-1 Manager.\n# Keep this file safe: root can change every database on the server.\nhost=192.168.0.155\nport=3306\ndatabase=habbo\nroot_user=root\nroot_password=R\ncms_user=cms\ncms_password=C\nemulator_user=emulator\nemulator_password=E\n"
         );
         assert_eq!(DatabaseCredentials::parse(&text), Some(c));
         assert_eq!(DatabaseCredentials::parse("host=x\nroot_password=\ncms_password=c"), None);

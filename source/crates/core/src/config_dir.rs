@@ -1,5 +1,5 @@
 //! The local "configuration" directory, next to the installer or, if that is read-only, under the local application
-//! data folder (`%LOCALAPPDATA%\All-in-1 Installer\configuration`, `~/.local/share/All-in-1 Installer/configuration`).
+//! data folder (`%LOCALAPPDATA%\All-in-1 Manager\configuration`, `~/.local/share/All-in-1 Manager/configuration`).
 //! The same folder and file names as the C# installer, so an existing configuration keeps working.
 
 use std::path::{Path, PathBuf};
@@ -191,7 +191,9 @@ fn resolve() -> PathBuf {
         }
     }
     let base = local_data_dir().unwrap_or_else(std::env::temp_dir);
-    let fallback = base.join("All-in-1 Installer").join("configuration");
+    // The folder of the name before the rename (All-in-1 Installer) is used while it is there: nothing is lost.
+    let old = base.join("All-in-1 Installer").join("configuration");
+    let fallback = if old.is_dir() { old } else { base.join("All-in-1 Manager").join("configuration") };
     let _ = std::fs::create_dir_all(&fallback);
     fallback
 }

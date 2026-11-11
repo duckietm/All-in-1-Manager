@@ -116,7 +116,7 @@ key=$(sed -n 's/^BOUNCER_KEY=//p' "$c/.env" 2>/dev/null) || key=
 enrolled=$(sed -n 's/^ENROLLED=//p' "$c/.env" 2>/dev/null) || enrolled=
 umask 077
 cat > "$c/.env" <<EOF
-# CrowdSec (written by All-in-1 Installer, Addons → CrowdSec).
+# CrowdSec (written by All-in-1 Manager, Addons → CrowdSec).
 LAPI_PORT=$port
 BOUNCER_KEY=$key
 INSTANCE=my-hotel
@@ -127,7 +127,7 @@ umask 022
 echo "> $c/.env: CrowdSec's API on 127.0.0.1:$port"
 
 cat > "$c/acquis.yaml" <<'EOF'
-# What CrowdSec reads (written by All-in-1 Installer): Traefik's access log, every request to the hotel.
+# What CrowdSec reads (written by All-in-1 Manager): Traefik's access log, every request to the hotel.
 filenames:
   - /var/log/traefik/access.log
 labels:
@@ -135,7 +135,7 @@ labels:
 EOF
 
 cat > "$c/parsers/hotel-assets.yaml" <<'EOF'
-# The hotel's own files are not suspicious (written by All-in-1 Installer): a room loads hundreds of furniture
+# The hotel's own files are not suspicious (written by All-in-1 Manager): a room loads hundreds of furniture
 # files at once, and missing ones answer 404. Without this, players would look like crawlers or scanners.
 name: all-in-1/hotel-assets
 description: "Requests for the hotel's assets (gamedata, client) are never counted"
@@ -146,7 +146,7 @@ whitelist:
 EOF
 
 cat > "$c/compose.yaml" <<'EOF'
-# CrowdSec for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# CrowdSec for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 services:
   crowdsec:
     image: crowdsecurity/crowdsec:latest
@@ -208,7 +208,7 @@ docker exec crowdsec cscli bouncers list -o raw 2>/dev/null | grep -q '^traefik,
 
 cs() { docker exec crowdsec cscli "$@"; }
 cs allowlists delete all-in-1 >/dev/null 2>&1 || true
-cs allowlists create all-in-1 -d "Never banned (All-in-1 Installer)" >/dev/null || fail "Could not make CrowdSec's allowlist."
+cs allowlists create all-in-1 -d "Never banned (All-in-1 Manager)" >/dev/null || fail "Could not make CrowdSec's allowlist."
 for e in '203.0.113.5' '198.51.100.0/24'; do
   cs allowlists add all-in-1 "$e" >/dev/null || fail "CrowdSec does not take $e for the allowlist."
   case "$e" in */*) cs decisions delete -r "$e" >/dev/null 2>&1 ;; *) cs decisions delete -i "$e" >/dev/null 2>&1 ;; esac

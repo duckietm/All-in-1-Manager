@@ -15,7 +15,7 @@ import sys
 
 SOURCE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(SOURCE)
-EXE = "all-in-1-installer" + (".exe" if os.name == "nt" else "")
+EXE = "all-in-1-manager" + (".exe" if os.name == "nt" else "")
 
 
 def main():
@@ -43,11 +43,56 @@ def main():
         assets = os.path.join(into, "Assets")
         shutil.rmtree(assets, ignore_errors=True)
         shutil.copytree(os.path.join(SOURCE, "Assets"), assets)
+    shortcut(into, kind)
     print(f"Ready: {target}")
 
     if "--run" in args:
         subprocess.Popen([target], cwd=into)
     return 0
+
+
+def shortcut(into, kind):
+    """A shortcut next to build.cmd to the program, started in its own folder so it keeps its own configuration/.
+
+    Windows: "All-in-1 Manager.lnk"; elsewhere a symbolic link ./all-in-1-manager, and on Linux also a launcher
+    "All-in-1 Manager.desktop" to double-click. "(dev)" / "-dev" for the debug build. A failure only warns."""
+    title = "All-in-1 Manager" + (" (dev)" if kind == "dev" else "")
+    target = os.path.join(into, EXE)
+    try:
+        if os.name == "nt":
+            script = (
+                "$ErrorActionPreference='Stop'; $s=(New-Object -ComObject WScript.Shell).CreateShortcut($env:AIO_LNK); "
+                "$s.TargetPath=$env:AIO_EXE; $s.WorkingDirectory=$env:AIO_DIR; $s.IconLocation=$env:AIO_EXE+',0'; "
+                "$s.Description='All-in-1 Manager'; $s.Save()"
+            )
+            env = dict(os.environ, AIO_LNK=os.path.join(ROOT, title + ".lnk"), AIO_EXE=target, AIO_DIR=into)
+            subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script], env=env, check=True, capture_output=True)
+            return
+        link = os.path.join(ROOT, "all-in-1-manager" + ("-dev" if kind == "dev" else ""))
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(os.path.relpath(target, ROOT), link)
+        os.chmod(target, 0o755)
+        if sys.platform.startswith("linux"):
+            launcher = os.path.join(ROOT, title + ".desktop")
+            with open(launcher, "w", encoding="utf-8") as f:
+                lines = [
+                    "[Desktop Entry]",
+                    "Type=Application",
+                    "Name=" + title,
+                    "Comment=Hotel server setup",
+                    'Exec="' + target + '"',
+                    "Path=" + into,
+                    "Terminal=false",
+                    "Categories=Utility;Development;",
+                ]
+                icon = os.path.join(SOURCE, "crates", "app", "assets", "icon.png")
+                if os.path.exists(icon):
+                    lines.append("Icon=" + icon)
+                f.write("\n".join(lines) + "\n")
+            os.chmod(launcher, 0o755)
+    except (OSError, subprocess.CalledProcessError) as e:
+        print(f"Note: the shortcut to {target} could not be made ({e}).")
 
 
 if __name__ == "__main__":

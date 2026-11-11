@@ -49,10 +49,18 @@ impl EpicNextState {
 pub const REPOSITORY: &str = "https://gitea.epicnabbo.nl/Remco/EpicNext-Cms.git";
 pub const REPOSITORY_FOLDER: &str = "";
 /// A checkout of the repository when the CMS is in a folder of it; the folder is copied to [`DIRECTORY`].
-pub const SOURCE_DIRECTORY: &str = "/var/www/epicnext-src";
-const SOURCE_INFO: &str = "/var/www/epicnext-src/.all-in-1-source";
+pub fn source_directory() -> &'static str {
+    &aio_core::ServerLayout::current().epicnext_source
+}
+fn source_info() -> &'static str {
+    static INFO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INFO.get_or_init(|| format!("{}/.all-in-1-source", source_directory()))
+}
 pub const NAME: &str = "EpicNext CMS";
-pub const DIRECTORY: &str = "/var/www/epicnext";
+/// The CMS folder (Settings → Server layout).
+pub fn directory() -> &'static str {
+    &aio_core::ServerLayout::current().epicnext
+}
 pub const SERVICE_FILE: &str = "/etc/systemd/system/epicnext-cms.service";
 pub const PORT: u16 = 3002;
 pub const UPSTREAM: &str = "http://127.0.0.1:3002";
@@ -99,7 +107,7 @@ const STOP_SERVICE: &str = r#"if [ -d /run/systemd/system ]; then systemctl stop
 else pkill -u www-data -f '{{Directory}}/node_modules/next/' 2>/dev/null || true; fi"#;
 
 fn stop_service() -> String {
-    fill(STOP_SERVICE, &[("Service", SERVICE), ("Directory", DIRECTORY)])
+    fill(STOP_SERVICE, &[("Service", SERVICE), ("Directory", directory())])
 }
 
 const INSPECT: &str = r#"d={{Directory}}
@@ -121,8 +129,8 @@ pub async fn inspect(server: &dyn Server) -> Result<EpicNextState> {
     let script = fill(
         INSPECT,
         &[
-            ("Directory", DIRECTORY),
-            ("SourceInfo", SOURCE_INFO),
+            ("Directory", directory()),
+            ("SourceInfo", source_info()),
             ("ServiceFile", SERVICE_FILE),
             ("Upstream", UPSTREAM),
             ("EmulatorDirectory", &emulator::directory()),
@@ -219,12 +227,12 @@ pub async fn get_from_folder(server: &dyn Server, url: &str, branch: &str, folde
         GET_FROM_FOLDER,
         &[
             ("Environment", ENVIRONMENT),
-            ("SourceDirectory", SOURCE_DIRECTORY),
-            ("Directory", DIRECTORY),
+            ("SourceDirectory", source_directory()),
+            ("Directory", directory()),
             ("url", &shell_quote(url)),
             ("branch", &shell_quote(branch)),
             ("folder", &shell_quote(folder)),
-            ("SourceInfo", SOURCE_INFO),
+            ("SourceInfo", source_info()),
         ],
     );
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Getting EpicNext failed", &["COMMIT"], None).await?;
@@ -256,7 +264,7 @@ echo "  pnpm $p (corepack)""#;
 
 /// Node.js 26.12.1 or newer (apt upgrades an older Node.js 26 from NodeSource) and pnpm through corepack.
 pub async fn prepare_tools(server: &dyn Server, log: Log<'_>) -> Result<()> {
-    let body = fill(PREPARE_TOOLS, &[("Environment", ENVIRONMENT), ("NodeMinimum", NODE_MINIMUM), ("Directory", DIRECTORY)]);
+    let body = fill(PREPARE_TOOLS, &[("Environment", ENVIRONMENT), ("NodeMinimum", NODE_MINIMUM), ("Directory", directory())]);
     script::run(server, &script::with_prelude(&body), log, "Preparing Node.js and pnpm failed", None).await
 }
 
@@ -337,7 +345,7 @@ env_set DATABASE_URL "mysql://$(enc "$dbuser"):$(enc "$dbpass")@127.0.0.1:3306/$
 # .env.example), while an unset one is fine: empty settings are commented out.
 empty=$(grep -cE '^[A-Za-z0-9_]+=("")?[[:space:]]*$' .env || true)
 if [ "$empty" -gt 0 ]; then
-  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Installer)/' .env
+  sed -i -E 's/^([A-Za-z0-9_]+)=("")?[[:space:]]*$/# \1=   (empty: left unset by All-in-1 Manager)/' .env
   echo "  $empty empty settings left unset (commented out): EpicNext refuses empty values"
 fi
 chmod 640 .env
@@ -357,8 +365,8 @@ pub async fn configure_env(
     let values: [(&str, String); 6] = [
         ("HOTEL_NAME", env_value(hotel_name)),
         ("APP_URL", site.url()),
-        // EpicNext's settings check (src/env.ts) refuses an APP_URL that differs from NEXT_PUBLIC_APP_URL,
-        // which .env.example sets to http://localhost:3002.
+        // The address the browser code is built with. EpicNext's settings check (src/env.ts) refuses an APP_URL
+        // that differs from it, and .env.example sets it to http://localhost:3002.
         ("NEXT_PUBLIC_APP_URL", site.url()),
         ("AUTH_URL", site.url()),
         // Behind Traefik and NGINX: NextAuth takes the host from the forwarded headers.
@@ -369,7 +377,7 @@ pub async fn configure_env(
     let body = fill(
         CONFIGURE_ENV,
         &[
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("sets", &sets),
             ("EmulatorDirectory", &emulator::directory()),
             ("CmsUser", &shell_quote(credentials.map(|c| c.cms_user.as_str()).unwrap_or(""))),
@@ -414,7 +422,23 @@ corepack pnpm store prune >/dev/null 2>&1 || true
 echo "> Disk: $(free_mb) MB free"
 need_disk 3072 "pnpm install"
 echo "> pnpm install --frozen-lockfile"
-run corepack pnpm install --frozen-lockfile --reporter=append-only || fail "pnpm install stopped (see above)."
+pnpm_log=$(mktemp)
+if ! (run corepack pnpm install --frozen-lockfile --reporter=append-only | tee "$pnpm_log"; exit "${PIPESTATUS[0]}"); then
+  # pnpm's supply-chain check refuses package versions younger than its minimum release age. When EpicNext commits
+  # a lockfile with versions newer than that (a fresh Next.js release), every install stops until they are old
+  # enough. The check stays on: the step says which versions and that it works again once they are old enough.
+  if grep -q 'MINIMUM_RELEASE_AGE' "$pnpm_log"; then
+    young=$(grep -oE '^ *[@a-zA-Z0-9._/-]+@[0-9][^ ]* was published at' "$pnpm_log" | awk '{print $1}' | sort -u | tr '\n' ' ')
+    newest=$(grep -oE 'published at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}' "$pnpm_log" | awk '{print $3}' | sort | tail -n 1)
+    rm -f "$pnpm_log"
+    echo "  EpicNext's lockfile pins $(echo $young | wc -w) package versions that pnpm's supply-chain check finds too new:"
+    echo "    $young" | fold -s -w 110 | sed 's/^/  /'
+    fail "pnpm only installs package versions once they are older than its minimum release age (a guard against freshly published malicious packages), and EpicNext's latest lockfile has newer ones${newest:+ (the newest published ${newest/T/ } UTC)}. pnpm installed nothing. Run this step again once they are old enough (usually a day or two after that), or ask EpicNext's author to commit a lockfile that passes the check."
+  fi
+  rm -f "$pnpm_log"
+  fail "pnpm install stopped (see above)."
+fi
+rm -f "$pnpm_log"
 # EpicNext was built on an AtomCMS database: its migrations expect AtomCMS' tables (such as
 # website_housekeeping_permissions). The ones the hotel database lacks come from its own base schema.
 db=$(grep -sE '^db.database=' {{EmulatorDirectory}}/config.ini | cut -d= -f2 | tr -d '[:space:]')
@@ -519,12 +543,12 @@ pub async fn build(server: &dyn Server, log: Log<'_>) -> Result<()> {
         BUILD,
         &[
             ("Environment", ENVIRONMENT),
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("Gamedata", &octane::gamedata()),
             ("OldGamedataLink", OLD_GAMEDATA_LINK),
             ("EmulatorDirectory", &emulator::directory()),
-            ("SourceInfo", SOURCE_INFO),
-            ("SourceDirectory", SOURCE_DIRECTORY),
+            ("SourceInfo", source_info()),
+            ("SourceDirectory", source_directory()),
             ("StopService", &stop_service()),
             ("BaseSchemaScript", BASE_SCHEMA_SCRIPT),
         ],
@@ -541,7 +565,7 @@ if [ -n "$pid" ] && [ "$(readlink /proc/$pid/cwd)" != {{Directory}} ]; then
 fi
 echo "> {{ServiceFile}}"
 cat > {{ServiceFile}} <<'UNIT'
-# EpicNext CMS (written by All-in-1 Installer, Addons → CMS). NGINX (cms-{{SiteName}}) passes the site here.
+# EpicNext CMS (written by All-in-1 Manager, Addons → CMS). NGINX (cms-{{SiteName}}) passes the site here.
 [Unit]
 Description=EpicNext CMS
 After=network-online.target mariadb.service
@@ -587,13 +611,13 @@ echo "  {{Upstream}}/ answers HTTP $code""#;
 
 /// The systemd service (as www-data, on 127.0.0.1:3002, at boot), started and waited for.
 pub async fn start_service(server: &dyn Server, log: Log<'_>) -> Result<()> {
-    let start = format!("/usr/bin/node {DIRECTORY}/node_modules/next/dist/bin/next start -H 127.0.0.1 -p {PORT}");
+    let start = format!("/usr/bin/node {}/node_modules/next/dist/bin/next start -H 127.0.0.1 -p {PORT}", directory());
     let body = fill(
         START_SERVICE,
         &[
             ("Environment", ENVIRONMENT),
             ("Port", &PORT.to_string()),
-            ("Directory", DIRECTORY),
+            ("Directory", directory()),
             ("ServiceFile", SERVICE_FILE),
             ("SiteName", SITE_NAME),
             ("start", &start),
@@ -629,7 +653,7 @@ pub async fn remove_service(server: &dyn Server, delete: bool, log: Log<'_>) -> 
             ("delete", if delete { "yes" } else { "no" }),
             ("ServiceFile", SERVICE_FILE),
             ("OldGamedataLink", OLD_GAMEDATA_LINK),
-            ("SourceDirectory", SOURCE_DIRECTORY),
+            ("SourceDirectory", source_directory()),
         ],
     );
     script::run(server, &script::with_prelude(&body), log, "Stopping EpicNext failed", None).await

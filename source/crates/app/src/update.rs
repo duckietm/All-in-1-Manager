@@ -1,7 +1,7 @@
 //! Keeps the program itself up to date (AppUpdate.cs). At startup it asks GitHub for the newest release; when that
 //! release is newer than the running build, the download replaces the running file and the program starts again.
-//! Releases of the Rust build are tagged `rust-v<version>` and carry `all-in-1-installer-windows-x64.exe` /
-//! `all-in-1-installer-linux-x64`. Only published releases count: no internet, a draft or pre-release, or a
+//! Releases of the Rust build are tagged `rust-v<version>` and carry `all-in-1-manager-windows-x64.exe` /
+//! `all-in-1-manager-linux-x64`. Only published releases count: no internet, a draft or pre-release, or a
 //! repository without releases all mean no question is asked.
 
 use std::path::{Path, PathBuf};
@@ -10,13 +10,19 @@ use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const REPOSITORY: &str = "duckietm/All-in-1-installer";
+pub const REPOSITORY: &str = "duckietm/All-in-1-Manager";
 const TAG_PREFIX: &str = "rust-v";
 
 #[cfg(windows)]
-pub const ASSET_NAME: &str = "all-in-1-installer-windows-x64.exe";
+pub const ASSET_NAME: &str = "all-in-1-manager-windows-x64.exe";
 #[cfg(not(windows))]
-pub const ASSET_NAME: &str = "all-in-1-installer-linux-x64";
+pub const ASSET_NAME: &str = "all-in-1-manager-linux-x64";
+
+/// The release file holding `ASSET_NAME`'s SHA-256, written by the release workflow.
+#[cfg(windows)]
+pub const CHECKSUM_NAME: &str = "all-in-1-manager-windows-x64.exe.sha256";
+#[cfg(not(windows))]
+pub const CHECKSUM_NAME: &str = "all-in-1-manager-linux-x64.sha256";
 
 /// Where to get the newest program by hand.
 pub fn download_page() -> String {
@@ -29,6 +35,8 @@ pub struct Release {
     pub page_url: String,
     pub asset_url: String,
     pub asset_bytes: u64,
+    /// `<asset>.sha256` of the release, when it publishes one: what the download is checked against.
+    pub asset_sha256_url: Option<String>,
     pub notes: String,
     /// Every published version newer than this build, newest first, with its notes: what an update brings.
     pub changes: Vec<(String, String)>,
@@ -59,15 +67,17 @@ struct GithubAsset {
 fn client() -> reqwest::Client {
     reqwest::Client::builder()
         // The GitHub API refuses requests without a user agent.
-        .user_agent(format!("All-in-1-Installer/{CURRENT_VERSION}"))
+        .user_agent(format!("All-in-1-Manager/{CURRENT_VERSION}"))
         .timeout(std::time::Duration::from_secs(20 * 60))
         .build()
         .expect("HTTP client")
 }
 
 /// True for a build that can replace itself: a release build (cargo run of a debug build never offers an update).
+/// Never on macOS: the releases have no macOS program, and taking the Linux one would replace a working build with a
+/// file that does not start. A macOS build is updated by building it again from the sources.
 pub fn can_update() -> bool {
-    !cfg!(debug_assertions) && std::env::current_exe().is_ok()
+    !cfg!(debug_assertions) && !cfg!(target_os = "macos") && std::env::current_exe().is_ok()
 }
 
 /// The newest published release when it is newer than this build, or None. Never fails.
@@ -106,7 +116,7 @@ fn newest(releases: Vec<GithubRelease>) -> Option<Release> {
             is_newer(version).then(|| (parsed, version.to_string(), r.body.clone().unwrap_or_default()))
         })
         .collect();
-    changes.sort_by(|a, b| b.0.cmp(&a.0));
+    changes.sort_by_key(|c| std::cmp::Reverse(c.0));
     let changes: Vec<(String, String)> = changes.into_iter().map(|(_, version, notes)| (version, notes)).collect();
     releases
         .into_iter()
@@ -114,6 +124,7 @@ fn newest(releases: Vec<GithubRelease>) -> Option<Release> {
         .filter_map(|r| {
             let version = parse_version(r.tag_name.strip_prefix(TAG_PREFIX)?)?;
             let asset = r.assets.iter().find(|a| a.name == ASSET_NAME)?;
+            let checksum = r.assets.iter().find(|a| a.name == CHECKSUM_NAME);
             Some((
                 version,
                 Release {
@@ -121,6 +132,7 @@ fn newest(releases: Vec<GithubRelease>) -> Option<Release> {
                     page_url: r.html_url.clone(),
                     asset_url: asset.browser_download_url.clone(),
                     asset_bytes: asset.size,
+                    asset_sha256_url: checksum.map(|a| a.browser_download_url.clone()),
                     notes: r.body.clone().unwrap_or_default(),
                     // Not past the version this update installs.
                     changes: changes.iter().filter(|(v, _)| parse_version(v).is_some_and(|p| p <= version)).cloned().collect(),
@@ -150,6 +162,18 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
     PathBuf::from(text)
 }
 
+/// The SHA-256 of `bytes` as lowercase hex.
+fn sha256_of(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The digest from a published checksum file: "<hex>" or the `sha256sum` form "<hex>  <file name>".
+fn checksum_in(text: &str) -> Option<String> {
+    let digest = text.split_whitespace().next()?.trim().to_ascii_lowercase();
+    (digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())).then_some(digest)
+}
+
 /// Downloads the release file next to the running one, moves the running one aside (`.old`, removed at the next
 /// start) and puts the new one in its place, keeping its name. `progress` gets (done, total) bytes.
 pub async fn download_and_replace(release: &Release, progress: impl Fn(u64, u64)) -> Result<PathBuf> {
@@ -170,6 +194,23 @@ pub async fn download_and_replace(release: &Release, progress: impl Fn(u64, u64)
     }
     if bytes.len() < 1024 * 1024 {
         bail!("The downloaded file is too small ({} bytes); not installing it", bytes.len());
+    }
+    // What the release says the file should be. A release without a .sha256 is installed as before, so an older
+    // release stays installable; when one is published it has to match, and a changed download never runs.
+    if let Some(url) = &release.asset_sha256_url {
+        let published = client().get(url).send().await.context("Downloading the checksum failed")?.error_for_status()?;
+        let expected = checksum_in(&published.text().await.context("Downloading the checksum failed")?)
+            .context("The published checksum could not be read")?;
+        let actual = sha256_of(&bytes);
+        if actual != expected {
+            bail!(
+                "The downloaded file is not the one this release publishes.
+  Expected: {expected}
+  Got:      {actual}
+Nothing was installed. Try again, and if it keeps happening download it by hand from {}.",
+                download_page()
+            );
+        }
     }
     std::fs::write(&downloaded, &bytes).with_context(|| format!("Could not write {}", downloaded.display()))?;
     #[cfg(unix)]
@@ -207,6 +248,37 @@ pub fn start_again() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_checksum_is_the_sha256_as_hex() {
+        // The empty input's SHA-256, the standard test vector.
+        assert_eq!(sha256_of(b""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+        assert_eq!(sha256_of(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    #[test]
+    fn a_published_checksum_is_read_in_either_form() {
+        let digest = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        assert_eq!(checksum_in(digest).as_deref(), Some(digest));
+        assert_eq!(checksum_in(&format!("{digest}
+")).as_deref(), Some(digest));
+        // The sha256sum form: the digest, two spaces, the file name.
+        assert_eq!(checksum_in(&format!("{digest}  {ASSET_NAME}
+")).as_deref(), Some(digest));
+        // Upper case is the same digest.
+        assert_eq!(checksum_in(&digest.to_ascii_uppercase()).as_deref(), Some(digest));
+    }
+
+    #[test]
+    fn nonsense_is_not_taken_for_a_checksum() {
+        assert_eq!(checksum_in(""), None);
+        assert_eq!(checksum_in("   "), None);
+        assert_eq!(checksum_in("not a checksum"), None);
+        // Too short, too long, and not hex.
+        assert_eq!(checksum_in("ba7816bf"), None);
+        assert_eq!(checksum_in(&"a".repeat(65)), None);
+        assert_eq!(checksum_in(&"z".repeat(64)), None);
+    }
 
     fn release(tag: &str, asset: bool, prerelease: bool) -> GithubRelease {
         GithubRelease {

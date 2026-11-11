@@ -99,7 +99,7 @@ load_cloudflare_ranges() {
   echo "  $(echo "$ranges" | grep -c .) ranges"
 }
 set -o pipefail
-db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]')
+db=$(grep -sE '^db.database=' /var/www/emulator/Emulator/config.ini | cut -d= -f2 | tr -d '[:space:]') || true
 db=${db:-habbo}
 staging=plus_import
 f='/tmp/x.sql'
@@ -221,7 +221,7 @@ if [ -n "$emulator" ]; then
   fi
 fi
 --- stdin
--- Part of the All-in-1 Installer's "Import Plus database" tool (Remote/PlusImport.cs).
+-- Part of the All-in-1 Manager's "Import Plus database" tool (Remote/PlusImport.cs).
 -- @S@ is the staging database with the PlusEMU dump, @T@ the hotel's Polaris database; the tool fills them in.
 -- Lines starting with a KEY= value in the output are the tool's report.
 SET SESSION sql_mode = 'NO_ENGINE_SUBSTITUTION';

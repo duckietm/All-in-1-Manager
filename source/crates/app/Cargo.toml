@@ -3,14 +3,15 @@ name = "aio-app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "All-in-1 Installer: sets up a full hotel server (Polaris, Octane, MariaDB, NGINX, Traefik) over SSH"
+description = "All-in-1 Manager: sets up a full hotel server (Polaris, Octane, MariaDB, NGINX, Traefik) over SSH"
 build = "build.rs"
 
 [[bin]]
-name = "all-in-1-installer"
+name = "all-in-1-manager"
 path = "src/main.rs"
 
 [dependencies]
+aio-assets.workspace = true
 aio-core.workspace = true
 aio-remote.workspace = true
 aio-terminal.workspace = true
@@ -20,7 +21,9 @@ tokio.workspace = true
 tokio-util.workspace = true
 futures.workspace = true
 serde.workspace = true
+parking_lot.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
 eframe.workspace = true

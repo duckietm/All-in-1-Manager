@@ -132,7 +132,7 @@ grep -E '^db\.(hostname|port|database|username|params)=' "$d/config.ini" | sed '
 echo "> Writing the start script $d/emulator"
 cat > "$d/emulator" <<'START'
 #!/bin/sh
-# Starts the Polaris emulator; used by emulator.service (written by All-in-1 Installer).
+# Starts the Polaris emulator; used by emulator.service (written by All-in-1 Manager).
 # The previous log is kept as emulator.log.<time>; kept logs older than 30 days are removed.
 JAVA_HOME=JAVA_HOME_HERE
 MEMORY_MB=MEMORY_HERE

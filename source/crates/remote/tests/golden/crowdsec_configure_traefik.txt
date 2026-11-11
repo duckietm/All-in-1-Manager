@@ -123,7 +123,7 @@ if [ no = yes ]; then
 fi
 umask 077
 cat > /opt/traefik/dynamic/crowdsec.yml <<EOF
-# CrowdSec's bouncer on every route (written by All-in-1 Installer, Addons → CrowdSec; Tools → CrowdSec).
+# CrowdSec's bouncer on every route (written by All-in-1 Manager, Addons → CrowdSec; Tools → CrowdSec).
 http:
   middlewares:
     crowdsec:
@@ -153,7 +153,7 @@ fi
 if [ -f /opt/traefik/dynamic/crowdsec.yml ]; then
   echo "> $t/traefik.yml (with CrowdSec)"
   cat > "$t/traefik.yml" <<'EOF'
-# Traefik static configuration (written by All-in-1 Installer).
+# Traefik static configuration (written by All-in-1 Manager).
 entryPoints:
   web:
     address: ":80"
@@ -196,7 +196,7 @@ EOF
 else
   echo "> $t/traefik.yml"
   cat > "$t/traefik.yml" <<'EOF'
-# Traefik static configuration (written by All-in-1 Installer).
+# Traefik static configuration (written by All-in-1 Manager).
 entryPoints:
   web:
     address: ":80"
@@ -230,7 +230,7 @@ sed -i "s#\[TRUSTED\]#[$trusted]#" "$t/traefik.yml"
 echo "> $t/compose.yaml"
 install -d -m 755 /var/log/traefik "$t/plugins-storage"
 cat > "$t/compose.yaml" <<'EOF'
-# Traefik for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# Traefik for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 services:
   traefik:
     image: traefik:v3

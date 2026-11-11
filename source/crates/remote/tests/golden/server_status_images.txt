@@ -1,5 +1,24 @@
 === root
 command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || exit 0
+hub_digest() {
+  hub_remote=; hub_limited=
+  command -v curl >/dev/null 2>&1 || return 0
+  local ref=$1 repo tag token head try
+  repo=${ref%%:*}; tag=${ref##*:}; [ "$repo" = "$ref" ] && tag=latest
+  case $repo in */*) ;; *) repo=library/$repo ;; esac
+  # Twice: a slow answer on a busy connection is not a verdict.
+  for try in 1 2; do
+    token=$(curl -fsS -m 15 "https://auth.docker.io/token?service=registry.docker.io&scope=repository:$repo:pull" 2>/dev/null | sed -n 's/.*"token": *"\([^"]*\)".*/\1/p')
+    [ -n "$token" ] || continue
+    head=$(curl -sS -I -m 15 -H "Authorization: Bearer $token" \
+      -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json' \
+      "https://registry-1.docker.io/v2/$repo/manifests/$tag" 2>/dev/null | tr -d '\r')
+    echo "$head" | grep -q '^HTTP/[0-9.]* 429' && { hub_limited=yes; return 0; }
+    hub_remote=$(echo "$head" | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: *//p' | head -1)
+    [ -n "$hub_remote" ] && return 0
+  done
+  return 0
+}
 if docker inspect traefik >/dev/null 2>&1; then
   running=$(docker inspect -f '{{.State.Running}}' traefik 2>/dev/null)
   version=$(docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print $2}')
@@ -8,11 +27,14 @@ if docker inspect traefik >/dev/null 2>&1; then
   downloaded=$(docker image inspect -f '{{.Id}}' traefik:v3 2>/dev/null)
   restart=$([ -n "$downloaded" ] && [ "$current" != "$downloaded" ] && echo yes)
   # The digest Docker Hub has for the tag now, against the one this server pulled.
-  remote=$(timeout 30 docker buildx imagetools inspect traefik:v3 --format '{{.Manifest.Digest}}' 2>/dev/null)
+  # A HEAD request does not count against Docker Hub's pull limit; buildx (a GET) only when that gives nothing.
+  hub_digest traefik:v3
+  remote=$hub_remote
+  [ -n "$remote" ] || remote=$(timeout 30 docker buildx imagetools inspect traefik:v3 --format '{{.Manifest.Digest}}' 2>/dev/null)
   mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' traefik:v3 2>/dev/null | sed -n 's/.*@//p' | head -1)
   newest=
   if [ -z "$remote" ]; then
-    newer=; problem="Docker Hub did not answer"
+    newer=; problem="Docker Hub did not answer${hub_limited:+ (it limits the requests from this server right now)}"
   else
     problem=
     newer=$([ "$remote" != "$mine" ] && echo yes)
@@ -29,11 +51,14 @@ if docker inspect gitea >/dev/null 2>&1; then
   downloaded=$(docker image inspect -f '{{.Id}}' gitea/gitea:1 2>/dev/null)
   restart=$([ -n "$downloaded" ] && [ "$current" != "$downloaded" ] && echo yes)
   # The digest Docker Hub has for the tag now, against the one this server pulled.
-  remote=$(timeout 30 docker buildx imagetools inspect gitea/gitea:1 --format '{{.Manifest.Digest}}' 2>/dev/null)
+  # A HEAD request does not count against Docker Hub's pull limit; buildx (a GET) only when that gives nothing.
+  hub_digest gitea/gitea:1
+  remote=$hub_remote
+  [ -n "$remote" ] || remote=$(timeout 30 docker buildx imagetools inspect gitea/gitea:1 --format '{{.Manifest.Digest}}' 2>/dev/null)
   mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' gitea/gitea:1 2>/dev/null | sed -n 's/.*@//p' | head -1)
   newest=
   if [ -z "$remote" ]; then
-    newer=; problem="Docker Hub did not answer"
+    newer=; problem="Docker Hub did not answer${hub_limited:+ (it limits the requests from this server right now)}"
   else
     problem=
     newer=$([ "$remote" != "$mine" ] && echo yes)
@@ -50,11 +75,14 @@ if docker inspect crowdsec >/dev/null 2>&1; then
   downloaded=$(docker image inspect -f '{{.Id}}' crowdsecurity/crowdsec:latest 2>/dev/null)
   restart=$([ -n "$downloaded" ] && [ "$current" != "$downloaded" ] && echo yes)
   # The digest Docker Hub has for the tag now, against the one this server pulled.
-  remote=$(timeout 30 docker buildx imagetools inspect crowdsecurity/crowdsec:latest --format '{{.Manifest.Digest}}' 2>/dev/null)
+  # A HEAD request does not count against Docker Hub's pull limit; buildx (a GET) only when that gives nothing.
+  hub_digest crowdsecurity/crowdsec:latest
+  remote=$hub_remote
+  [ -n "$remote" ] || remote=$(timeout 30 docker buildx imagetools inspect crowdsecurity/crowdsec:latest --format '{{.Manifest.Digest}}' 2>/dev/null)
   mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' crowdsecurity/crowdsec:latest 2>/dev/null | sed -n 's/.*@//p' | head -1)
   newest=
   if [ -z "$remote" ]; then
-    newer=; problem="Docker Hub did not answer"
+    newer=; problem="Docker Hub did not answer${hub_limited:+ (it limits the requests from this server right now)}"
   else
     problem=
     newer=$([ "$remote" != "$mine" ] && echo yes)

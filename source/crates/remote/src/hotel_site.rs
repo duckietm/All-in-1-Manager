@@ -4,9 +4,14 @@
 
 use crate::web_access::WebAccessSettings;
 
-pub const FILE: &str = "/etc/nginx/sites-available/hotel";
+/// The hotel's NGINX site file (Settings → Server layout).
+pub fn file() -> &'static str {
+    &aio_core::ServerLayout::current().nginx_site
+}
 pub const PORT: &str = "85";
-pub const LOG_DIRECTORY: &str = "/var/log/nginx/hotel";
+pub fn log_directory() -> &'static str {
+    &aio_core::ServerLayout::current().nginx_logs
+}
 /// The proxies NGINX takes the visitor's address from: 127.0.0.1 (Traefik), and Cloudflare's ranges behind Cloudflare.
 pub const REAL_IP_FILE: &str = "/etc/nginx/hotel-real-ip.conf";
 pub const DEFAULT_ROOT: &str = "/usr/share/nginx/html";
@@ -38,7 +43,7 @@ pub fn write_script(site: &WebAccessSettings, root: Option<&str>) -> String {
 pub fn real_ip_script(site: &WebAccessSettings) -> String {
     crate::script::fill(
         REAL_IP,
-        &[("cloudflare", if site.cloudflare { "yes" } else { "no" }), ("RealIpFile", REAL_IP_FILE), ("File", FILE)],
+        &[("cloudflare", if site.cloudflare { "yes" } else { "no" }), ("RealIpFile", REAL_IP_FILE), ("File", file())],
     )
 }
 
@@ -190,8 +195,8 @@ pub(crate) fn server_name(site: &WebAccessSettings) -> String {
     }
 }
 
-const CONFIG: &str = r#"# The hotel website (written by All-in-1 Installer; the web access and Octane steps rewrite it).
-# Traefik (/opt/traefik) answers on ports 80/443 for {{Url}} (and does the TLS) and passes the
+const CONFIG: &str = r#"# The hotel website (written by All-in-1 Manager; the web access and Octane steps rewrite it).
+# Traefik ({{TraefikDirectory}}) answers on ports 80/443 for {{Url}} (and does the TLS) and passes the
 # site to this server on 127.0.0.1:{{Port}}; /ws and Polaris' /api go straight to Polaris on 127.0.0.1:{{PolarisPort}}.
 # {{what}}
 
@@ -306,12 +311,13 @@ pub fn config(site: &WebAccessSettings) -> String {
         CONFIG,
         &[
             ("Url", &site.url()),
+            ("TraefikDirectory", crate::web_access::traefik_directory()),
             ("Port", PORT),
             ("PolarisPort", crate::web_access::POLARIS_PORT),
             ("origin", &origin),
             ("serverName", &server_name(site)),
             ("RealIpFile", REAL_IP_FILE),
-            ("LogDirectory", LOG_DIRECTORY),
+            ("LogDirectory", log_directory()),
             ("Gamedata", &crate::octane::gamedata()),
             ("what", &what),
             ("hsts", hsts),
@@ -327,7 +333,7 @@ if [ {{cloudflare}} = yes ]; then
   cf=$( (curl -fsS --max-time 20 https://www.cloudflare.com/ips-v4; echo; curl -fsS --max-time 20 https://www.cloudflare.com/ips-v6) \
     | grep -E '^[0-9a-f.:]+/[0-9]+$' ) || true
   if [ "$(echo "$cf" | grep -c .)" -ge 10 ]; then
-    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+    { echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Manager): Traefik and Cloudflare."
       echo "set_real_ip_from 127.0.0.1;"
       echo "$cf" | sed 's/.*/set_real_ip_from &;/'; } > "$realip"
     echo "> $realip: 127.0.0.1 and $(echo "$cf" | grep -c .) Cloudflare ranges (the visitor's address, not Cloudflare's)"
@@ -338,7 +344,7 @@ if [ {{cloudflare}} = yes ]; then
     echo "  Could not download Cloudflare's ranges: NGINX sees Cloudflare's address until this runs again"
   fi
 else
-  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Installer): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
+  printf '# Proxies NGINX takes the visitor'"'"'s address from (written by All-in-1 Manager): Traefik.\nset_real_ip_from 127.0.0.1;\n' > "$realip"
   echo "> $realip: 127.0.0.1 (Traefik)"
 fi
 if [ -f {{File}} ] && ! grep -q 'include {{RealIpFile}}' {{File}}; then
@@ -346,8 +352,8 @@ if [ -f {{File}} ] && ! grep -q 'include {{RealIpFile}}' {{File}}; then
   echo "  {{File}} now takes its proxies from $realip"
 fi"##;
 
-const WRITE: &str = r#"[ -d /etc/nginx/sites-available ] || fail "NGINX is not installed with sites-available. Run the NGINX step first."
-if [ -f {{File}} ] && ! grep -q 'All-in-1 Installer' {{File}}; then
+const WRITE: &str = r#"[ -d "$(dirname {{File}})" ] || fail "$(dirname {{File}}) does not exist: run the NGINX step first, or fix the NGINX hotel site in Settings → Server layout."
+if [ -f {{File}} ] && ! grep -qE 'All-in-1 (Manager|Installer)' {{File}}; then
   cp {{File}} "{{File}}.bak-$(date +%Y%m%d-%H%M%S)"
   echo "  The old {{File}} is saved as {{File}}.bak-<time>"
 fi
@@ -370,7 +376,8 @@ cat > {{File}} <<'SITE'
 {{Config}}
 SITE
 sed -i "s#@ROOT@#$root#" {{File}}
-ln -sfn {{File}} /etc/nginx/sites-enabled/hotel
+# A site in sites-available is switched on with a link in sites-enabled; elsewhere (conf.d) NGINX reads it as it is.
+case {{File}} in /etc/nginx/sites-available/*) ln -sfn {{File}} "/etc/nginx/sites-enabled/$(basename {{File}})" ;; esac
 
 # Ports 80 and 443 belong to Traefik, so the default site and any other site must not listen there.
 if [ -L /etc/nginx/sites-enabled/default ] || [ -f /etc/nginx/sites-enabled/default ]; then
@@ -399,10 +406,10 @@ fn write_script_for(site: &WebAccessSettings, root: Option<&str>) -> String {
     let text = fill(
         WRITE,
         &[
-            ("File", FILE),
+            ("File", file()),
             ("root", root.unwrap_or("")),
             ("DefaultRoot", DEFAULT_ROOT),
-            ("LogDirectory", LOG_DIRECTORY),
+            ("LogDirectory", log_directory()),
             ("Gamedata", &crate::octane::gamedata()),
             ("Camera", &camera),
             ("Port", PORT),

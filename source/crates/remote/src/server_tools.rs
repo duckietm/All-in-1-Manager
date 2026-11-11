@@ -15,9 +15,15 @@ pub fn backup_directory() -> String {
 pub const KEPT_BACKUPS: usize = 10;
 
 /// Sets $db: the hotel database from the emulator's config.ini, or the layout's database. (DatabaseName)
+/// `|| true`: without config.ini (an emulator elsewhere) grep exits with 2, which stopped scripts that run with
+/// pipefail (the backup) before they said anything.
 pub fn database_name() -> String {
+    // Chosen during this run (the configured one was not there): exactly that one.
+    if let Some(chosen) = ServerLayout::chosen_database() {
+        return format!("db={chosen}");
+    }
     format!(
-        "db=$(grep -sE '^db.database=' {}/config.ini | cut -d= -f2 | tr -d '[:space:]')\ndb=${{db:-{}}}",
+        "db=$(grep -sE '^db.database=' {}/config.ini | cut -d= -f2 | tr -d '[:space:]') || true\ndb=${{db:-{}}}",
         crate::emulator::directory(),
         ServerLayout::current().database
     )
@@ -200,7 +206,7 @@ ss -Hltn 'sport = :80' | grep -q . || { docker logs --tail 20 traefik 2>&1 | sed
 echo "  $(docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print "Traefik " $2}') is running""#;
 
 pub async fn restart_traefik(server: &dyn Server, log: Log<'_>) -> Result<()> {
-    let body = fill(RESTART_TRAEFIK, &[("TraefikDirectory", web_access::TRAEFIK_DIRECTORY)]);
+    let body = fill(RESTART_TRAEFIK, &[("TraefikDirectory", web_access::traefik_directory())]);
     script::run(server, &script::with_prelude(&body), log, "Restarting Traefik failed", None).await
 }
 
@@ -210,7 +216,7 @@ pub async fn update_traefik(server: &dyn Server, log: Log<'_>) -> Result<()> {
     update_image(
         server,
         "Traefik",
-        web_access::TRAEFIK_DIRECTORY,
+        web_access::traefik_directory(),
         "traefik",
         "docker exec traefik traefik version 2>/dev/null | awk '/^Version/ {print $2}'",
         "ss -Hltn 'sport = :80' | grep -q .",
@@ -409,7 +415,7 @@ impl DebugLogSource {
 /// The emulator, NGINX, Traefik, the firewall, Fail2Ban and CrowdSec, in the order of the Debug page's buttons.
 pub fn debug_log_sources() -> Vec<DebugLogSource> {
     let logs = emulator::log_directory();
-    let nginx = hotel_site::LOG_DIRECTORY;
+    let nginx = hotel_site::log_directory();
     let ufw = UFW_LOG;
     let fail2ban = FAIL2BAN_LOG;
     let source = |name: &str, description: String, follows: String, command: String| DebugLogSource {

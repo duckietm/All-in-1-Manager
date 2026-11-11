@@ -1,4 +1,4 @@
-# The hotel website (written by All-in-1 Installer; the web access and Octane steps rewrite it).
+# The hotel website (written by All-in-1 Manager; the web access and Octane steps rewrite it).
 # Traefik (/opt/traefik) answers on ports 80/443 for https://hotel.example.com (and does the TLS) and passes the
 # site to this server on 127.0.0.1:85; /ws and Polaris' /api go straight to Polaris on 127.0.0.1:2096.
 # AtomCMS is the site (its own NGINX site on 127.0.0.1:86); this one serves Octane on /client/ and the assets.

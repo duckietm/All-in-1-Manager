@@ -2,7 +2,7 @@
 //! (SshLoginStep.cs)
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_core::keys::{self, AuthorizedKey};
 use aio_core::{config_dir, InstallerSettings};
@@ -10,6 +10,7 @@ use aio_remote::ssh_login::{self, DROP_IN};
 use aio_remote::{fail, Server, ServerLogin};
 use async_trait::async_trait;
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -141,7 +142,7 @@ impl InstallStep for SshLoginStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut guard = self.options.lock().unwrap();
+        let mut guard = self.options.lock();
         let o = &mut *guard;
         ui.add_space(8.0);
         ui.spacing_mut().item_spacing.y = 10.0;
@@ -170,7 +171,7 @@ impl InstallStep for SshLoginStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let o = self.options.lock().unwrap();
+        let o = self.options.lock();
         (o.keys_only && !o.understood).then(|| {
             t("Tick that you understand the warning: without your SSH key the only way in is the console of your hosting provider.").into()
         })
@@ -180,7 +181,7 @@ impl InstallStep for SshLoginStep {
         let keys = private_keys(server.login());
         let state = ssh_login::inspect(server.as_ref(), &public_keys(&keys)).await?;
         {
-            let mut o = self.options.lock().unwrap();
+            let mut o = self.options.lock();
             o.keys = if keys.is_empty() {
                 t("No SSH key for this server on this computer (configuration/keys): install one in the SSH key step first.").into()
             } else {
@@ -217,7 +218,7 @@ impl InstallStep for SshLoginStep {
         let log = ui.logger();
         let server = server.as_ref();
         let (keep, password) = {
-            let o = self.options.lock().unwrap();
+            let o = self.options.lock();
             (!o.keys_only, o.key_password.clone())
         };
         log("> Checking the server ...");

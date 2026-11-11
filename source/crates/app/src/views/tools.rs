@@ -1,7 +1,8 @@
 //! The Tools page (ToolsView.cs): the server tools as tiles (restarts, firewall, Fail2Ban / CrowdSec whitelist and
 //! bans, database backup and import, the SQL password, the update check and the updates), each with its question,
-//! check list, result and log under the tiles, and the settings backup card under it. Server status, Emulator & wired
-//! and the SSH terminal are sub-pages of it, built once (the terminal keeps its shell while other pages are shown).
+//! check list, result and log under the tiles. Server status, Emulator & wired and the SSH terminal are sub-pages of it,
+//! built once (the terminal keeps its shell while other pages are shown). The settings backup card is drawn on the
+//! Settings page, from here, since its password dialog is one of this view's dialogs.
 //!
 //! The check for updates runs by itself once per login; its result goes on the update tiles' captions, on the line
 //! under them, and to the dashboard's components card ([`ToolsView::last_updates`], [`ToolsView::last_images`]).
@@ -10,11 +11,12 @@ mod actions;
 mod modals;
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::server_status::{ImageStatus, RepositoryUpdate};
 use aio_remote::{Server, ServerError};
 use eframe::egui::{self, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::dialogs::{Choice, Dialogs};
 use crate::gui::icons::{self, Icon};
@@ -59,6 +61,7 @@ enum Tool {
     ImportDatabase,
     ImportPlus,
     FurnitureLanguage,
+    CheckMultiheight,
     RecoverSqlPassword,
     CheckUpdates,
     UpdateSystem,
@@ -92,6 +95,7 @@ impl Tool {
             Tool::ImportDatabase => (n("Import full database"), n("Replace the hotel database with a backup"), Icon::Folder),
             Tool::ImportPlus => (n("Import Plus database"), n("PlusEMU furniture and catalog into Polaris"), Icon::Swap),
             Tool::FurnitureLanguage => (n("Furniture language"), n("The furniture names in another hotel's language; the database follows"), Icon::Globe),
+            Tool::CheckMultiheight => (n("Check multiheight"), n("Every multiheight against the states of the furni's .hab; too many heights fixed"), Icon::Wrench),
             Tool::RecoverSqlPassword => (n("Recover SQL password"), n("New MariaDB root password, saved in configuration"), Icon::Key),
             Tool::CheckUpdates => (n("Check for updates"), n("git fetch: what is new for the emulator, Octane and AtomCMS"), Icon::Download),
             Tool::UpdateSystem => (n("Update system"), n("apt update, upgrade and dist-upgrade"), Icon::Cog),
@@ -132,7 +136,7 @@ const SECTIONS: [(&str, &[Tool]); 8] = [
     (n("Firewall"), &[Tool::EnableFirewall, Tool::DisableFirewall]),
     (n("Fail2Ban"), &[Tool::Fail2Ban]),
     (n("CrowdSec"), &[Tool::CrowdSec]),
-    (n("Database"), &[Tool::BackupDatabase, Tool::ImportDatabase, Tool::ImportPlus, Tool::FurnitureLanguage, Tool::RecoverSqlPassword]),
+    (n("Database"), &[Tool::BackupDatabase, Tool::ImportDatabase, Tool::ImportPlus, Tool::FurnitureLanguage, Tool::CheckMultiheight, Tool::RecoverSqlPassword]),
     (
         n("Updates"),
         &[
@@ -225,7 +229,7 @@ impl ToolsView {
     pub fn refresh(&mut self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.running || state.checked_for == Some(session_id(&server)) {
                 return;
             }
@@ -251,21 +255,29 @@ impl ToolsView {
         self.start_tool(Tool::for_component(component), shared);
     }
 
+    /// Restarts a Docker service so it runs the newer image that is already downloaded (no Docker Hub needed). Only
+    /// Traefik has a restart tool; the others are updated, which recreates them from the downloaded image too.
+    pub fn restart(&mut self, component: Component, shared: &Shared) {
+        self.page = Page::Tools;
+        let tool = if component == Component::Traefik { Tool::RestartTraefik } else { Tool::for_component(component) };
+        self.start_tool(tool, shared);
+    }
+
     /// The last update check for this login (None: not checked yet).
     pub fn last_updates(&self) -> Option<Vec<RepositoryUpdate>> {
-        self.state.lock().unwrap().last_updates.clone()
+        self.state.lock().last_updates.clone()
     }
 
     /// The last Docker image check for this login.
     pub fn last_images(&self) -> Option<Vec<ImageStatus>> {
-        self.state.lock().unwrap().last_images.clone()
+        self.state.lock().last_images.clone()
     }
 
     /// Fetches GitHub again (the dashboard's Check again), without a run panel.
     pub fn check_updates_again(&mut self, shared: &Shared) {
         let Some(server) = shared.session() else { return };
         {
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             if state.running || state.checking {
                 return;
             }
@@ -277,7 +289,7 @@ impl ToolsView {
     /// A tile was clicked (or an Update button of the dashboard). (RunToolAsync)
     fn start_tool(&mut self, tool: Tool, shared: &Shared) {
         let Some(server) = shared.session() else { return };
-        if self.state.lock().unwrap().running {
+        if self.state.lock().running {
             return;
         }
         match tool {
@@ -295,7 +307,7 @@ impl ToolsView {
         }
         let title = t(tool.title()).to_string();
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.running = true;
             state.current_run = None;
         }
@@ -304,7 +316,7 @@ impl ToolsView {
             // The recorded commands go to the run panel of the tool.
             let state = self.state.clone();
             crate::gui::dry_run::set_sink(move |line| {
-                let run = state.lock().unwrap().current_run.clone();
+                let run = state.lock().current_run.clone();
                 if let Some(run) = run {
                     run.log(line);
                 }
@@ -315,7 +327,7 @@ impl ToolsView {
         shared.spawn(async move {
             let result = actions::perform(tool, &job).await;
             let failed = result.is_err();
-            let run = job.state.lock().unwrap().current_run.clone();
+            let run = job.state.lock().current_run.clone();
             if let Err(error) = result {
                 let message = step::error_message(&error);
                 let heading = tf("{title} failed", &[("title", &title)]);
@@ -335,7 +347,7 @@ impl ToolsView {
                 step::save_history(run, job.server.as_ref(), "tool", &title, outcome, started);
             }
             {
-                let mut state = job.state.lock().unwrap();
+                let mut state = job.state.lock();
                 state.running = false;
                 state.current_run = None;
             }
@@ -346,7 +358,7 @@ impl ToolsView {
     /// The settings backup buttons: no server needed.
     fn start_settings(&mut self, action: SettingsAction, shared: &Shared) {
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.running {
                 return;
             }
@@ -360,7 +372,7 @@ impl ToolsView {
                 SettingsAction::Export => actions::export_settings(&task_shared, &state).await,
                 SettingsAction::Import => actions::import_settings(&task_shared, &state).await,
             };
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock();
             if let Err(error) = result {
                 s.settings_result =
                     Some(Banner { kind: ResultKind::Error, heading: tf("{title} failed", &[("title", &title)]), message: step::error_message(&error) });
@@ -371,10 +383,51 @@ impl ToolsView {
         });
     }
 
+    /// The settings backup card (on the Settings page): export and import the encrypted settings. No server needed.
+    pub fn settings_backup_card(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        modals::show(ui.ctx(), palette, &self.state);
+        let (running, settings_result) = {
+            let state = self.state.lock();
+            (state.running, state.settings_result.clone())
+        };
+        let mut clicked_settings = None;
+        widgets::card(ui, palette, egui::Margin::symmetric(24, 20), |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            ui.label(widgets::title_text(t("Settings backup"), 15.0));
+            let directory = aio_core::config_dir::directory();
+            widgets::muted(
+                ui,
+                palette,
+                &tf(
+                    "All settings of this installer in one file, encrypted with a password: the SSH keys (also the .ppk files) and the MariaDB passwords of every server, from {directory}. Import it on another computer to manage the same servers from there. No server connection needed.",
+                    &[("directory", &directory.display().to_string())],
+                ),
+                12.5,
+            );
+            ui.horizontal(|ui| {
+                for (action, icon) in [(SettingsAction::Export, Icon::Shield), (SettingsAction::Import, Icon::Key)] {
+                    let button = egui::Button::image_and_text(icons::image(icon, 16.0, Fixed::brand()), RichText::new(t(action.title())).size(13.0).strong())
+                        .corner_radius(if theme::hotel() { 6 } else { 8 })
+                        .min_size(egui::vec2(0.0, 36.0));
+                    if ui.add_enabled(!running, button).clicked() {
+                        clicked_settings = Some(action);
+                    }
+                    ui.add_space(4.0);
+                }
+            });
+            if let Some(banner) = &settings_result {
+                widgets::result_banner(ui, palette, banner.kind, &banner.heading, &banner.message);
+            }
+        });
+        if let Some(action) = clicked_settings {
+            self.start_settings(action, shared);
+        }
+    }
+
     fn show_tools(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         let connected = shared.session().is_some();
-        let (running, host, captions, updates_text, updates_warning, settings_result, scroll) = {
-            let mut state = self.state.lock().unwrap();
+        let (running, host, captions, updates_text, updates_warning, scroll) = {
+            let mut state = self.state.lock();
             let scroll = std::mem::take(&mut state.scroll_to_result);
             (
                 state.running,
@@ -382,12 +435,10 @@ impl ToolsView {
                 state.captions.clone(),
                 state.updates_text.clone(),
                 state.updates_warning,
-                state.settings_result.clone(),
                 scroll,
             )
         };
         let mut clicked_tool = None;
-        let mut clicked_settings = None;
         egui::ScrollArea::vertical().id_salt("tools-page").auto_shrink([false, false]).show(ui, |ui| {
             widgets::card(ui, palette, egui::Margin::symmetric(24, 20), |ui| {
                 ui.spacing_mut().item_spacing.y = 8.0;
@@ -471,42 +522,10 @@ impl ToolsView {
                     }
                 }
             });
-            ui.add_space(16.0);
-            widgets::card(ui, palette, egui::Margin::symmetric(24, 20), |ui| {
-                ui.spacing_mut().item_spacing.y = 10.0;
-                ui.label(widgets::title_text(t("Settings backup"), 15.0));
-                let directory = aio_core::config_dir::directory();
-                widgets::muted(
-                    ui,
-                    palette,
-                    &tf(
-                        "All settings of this installer in one file, encrypted with a password: the SSH keys (also the .ppk files) and the MariaDB passwords of every server, from {directory}. Import it on another computer to manage the same servers from there. No server connection needed.",
-                        &[("directory", &directory.display().to_string())],
-                    ),
-                    12.5,
-                );
-                ui.horizontal(|ui| {
-                    for (action, icon) in [(SettingsAction::Export, Icon::Shield), (SettingsAction::Import, Icon::Key)] {
-                        let button = egui::Button::image_and_text(icons::image(icon, 16.0, Fixed::brand()), RichText::new(t(action.title())).size(13.0).strong())
-                            .corner_radius(if theme::hotel() { 6 } else { 8 })
-                            .min_size(egui::vec2(0.0, 36.0));
-                        if ui.add_enabled(!running, button).clicked() {
-                            clicked_settings = Some(action);
-                        }
-                        ui.add_space(4.0);
-                    }
-                });
-                if let Some(banner) = &settings_result {
-                    widgets::result_banner(ui, palette, banner.kind, &banner.heading, &banner.message);
-                }
-            });
             ui.add_space(18.0);
         });
         if let Some(tool) = clicked_tool {
             self.start_tool(tool, shared);
-        }
-        if let Some(action) = clicked_settings {
-            self.start_settings(action, shared);
         }
     }
 
@@ -571,13 +590,13 @@ impl View for ToolsView {
     }
 
     fn busy(&self) -> bool {
-        self.state.lock().unwrap().running
+        self.state.lock().running
     }
 
     fn session_changed(&mut self, shared: &Shared) {
         let id = shared.session().map(|s| session_id(&s));
         {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if state.last_for != id {
                 state.last_for = None;
                 state.last_updates = None;
@@ -659,7 +678,7 @@ async fn confirm(dialogs: &Dialogs, heading: &str, message: &str, go: &str) -> b
 /// The update check without a run panel: after logging in, the dashboard's Check again, and after an update.
 async fn check_quietly(shared: &Shared, state: &SharedState, server: &Arc<dyn Server>) {
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         s.updates_text = t("Checking for updates ...").into();
         s.updates_warning = false;
         s.checking = true;
@@ -673,12 +692,12 @@ async fn check_quietly(shared: &Shared, state: &SharedState, server: &Arc<dyn Se
     match result {
         Ok((updates, images)) => show_updates(shared, state, server, updates, images),
         Err(error) => {
-            let mut s = state.lock().unwrap();
+            let mut s = state.lock();
             s.updates_text = tf("Could not check for updates: {message}", &[("message", &step::error_message(&error))]);
             s.updates_warning = false;
         }
     }
-    state.lock().unwrap().checking = false;
+    state.lock().checking = false;
     shared.ctx.request_repaint();
 }
 
@@ -701,7 +720,7 @@ fn show_updates(shared: &Shared, state: &SharedState, server: &Arc<dyn Server>, 
     let captions = update_captions(&updates, &images, &directories);
     let (text, warning) = updates_line(&updates);
     {
-        let mut s = state.lock().unwrap();
+        let mut s = state.lock();
         s.captions = captions;
         s.updates_text = text;
         s.updates_warning = warning;

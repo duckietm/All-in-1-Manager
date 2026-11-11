@@ -2,7 +2,7 @@
 //! Catalog_Export.sql and FurnitureData.json) into the hotel database and gamedata/config.
 
 use std::io::Read;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::default_catalog::{self, CatalogResult};
 use aio_remote::external_texts::{self, PreparedTexts};
@@ -10,6 +10,7 @@ use aio_remote::furniture_language::{self, FurniLanguage, SwitchResult};
 use aio_remote::{fail, server_tools, Server};
 use async_trait::async_trait;
 use eframe::egui;
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -109,11 +110,14 @@ struct Form {
     language: String,
     /// Also ExternalTexts.json in that language.
     texts: bool,
+    /// Filled in where the catalogue's texts name the hotel (%hotel_name%); kept in Settings.
+    hotel_name: String,
 }
 
 impl Default for Form {
     fn default() -> Self {
-        Self { confirmed: false, has_catalog: false, language: PACKED_LANGUAGE.into(), texts: false }
+        let hotel_name = aio_core::InstallerSettings::load().hotel_name.unwrap_or_default();
+        Self { confirmed: false, has_catalog: false, language: PACKED_LANGUAGE.into(), texts: false, hotel_name }
     }
 }
 
@@ -159,23 +163,23 @@ impl DefaultCatalogStep {
     }
 
     pub fn result(&self) -> Option<CatalogResult> {
-        self.output.lock().unwrap().result.clone()
+        self.output.lock().result.clone()
     }
 
     pub fn version(&self) -> String {
-        self.output.lock().unwrap().version.clone()
+        self.output.lock().version.clone()
     }
 
     pub fn language(&self) -> Option<FurniLanguage> {
-        self.output.lock().unwrap().language
+        self.output.lock().language
     }
 
     pub fn texts(&self) -> Option<(usize, usize)> {
-        self.output.lock().unwrap().texts
+        self.output.lock().texts
     }
 
     pub fn switched(&self) -> Option<SwitchResult> {
-        self.output.lock().unwrap().switched.clone()
+        self.output.lock().switched.clone()
     }
 }
 
@@ -234,7 +238,26 @@ impl InstallStep for DefaultCatalogStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(t("Hotel name")).size(12.0).strong().color(palette.muted));
+        ui.add(
+            egui::TextEdit::singleline(&mut form.hotel_name)
+                .hint_text(egui::RichText::new(t("For example Habbo")).italics())
+                .desired_width(260.0)
+                .char_limit(32),
+        );
+        let name = form.hotel_name.trim();
+        let hint = match (name.is_empty(), default_catalog::hotel_name_problem(name)) {
+            (false, Some(problem)) => egui::RichText::new(t(problem)).size(12.0).color(palette.warning_text),
+            _ => egui::RichText::new(tf(
+                "Where the catalogue names the hotel: \"De {name} Badgewinkel\", \"Huisdieren zijn inwoners van {name}\" and the like, in every language.",
+                &[("name", if name.is_empty() { "…" } else { name })],
+            ))
+            .size(12.0)
+            .color(palette.subtle),
+        };
+        ui.add(egui::Label::new(hint).wrap());
         ui.add_space(8.0);
         ui.label(egui::RichText::new(t("Language of the furniture names and descriptions")).size(12.0).strong().color(palette.muted));
         if let Some(code) = language_choice(ui, palette, &form.language) {
@@ -273,14 +296,17 @@ impl InstallStep for DefaultCatalogStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let form = self.form.lock().unwrap();
+        let form = self.form.lock();
+        if let Some(problem) = default_catalog::hotel_name_problem(&form.hotel_name) {
+            return Some(t(problem).to_string());
+        }
         (form.has_catalog && !form.confirmed).then(|| t("Tick the box to confirm that the catalogue on the server may be replaced.").to_string())
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = default_catalog::inspect(server.as_ref()).await?;
         let version = packed_version();
-        self.form.lock().unwrap().has_catalog = state.pages > 0 || state.catalog_items > 0;
+        self.form.lock().has_catalog = state.pages > 0 || state.catalog_items > 0;
         ui.wake();
         if let Some(problem) = problem(&state) {
             ui.detected(ResultKind::Warning, t("The server is not ready for the catalogue yet"), &problem);
@@ -313,10 +339,20 @@ impl InstallStep for DefaultCatalogStep {
         let log = ui.logger();
         let server = server.as_ref();
         log("> Checking the server ...");
-        let catalog = match open_catalog() {
+        let mut catalog = match open_catalog() {
             Ok(catalog) => catalog,
             Err(problem) => fail!("The catalogue in the installer is damaged: {problem}"),
         };
+        // The hotel's name into the texts, and kept for next time.
+        let hotel_name = self.form.lock().hotel_name.trim().to_string();
+        if let Some(problem) = default_catalog::hotel_name_problem(&hotel_name) {
+            fail!("{}", t(problem));
+        }
+        catalog.sql = default_catalog::with_hotel_name(&String::from_utf8_lossy(&catalog.sql), &hotel_name).into_bytes();
+        let mut settings = aio_core::InstallerSettings::load();
+        settings.hotel_name = Some(hotel_name.clone());
+        let _ = settings.save();
+        log(&format!("  Hotel name in the catalogue texts: {hotel_name}"));
         let state = default_catalog::inspect(server).await?;
         if let Some(problem) = problem(&state) {
             fail!("{problem}");
@@ -331,7 +367,7 @@ impl InstallStep for DefaultCatalogStep {
         ui.done(state.database.as_deref().unwrap_or(""));
 
         // Another furniture language is downloaded first, while the hotel still runs: a failed download changes nothing.
-        let code = self.form.lock().unwrap().language.clone();
+        let code = self.form.lock().language.clone();
         let language = furniture_language::language(&code).unwrap_or(furniture_language::LANGUAGES[0]);
         let prepared = if language.code == PACKED_LANGUAGE {
             None
@@ -340,7 +376,7 @@ impl InstallStep for DefaultCatalogStep {
             Some(furniture_language::prepare(language, Some(&packed), &log).await?)
         };
         let texts: Option<PreparedTexts> =
-            if self.form.lock().unwrap().texts { Some(external_texts::prepare(server, language, &log).await?) } else { None };
+            if self.form.lock().texts { Some(external_texts::prepare(server, language, &log).await?) } else { None };
 
         // Through files on this computer, because the upload sends files.
         let directory = server_tools::backup_directory();
@@ -370,7 +406,7 @@ impl InstallStep for DefaultCatalogStep {
             let result = default_catalog::install(server, &remote_sql, &remote_json, &catalog.version, false, &log).await?;
             ui.done(&tf("{pages} pages", &[("pages", &result.pages.to_string())]));
             {
-                let mut output = self.output.lock().unwrap();
+                let mut output = self.output.lock();
                 output.result = Some(result.clone());
                 output.version = catalog.version.clone();
                 output.language = Some(language);
@@ -382,18 +418,29 @@ impl InstallStep for DefaultCatalogStep {
                 }
                 Some(prepared) => {
                     let switched = furniture_language::finish(server, prepared, false, &log).await?;
-                    self.output.lock().unwrap().switched = Some(switched);
+                    self.output.lock().switched = Some(switched);
                 }
             }
             // The page texts were imported in Dutch.
             if language.code != PACKED_LANGUAGE {
-                aio_remote::catalog_texts::translate(server, page_dictionaries(), language.code, language.name, &log).await?;
+                // The translations name the hotel as the texts do: the same name goes into both.
+                let dictionaries: Vec<(&str, aio_remote::catalog_texts::Dictionary)> = page_dictionaries()
+                    .iter()
+                    .map(|(code, dictionary)| {
+                        let filled = dictionary
+                            .iter()
+                            .map(|(dutch, text)| (default_catalog::with_hotel_name(dutch, &hotel_name), default_catalog::with_hotel_name(text, &hotel_name)))
+                            .collect();
+                        (*code, filled)
+                    })
+                    .collect();
+                aio_remote::catalog_texts::translate(server, &dictionaries, language.code, language.name, &log).await?;
             }
             // The emulator writes to ExternalTexts.json too, so it goes in while the emulator is stopped.
             let old_texts = match &texts {
                 Some(texts) => {
                     let old = external_texts::put(server, texts, &log).await?;
-                    self.output.lock().unwrap().texts = Some((texts.count(), texts.kept));
+                    self.output.lock().texts = Some((texts.count(), texts.kept));
                     Some(old)
                 }
                 None => None,
@@ -498,11 +545,11 @@ mod tests {
     #[test]
     fn the_version_is_quick() {
         let started = std::time::Instant::now();
-        assert_eq!(packed_version(), "2026-11-01");
+        assert_eq!(packed_version(), "2026-11-05");
         // Asked on every frame: after the first time it must cost nothing.
         let again = std::time::Instant::now();
         for _ in 0..1000 {
-            assert_eq!(packed_version(), "2026-11-01");
+            assert_eq!(packed_version(), "2026-11-05");
         }
         assert!(again.elapsed() < std::time::Duration::from_millis(50), "{:?}", again.elapsed());
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
@@ -511,10 +558,17 @@ mod tests {
     #[test]
     fn the_packed_catalogue_is_complete() {
         let catalog = open_catalog().unwrap();
-        assert_eq!(catalog.version, "2026-11-01");
+        assert_eq!(catalog.version, "2026-11-05");
         assert!(catalog.sql.len() > 1_000_000 && catalog.furniture_data.len() > 1_000_000);
         let sql = String::from_utf8_lossy(&catalog.sql);
         assert!(sql.contains("CREATE TABLE `items_base`") && sql.contains("CREATE TABLE `catalog_pages`"));
+        // The hotel's name is filled in at install time: no hotel of its own in the texts.
+        assert!(sql.contains(default_catalog::HOTEL_NAME) && !sql.contains("Camwijs"));
+        for (code, dictionary) in page_dictionaries() {
+            for (dutch, text) in dictionary {
+                assert_eq!(dutch.matches(default_catalog::HOTEL_NAME).count(), text.matches(default_catalog::HOTEL_NAME).count(), "{code}.json: {dutch:?}");
+            }
+        }
         // Nothing outside the catalogue: no database, user or grant statements.
         for line in sql.lines() {
             let upper = line.trim_start().to_uppercase();

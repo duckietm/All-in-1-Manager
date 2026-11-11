@@ -1,4 +1,4 @@
--- Part of the All-in-1 Installer's "Import Plus database" tool (Remote/PlusImport.cs).
+-- Part of the All-in-1 Manager's "Import Plus database" tool (Remote/PlusImport.cs).
 -- @S@ is the staging database with the PlusEMU dump, @T@ the hotel's Polaris database; the tool fills them in.
 -- Lines starting with a KEY= value in the output are the tool's report.
 -- Run after plus-to-polaris-furniture.sql, in the same staging database: it uses its _pi_furni map.

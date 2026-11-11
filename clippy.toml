@@ -1,0 +1,8 @@
+# The window passes its callbacks around as boxed closures (`Option<Box<dyn Fn(&str) -> Option<String> + Send>>`
+# and the like). Naming each of those as a `type` would hide what a reader wants to see at the call site, so the
+# threshold is raised rather than the types aliased away.
+type-complexity-threshold = 500
+
+# Two of the window's builders (a dialog, a wizard step) take eight and nine plain settings. Grouping them into a
+# struct would only move the same list one line up.
+too-many-arguments-threshold = 9

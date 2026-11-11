@@ -1,4 +1,4 @@
-# All-in-1 Installer
+# All-in-1 Manager
 
 A desktop installer, written in Rust, that sets up a **full hotel server** on an **Ubuntu Server or Debian**
 machine over SSH:
@@ -56,8 +56,14 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 - **The whole server in one wizard**: SSH key, NGINX, PHP 8.5, MariaDB 12.3, Node.js, the Polaris / Octane clones,
   the emulator as a service, Traefik with Let's Encrypt (and Cloudflare), the Octane client, hardening and SSH keys
   only. Every step says what it will do first, and can be run again.
-- **Addons**: AtomCMS, EpicNext or your own CMS, Gitea, Fail2Ban, CrowdSec, Deploy Assets, an Asset Explorer and a
-  SQL Editor over the SSH tunnel.
+- **Addons**: AtomCMS, EpicNext or your own CMS, Gitea, Fail2Ban, CrowdSec, the default catalogue and a SQL Editor over the SSH
+  tunnel.
+- **Assets** (its own section in the sidebar): Habbo assets (Habbo's own furniture, clothes, effects, badges and
+  game data as .hab and JSON), Nitro retro (a retro's custom furniture and clothes), Asset tools (decompile and
+  compile .hab, SWF / NITRO to HAB), Deploy Assets and an Asset Explorer.
+- **Housekeeping**: the hotel's staff panel outside the hotel: dashboard, who is online, rooms, hotel alerts,
+  maintenance and lockdown, word filter, permissions, bans, support tickets and the soundboard, next to **Players**
+  (kick, trade lock, password reset, temporary rank, furni, Habbo Club, notes, clones and sanctions).
 - **Running the hotel**: restarts, updates of the emulator, Octane, AtomCMS and the containers, database backup and
   import (also PlusEMU), live server status, the emulator's wired CPU, an SSH terminal in the window, a **Health
   check** with a fix for each problem, and a **History** of every run with its log.
@@ -66,21 +72,31 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 
 ## Quick start
 
-1. Download `all-in-1-installer-windows-x64.exe` or `all-in-1-installer-linux-x64` from the
-   [releases](https://github.com/duckietm/All-in-1-installer/releases) and start it (on Linux: `chmod +x` first).
+1. Download `all-in-1-manager-windows-x64.exe` or `all-in-1-manager-linux-x64` from the
+   [releases](https://github.com/duckietm/All-in-1-Manager/releases) and start it (on Linux: `chmod +x` first).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
+   The login remembers the last server and the user of each server. With a password, **Remember the password on
+   this computer** fills it in next time: it is kept encrypted (AES-256-GCM, with a random key next to it) in the
+   configuration folder, readable by your account only; untick it and log in to forget it. SSH key logins never store
+   a password.
 3. **Install New Server** and follow the steps. Each one explains what it does; **Skip** leaves it out.
-4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Deploy Assets** for the game's files.
+4. Optional: a CMS, Gitea, Fail2Ban, CrowdSec or the default catalogue under **Addons**, then **Habbo assets** and
+   **Deploy Assets** (sidebar → ASSETS) for the game's files.
 5. Afterwards **Tools** runs the hotel: **Health check** first when something seems wrong.
 
-To look around first: `all-in-1-installer --dry-run` logs in to nothing and only shows the commands.
+To look around first: `all-in-1-manager --dry-run` logs in to nothing and only shows the commands.
+
+**Does not open (a Windows VM)?** On Windows the window is drawn with DirectX 12 (wgpu), which works without a GPU
+too (VMware SVGA 3D, Hyper-V, Microsoft's software renderer). If that fails, the installer starts itself again with
+OpenGL; if neither works it says so in a message box, and the reason is in `configuration/start-error.log` next to the
+program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 
 ## Contents
 
 - [Requirements](#requirements)
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
-  [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+  [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -88,8 +104,8 @@ To look around first: `all-in-1-installer --dry-run` logs in to nothing and only
 ## Requirements
 
 **On your computer** (Windows 10/11 x64 or Linux x64): nothing. The installer is one file, with everything it
-needs inside (fonts, the client images for Deploy Assets). Download `all-in-1-installer-windows-x64.exe` or
-`all-in-1-installer-linux-x64` from the [releases](https://github.com/duckietm/All-in-1-installer/releases), or
+needs inside (fonts, the client images for Deploy Assets). Download `all-in-1-manager-windows-x64.exe` or
+`all-in-1-manager-linux-x64` from the [releases](https://github.com/duckietm/All-in-1-Manager/releases), or
 [build it](#building). On Linux it needs a desktop (X11 or Wayland) and OpenGL.
 
 **The server**: a fresh Ubuntu Server (22.04 or newer) or Debian (12 or newer) machine you can reach over SSH as
@@ -186,7 +202,7 @@ trusts the host key seen during the first login.
 #### The configuration directory
 
 `configuration/` is created next to the installer (falling back to
-`%LOCALAPPDATA%\All-in-1 Installer\configuration` or `~/.local/share/All-in-1 Installer/configuration`
+`%LOCALAPPDATA%\All-in-1 Manager\configuration` or `~/.local/share/All-in-1 Manager/configuration`
 when that folder is read-only). Keys are stored per server:
 
 ```
@@ -519,7 +535,12 @@ Uses the address from the web access step; nothing to fill in. For `https://exam
 1. `yarn install` in `/var/www/Octane-Renderer`, then in `/var/www/Octane` (Node.js 26 and Yarn 4 from `/usr/bin`).
 2. In `/var/www/Octane/public/configuration`, `client-mode`, `hotlooks`, `infostand_backgrounds`, `news`,
    `renderer-config` and `ui-config` `.json` are created from the `.example` files (existing files are kept), and
-   the URL keys are set (an existing file that changes is saved as `.bak-<time>` first):
+   the URL keys are set (an existing file that changes is saved as `.bak-<time>` first).
+   `renderer-config`, `ui-config` and `client-mode` **follow their `.example`** on every run (also after
+   **Update Octane** pulls a newer one): a key the `.example` has and the `.json` lacks is added with the example's
+   value, also inside nested settings, and the keys are put in the example's order; keys only your `.json` has stay,
+   after them. A value already in the `.json` is never changed (lists neither) apart from the URL keys below. The
+   data files (`news`, `hotlooks`, `infostand_backgrounds`) are left as they are.
 
    | File | Keys |
    |---|---|
@@ -643,8 +664,8 @@ reload ssh.
 After the last step (done or skipped) the wizard shows **Successfully completed** (or *Completed, with steps to look
 at* when a step was skipped or failed), with what every step did, and then:
 
-1. Download all assets with the **All-in-1 downloader**.
-2. Upload them with **WinSCP**: SFTP, the server and SSH port, user `root`, the `.ppk` key from the configuration
+1. Download all assets with **Assets → Habbo assets** and send them with **Assets → Deploy Assets**.
+2. Or upload them yourself with **WinSCP**: SFTP, the server and SSH port, user `root`, the `.ppk` key from the configuration
    folder (*Advanced… → SSH → Authentication*), into `/var/www/gamedata/`.
 3. Where everything goes:
 
@@ -703,9 +724,9 @@ A new step implements `InstallStep` (`source/crates/app/src/gui/step.rs`) and is
 ## Addons
 
 **Addons** (in the sidebar under SERVER) opens a menu with one button per addon, for things that go on top of a
-finished server installation. In the Hotel look every button (the addons, the dashboard and Tools) has its own
-soft Habbo-style picture in the background (a room, the lido, a disco, bricks, a garden, space ...), with the text on a solid
-plate so it reads the same on every picture; the Professional look keeps the plain tiles.
+finished server installation. In the Hotel look every button (the addons, the dashboard and Tools) is filled with its
+own colour (a soft gradient with a few light bubbles), with white text on it; every colour is dark enough for white
+text, which a test checks. The Professional look keeps the plain tiles.
 The addons and Tools use the login from the start of the program: there is no separate login per page. **Back**
 returns to the dashboard and keeps the login (and the SQL Editor's database connection) open.
 
@@ -808,7 +829,9 @@ imported assets; with an empty folder it clones the repository into `/var/www/ep
    the step runs that check (`src/env.ts`) itself, so a wrong setting shows in seconds instead of after the build. `HOTEL_NAME`, `APP_URL`, `NEXT_PUBLIC_APP_URL` and `AUTH_URL` (the site's
    address), `AUTH_TRUST_HOST=true` (behind Traefik), a random `AUTH_SECRET` (made once, so logins stay valid), and
    `RCON_HOST`/`RCON_PORT` from the emulator's `config.ini`.
-4. **Build**: `pnpm install --frozen-lockfile`, the base tables (EpicNext was built on an AtomCMS database and its migrations
+4. **Build**: `pnpm install --frozen-lockfile` (when EpicNext's lockfile pins versions younger than pnpm's minimum
+   release age, such as a Next.js release of yesterday, the step names them and when the newest was published: run it
+   again once they are old enough; the check is never turned off), the base tables (EpicNext was built on an AtomCMS database and its migrations
    expect AtomCMS' tables, such as `website_housekeeping_permissions`: the ones the hotel database lacks are made
    from its own `drizzle/drafts/0000_premium_spirit.sql`, the emulator's tables are not touched),
    `users.password` widened to `VARCHAR(255)` when it is shorter (Polaris makes it `VARCHAR(64)`, too short for
@@ -1090,11 +1113,99 @@ A marker in `gamedata/config/.all-in-1-catalog` remembers the installed version,
 installed)** for the same catalogue. Meant for a new hotel: furniture players already own keeps its `items_base`
 number, so on a hotel with a different furniture list it would turn into other furniture.
 
+### Habbo assets
+
+**Habbo assets** (sidebar → ASSETS) downloads Habbo's own assets on this computer, the first part of the
+[All-in-1 converter](https://github.com/duckietm/all-in-1-converter) moved into the installer. No server connection is
+needed. Everything goes into `Habbo_Assets/gamedata` next to the configuration folder (or a folder you choose), laid
+out exactly like `/var/www/gamedata`, so **Deploy Assets** copies it as it is. Only `.hab` bundles, JSON and images
+are kept: what Habbo still serves as XML or text is converted to the JSON Octane loads, and no `.swf` or XML is
+saved. A file that is already there is not downloaded again, and an error page from Habbo's CDN is never saved as an
+asset.
+
+Pick the hotel (its language goes into the furnidata, productdata and texts), tick what you want and press
+**Download the selected**, or **Download all**. The switch **Download only .hab** / **Download .hab and .swf** (off,
+only .hab, by default; remembered) also fetches the .swf of furniture, clothes, effects and pets, into the asset
+tools' `Assets_tools/Original_SWF_Files/<type>`, never into gamedata, so never to the server:
+
+| Download | Into `gamedata/` |
+|---|---|
+| Badges (from all nine hotels) | `c_images/album1584` |
+| Clothes | `clothes/*.hab`, `config/FigureData.json`, `config/FigureMap.json` |
+| Effects | `effect/*.hab`, `config/EffectMap.json`, `config/HabboAvatarActions.json` |
+| Furnidata | `config/FurnitureData.json` |
+| Furniture | `furniture/*.hab`, `icons/*_icon.png` |
+| Catalogue icons | `c_images/catalogue` |
+| MP3 | `sounds` |
+| Productdata | `config/ProductData.json` |
+| Quest images | `c_images/Quests` |
+| Reception images | `c_images/reception`, `c_images/web_promo_small`, ... |
+| Texts | `config/ExternalTexts.json` |
+| Variables | `downloads/ExternalVariables.json` (stays on this computer) |
+| Pets | `pets/*.hab` |
+| Effect icons | `c_images/fx_icons` |
+
+Habbo has no download link for the effect icons (`fx_icon_<type>` for the avatar editor): they are inside the Habbo
+Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choose that `app.asar` (choosing it ticks
+**Effect icons**); **Download all** takes them along when it is set. **Clothes: make every clothing set wearable** turns off `sellable` in
+FigureData.json, the converter's "disable all sellable" question. The `.hab` files are saved as Habbo serves them
+(the converter's optional WebP repacking of their sheets is not part of this yet).
+
+### Nitro retro (custom assets)
+
+**Nitro retro** (sidebar → ASSETS) downloads a Nitro hotel's own furniture and clothes. Fill in the six values from its
+`renderer-config.json` (`furnidata.url`, `furni.asset.url`, `furni.asset.icon.url`, `avatar.asset.url`,
+`avatar.figuredata.url`, `avatar.figuremap.url`; a folder or the full `.../%libname%.nitro` pattern), give it a
+name and **Save**. The three JSON fields also take a file on this computer (**Choose ...**: a FurnitureData.json,
+FigureData.json or FigureMap.json saved from the browser, for example); the bundles then still come from the folder
+links. Every retro is a **profile**: switch between them with one click, **+ New profile** starts an
+empty one, **Delete profile** removes one (its downloaded folder stays). Profiles are kept in Settings, so they are
+there next time (also saved when you press **Download**).
+
+- **Custom furniture**: the retro's FurnitureData.json, every furniture bundle and the icon of every colour. An old
+  Flash retro's (or Habbo's) furnidata XML works too: it is saved as FurnitureData.json, and its revision per furni
+  is used for hof_furni-style folders (`<folder>/<revision>/<name>.swf`, then `<folder>/<name>.swf`).
+- **Custom clothes**: FigureData.json, FigureMap.json and every clothing bundle (not hh_human_fx and hh_pets);
+  figuredata and figuremap XML are converted to JSON.
+
+Each profile downloads into `Habbo_Assets/custom/<name>/gamedata` (laid out like gamedata; characters a folder name
+cannot have become `_`), which Deploy Assets does **not** copy: upload
+what you want by hand with the Asset Explorer. A retro serves `.hab`, `.nitro` or `.swf`: choose it per profile (**Format**), or leave it on **Auto**, which finds
+out per bundle (trying the one that worked last first) and saves every bundle as `.hab`: a `.nitro` is repacked
+with the same files, a `.swf` is converted (furniture, clothes, pets and effects: the All-in-1 converter's SWF
+compilers ported to Rust, the JSON and sprite sheet as it makes them; the sheet stays PNG). A `.swf` that cannot be
+converted is kept in `custom/<name>/source/`; **Convert the kept .swf files** tries those again without downloading. The bundle formats and conversions live in their own crate, `aio-assets`, so other parts of the
+installer can use them too.
+
+### Asset tools
+
+**Asset tools** (sidebar → ASSETS) works on files on this computer, in `Habbo_Assets/Assets_tools`, the All-in-1
+converter's Hotel Tools for bundles with one clear folder layout (the folders are made for you):
+
+```text
+Assets_tools/
+  Original_SWF_Files/<type>/       put .swf files here (type: furni, clothes, pets, effects)
+  Original_NITRO_Files/<type>/     put .nitro files here
+  converted/<type>/                the .hab files SWF / NITRO to HAB makes
+  Decompiled_SWF_Files/<type>/<name>/   debugging: images/, binaryData/ (the XML), symbolClass/symbols.csv
+  Decompiled_HAB_Files/<type>/<name>/   each .hab as its .json and image, to edit
+  Compiled_HAB_Files/<type>/       the edited folders packed as .hab again
+```
+
+- **Decompile SWF files**: Original_SWF_Files → Decompiled_SWF_Files, for debugging (images, XML and symbols, like
+  FFDEC's export; no ActionScript or sounds).
+- **Decompile HAB files**: converted → Decompiled_HAB_Files; **Compile HAB files**: Decompiled_HAB_Files →
+  Compiled_HAB_Files (every file in the folder goes in, as edited).
+- **SWF / NITRO furniture, clothes, pets, effects to HAB**: Original_SWF_Files/<type> or Original_NITRO_Files/<type>
+  → converted/<type>. The .swf can also come from a Nitro retro profile (**Custom: <name>**: the .swf it kept in
+  `custom/<name>/source/`). A .hab already in converted is skipped unless **Replace** is ticked. The work runs on
+  all CPU cores but one; one broken file fails alone.
+
 ### Deploy Assets
 
-**Deploy Assets** copies what the [All-in-1 downloader](https://github.com/duckietm/all-in-1-converter) downloaded to
-`/var/www/gamedata` on the server, where Octane loads it. Set the downloader's executable in **Settings** first: its
-folder holds `Habbo_Default`.
+**Deploy Assets** (sidebar → ASSETS) copies what **Habbo assets** downloaded to `/var/www/gamedata` on the server, where Octane loads it,
+folder for folder (`gamedata/furniture` to `/var/www/gamedata/furniture`, and so on): the download already has the
+server's layout.
 
 ![Deploy Assets](public/docs/screenshots/deploy-assets.png)
 
@@ -1104,24 +1215,10 @@ files), and they keep their dates, so the next sync sends only what was download
 deleted: your own furniture, badges and the emulator's files stay. Before uploading it checks the free disk space;
 afterwards `gamedata-permissions` gives the emulator and NGINX access again.
 
-| Downloader (`Habbo_Default/...`) | Server (`/var/www/gamedata/...`) |
-|---|---|
-| `hof_furni/hab/*.hab` | `furniture` |
-| `hof_furni/icons/*.png` | `icons` |
-| `clothes/hab/*.hab` | `clothes` |
-| `effects/hab/*.hab` | `effect` |
-| `pets/hab/*.hab` | `pets` |
-| `badges` | `c_images/album1584` |
-| `icons/*.png` | `c_images/catalogue` |
-| `fx_icons/*.png` | `c_images/fx_icons` |
-| `quests` | `c_images/Quests` |
-| `reception` / `reception/web_promo_small` | `c_images/reception` / `c_images/web_promo_small` |
-| `mp3/*.mp3` | `sounds` |
-| `files/json`: FurnitureData, ProductData, FigureData, FigureMap, EffectMap, HabboAvatarActions, ExternalTexts | `config` |
-
 The config JSON files are only added when they are missing: hotels and the emulator edit them (custom furniture,
-badge texts). Tick **Also replace config JSON files** to overwrite them with the downloader's. New furniture also needs
-its rows in `items_base` and `catalog_items`: make the SQL with the All-in-1 converter (Hotel Tools → Generate SQL).
+badge texts). Tick **Also replace config JSON files** to overwrite them with the downloaded ones. New furniture also
+needs its rows in `items_base` and `catalog_items`: **Import Assets** adds them (**Import custom furniture** for a
+retro's own furni).
 
 #### UI texts
 
@@ -1225,16 +1322,385 @@ port; **Log in to MariaDB** asks again.
 `NULL` is shown as `(NULL)`, binary values as hex. Changes are made at once (autocommit), so make a backup first with
 **Tools → Create full database backup** before bigger changes. Big dumps go through **Tools → Import full database**.
 
+### Catalogue
+
+**HOTEL → Catalogue** edits the hotel catalogue in the database the emulator uses (`db.database` in its `config.ini`),
+through the same SSH tunnel and MariaDB login as the SQL Editor.
+
+The pages and their offers are edited in the **Catalogue explorer** (below; **Pages and offers →** goes there). This
+page has the rest:
+
+- **Front page** (the first tab) shows the catalogue front page (`catalog_featured_pages`) as the hotel draws it
+  (Octane's frontpage4 layout): the front page's header with its headline image, the first slot as the tall 184 × 460
+  picture, the other slots in the scrolling list beside it (356 × 126 each), and the voucher box with the page's
+  text 1. The images come from `c_images` on this computer (Habbo assets and the retro profiles), else from the
+  server's `gamedata/c_images` over SSH. **Click a tile** to edit it next to the picture: caption, image (**Choose
+  ...** shows the images of `c_images/catalogue`, `web_promo_small` and `web_promo` of this computer and the server as
+  thumbnails), what it opens (a page by internal name or id, with **Pick a page**, or an offer by product name) and
+  when it stops showing (`YYYY-MM-DD HH:MM` in this computer's time zone; empty never). **Drag a tile onto another**,
+  or use **◀ Earlier** / **Later ▶**, to swap their slots; **Add tile** and **Remove tile** add and take away one.
+  A tile whose end date passed is marked *Ended*: the emulator no longer sends it (an emulator before that fix kept
+  showing it for good), so clear the date to show it again, or remove it. **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails
+  halfway is not rolled back: save again.
+- **Limited** (the second tab) lists every limited series: its offer and page, and how many are sold of how many,
+  with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
+  the catalogue); a series never gets smaller, as its numbers already exist. **No longer limited** ends a series of
+  which nothing is sold; **Remove with its sales** ends one that sold, after asking, and deletes its numbers and the
+  record of who has which one for good (the furni players have keeps its number).
+- **Vouchers** (the third tab): the codes players type in the catalogue, with what each gives (credits, points of a
+  type, an offer), how often it was used of how many uses (0: without end) and how often one player may use it (-1:
+  without end), and a search. **New voucher**, **Save voucher**, **Delete voucher** (with the record of its uses, after
+  asking); a code is 1 to 10 letters, digits, `-` or `_` and is never used twice, as the emulator matches it exactly.
+  **Make codes** adds up to 500 vouchers with random codes (an optional prefix, then at least 4 easy-to-read letters and
+  digits) that each give what the form shows. A voucher's **Used by** lists who used it and when.
+- **Checks** (the fourth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
+  of them) and **offers that sell the same furni** (the same furni ids in any order, with the same extra data; for `wallpaper_single`, `floor_single` and
+  `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Tick
+  copies (or **Tick all but the first of each**) and **Delete ticked** removes
+  them after asking. Offers with sold limited numbers are never ticked or deleted.
+- **Checks** also runs the **health check** of the emulator's Catalog Studio over the catalogue and the Builders Club
+  warehouse: offers on a page that does not exist, furni ids that are wrong or not in `items_base`, negative prices or
+  no amount, points in a currency the hotel does not use (`users_currency`, `emulator_settings`), song offers without
+  their song, limited series smaller than what is sold, pages under a missing page, loops in the tree, layouts the
+  emulator does not know (it skips those pages), sibling pages with the same order number, wrong `includes`, and
+  visible pages under a hidden one (players never reach them). Fix them in the explorers (right-click, Edit).
+- **History** (the fifth tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
+  explorers, Checks, Limited, imports), newest first: the same history Octane shows (`catalog_manager_history`).
+  **Undo ...** puts what one operation changed back, in one go, when nothing changed those pages and offers since
+  (otherwise it says which one did); the undo is recorded too. The Manager writes its changes there as the emulator
+  does, raises `catalog_manager_state.revision` so Octane sees the catalogue changed, and takes the ids of new pages
+  and offers from `catalog_id_sequences`, so Octane never makes a page or offer at an id that is already used. An
+  emulator older than Catalog Studio has none of these tables: then nothing is recorded.
+- **Backups** (the sixth tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
+  file in the format of Octane's Catalog Studio, so a file exported there can be imported here and the other way
+  round. **Import a file ...** never runs the file as SQL: only `INSERT`, `UPDATE` and `DELETE` of `catalog_pages` and
+  `catalog_items` with plain values are read (anything else is refused), and you first see what would be new,
+  changed, moved or deleted; **Apply N changes** writes them in one transaction, when the catalogue is still as it was
+  at the preview, and records them in the history.
+  Under it, **Backups**: copies of the catalogue on the server, in `<backups>/catalogue` (Settings → server
+  folders). **Make backup** dumps `catalog_pages`, `catalog_items`, `catalog_featured_pages`, `vouchers` and the
+  Builders Club `catalog_pages_bc` / `catalog_items_bc` (those that exist) with `mariadb-dump` to a `.sql.gz`, with an
+  optional name. **Roll back** first makes a `before-rollback` backup of the catalogue as it is, then puts the chosen
+  one back; publish afterwards. Sold limited numbers (`catalog_items_limited`) and voucher uses (`voucher_history`) are
+  never in a backup, so a rollback never takes back what players own or used. **Delete** removes a backup file.
+- In **Checks**, **Merge into #id** moves the offers, sub-pages and front page tiles of pages that share an internal
+  name to the first one, then deletes the others, after asking.
+- **Publish** asks the running emulator over its RCON port (`rcon.port` in `config.ini`, on 127.0.0.1 of the server) to
+  load the catalogue again (`updatecatalog`); the players online are told to refresh it. Saved changes show in the hotel
+  after a publish.
+
+Every change is one statement with its values sent separately, in a transaction; nothing typed in becomes SQL text.
+
+
+### Catalogue explorer
+
+**HOTEL → Catalogue explorer** shows the same catalogue as the game does, in **two windows side by side** (or one:
+**One window**): the root pages as tabs, the page tree with its icons on the left (hidden pages grey, switched-off
+ones marked *off*), and the page's furni as a grid with an info box for the one selected: a large icon, its name,
+class name and offer, and the price in credits, duckets or diamonds (*LTD* marks a limited series, *+* a bundle).
+The icons come from the downloaded assets (**Habbo assets** and the Nitro retro profiles), the furni names from
+`items_base`.
+
+A **front page** (layout `frontpage`, `frontpage4`, ...) holds promotions, not furni: it is locked here (no drops;
+its promotions are edited on the Catalogue page). The icons are drawn as the game does, each image pixel on whole
+screen pixels at any display scale, so they stay sharp (twice their size in the info box).
+
+Furni are dragged like files in the Asset Explorer:
+
+- onto the **other window**, or onto a **page in either tree**: they move to that page, at the end;
+- onto **another furni**: they go in before it, also on the same page (to change the order);
+- with **Ctrl** held: a copy goes there, the original stays.
+
+**Pages** are dragged in the tree like folders: onto the middle of a page to put it under that page, onto its top or
+bottom edge to put it before or after it (also to change the order), or onto a tab to put it under that root page.
+A page never goes under itself or one of its own pages, and nothing goes into a front page.
+
+The **Without offer** tab (after the root pages) lists the furni no offer sells yet (search on the name, class name or
+id): drag them onto a page in the other window, or a page in its tree, and each gets an offer there (named after its
+class name, at the price set under the list: credits, points and the points type, 3 credits to start with).
+
+**Right-click** a furni (in a page or on the Without offer tab) and **Edit furni** opens its `items_base` row: every
+column of the table as this emulator has it, read from the database (so other columns work too). The `enum('0','1')`
+flags (allow_sit, allow_trade ...) are ticks, other enums a list (`type`), numbers and text fields with their column
+type next to them (the column's comment on hover); a column that may be NULL has a NULL tick, and `id` stays as it
+is. Changed values are marked and checked (whole numbers, decimals, the text length); **Save changes** writes only
+those, in one statement. A bundle offers an entry per furni. The emulator reads `items_base` when it starts: restart
+it (Tools) or use `:update_items` in the hotel.
+
+The same menu has **Edit offer**: the offer's `catalog_items` row in the same editor (price in credits and points
+with their type, amount, page, order, limited series, offer id, extra data, the flags as ticks ...). After a save
+the page is read again (also the new page when `page_id` changed); **Publish** shows it in the hotel.
+
+**Right-click a page** (in a tree, on its tab, or on the page bar above its furni) for **Edit page**: the page's
+`catalog_pages` row in the same editor (caption and internal name, `page_layout` from the layouts the table allows,
+icon, parent, order, minimum rank, visible / enabled / club / VIP as ticks, headline and teaser images, the page texts
+in fields of several lines ...). After a save the tree is read again; **Publish** shows it in the hotel.
+`icon_image`, `page_headline`, `page_teaser` and `page_special` show their image next to the field and have
+**Choose ...**: a picker with every page icon (`c_images/catalogue/icon_<n>.png`, by number) or every catalogue image
+(the headlines and teasers), from this computer and the server's `gamedata/c_images/catalogue`, with a search. The
+server's images are fetched over the SSH connection as they come into view. A click writes the icon's number, or the
+image's name without `.gif` (the client adds it).
+
+The page editor's **Translate texts ...** translates the caption and page texts with Google Translate, as Octane's page
+editor does (the same free endpoint the emulator uses; the language they are in is found by itself): only the text
+between the HTML tags is translated, so links, images and formatting stay. The translations become changes in the
+editor, to check before **Save**.
+
+The offer and page editors keep the rules of Octane's catalogue admin before a save, and say which one is broken: an
+offer needs a name and furni ids like `123` or `123:2` that are in `items_base`, an amount of 1 to 10,000, no
+negative price, a limited size not below what is sold, a page that exists, and a song id with the soundtrack code for
+a `SONG ...` offer; a page needs a caption, a minimum rank of at least 1, a parent that exists and is not one of its
+own pages, and `includes` of existing page ids.
+
+The page texts (`page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`) have **HTML ...**: a small HTML
+editor with a toolbar (bold, italic, underline, line break, paragraph, link, image, text colours; it wraps the
+selection), the HTML, and a preview of what the client shows. Only the HTML both Octane (`SanitizeHtml`, DOMPurify)
+and the gameserver's catalogue admin (Jsoup safelist) show is kept: `b i u strong em br p div span a img`; `href`
+to http(s), mailto or `#...` (links open in a new tab), or `event:...` for a hotel link (the **hotel link**
+button: `event:catalog/open/<page>`, `event:habbopages/<page>`; Octane opens it in the client on the layouts
+single_bundle, info_loyalty, the info pages, guild_frontpage, info_illustration, trophies and builders_club_buy, the
+others show only its text), images from http(s) only, `class` and `style` with text
+properties only (color, background-color, font-weight, font-style, font-size, text-decoration, text-align; no `url()`
+or `expression()`). Scripts, event handlers, forms, frames and other tags are taken out, their text stays. The editor
+says when something would go and offers **Clean up**; **Use**, and every save of a page, keeps only the safe HTML.
+
+The page menu (right-click a page) also has **New page here** (a page under it, after its sisters, hidden until
+you tick visible; its editor opens to name it), **Build page from a furni line ...** (a new page under it with an
+offer for every floor and wall furni whose class name starts with a prefix, like `rare_dragonlamp`, optionally only
+furni no offer sells yet, at a price you choose: **Find furni** first, then **Build page**), **Sort the furni by name**
+(on the page bar: the page's offers in the order of their names; **Undo** puts the old order back) and **Delete page
+...** (with its offers, after asking). A page with sub-pages, or with offers with sold limited numbers, is never
+deleted: move the sub-pages first, and the record of who has which number stays.
+
+The furni menu has **Delete offer ...** (or **Delete N offers ...** with several selected; the **Delete** key does the
+same), after asking; an offer with sold limited numbers is never deleted. The offer editor lists the **furni of the
+offer** by name, with **Remove** for one of a bundle, and a search on the name, class name or id of `items_base` to
+**Add** furni.
+
+Ctrl-click and Shift-click select several. Every drop is saved at once in one transaction (the page's offers are
+numbered again in their new order); **Undo** puts the last drop back. **Publish** makes the emulator load the
+catalogue again, as on the Catalogue page.
+
+### Builders Club explorer
+
+**HOTEL → Builders Club explorer** is the same explorer for the Builders Club warehouse: the pages and offers the
+emulator loads from `catalog_pages_bc` and `catalog_items_bc`, apart from the normal catalogue. Everything works as
+above (two windows, drag and drop of furni and pages, Ctrl to copy, Undo, **Without offer**, Build page, New / Delete
+page, Delete offer, Sort by name, and the right-click editors, which edit the `_bc` rows). Builders Club offers have
+no price: members place them for free, so the info box says *Builders Club* and there is no price to set for new
+offers. `builders_club_frontpage` is locked like a front page. **Publish** makes the emulator load both catalogues
+again.
+
+### Content
+
+**HOTEL → Content** edits the hotel's plain content tables in the same database, through the same SSH tunnel and
+MariaDB login as the Catalogue. Each tab has a list on the left (with a search and **New**) and the row's form on the
+right; a changed form says *Not saved yet* until **Save** (or **Add**), **Undo changes** goes back, and **Delete**
+asks first. Values are checked before saving (number ranges, text lengths, the table's unique key).
+
+- **Achievements** (`achievements`): name (without `ACH_`: the badge is `ACH_` + name + level, `ACH_RoomEntry1`),
+  category, level (each level of a name once), progress needed, reward amount and currency type, score, state
+  (0 off, 1 on, 2 archived, 3 off-season, 4 by wired), display method and subcategory. The hotel loads them with
+  `:update_achievements` (or a restart of the emulator).
+- **Daily tasks** (`daily_tasks`) and **Quests** (`quests`): code (and campaign for quests, unique together), goal
+  (pick one of the emulator's goals, or type its enum name), goal data and count, reward, images, order, enabled. The
+  emulator reads these only when it starts: **restart the emulator** to load the changes.
+- **Polls** (`polls`): title, thank-you message and reward badge, with the poll's **questions** (`polls_questions`)
+  under it: order, question, type (1 one answer, 2 several, 3 written), least answers and the options
+  `value:label;value:label` (checked, as the emulator fails on an option without `:`). Deleting a poll deletes its
+  questions and the answers given (`polls_answers`). The hotel loads them with `:update_polls`.
+- **Currencies**: the emulator settings that name the currency types (`seasonal.types`, `seasonal.primary.type`,
+  `seasonal.currency.*`, `hotel.marketplace.currency` in `emulator_settings`), each saved on its own, and how many
+  players hold each type and how much in all (`users_currency`). The hotel loads them with `:update_config`.
+- **Public rooms** (`navigator_publiccats`): the navigator's public categories (name, shown as pictures, visible,
+  order: the navigator lists them from the highest order down), with the category's **rooms** (`navigator_publics`)
+  under it: room id and visible, each room once per category. Deleting a category removes its room list (the rooms
+  stay). **Room categories** (`navigator_flatcats`): caption (the text, or a `${navigator...}` text key), saved
+  caption, lowest rank, most users in a room, trading, official, list type (0 list, 1 pictures) and order. A room
+  category that rooms still use is not deleted: the page says how many rooms to move first. Both load with
+  `:update_navigator`.
+- **Pets** (`pet_actions`): pet type, name, offspring type (-1 none) and the happy, tired and random actions, with the
+  pet's **breeds** (`pet_breeds`: colours, which colours it uses, club only), **sounds** (`pet_vocals`: when and the
+  message; sounds of pet type 0 are said by every pet) and **commands** (`pet_commands`) under it. **Pet commands**
+  (`pet_commands_data`): the commands pets can learn, with the level needed, experience and costs. Deleting a pet
+  removes its breeds and commands; deleting a command takes it from every pet type. Both load with `:update_pet_data`.
+- **Group badges** (`guilds_elements`): the parts of the group badge editor: type (base, symbol, or the base, symbol
+  or background colour), number (each type has its own; **New** takes the next free one), image or colour (six hex
+  digits for the colours), second image (a symbol in two layers) and enabled. Loaded with `:update_guildparts`, which
+  also reloads the badge images.
+- **Chat bubbles** (`chat_bubbles`): the hotel's own styles (46 and up): name, permission needed (empty for
+  everyone), whether others may override it, whether talking furni react, and the catalogue item that sells it (0 not
+  sold). Deleting a style takes it from the players who bought it (`users_chat_styles`). Loaded with
+  `:update_chat_bubbles`.
+- **Calendar** (`calendar_campaigns`): name, image, start (Unix time), days, lock missed days and enabled, with the
+  campaign's **rewards** (`calendar_rewards`) under it: the day (empty: the random pool for the days without their own
+  reward; several on one day are picked at random), and what it gives: a furni, credits, duckets, points of a
+  currency type, a badge, an item or a subscription (at least one). Deleting a campaign removes its rewards and the
+  record of the days opened. Loaded with `:update_calendar`.
+
+Tables that have no id column (`navigator_publics`, `pet_breeds`, `pet_vocals`, `pet_commands`, `pet_commands_data`,
+`pet_actions`, `guilds_elements`, `chat_bubbles`) are found by their key values as they were loaded, one row at a time
+(`... LIMIT 1`). The reward tracks are not on this page: the hotel edits them itself in the Reward Track window (the
+gear tab, permission `acc_rewardtrack`), which reloads them for everyone.
+
+### Logs
+
+**HOTEL → Logs** reads the logs the emulator writes, through the same SSH tunnel and MariaDB login as the Catalogue.
+It is read-only: nothing is changed or deleted. Every list shows 200 rows a page, newest first, with **Previous** and
+**Next**; player names come from `users` (a removed player shows as `#id`), and times are shown in the time zone of
+this computer. A filter can name a player (the exact name: it is looked up first, then the log is searched on the
+player's id), a room id where the log has rooms, words (anywhere in the text; `%` and `_` are matched as themselves)
+and a date range (**From** and **Until**, `YYYY-MM-DD` with an optional `HH:MM`; a date alone includes that whole
+day). Enter in a field or **Search** applies it, **Clear** empties it.
+
+- **Commands** (`commandlogs`): the player, the command, its parameters and whether it worked. Words look in the
+  command and the parameters.
+- **Room chat** (`chatlogs_room`): the player, who a whisper went to, the room and the message. Click a line to see
+  the 10 lines before and after it in the same room, the chosen one marked.
+- **Private chat** (`chatlogs_private`): sender, receiver and message; a player filter finds both sides.
+- **Currencies** (`logs_economy`): every change of a player's currency: operation, currency type, amount, the balance
+  before and after, the item and the context.
+- **Purchases** (`logs_shop_purchases`): the catalogue offer bought, how many and what it cost.
+- **Permissions** (`permission_audit`): rank and permission changes: who, the action, the target (a player or a
+  rank), the subject, the old and new value and how (command or housekeeping). A player filter finds the changes the
+  player made and the changes made to them.
+- **Staff actions** (`housekeeping_log`): the housekeeping actions of the staff (bans, kicks, room actions) with the
+  detail and whether they worked.
+- **Room visits** (`room_enter_log`): who entered which room, and when they left (empty while still inside).
+- **Name changes** (`namechange_log`) and **Trades** (`room_trade_log`: both players and how many items each gave).
+
+A log table that is not in the database (an older emulator without `logs_economy`, `housekeeping_log` or
+`permission_audit`) shows a greyed tab that says so.
+
+### Players
+
+**HOTEL → Players** finds a player and acts on them. It reads through the same SSH tunnel and MariaDB login as the
+Catalogue; the changes go to the running emulator over RCON, the way the catalogue is published.
+
+- **Search**: the start of a name (`%` and `_` count as themselves) or an id, 100 players a page, online players
+  first and then the ones seen last; **Online only** shows the players in the hotel now.
+- **The player**: id, name, rank and its name (`permission_ranks`, or the older `permissions`), motto, look, mail,
+  when the account was made and the player was last online, online or not and the room they are in (the room visit
+  without a leave time), the home room. The **wallet**: credits, every `users_currency` balance (0 duckets, 5
+  diamonds, other types by number) and the club subscription (`users_subscriptions`). The **badges**, the worn ones
+  first. The **possessions**: furni by kind (floor, wall, effect, ...) in the inventory and placed in a room, pets and
+  bots the same way, and the rooms owned. The last 15 **room visits**, and the **bans** (the active ones in red; an end
+  of 0 never ends) and a mute (`users_settings.mute_end_timestamp`). The password hash, the SSO ticket, the remember-me
+  token, the secret key and the pincode are never read.
+- **Actions (RCON)**: give credits (`givecredits`), give points of a currency type (`givepoints`), give a badge
+  (`givebadge`), set the rank (`setrank`), send an alert (`alertuser`) and disconnect (`disconnect`). Each asks first,
+  shows the emulator's answer and reads the player again. Credits, points, badges and the rank also work for an
+  offline player: the emulator writes them to the database. An alert and a disconnect only reach a player who is
+  online. The emulator keeps its own limits: `rcon.grant.max_amount` (default 1,000,000 a grant) and
+  `rcon.setrank.max_rank` (default 12) in its config, and it logs a rank change.
+- **Housekeeping on the player** (needs the emulator's `housekeeping` RCON command, see [Housekeeping](#housekeeping)):
+  kick with a reason, a trade lock (1 hour to 30 days), reset the password (a new random one, shown once), a
+  temporary rank (1 hour to a year; the rank before it comes back by itself), give furni (an `items_base` id, 1 to
+  100 of it) and set the Habbo Club days (0 ends it). Below the details: the running temporary rank, the
+  **sanctions** of the mod tools' ladder, the **accounts on the same IP** (registered or logged in from one of this
+  player's IPs; **Open** shows one), the **IP and mail** behind **Reveal**, and the **staff notes** (add and delete).
+
+### Housekeeping
+
+**HOTEL → Housekeeping** is the hotel's housekeeping panel (the one in the Octane client) outside the hotel. The lists
+come from the database over the same MariaDB login as Players; the actions go to the running emulator over RCON, as
+one `housekeeping` command with an `action` (the contract is in the emulator's `docs/rcon-housekeeping.md`). An
+emulator without that command says so at the top; the lists still work.
+
+- **Dashboard**: players online and in total, rooms with players and in total, open support tickets, the emulator's
+  uptime and version. Without the RCON command it falls back to the database counts.
+- **Online**: who is in the hotel now, their rank, the room they are in, IP and since when. A click on a room opens it.
+- **Rooms**: search by id, name or owner (without a search: the rooms with players, fullest first). For a room: open
+  or close it (doorbell off/on), kick everyone, mute and unmute it, give it to another player (name or id), delete
+  it, and change its name, description, maximum players, category, trading and two tags.
+- **Hotel**: an alert to everyone online, to staff only, to one player or to one room (signed "-All-in-1 Manager");
+  maintenance with a countdown of 0 to 120 minutes and a message, stop the countdown, end maintenance; the emergency
+  lockdown (only the highest rank can use the in-hotel panel); and reload content (catalogue, items, navigator,
+  permissions, word filter, texts, configuration).
+- **Word filter**: every filtered word and its replacement (empty: `bobba`); add, change and remove.
+- **Permissions**: every `permission_definitions` row against every rank, searchable; a click steps the value
+  (0, 1 and 2 = "in rooms with rights") in the running emulator and the database at once. The emulator refuses a
+  change that would lock everyone out of housekeeping.
+- **Bans**: the active bans (account, IP, machine) with who gave them, why and until when; **Revoke** lifts one.
+- **Support**: the open and picked-up help tickets; reply (and close) or close as resolved, useless or abusive.
+- **Soundboard**: the `soundboard_sounds` catalogue: add, edit, enable, order (up/down), delete, and tell the
+  emulator to load it again (`updatesoundboard`).
+
+Every action asks first and shows the emulator's answer. The emulator checks the staff rank, the limits and the
+permissions itself, and logs every action. The gameserver also gained the RCON commands `banuser`, `unbanuser` and
+`reloadcontent` for the CMS and other tools.
+
+### Hotel view
+
+**HOTEL → Hotel view** edits the landing page players see before they enter a room, through the same SSH tunnel and
+MariaDB login as the Catalogue. Four tabs:
+
+- **Widgets**: the five slots of `hotelview_landing_slots` (a missing row is shown as a hidden promotion and added when
+  saved). Per slot: shown or not, the type (the 23 types the emulator accepts: promotion, bonus rare, catalogue
+  promotion, expiring catalogue page, community goal, daily quest, next limited rare countdown, ...), title, text,
+  image, button text and link, progress (0 to 100) and its text. **Options of this type** are the keys of
+  `config_json` the client reads for that type (position x/y, second button, catalogue page, featured slot, end date,
+  badge and goal code, the "use the emulator's LTD / bonus rare / community goal / daily quest" switches); an empty field
+  removes its key. Everything else in `config_json` (such as `voteOptions`) is edited as JSON below them. The JSON must
+  be an object of at most 3000 characters (the emulator replaces anything else by `{}`); keys you do not touch are kept
+  as they were, and the runtime keys `userVote` and `voteCounts` are never saved. A vote slot shows how many votes are
+  cast and can **reset** them (`hotelview_landing_votes`).
+- **Scene and Hall of Fame** (`hotelview_landing_settings`, row 1): the background, left, right and drape images and
+  their positions (-1 is the client's default place), and the Hall of Fame box: shown or not, its place and what it
+  lists (newest players, most time online, highest achievement score, or most of one currency type).
+- **News** (`hotelview_news`): add, edit and delete articles (title, text, button text, whether the button opens a page
+  in the client or a web page, its link, the image). The hotel shows the ten with the highest ids.
+- **Bonus rare and goals**: the `emulator_settings` the widgets read: the bonus rare's furni id and class name, the
+  points it costs and their currency type, the concurrent users goal and its badge, and how many players the community
+  goal Hall of Fame lists. A setting that is not in the table yet is added.
+
+Saving writes the database; the hotel shows it after a reload. **Reload in the hotel as** sends `:update_hotel_view`
+over RCON (`executecommand`) as the online staff player you name: the emulator loads the widgets, scene, news and Hall
+of Fame again and refreshes the hotel view of everyone online. The player must be online and may use the command
+(`cmd_update_hotel_view`); you can also type the command in the hotel yourself. The settings tab is read by the emulator
+at start or with `:update_config`.
+
+### Gamedata
+
+**HOTEL → Gamedata** edits two files in the server's `gamedata/config` over the SSH login (no MariaDB password needed):
+
+- **Furnidata** (`FurnitureData.json`): search floor and wall furni by id, classname or name, and edit the plain fields
+  of one (name, description, dimensions, offer id, `canstandon`, ...). Each value keeps its type (a number stays a
+  number, true/false stays true/false); lists and objects such as `partcolors`, and fields this editor does not know,
+  are kept as they are. An id or classname another furni already uses is refused. **Check items_base** looks the
+  classname and sprite id up in the hotel's `items_base` (read only, through the root login's MariaDB socket) and says
+  whether they match (otherwise run Fix items_base). **Add copy** adds a new furni as a copy of the one shown, with its
+  own id and classname and offer id -1 (Fix offer IDs gives it one); it still needs a furni bundle and an `items_base`
+  row of that name.
+- **Texts** (`ExternalTexts.json`): search a key or a text, edit a text, add a key, delete a key (after a confirm).
+
+Changes go into an edited copy first; **Save** writes the file. Saving checks first that the file on the server is
+still the one that was loaded (its SHA-256: an edit by the emulator or the in-hotel furni editor in the meantime is
+never overwritten, load it again instead), copies it to `<file>.bak-<time>` next to it, then writes the new file under
+a temporary name in the same folder and renames it over the old one, keeping its owner, group and mode. The JSON is
+written back in the file's own layout (one line or its indent, a BOM, a closing newline).
+
+There is no reload command: the emulator watches its furnidata (`items.furnidata.watch.enabled`, on by default) and
+sends the changed furni to everyone online by itself. Texts are read by the client when it loads, so players see them
+after reloading the hotel page. Octane's `UITexts.jsonc` is not edited here, because it has comments that saving as
+JSON would drop; FigureData is not edited either, because its set, part and palette ids depend on each other and a
+plain field edit easily breaks avatars.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;
 **Octane and Octane Renderer** as one row (they depend on each other: both versions are shown, the new commits of both
 are counted together, and **Update** updates the renderer first, then Octane, then builds the client); AtomCMS when it is
 installed; and the Docker services **Traefik** and, once installed, **Gitea**. For those the check compares the image on
-the server with Docker Hub's newest for the same tag (`docker buildx imagetools inspect`, which reads only the
-registry's index: nothing is downloaded or changed), and shows **NEW IMAGE WAITING** when a newer image is downloaded but
+the server with Docker Hub's newest for the same tag (a `HEAD` request of the tag's manifest, which does not count
+against Docker Hub's pull limit; `docker buildx imagetools inspect` only when that gives nothing, and to read the newest
+version number; nothing is downloaded or changed), shows **NOT CHECKED** with the reason when Docker Hub does not answer
+or limits the server's requests, and shows **NEW IMAGE WAITING** when a newer image is downloaded but
 the old container still runs (a `docker restart` keeps the image the container was made from; **Update** and
-**Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page.
+**Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page. For Traefik
+with a waiting image the button is **Restart** instead: it runs **Restart Traefik**, which makes the new container from
+the downloaded image without asking Docker Hub (so it also works while Docker Hub limits downloads), and checks again
+afterwards so the row shows the new version.
 
 **Settings** (sidebar, under GENERAL):
 
@@ -1255,6 +1721,17 @@ the old container still runs (a `docker restart` keeps the image the container w
   | AtomCMS, and **AtomCMS installed**: Detect / Installed / Not installed | `/var/www/atomcms`, Detect |
   | Database backups | `/var/backups/all-in-1` |
   | Hotel database (for new MariaDB passwords files) | `habbo` |
+
+  Under **Web and other services**, for a server that keeps these elsewhere (a part already installed is not moved):
+
+  | Setting | Default |
+  |---|---|
+  | NGINX hotel site (file; a file in `sites-available` is linked into `sites-enabled`, one elsewhere such as `conf.d` is read as it is) | `/etc/nginx/sites-available/hotel` |
+  | NGINX hotel logs | `/var/log/nginx/hotel` |
+  | Traefik (compose, `dynamic/` routes, certificates) / Traefik logs | `/opt/traefik`, `/var/log/traefik` |
+  | EpicNext CMS / EpicNext source | `/var/www/epicnext`, `/var/www/epicnext-src` |
+  | Gitea | `/opt/gitea` |
+  | CrowdSec | `/opt/crowdsec` |
 
   **Emulator account** is a list of the server's accounts once you are logged in: `root`, the people's accounts and
   the accounts in group `www-data` (where the emulator's account lives), each with a short note. **+ Create a new
@@ -1281,10 +1758,6 @@ the old container still runs (a `docker restart` keeps the image the container w
   `provided_<type>.pub`, for the SSH key step to install for root.
 
 ![Settings: servers](public/docs/screenshots/settings-servers.png)
-
-- **All-in-1 downloader**: the path of the downloader's executable (`Habbo Downloader.exe`, or the Linux binary).
-  Deploy Assets takes the files from the `Habbo_Default` folder next to it; the card shows how many furniture bundles
-  it found.
 
 ## Debug
 
@@ -1334,6 +1807,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 | **Import full database** | uploads a `.sql` or `.sql.gz`, makes a safety backup (`<db>-before-import-<time>.sql.gz`), stops the emulator, recreates the database with its character set and imports (database names in `CREATE DATABASE` / `USE` lines become the hotel's), clears AtomCMS' cache, and starts the emulator, which updates the database to its version. A file that is not a SQL dump is refused before anything changes |
 | **Furniture language** | the furniture names and descriptions in another hotel's language (the 9 Habbo hotels): its furnidata is downloaded and converted, the hotel's own furni stay, and `items_base` / `catalog_items` follow it (sprite ids, catalogue items, offer ids), after a safety backup and with the emulator restarted. See [Default catalogue](#default-catalogue) |
 | **Import Plus database** | a PlusEMU dump (such as Plus' fresh install) into the Polaris hotel database: the reverse of [plus-migrator](https://github.com/plus-emulator/plus-migrator). Choose **Furniture and catalog** or **Furniture only**. It uploads the `.sql` / `.sql.gz`, makes a safety backup (`<db>-before-plus-import-<time>.sql.gz`), stops the emulator, loads the dump into a staging database `plus_import` next to the hotel's, converts, drops the staging database and starts the emulator. See [Import Plus database](#import-plus-database) |
+| **Check multiheight** | compares every floor and wall furni in `items_base` that has a `multiheight` with the states of its `.hab` in `gamedata/furniture` (counted as the converter counts interaction modes: the first visualization with animations, its highest animation id + 1). It lists furni with **too many heights** (the last ones show no graphic, e.g. `0.8;2.0;3.0;4.0;5.0` for 4 states), a wrong `interaction_modes_count`, **too few heights** (states that cannot be reached; add the heights by hand, they are not in the `.hab`) and furni without a readable `.hab`. After a yes, too many heights are cut to one per state (the first heights stay) and `interaction_modes_count` is set to match, in one transaction that only changes rows still as they were read; then the emulator restarts. Needs Node.js on the server (installed with Octane) |
 | **Recover SQL password** | gives MariaDB's root a new random 32-character password (asks first) and saves it in `configuration/database/<server>/mariadb.txt`; a changed file is kept as `mariadb.txt.bak-<time>`. Changes `root@localhost` (its socket login stays) and `root@'%'` when it exists. When root cannot log in through the socket any more, MariaDB is restarted for a moment with `--skip-grant-tables --skip-networking` to change it and then started normally. Then it tests the new password over 127.0.0.1 and the socket. Without a saved file, the CMS and emulator accounts are read from AtomCMS' `.env` and the emulator's `config.ini`, so the new file is complete. The emulator and AtomCMS use their own accounts and are not affected |
 | **Check for updates** | `git fetch` of the emulator, Octane, Octane-Renderer and AtomCMS, and per clone how many commits a `git pull` would bring in, with the newest one. The commits are counted against the branch chosen in **Settings → Repository branches**, not against the branch the clone happens to be on, so a clone still on `main` while `dev` is chosen reports what `dev` has and says `main → dev`. AtomCMS has no choice and is counted against its own branch. A fetch only fills the remote branches: no file on the server is changed and the hotel keeps running. The same check runs by itself right after you log in here, and again after an update, so **Update emulator** and **Update Octane** say `3 new commit(s)` or `up to date` before you press them |
 | **Update system** | `apt-get update`, `upgrade` and `dist-upgrade` (changed configuration files are kept); says when a reboot is needed |
@@ -1373,7 +1847,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 The conversion is `source/crates/remote/sql/plus-to-polaris-furniture.sql` and `plus-to-polaris-catalog.sql`, built into
 the program.
 
-**Settings backup** (no server needed): **Export encrypted settings** writes the whole configuration directory
+**Settings backup** (on the **Settings** page, no server needed): **Export encrypted settings** writes the whole configuration directory
 (SSH keys, .ppk files, MariaDB passwords of every server) to one `.aio-settings` file, encrypted with AES-256-GCM
 and a key derived from your password (PBKDF2-SHA256, 600,000 rounds). **Import encrypted settings** on another
 computer restores it; the settings already there are kept next to it as `configuration.bak-<time>`. A wrong
@@ -1400,7 +1874,13 @@ recorded.
 
 ## Updating the installer itself
 
-The program checks at startup whether a newer release of <https://github.com/duckietm/All-in-1-installer> is out
+**Renamed from All-in-1 Installer.** The repository was `duckietm/All-in-1-installer` and the program
+`all-in-1-installer`. Releases still carry `all-in-1-installer-windows-x64.exe` / `-linux-x64` next to the new names,
+so a version from before the rename updates itself to the All-in-1 Manager. Its settings stay: the `configuration`
+folder next to the program, or `All-in-1 Installer\configuration` in the user's data folder while that one exists;
+files the installer wrote on a server are recognised by both names, and the old history files are still read.
+
+The program checks at startup whether a newer release of <https://github.com/duckietm/All-in-1-Manager> is out
 (releases tagged `rust-v<version>`). When there is one, it says what is new and offers **Update and restart**: the
 release file is downloaded next to the running program, the running one is renamed to `<name>.old`, the new one takes
 its place under the same name, and the program starts again. **Later** keeps the version you have; the question comes
@@ -1412,7 +1892,7 @@ a repository without releases all mean no question is asked. A debug build (`car
 **About → Check for updates** checks again at any time.
 
 The version it compares is `version` in `[workspace.package]` of `Cargo.toml` against the release's tag. The file it
-downloads is `all-in-1-installer-windows-x64.exe` on Windows and `all-in-1-installer-linux-x64` on Linux.
+downloads is `all-in-1-manager-windows-x64.exe` on Windows and `all-in-1-manager-linux-x64` on Linux.
 
 ## Building
 
@@ -1435,15 +1915,26 @@ build test         ./build.sh test        # all tests
 On Windows it needs Visual Studio's "Desktop development with C++" (Rust uses its linker). The same with Python:
 
 ```bash
-python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-installer(.exe)
+python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-manager(.exe)
 python source/tools/build.py release           # release build  -> public/release/ (with Assets/ next to it)
 python source/tools/build.py dev --run         # and start it
 cargo test --workspace                         # all tests, including the parity tests
 ```
 
+Release and dev also leave a **shortcut** to the program next to the build script: on Windows `All-in-1 Manager.lnk`
+(and `All-in-1 Manager (dev).lnk`); on Linux and macOS a link `./all-in-1-manager` (`./all-in-1-manager-dev`), and
+on Linux a launcher `All-in-1 Manager.desktop` to double-click in the file manager. The shortcut starts the program
+in its own folder in `public/`, so it uses that folder's configuration. Git ignores them.
+
 `public/dev` and `public/release` are where you run the program while developing and the copy you hand out; each
 keeps its own `configuration/` (keys, passwords, history) next to the program, and git ignores both. Plain
 `cargo build` / `cargo run -p aio-app` work too and leave the program in `target/`.
+
+On **macOS** (Apple silicon or Intel) `./build.sh release` builds a native program, with no extra libraries: the
+releases have none for macOS, so this build does not update itself (`git pull` and build again instead). Started from
+a terminal it works right away. Started as an app from Finder, macOS asks once for **Local Network** access (System
+Settings → Privacy & Security → Local Network): without it, a server on your own network answers
+`No route to host (os error 65)`.
 
 On Windows both the MSVC and the GNU toolchain work (the GNU one with MinGW, for the icon and version information of
 the `.exe`). The installer runs on your own Windows or Linux desktop and connects to the server, so the server itself
@@ -1452,7 +1943,7 @@ needs no GUI.
 ### Dry run
 
 ```bash
-all-in-1-installer --dry-run
+all-in-1-manager --dry-run
 ```
 
 logs in to nothing: every command a step would send to the server (the scripts, what goes over stdin, uploads and
@@ -1469,7 +1960,7 @@ first (the health check then finds a sample server), and `AIO_SCREENSHOT_THEME=d
 `AIO_SCREENSHOT_LOOK=hotel|professional` and `AIO_SCREENSHOT_LANG=<code>` set the rest. For example:
 
 ```bash
-AIO_SCREENSHOT=install.png AIO_SCREENSHOT_PAGE=install AIO_SCREENSHOT_STEP=2 AIO_SCREENSHOT_CONNECT=1 all-in-1-installer
+AIO_SCREENSHOT=install.png AIO_SCREENSHOT_PAGE=install AIO_SCREENSHOT_STEP=2 AIO_SCREENSHOT_CONNECT=1 all-in-1-manager
 ```
 
 The pictures in `public/docs/screenshots` are made this way with the latest release, in English and the light theme
@@ -1493,7 +1984,7 @@ the C# sources they compile are in the git history up to commit `50dd986`.
 Every push to `main` makes a release (`.github/workflows/release.yml`), and the version goes up by itself: when the
 version in `Cargo.toml` already has a release, the last number is raised (2.0.3 → 2.0.4), the bot commits
 `Version 2.0.4` to `main`, and that commit is tested, built and published as `rust-v2.0.4` with
-`all-in-1-installer-windows-x64.exe` and `all-in-1-installer-linux-x64`, the files the update check looks for. A
+`all-in-1-manager-windows-x64.exe` and `all-in-1-manager-linux-x64`, the files the update check looks for. A
 version you set yourself and that has no release yet (for a bigger step, e.g. 2.1.0) is released as it is. Pushes
 that only change the README, the licence or `public/docs` release nothing. After a release, `git pull` brings the
 bot's version commit to your copy.
@@ -1518,12 +2009,14 @@ source/                          The code
   tools/                         build.py, version.py, i18n_keys.py (texts to translate), make_icon.py (the program icon)
   Assets/                        Client images packed into the program (Deploy Assets → Images)
   crates/core/                   What lives on this computer
-    src/settings.rs              configuration/settings.json: servers, default key, downloader, branches, look, layout, language
+    src/settings.rs              configuration/settings.json: servers, default key, branches, look, layout, language, assets, retros
     src/layout.rs                Paths on the server, the emulator's account and the database name, with their checks
     src/config_dir.rs            The configuration/ folder: keys per server, mariadb.txt, owner-only files
     src/credentials.rs           Generated MariaDB passwords and their file format
     src/keys.rs                  SSH keys: generation (encrypted OpenSSH + PuTTY .ppk v2), public key formats, .ppk reader
     src/backup.rs                Encrypted export / import of the configuration folder (AES-256-GCM, PBKDF2)
+  crates/assets/                 Habbo's asset bundles: .hab, .nitro and .asar read and written, and the
+                                 conversions to .hab every part of the installer uses (no network, no server)
   crates/remote/                 Everything that happens on the server
     src/server.rs                The Server trait: commands as root, streaming, follow, stdin, SFTP, tunnel, shell
     src/ssh.rs                   The SSH login (russh): password, keyboard-interactive or key, the OS check, sudo -> root

@@ -1,9 +1,9 @@
-//! Deploy Assets: the downloader's files, the client's UI texts and the emulator's images, three steps in one wizard.
+//! Deploy Assets: the downloaded Habbo assets, the client's UI texts and the emulator's images, three steps in one wizard.
 //! (AssetSyncStep.cs, UiTextsStep.cs, EmulatorAssetsStep.cs, InstallerWindow._deployWizard)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Instant;
 
 use aio_remote::asset_sync::{self, AssetPlan};
@@ -11,6 +11,7 @@ use aio_remote::emulator_assets::{self, EmulatorAssetState};
 use aio_remote::{fail, octane, ui_texts, Server};
 use async_trait::async_trait;
 use eframe::egui::{self, Color32, RichText};
+use parking_lot::Mutex;
 
 use crate::gui::icons::Icon;
 use crate::gui::step::{InstallStep, Intro, StepOutcome, StepUi};
@@ -57,7 +58,7 @@ fn small(ui: &mut egui::Ui, text: &str, size: f32, color: Color32, strong: bool)
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Sync from the All-in-1 downloader (AssetSyncStep.cs)
+// Sync the downloaded Habbo assets (AssetSyncStep.cs)
 
 #[derive(Clone)]
 struct PlanRow {
@@ -83,8 +84,13 @@ pub struct AssetSyncStep {
     summary: Mutex<Option<String>>,
 }
 
-fn downloader_folder() -> Option<PathBuf> {
-    asset_sync::downloader_folder(aio_core::InstallerSettings::load().downloader_path.as_deref())
+/// The downloaded Habbo assets (Assets → Habbo assets).
+fn sources() -> Vec<asset_sync::Source> {
+    asset_sync::sources(&aio_core::InstallerSettings::load().assets_folder())
+}
+
+fn source_list(sources: &[asset_sync::Source]) -> String {
+    sources.iter().map(|s| s.label.display().to_string()).collect::<Vec<_>>().join(" + ")
 }
 
 /// The "To upload" column of a folder.
@@ -101,15 +107,12 @@ fn upload_text(plan: &AssetPlan) -> String {
 
 impl AssetSyncStep {
     fn summary(&self) -> Option<String> {
-        self.summary.lock().unwrap().clone()
+        self.summary.lock().clone()
     }
 
-    fn show_plans(&self, folder: &Path, plans: &[AssetPlan]) {
-        let mut form = self.form.lock().unwrap();
-        form.source = tf(
-            "From {source} to {gamedata} on the server:",
-            &[("source", &folder.join(asset_sync::DEFAULT_FOLDER).display().to_string()), ("gamedata", &octane::gamedata())],
-        );
+    fn show_plans(&self, sources: &[asset_sync::Source], plans: &[AssetPlan]) {
+        let mut form = self.form.lock();
+        form.source = tf("From {source} to {gamedata} on the server:", &[("source", &source_list(sources)), ("gamedata", &octane::gamedata())]);
         form.rows = plans
             .iter()
             .map(|plan| PlanRow {
@@ -130,7 +133,7 @@ impl InstallStep for AssetSyncStep {
     }
 
     fn caption(&self) -> String {
-        t("Downloader").into()
+        t("Assets").into()
     }
 
     fn install_label(&self) -> String {
@@ -144,10 +147,13 @@ impl InstallStep for AssetSyncStep {
     fn intro(&self) -> Intro {
         Intro {
             icon: Icon::Download,
-            heading: t("Sync from the All-in-1 downloader").into(),
+            heading: t("Sync the downloaded assets").into(),
             description: tf(
-                "Copies the Habbo assets the All-in-1 downloader saved in its Habbo_Default folder to {gamedata} on the server, where Octane loads them.",
-                &[("gamedata", &octane::gamedata())],
+                "Copies the downloaded Habbo assets ({folder}) to {gamedata} on the server, where Octane loads them, folder for folder.",
+                &[
+                    ("folder", &aio_remote::habbo_assets::gamedata_folder(&aio_core::InstallerSettings::load().assets_folder()).display().to_string()),
+                    ("gamedata", &octane::gamedata()),
+                ],
             ),
             bullets: vec![
                 t("Compares every folder with the server first: only files that are not there yet, or that differ (size, or newer here), are sent.").into(),
@@ -156,19 +162,19 @@ impl InstallStep for AssetSyncStep {
                 t("Config JSON (FurnitureData, ProductData, ExternalTexts ...) is only added when missing, unless you tick that it may be replaced: hotels and the emulator edit those files.").into(),
                 tf("Then gives the emulator and NGINX access again ({script}).", &[("script", octane::PERMISSIONS_SCRIPT)]),
             ],
-            footnote: Some(t("Set the downloader's executable in Settings first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).").into()),
+            footnote: Some(t("Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).").into()),
         }
     }
 
     fn checks(&self) -> Vec<String> {
-        [n("Compare the downloader with the server"), n("Check the free space"), n("Upload new and changed files"), n("Permissions (www-data)")]
+        [n("Compare the assets with the server"), n("Check the free space"), n("Upload new and changed files"), n("Permissions (www-data)")]
             .iter()
             .map(|c| t(c).to_string())
             .collect()
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(2.0);
         if !form.source.is_empty() {
@@ -197,32 +203,30 @@ impl InstallStep for AssetSyncStep {
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
-        let Some(folder) = downloader_folder() else {
+        let sources = sources();
+        if sources.is_empty() {
             {
-                let mut form = self.form.lock().unwrap();
+                let mut form = self.form.lock();
                 form.source.clear();
                 form.rows.clear();
             }
             ui.detected(
                 ResultKind::Warning,
-                t("The All-in-1 downloader is not set"),
-                t("Open Settings → All-in-1 downloader and choose its executable (its folder holds Habbo_Default), then come back here."),
+                t("Nothing downloaded yet"),
+                t("Download assets with Assets → Habbo assets first, then come back here."),
             );
             return Ok(false);
-        };
-        let overwrite = self.form.lock().unwrap().overwrite_config;
-        let plans = asset_sync::plan(server.as_ref(), &folder, overwrite).await?;
-        self.show_plans(&folder, &plans);
+        }
+        let overwrite = self.form.lock().overwrite_config;
+        let plans = asset_sync::plan_sources(server.as_ref(), &sources, overwrite).await?;
+        self.show_plans(&sources, &plans);
         let count: usize = plans.iter().map(|p| p.upload_count()).sum();
         if count == 0 {
             let local: usize = plans.iter().map(|p| p.local_count).sum();
             ui.detected(
                 ResultKind::Success,
-                t("The server has everything the downloader has"),
-                &tf(
-                    "{count} files in {folder}, all on the server. Download more with the All-in-1 downloader and sync again.",
-                    &[("count", &local.to_string()), ("folder", asset_sync::DEFAULT_FOLDER)],
-                ),
+                t("The server has every downloaded file"),
+                &tf("{count} files here, all on the server. Download more with Habbo assets and sync again.", &[("count", &local.to_string())]),
             );
             return Ok(true);
         }
@@ -238,13 +242,16 @@ impl InstallStep for AssetSyncStep {
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let log = ui.logger();
         let server = server.as_ref();
-        let Some(folder) = downloader_folder() else { fail!("{}", t("Set the All-in-1 downloader in Settings first.")) };
-        log(&format!("> Comparing {} with {} ...", folder.join(asset_sync::DEFAULT_FOLDER).display(), octane::gamedata()));
+        let sources = sources();
+        if sources.is_empty() {
+            fail!("{}", t("Nothing downloaded yet: use Assets → Habbo assets first."));
+        }
+        log(&format!("> Comparing {} with {} ...", source_list(&sources), octane::gamedata()));
         let (overwrite, selected) = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             (form.overwrite_config, form.selected.clone())
         };
-        let plans = asset_sync::plan(server, &folder, overwrite).await?;
+        let plans = asset_sync::plan_sources(server, &sources, overwrite).await?;
         let is_chosen = |p: &AssetPlan| p.upload_count() > 0 && selected.get(&p.mapping.name).copied() != Some(false);
         for plan in plans.iter().filter(|p| p.local_count > 0) {
             let skipped = if plan.upload_count() > 0 && !is_chosen(plan) { " (skipped: unticked)" } else { "" };
@@ -266,7 +273,7 @@ impl InstallStep for AssetSyncStep {
             ui.done(t("nothing to send"));
             ui.done(t("not needed"));
             let summary = t("Nothing to upload: the server already has every file.").to_string();
-            *self.summary.lock().unwrap() = Some(summary.clone());
+            *self.summary.lock() = Some(summary.clone());
             return Ok(ui.succeeded(t("The server is up to date"), &summary));
         }
 
@@ -299,7 +306,7 @@ impl InstallStep for AssetSyncStep {
             let progress = |sent: u64| {
                 let so_far = before + sent as i64;
                 let percent = so_far * 100 / total.max(1);
-                let mut last = last.lock().unwrap();
+                let mut last = last.lock();
                 if percent == last.0 || (last.1.elapsed().as_secs_f64() < 3.0 && percent < 100) {
                     return;
                 }
@@ -323,7 +330,7 @@ impl InstallStep for AssetSyncStep {
             tf("{count} files ({size}) uploaded: ", &[("count", &files.to_string()), ("size", &bytes(total))]),
             per_folder.join(", ")
         );
-        *self.summary.lock().unwrap() = Some(summary.clone());
+        *self.summary.lock() = Some(summary.clone());
         Ok(ui.succeeded(
             t("The assets are on the server"),
             &format!(
@@ -376,7 +383,7 @@ pub struct UiTextsStep {
 
 impl UiTextsStep {
     fn summary(&self) -> Option<String> {
-        self.summary.lock().unwrap().clone()
+        self.summary.lock().clone()
     }
 }
 
@@ -424,7 +431,7 @@ impl InstallStep for UiTextsStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let mut form = self.form.lock().unwrap();
+        let mut form = self.form.lock();
         let form = &mut *form;
         ui.add_space(2.0);
         super::atom_cms::field_label(ui, palette, t("Language"));
@@ -440,14 +447,14 @@ impl InstallStep for UiTextsStep {
     }
 
     fn validate(&self) -> Option<String> {
-        let form = self.form.lock().unwrap();
+        let form = self.form.lock();
         form.selected.filter(|&i| i < form.codes.len()).is_none().then(|| t("Choose a language.").to_string())
     }
 
     async fn detect(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<bool> {
         let state = ui_texts::inspect(server.as_ref()).await?;
         {
-            let mut form = self.form.lock().unwrap();
+            let mut form = self.form.lock();
             let select = state.current.as_deref().filter(|c| *c != "custom");
             form.set_languages(state.languages.clone(), select);
             form.note = if state.from_clone {
@@ -486,7 +493,7 @@ impl InstallStep for UiTextsStep {
 
     async fn run(&self, server: Arc<dyn Server>, ui: StepUi) -> anyhow::Result<StepOutcome> {
         let code = {
-            let form = self.form.lock().unwrap();
+            let form = self.form.lock();
             form.selected.and_then(|i| form.codes.get(i)).cloned()
         };
         let Some(code) = code else { fail!("{}", t("Choose a language.")) };
@@ -499,7 +506,7 @@ impl InstallStep for UiTextsStep {
         if let Some(backup) = backup {
             summary.push_str(&format!(" {}", tf("The previous file is {backup}.", &[("backup", &backup)])));
         }
-        *self.summary.lock().unwrap() = Some(summary.clone());
+        *self.summary.lock() = Some(summary.clone());
         Ok(ui.succeeded(t("The UI texts are installed"), &format!("{summary} {}", t("Players see them after reloading the hotel."))))
     }
 }
@@ -554,7 +561,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// The merged Assets folder in the temp folder, made again for each check (Assets/ next to the exe may change).
 async fn local_assets() -> anyhow::Result<PathBuf> {
-    let into = std::env::temp_dir().join(format!("all-in-1-installer-{}", std::process::id())).join("Assets");
+    let into = std::env::temp_dir().join(format!("all-in-1-manager-{}", std::process::id())).join("Assets");
     let beside = emulator_assets::local_assets();
     let target = into.clone();
     tokio::task::spawn_blocking(move || prepare_assets(CLIENT_ASSETS, &beside, &target)).await??;
@@ -616,11 +623,11 @@ pub struct EmulatorAssetsStep {
 
 impl EmulatorAssetsStep {
     fn summary(&self) -> Option<String> {
-        self.summary.lock().unwrap().clone()
+        self.summary.lock().clone()
     }
 
     fn show_states(&self, states: &[EmulatorAssetState]) {
-        *self.rows.lock().unwrap() = asset_rows(states);
+        *self.rows.lock() = asset_rows(states);
     }
 }
 
@@ -675,7 +682,7 @@ impl InstallStep for EmulatorAssetsStep {
     }
 
     fn options(&self, ui: &mut egui::Ui, palette: &Palette) {
-        let rows = self.rows.lock().unwrap().clone();
+        let rows = self.rows.lock().clone();
         if rows.is_empty() {
             return;
         }
@@ -765,7 +772,7 @@ impl InstallStep for EmulatorAssetsStep {
         } else {
             tf("{count} of the emulator's images and badge parts copied into gamedata.", &[("count", &added.to_string())])
         };
-        *self.summary.lock().unwrap() = Some(summary.clone());
+        *self.summary.lock() = Some(summary.clone());
         Ok(ui.succeeded(
             if added == 0 { t("Nothing was missing") } else { t("The emulator's assets are in gamedata") },
             &format!("{summary} {}", t("Reload the hotel (Ctrl+F5) to start the client with them.")),

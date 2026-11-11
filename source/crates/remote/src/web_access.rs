@@ -134,10 +134,15 @@ fn is_registrable_domain(name: &str) -> bool {
     labels.len() == if two_part { 3 } else { 2 }
 }
 
-pub const TRAEFIK_DIRECTORY: &str = "/opt/traefik";
+/// Traefik's folder (Settings → Server layout).
+pub fn traefik_directory() -> &'static str {
+    &aio_core::ServerLayout::current().traefik
+}
 pub const NGINX_PORT: &str = crate::hotel_site::PORT;
 pub const POLARIS_PORT: &str = "2096";
-pub const SITE_FILE: &str = crate::hotel_site::FILE;
+pub fn site_file() -> &'static str {
+    crate::hotel_site::file()
+}
 
 /// Waits until the traefik container runs and listens on port 80; fails with its log otherwise. (WaitForTraefikScript)
 pub fn wait_for_traefik_script() -> String {
@@ -163,7 +168,7 @@ pub fn static_config_script(settings: &WebAccessSettings) -> String {
 /// that sets X-Forwarded-For) and CrowdSec on 127.0.0.1. The access log folder and the plugin storage are for
 /// CrowdSec. (ComposeScript)
 pub fn compose_script() -> String {
-    fill(COMPOSE, &[("AccessLogDirectory", crate::crowdsec::ACCESS_LOG_DIRECTORY)])
+    fill(COMPOSE, &[("AccessLogDirectory", crate::crowdsec::access_log_directory())])
 }
 
 /// Polaris reads X-Forwarded-For from right to left and skips only the proxies it trusts. Behind Cloudflare the
@@ -246,8 +251,8 @@ pub async fn inspect(server: &dyn Server) -> Result<WebAccessState> {
         &[
             ("ConflictingPackages", CONFLICTING_PACKAGES),
             ("NginxPort", NGINX_PORT),
-            ("SiteFile", SITE_FILE),
-            ("TraefikDirectory", TRAEFIK_DIRECTORY),
+            ("SiteFile", site_file()),
+            ("TraefikDirectory", traefik_directory()),
             ("port80", &port_owner(80)),
             ("port443", &port_owner(443)),
             ("PolarisPort", POLARIS_PORT),
@@ -375,7 +380,7 @@ ufw_allow 80/tcp 443/tcp"#;
 
 /// With Cloudflare, X-Forwarded-For is trusted only from Cloudflare's published ranges.
 pub async fn configure_traefik(server: &dyn Server, settings: &WebAccessSettings, log: Log<'_>) -> Result<()> {
-    let text = fill(CONFIGURE_TRAEFIK, &[("TraefikDirectory", TRAEFIK_DIRECTORY)]);
+    let text = fill(CONFIGURE_TRAEFIK, &[("TraefikDirectory", traefik_directory())]);
     let body = fill(
         &text,
         &[
@@ -420,7 +425,7 @@ fn static_yaml(settings: &WebAccessSettings, crowdsec: bool) -> String {
     let extra = if crowdsec {
         format!(
             "\n# CrowdSec (Addons → CrowdSec): it reads this log; the plugin blocks the addresses it bans.\naccessLog:\n  filePath: {}\nexperimental:\n  plugins:\n    {}:\n      moduleName: {}\n      version: {}",
-            cs::ACCESS_LOG,
+            cs::access_log(),
             cs::PLUGIN,
             cs::PLUGIN_MODULE,
             cs::PLUGIN_VERSION
@@ -429,7 +434,7 @@ fn static_yaml(settings: &WebAccessSettings, crowdsec: bool) -> String {
         String::new()
     };
     format!(
-        "# Traefik static configuration (written by All-in-1 Installer).\nentryPoints:\n  web:\n    address: \":80\"\n    forwardedHeaders:\n      trustedIPs: [TRUSTED]{web}{websecure}\nproviders:\n  file:\n    directory: /etc/traefik/dynamic\n    watch: true{acme}\nlog:\n  level: INFO\n  noColor: true{extra}"
+        "# Traefik static configuration (written by All-in-1 Manager).\nentryPoints:\n  web:\n    address: \":80\"\n    forwardedHeaders:\n      trustedIPs: [TRUSTED]{web}{websecure}\nproviders:\n  file:\n    directory: /etc/traefik/dynamic\n    watch: true{acme}\nlog:\n  level: INFO\n  noColor: true{extra}"
     )
 }
 
@@ -454,7 +459,7 @@ sed -i "s#\[TRUSTED\]#[$trusted]#" "$t/traefik.yml""#;
 const COMPOSE: &str = r#"echo "> $t/compose.yaml"
 install -d -m 755 {{AccessLogDirectory}} "$t/plugins-storage"
 cat > "$t/compose.yaml" <<'EOF'
-# Traefik for the hotel (written by All-in-1 Installer). Update: docker compose pull && docker compose up -d
+# Traefik for the hotel (written by All-in-1 Manager). Update: docker compose pull && docker compose up -d
 services:
   traefik:
     image: traefik:v3
@@ -474,7 +479,7 @@ pub const POLARIS_API_PATHS: [&str; 10] = ["auth", "authx", "badges", "cms", "em
 
 const ROUTES: &str = r#"echo "> $t/dynamic/hotel.yml: {{Url}}{{description}}"
 cat > "$t/dynamic/hotel.yml" <<'EOF'
-# The hotel's routes (written by All-in-1 Installer).
+# The hotel's routes (written by All-in-1 Manager).
 http:
   routers:
     polaris:
@@ -518,7 +523,7 @@ second=$(getent ahostsv4 "$www" 2>/dev/null | awk '{print $1}' | sort -u)
 if [ -n "$second" ] && { [ {{cloudflare}} = yes ] || [ -z "$main" ] || [ -n "$(printf '%s\n' $main $second | sort | uniq -d)" ]; }; then
   echo "> $t/dynamic/hotel-www.yml: $www → {{Url}}"
   cat > "$t/dynamic/hotel-www.yml" <<'EOF'
-# {{alias}} leads to the hotel's address (written by All-in-1 Installer).
+# {{alias}} leads to the hotel's address (written by All-in-1 Manager).
 http:
   routers:
     hotel-www:
@@ -647,7 +652,8 @@ fn routes_script(settings: &WebAccessSettings) -> String {
 /// Rewrites only the routes, for the CMS addon. Traefik itself keeps running.
 pub async fn configure_routes(server: &dyn Server, settings: &WebAccessSettings, log: Log<'_>) -> Result<()> {
     let body = format!(
-        "t={TRAEFIK_DIRECTORY}\n[ -d \"$t/dynamic\" ] || fail \"Traefik is not set up in $t. Run the Web access step first.\"\n{}",
+        "t={}\n[ -d \"$t/dynamic\" ] || fail \"Traefik is not set up in $t. Run the Web access step first.\"\n{}",
+        traefik_directory(),
         routes_script(settings)
     );
     script::run(server, &script::with_prelude(&body), log, "Changing the Traefik routes failed", None).await
@@ -671,7 +677,7 @@ pub const CLOUDFLARE_REFRESH_SCRIPT: &str = "/var/scripts/CF_Refresh.sh";
 pub const CLOUDFLARE_REFRESH_CRON: &str = "/etc/cron.d/cf-refresh";
 
 const CLOUDFLARE_REFRESH: &str = r##"#!/bin/bash
-# Keeps Cloudflare's IP ranges current for the hotel (written by All-in-1 Installer; weekly from {{CloudflareRefreshCron}}).
+# Keeps Cloudflare's IP ranges current for the hotel (written by All-in-1 Manager; weekly from {{CloudflareRefreshCron}}).
 # NGINX, Traefik and Polaris read the visitor's address from X-Forwarded-For past Cloudflare, instead of seeing Cloudflare's.
 set -u
 fail() { echo "ERROR: $*"; exit 1; }
@@ -683,7 +689,7 @@ echo "$(date '+%F %T') $(echo "$ranges" | grep -c .) Cloudflare ranges"
 
 # NGINX: the hotel site's trusted proxies. A reload keeps every connection.
 realip={{RealIpFile}}
-{ echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Installer): Traefik and Cloudflare."
+{ echo "# Proxies NGINX takes the visitor's address from (written by All-in-1 Manager): Traefik and Cloudflare."
   echo "set_real_ip_from 127.0.0.1;"
   echo "$ranges" | sed 's/.*/set_real_ip_from &;/'; } > "$realip.new"
 if ! cmp -s "$realip.new" "$realip"; then
@@ -759,7 +765,7 @@ fn cloudflare_refresh_content() -> String {
         &[
             ("CloudflareRefreshCron", CLOUDFLARE_REFRESH_CRON),
             ("RealIpFile", crate::hotel_site::REAL_IP_FILE),
-            ("TraefikDirectory", TRAEFIK_DIRECTORY),
+            ("TraefikDirectory", traefik_directory()),
             ("MiddlewareFile", &crate::crowdsec::middleware_file()),
             ("EmulatorDirectory", &crate::emulator::directory()),
             ("EmulatorLogDirectory", &crate::emulator::log_directory()),
@@ -774,14 +780,14 @@ cat > {{CloudflareRefreshScript}} <<'REFRESH'
 {{content}}
 REFRESH
 chmod 755 {{CloudflareRefreshScript}}
-printf '# Cloudflare IP ranges for the hotel (All-in-1 Installer)\n0 4 * * 0 root {{CloudflareRefreshScript}} >> /var/log/cf-refresh.log 2>&1\n' > {{CloudflareRefreshCron}}
+printf '# Cloudflare IP ranges for the hotel (All-in-1 Manager)\n0 4 * * 0 root {{CloudflareRefreshScript}} >> /var/log/cf-refresh.log 2>&1\n' > {{CloudflareRefreshCron}}
 chmod 644 {{CloudflareRefreshCron}}
 echo "  {{CloudflareRefreshCron}}: every Sunday at 04:00, output in /var/log/cf-refresh.log"
 echo "> Running it now"
 {{CloudflareRefreshScript}} | sed 's/^/  /'
 [ "${PIPESTATUS[0]}" = 0 ] || fail "The refresh script failed (see above).""#;
 
-const REMOVE_REFRESH: &str = r#"if grep -qs 'All-in-1 Installer' {{CloudflareRefreshScript}}; then
+const REMOVE_REFRESH: &str = r#"if grep -qsE 'All-in-1 (Manager|Installer)' {{CloudflareRefreshScript}}; then
   rm -f {{CloudflareRefreshScript}} {{CloudflareRefreshCron}}
   echo "  No Cloudflare: the weekly refresh of Cloudflare's ranges is removed"
 fi"#;

@@ -9,6 +9,7 @@ pub mod dialogs;
 pub mod dry_run;
 pub mod flags;
 pub mod icons;
+pub mod image_loader;
 pub mod language_picker;
 pub mod log_view;
 pub mod scenes;
@@ -18,7 +19,7 @@ pub mod theme;
 pub mod widgets;
 pub mod wizard;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use aio_remote::Server;
 use eframe::egui::{self, Color32, RichText};
@@ -27,6 +28,7 @@ use crate::i18n::{t, tf};
 use crate::views;
 use dialogs::{Choice, Dialogs};
 use icons::Icon;
+use parking_lot::Mutex;
 use theme::{Fixed, Palette};
 use wizard::{Wizard, WizardAction};
 
@@ -48,8 +50,24 @@ pub enum Page {
     RemoveCrowdSec,
     DefaultCatalog,
     DeployAssets,
+    ImportAssets,
+    ImportCustom,
+    OfferFix,
+    ItemFix,
+    GetAssets,
+    RetroAssets,
+    AssetTools,
     AssetExplorer,
     SqlEditor,
+    CatalogManager,
+    CatalogExplorer,
+    BuildersExplorer,
+    Content,
+    Logs,
+    Players,
+    Housekeeping,
+    HotelView,
+    Gamedata,
     Debug,
     Tools,
     ServerStatus,
@@ -81,6 +99,8 @@ pub enum Request {
     Login,
     /// Run a Tools update on the Tools page (from the dashboard's components card).
     Update(views::tools::Component),
+    /// Restart a Docker service on the Tools page, so it runs the newer image that is already downloaded.
+    Restart(views::tools::Component),
     RestartForLook,
     /// Fetch GitHub again for the dashboard's card.
     CheckUpdates,
@@ -91,20 +111,20 @@ pub enum Request {
 impl Shared {
     /// The login while it is connected.
     pub fn session(&self) -> Option<Arc<dyn Server>> {
-        self.session.lock().unwrap().clone().filter(|s| s.is_connected())
+        self.session.lock().clone().filter(|s| s.is_connected())
     }
 
     pub fn set_status(&self, message: &str) {
-        *self.status.lock().unwrap() = message.to_string();
+        *self.status.lock() = message.to_string();
         self.ctx.request_repaint();
     }
 
     pub fn status(&self) -> String {
-        self.status.lock().unwrap().clone()
+        self.status.lock().clone()
     }
 
     pub fn request(&self, request: Request) {
-        self.requests.lock().unwrap().push(request);
+        self.requests.lock().push(request);
         self.ctx.request_repaint();
     }
 
@@ -143,6 +163,10 @@ pub(crate) struct Wizards {
     pub(crate) remove_crowdsec: Wizard,
     pub(crate) default_catalog: Wizard,
     pub(crate) deploy: Wizard,
+    pub(crate) import_assets: Wizard,
+    pub(crate) import_custom: Wizard,
+    pub(crate) offer_fix: Wizard,
+    pub(crate) item_fix: Wizard,
 }
 
 impl Wizards {
@@ -161,11 +185,15 @@ impl Wizards {
             Page::RemoveCrowdSec => &mut self.remove_crowdsec,
             Page::DefaultCatalog => &mut self.default_catalog,
             Page::DeployAssets => &mut self.deploy,
+            Page::ImportAssets => &mut self.import_assets,
+            Page::ImportCustom => &mut self.import_custom,
+            Page::OfferFix => &mut self.offer_fix,
+            Page::ItemFix => &mut self.item_fix,
             _ => return None,
         })
     }
 
-    fn all(&self) -> [&Wizard; 13] {
+    fn all(&self) -> [&Wizard; 17] {
         [
             &self.install,
             &self.atom,
@@ -180,6 +208,10 @@ impl Wizards {
             &self.remove_crowdsec,
             &self.default_catalog,
             &self.deploy,
+            &self.import_assets,
+            &self.import_custom,
+            &self.offer_fix,
+            &self.item_fix,
         ]
     }
 }
@@ -192,7 +224,18 @@ pub struct App {
     settings: views::settings::SettingsView,
     tools: views::tools::ToolsView,
     explorer: views::asset_explorer::AssetExplorerView,
+    get_assets: views::get_assets::GetAssetsView,
+    asset_tools: views::asset_tools::AssetToolsView,
     sql: views::sql_editor::SqlEditorView,
+    catalog: views::catalog_manager::CatalogManagerView,
+    catalog_explorer: views::catalog_explorer::CatalogExplorerView,
+    builders_explorer: views::catalog_explorer::CatalogExplorerView,
+    content: views::content_manager::ContentManagerView,
+    logs: views::logs_view::LogsView,
+    players: views::players_view::PlayersView,
+    housekeeping: views::housekeeping_view::HousekeepingView,
+    hotel_view: views::hotel_view_manager::HotelViewManager,
+    gamedata: views::gamedata_editor::GamedataEditor,
     debug: views::debug::DebugView,
     history: views::history::HistoryView,
     about: views::about::AboutView,
@@ -233,7 +276,18 @@ impl App {
             settings: views::settings::SettingsView::new(&shared),
             tools: views::tools::ToolsView::new(&shared),
             explorer: views::asset_explorer::AssetExplorerView::new(&shared),
+            get_assets: views::get_assets::GetAssetsView::new(&shared),
+            asset_tools: views::asset_tools::AssetToolsView::new(&shared),
             sql: views::sql_editor::SqlEditorView::new(&shared),
+            catalog: views::catalog_manager::CatalogManagerView::new(&shared),
+            catalog_explorer: views::catalog_explorer::CatalogExplorerView::new(&shared),
+            builders_explorer: views::catalog_explorer::CatalogExplorerView::new_builders(&shared),
+            content: views::content_manager::ContentManagerView::new(&shared),
+            logs: views::logs_view::LogsView::new(&shared),
+            players: views::players_view::PlayersView::new(&shared),
+            housekeeping: views::housekeeping_view::HousekeepingView::new(&shared),
+            hotel_view: views::hotel_view_manager::HotelViewManager::new(&shared),
+            gamedata: views::gamedata_editor::GamedataEditor::new(&shared),
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
             about: views::about::AboutView::new(&shared),
@@ -256,6 +310,15 @@ impl App {
             || self.tools.busy()
             || self.explorer.busy()
             || self.sql.busy()
+            || self.catalog.busy()
+            || self.catalog_explorer.busy()
+            || self.builders_explorer.busy()
+            || self.content.busy()
+            || self.logs.busy()
+            || self.players.busy()
+            || self.housekeeping.busy()
+            || self.hotel_view.busy()
+            || self.gamedata.busy()
             || self.settings.busy()
     }
 
@@ -274,7 +337,7 @@ impl App {
             self.shared.set_status(t("Wait until the running step has finished before disconnecting."));
             return;
         }
-        *self.shared.session.lock().unwrap() = None;
+        *self.shared.session.lock() = None;
         // A drop noticed while closing is not a lost connection: no login pops up.
         self.login_pending = false;
         let host = session.login().host.clone();
@@ -285,7 +348,7 @@ impl App {
     fn set_session(&mut self, server: Arc<dyn Server>) {
         let login = server.login().clone();
         let user = server.login_user();
-        let old = self.shared.session.lock().unwrap().replace(server);
+        let old = self.shared.session.lock().replace(server);
         if let Some(old) = old {
             self.shared.spawn(async move { old.disconnect().await });
         }
@@ -299,9 +362,9 @@ impl App {
             return;
         }
         self.last_watch = now;
-        let lost = self.shared.session.lock().unwrap().clone().filter(|s| !s.is_connected());
+        let lost = self.shared.session.lock().clone().filter(|s| !s.is_connected());
         if let Some(lost) = lost {
-            *self.shared.session.lock().unwrap() = None;
+            *self.shared.session.lock() = None;
             self.shared.set_status(&tf("The connection to {host} was lost.", &[("host", &lost.login().host)]));
             self.login_pending = true;
         }
@@ -317,6 +380,15 @@ impl App {
         self.tools.session_changed(&shared);
         self.explorer.session_changed(&shared);
         self.sql.session_changed(&shared);
+        self.catalog.session_changed(&shared);
+        self.catalog_explorer.session_changed(&shared);
+        self.builders_explorer.session_changed(&shared);
+        self.content.session_changed(&shared);
+        self.logs.session_changed(&shared);
+        self.players.session_changed(&shared);
+        self.housekeeping.session_changed(&shared);
+        self.hotel_view.session_changed(&shared);
+        self.gamedata.session_changed(&shared);
         self.debug.session_changed(&shared);
         self.history.session_changed(&shared);
         self.settings.session_changed(&shared);
@@ -440,6 +512,18 @@ impl App {
                 t("Addon: a complete catalogue for a new hotel, with its furniture list and FurnitureData.json.").into(),
             ),
             Page::RemoveCms => (t("Remove the CMS").into(), t("Addon: Octane as the hotel's website again, as after the server installation.").into()),
+            Page::GetAssets => (
+                t("Habbo assets").into(),
+                t("Habbo's furniture, clothes, effects, badges and game data, downloaded on this computer, ready for Deploy Assets.").into(),
+            ),
+            Page::AssetTools => (
+                t("Asset tools").into(),
+                t("Decompile SWF and HAB files, compile edited HAB files, and convert SWF and NITRO to HAB, on this computer.").into(),
+            ),
+            Page::RetroAssets => (
+                t("Nitro retro").into(),
+                t("A Nitro hotel's custom furniture and clothes, downloaded on this computer as .hab, to upload by hand.").into(),
+            ),
             Page::AssetExplorer => (
                 "Asset Explorer".into(),
                 if session.is_none() {
@@ -456,9 +540,97 @@ impl App {
                     tf("The databases of {host}: browse and edit tables, run queries.", &[("host", &host)])
                 },
             ),
+            Page::CatalogExplorer => (
+                t("Catalogue explorer").into(),
+                if session.is_none() {
+                    t("The hotel catalogue as the game shows it, in two windows: drag furni between pages.").into()
+                } else {
+                    tf("The catalogue of {host} as the game shows it: drag furni between pages, then publish.", &[("host", &host)])
+                },
+            ),
+            Page::BuildersExplorer => (
+                t("Builders Club explorer").into(),
+                if session.is_none() {
+                    t("The Builders Club warehouse (catalog_pages_bc, catalog_items_bc) as the game shows it, in two windows: drag furni between pages.").into()
+                } else {
+                    tf("The Builders Club warehouse of {host} as the game shows it: drag furni between pages, then publish.", &[("host", &host)])
+                },
+            ),
+            Page::CatalogManager => (
+                t("Catalogue").into(),
+                if session.is_none() {
+                    t("The catalogue's front page, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.").into()
+                } else {
+                    tf("The catalogue of {host}: front page, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.", &[("host", &host)])
+                },
+            ),
+            Page::Logs => (
+                t("Logs").into(),
+                if session.is_none() {
+                    t("The hotel logs: commands, chat, currencies, purchases, permission changes and room visits, read from the database through the SSH login.").into()
+                } else {
+                    tf("The logs of {host}: commands, chat, currencies, purchases, permission changes and room visits.", &[("host", &host)])
+                },
+            ),
+            Page::Housekeeping => (
+                t("Housekeeping").into(),
+                if session.is_none() {
+                    t("What the hotel's housekeeping panel does: the numbers, who is online, rooms, alerts, maintenance, the word filter, permissions, bans, support tickets and the soundboard.").into()
+                } else {
+                    tf("The housekeeping of {host}: lists from the database, actions to the emulator over RCON.", &[("host", &host)])
+                },
+            ),
+            Page::Players => (
+                t("Players").into(),
+                if session.is_none() {
+                    t("Find a player, see their rank, currencies, badges, furni, visits and bans, and give credits, points, badges or a rank over RCON.").into()
+                } else {
+                    tf("The players of {host}: details from the database, actions over RCON.", &[("host", &host)])
+                },
+            ),
+            Page::HotelView => (
+                t("Hotel view").into(),
+                if session.is_none() {
+                    t("The hotel view: its widgets, scene, Hall of Fame, news and bonus rare, edited in the database through the SSH login.").into()
+                } else {
+                    tf("The hotel view of {host}: widgets, scene, news and settings.", &[("host", &host)])
+                },
+            ),
+            Page::Gamedata => (
+                t("Gamedata").into(),
+                if session.is_none() {
+                    t("FurnitureData.json and ExternalTexts.json on the server: search, edit and add furni and texts, saved with a backup.").into()
+                } else {
+                    tf("The gamedata files of {host}: furnidata and texts.", &[("host", &host)])
+                },
+            ),
+            Page::Content => (
+                t("Content").into(),
+                if session.is_none() {
+                    t("Hotel content: achievements, daily tasks, quests, polls and currencies, edited in the database through the SSH login.").into()
+                } else {
+                    tf("The content of {host}: achievements, daily tasks, quests, polls and currencies.", &[("host", &host)])
+                },
+            ),
             Page::DeployAssets => (
                 t("Deploy Assets").into(),
                 tf("Addon: copy the hotel's assets, the client's UI texts and the emulator's images to {gamedata} on the server.", &[("gamedata", &gamedata)]),
+            ),
+            Page::ImportAssets => (
+                t("Import Assets").into(),
+                t("The Habbo furniture the hotel database lacks into items_base and the catalogue, with an overview first.").into(),
+            ),
+            Page::ImportCustom => (
+                t("Import custom furniture").into(),
+                t("A Nitro retro profile's custom furniture merged into Habbo's FurnitureData.json, and into items_base and the catalogue.").into(),
+            ),
+            Page::OfferFix => (
+                t("Fix offer IDs").into(),
+                t("catalog_items.offer_id and FurnitureData.json in line, so every furni can be bought.").into(),
+            ),
+            Page::ItemFix => (
+                t("Fix items_base").into(),
+                t("sprite_id, size, sit / lay / walk and interaction modes of the furni in items_base, as FurnitureData.json and the .hab files give them.").into(),
             ),
             Page::Debug => (
                 "Debug".into(),
@@ -468,7 +640,7 @@ impl App {
                     tf("Live logs on {host}: the emulator, NGINX, Traefik, the firewall, Fail2Ban and CrowdSec.", &[("host", &host)])
                 },
             ),
-            Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, update, and move your settings.").into()),
+            Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, and update.").into()),
             Page::Doctor => (t("Health check").into(), tf("How {host} is doing: services, disk, certificate, backups, updates.", &[("host", &host)])),
             Page::ServerStatus => (t("Server status").into(), tf("Live figures of {host}, every 2 seconds.", &[("host", &host)])),
             Page::Terminal => (
@@ -483,8 +655,8 @@ impl App {
                 tf("The emulator on {host}: CPU per thread, the wired engine and slow wired rooms.", &[("host", &host)]),
             ),
             Page::History => (t("History").into(), t("What ran on which server, with its log: every install step and tool.").into()),
-            Page::About => (t("About").into(), "All-in-1 Installer".into()),
-            Page::Settings => (t("Settings").into(), t("Your servers and default SSH key, your own SSH keys, and the All-in-1 downloader.").into()),
+            Page::About => (t("About").into(), "All-in-1 Manager".into()),
+            Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, and your own SSH keys.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
         };
@@ -503,18 +675,18 @@ impl App {
                     ui.add_space(6.0);
                     ui.vertical(|ui| {
                         if theme::hotel() {
-                            let text = RichText::new("All-in-1 Installer").size(17.0).family(theme::title_family()).color(Fixed::hotel_yellow());
+                            let text = RichText::new("All-in-1 Manager").size(17.0).family(theme::title_family()).color(Fixed::hotel_yellow());
                             let galley_pos = ui.cursor().min;
                             ui.painter().text(
                                 galley_pos + egui::vec2(0.0, 2.0),
                                 egui::Align2::LEFT_TOP,
-                                "All-in-1 Installer",
+                                "All-in-1 Manager",
                                 egui::FontId::new(17.0, theme::title_family()),
                                 Color32::from_black_alpha(0xB0),
                             );
                             ui.label(text);
                         } else {
-                            ui.label(RichText::new("All-in-1 Installer").size(15.0).strong().color(Color32::WHITE));
+                            ui.label(RichText::new("All-in-1 Manager").size(15.0).strong().color(Color32::WHITE));
                         }
                         ui.label(RichText::new(t("Hotel server setup")).size(11.5).color(Fixed::sidebar_muted()));
                     });
@@ -538,8 +710,6 @@ impl App {
                             | Page::CrowdSec
                             | Page::RemoveCrowdSec
                             | Page::DefaultCatalog
-                            | Page::DeployAssets
-                            | Page::AssetExplorer
                             | Page::SqlEditor
                     ),
                     Page::Tools => matches!(current, Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor),
@@ -550,28 +720,48 @@ impl App {
                         clicked = Some(page);
                     }
                 };
-                nav(ui, t("Dashboard"), Icon::Home, Page::Dashboard);
-                // Each group folds away with a click on its heading; a folded group still shows the page you are on.
-                let groups: [(&str, &str, Vec<(&str, Icon, Page)>); 3] = [
-                    // The addons are one page of picture buttons, not a long list here.
-                    (
-                        "sidebar:server",
-                        t("SERVER"),
-                        vec![(t("Install New Server"), Icon::ServerPlus, Page::Install), (t("Addons"), Icon::Puzzle, Page::Addons)],
-                    ),
-                    ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
-                    ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
-                ];
-                for (key, heading, items) in groups {
-                    ui.add_space(14.0);
-                    let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
-                    ui.add_space(2.0);
-                    for (label, icon, page) in items {
-                        if open || selected(page) {
-                            nav(ui, label, icon, page);
+                // The menu scrolls when the window is too low for every item; the line at the bottom stays.
+                let list_height = (ui.available_height() - 44.0).max(80.0);
+                egui::ScrollArea::vertical().id_salt("sidebar-nav").max_height(list_height).auto_shrink([false, true]).show(ui, |ui| {
+                    nav(ui, t("Dashboard"), Icon::Home, Page::Dashboard);
+                    // Each group folds away with a click on its heading; a folded group still shows the page you are on.
+                    let groups: [(&str, &str, Vec<(&str, Icon, Page)>); 5] = [
+                        // The addons are one page of picture buttons, not a long list here.
+                        (
+                            "sidebar:server",
+                            t("SERVER"),
+                            vec![(t("Install New Server"), Icon::ServerPlus, Page::Install), (t("Addons"), Icon::Puzzle, Page::Addons)],
+                        ),
+                        (
+                            "sidebar:assets",
+                            t("ASSETS"),
+                            vec![
+                                (t("Habbo assets"), Icon::Download, Page::GetAssets),
+                                (t("Nitro retro"), Icon::Cube, Page::RetroAssets),
+                            (t("Asset tools"), Icon::Swap, Page::AssetTools),
+                                (t("Deploy Assets"), Icon::ArrowUp, Page::DeployAssets),
+                                (t("Import Assets"), Icon::Database, Page::ImportAssets),
+                                (t("Import custom furniture"), Icon::Cube, Page::ImportCustom),
+                                (t("Fix offer IDs"), Icon::Shopping, Page::OfferFix),
+                                (t("Fix items_base"), Icon::Wrench, Page::ItemFix),
+                                ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
+                            ],
+                        ),
+                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Housekeeping"), Icon::Shield, Page::Housekeeping), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
+                        ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
+                        ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
+                    ];
+                    for (key, heading, items) in groups {
+                        ui.add_space(14.0);
+                        let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
+                        ui.add_space(2.0);
+                        for (label, icon, page) in items {
+                            if open || selected(page) {
+                                nav(ui, label, icon, page);
+                            }
                         }
                     }
-                }
+                });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.label(RichText::new(t("Targets Ubuntu Server and Debian")).size(11.5).color(Fixed::sidebar_muted()));
                     ui.add_space(4.0);
@@ -639,7 +829,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::SqlEditor | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -678,6 +868,10 @@ impl App {
             Page::RemoveCrowdSec => &self.wizards.remove_crowdsec,
             Page::DefaultCatalog => &self.wizards.default_catalog,
             Page::DeployAssets => &self.wizards.deploy,
+            Page::ImportAssets => &self.wizards.import_assets,
+            Page::ImportCustom => &self.wizards.import_custom,
+            Page::OfferFix => &self.wizards.offer_fix,
+            Page::ItemFix => &self.wizards.item_fix,
             _ => return None,
         };
         Some(wizard.status()).filter(|s| s != t("Ready."))
@@ -705,6 +899,14 @@ impl App {
             Page::AssetExplorer => Some(tf("The Asset Explorer works on {gamedata} of the server you are logged in to.", &[("gamedata", &aio_remote::octane::gamedata())])),
             Page::Debug => Some(t("Debug follows the logs on the server you are logged in to.").to_string()),
             Page::SqlEditor => Some(t("The SQL Editor reaches MariaDB through the login to the server.").to_string()),
+            Page::CatalogManager => Some(t("The catalogue manager reaches the hotel database through the login to the server.").to_string()),
+            Page::CatalogExplorer | Page::BuildersExplorer => Some(t("The catalogue explorer reaches the hotel database through the login to the server.").to_string()),
+            Page::Content => Some(t("The content manager reaches the hotel database through the login to the server.").to_string()),
+            Page::Logs => Some(t("The logs are read from the hotel database through the login to the server.").to_string()),
+            Page::Players => Some(t("The players are read from the hotel database through the login to the server.").to_string()),
+            Page::Housekeeping => Some(t("Housekeeping reaches the hotel database and the emulator through the login to the server.").to_string()),
+            Page::HotelView => Some(t("The hotel view editor reaches the hotel database through the login to the server.").to_string()),
+            Page::Gamedata => Some(t("The gamedata editor reads and writes the files on the server through the login to the server.").to_string()),
             _ => None,
         };
         if let (Some(message), None) = (&needs_login, &session) {
@@ -715,7 +917,21 @@ impl App {
         }
         match page {
             Page::AssetExplorer => self.explorer.show(ui, palette, &shared),
+            Page::AssetTools => scroll(ui, |ui| self.asset_tools.show(ui, palette, &shared)),
+            Page::GetAssets | Page::RetroAssets => {
+                self.get_assets.set_retro(page == Page::RetroAssets);
+                scroll(ui, |ui| self.get_assets.show(ui, palette, &shared))
+            }
             Page::SqlEditor => self.sql.show(ui, palette, &shared),
+            Page::CatalogManager => self.catalog.show(ui, palette, &shared),
+            Page::CatalogExplorer => self.catalog_explorer.show(ui, palette, &shared),
+            Page::BuildersExplorer => self.builders_explorer.show(ui, palette, &shared),
+            Page::Content => self.content.show(ui, palette, &shared),
+            Page::Logs => self.logs.show(ui, palette, &shared),
+            Page::Players => self.players.show(ui, palette, &shared),
+            Page::Housekeeping => self.housekeeping.show(ui, palette, &shared),
+            Page::HotelView => self.hotel_view.show(ui, palette, &shared),
+            Page::Gamedata => self.gamedata.show(ui, palette, &shared),
             Page::Debug => self.debug.show(ui, palette, &shared),
             Page::History => self.history.show(ui, palette, &shared),
             Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor => {
@@ -723,7 +939,10 @@ impl App {
                 self.tools.show(ui, palette, &shared);
                 self.page = self.tools.page();
             }
-            Page::Settings => scroll(ui, |ui| self.settings.show(ui, palette, &shared)),
+            Page::Settings => {
+                let tools = &mut self.tools;
+                scroll(ui, |ui| self.settings.show_with(ui, palette, &shared, |ui| tools.settings_backup_card(ui, palette, &shared)))
+            }
             Page::About => scroll(ui, |ui| self.about.show(ui, palette, &shared)),
             Page::Addons => {
                 let mut clicked = None;
@@ -745,7 +964,7 @@ impl App {
     }
 
     fn handle_requests(&mut self) {
-        let requests: Vec<Request> = std::mem::take(&mut *self.shared.requests.lock().unwrap());
+        let requests: Vec<Request> = std::mem::take(&mut *self.shared.requests.lock());
         for request in requests {
             match request {
                 Request::Go(page) => self.go(page),
@@ -754,6 +973,12 @@ impl App {
                     if !self.any_busy() && self.shared.session().is_some() {
                         self.go(Page::Tools);
                         self.tools.update(component, &self.shared);
+                    }
+                }
+                Request::Restart(component) => {
+                    if !self.any_busy() && self.shared.session().is_some() {
+                        self.go(Page::Tools);
+                        self.tools.restart(component, &self.shared);
                     }
                 }
                 Request::CheckUpdates => {
@@ -901,21 +1126,63 @@ pub fn open_url(url: &str) {
     let _ = result;
 }
 
+/// How the window is drawn. OpenGL needs a driver with OpenGL 2 or newer, which a Windows VM without (or with
+/// VMware's / Hyper-V's basic) display driver often lacks; DirectX 12 through wgpu always works on Windows 10 / 11,
+/// on Microsoft's software renderer (WARP) when there is no GPU.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renderer {
+    Glow,
+    Wgpu,
+}
+
+impl Renderer {
+    /// The first one tried: DirectX on Windows, OpenGL elsewhere (Linux desktops have it, and it starts faster).
+    pub fn preferred() -> Self {
+        if cfg!(windows) { Renderer::Wgpu } else { Renderer::Glow }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Renderer::Glow => Renderer::Wgpu,
+            Renderer::Wgpu => Renderer::Glow,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Renderer::Glow => "glow",
+            Renderer::Wgpu => "wgpu",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "glow" | "opengl" | "gl" => Some(Renderer::Glow),
+            "wgpu" | "directx" | "dx12" => Some(Renderer::Wgpu),
+            _ => None,
+        }
+    }
+}
+
 /// Starts the window.
-pub fn run(runtime: tokio::runtime::Handle, dry_run: bool) -> eframe::Result<()> {
+pub fn run(runtime: tokio::runtime::Handle, dry_run: bool, renderer: Renderer) -> eframe::Result<()> {
     let icon = image::load_from_memory(include_bytes!("../../resources/app.ico")).ok().map(|image| {
         let image = image.to_rgba8();
         let (width, height) = image.dimensions();
         egui::IconData { rgba: image.into_raw(), width, height }
     });
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("All-in-1 Installer")
+        .with_title("All-in-1 Manager")
         .with_inner_size([1280.0, 820.0])
         .with_min_inner_size([1000.0, 680.0])
         .with_drag_and_drop(true);
     if let Some(icon) = icon {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions { viewport, centered: true, ..Default::default() };
-    eframe::run_native("All-in-1 Installer", options, Box::new(move |cc| Ok(Box::new(App::new(cc, runtime, dry_run)))))
+    let renderer = match renderer {
+        Renderer::Glow => eframe::Renderer::Glow,
+        Renderer::Wgpu => eframe::Renderer::Wgpu,
+    };
+    let options = eframe::NativeOptions { viewport, centered: true, renderer, ..Default::default() };
+    eframe::run_native("All-in-1 Manager", options, Box::new(move |cc| Ok(Box::new(App::new(cc, runtime, dry_run)))))
 }

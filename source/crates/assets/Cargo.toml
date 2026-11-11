@@ -1,0 +1,19 @@
+[package]
+name = "aio-assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "All-in-1 Manager: Habbo's asset bundles (.hab, .nitro, .swf) read, written and converted, shared by every part that handles assets"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+flate2.workspace = true
+zip.workspace = true
+image.workspace = true
+lzma-rs = "0.3"
+roxmltree = "0.19"
+
+[dev-dependencies]
+tempfile.workspace = true

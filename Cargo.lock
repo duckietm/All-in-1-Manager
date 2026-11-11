@@ -205,8 +205,12 @@ name = "aio-plugin-host"
 version = "2.0.20"
 dependencies = [
  "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
  "wasmtime",
  "wit-parser 0.263.0",
+ "zip",
 ]
 
 [[package]]

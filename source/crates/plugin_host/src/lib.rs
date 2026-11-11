@@ -9,3 +9,11 @@ pub mod bindings {
         exports: { default: async },
     });
 }
+
+pub mod manifest;
+pub mod package;
+pub mod permissions;
+
+pub use manifest::{Manifest, Tile};
+pub use package::{inspect, install, installed, remove, Package};
+pub use permissions::Permission;

@@ -128,7 +128,7 @@ pub fn install(pkg: &Package, root: &Path) -> Result<PathBuf> {
 }
 
 /// Test hook: behaves like `install` but fails the final rename, after the old version was moved aside.
-#[doc(hidden)]
+#[cfg(feature = "test-hooks")]
 pub fn install_failing_after_move_aside(pkg: &Package, root: &Path) -> Result<PathBuf> {
     install_inner(pkg, root, true)
 }
@@ -145,6 +145,14 @@ fn install_inner(pkg: &Package, root: &Path, fail_final_rename: bool) -> Result<
     // A crash between "move aside" and "put in place" leaves only `.old`: bring it back, data included.
     if old.exists() && !into.exists() {
         std::fs::rename(&old, &into).context("Could not recover the previous version")?;
+    }
+    // An interrupted install may have stranded the private data in `.partial`: put it back before that folder goes.
+    let stranded = partial.join("data");
+    if stranded.is_dir() {
+        std::fs::create_dir_all(&into)?;
+        if !into.join("data").exists() {
+            std::fs::rename(&stranded, into.join("data")).context("Could not recover the plugin data")?;
+        }
     }
     let _ = std::fs::remove_dir_all(&partial);
     std::fs::create_dir(&partial).with_context(|| format!("Could not create {}", partial.display()))?;

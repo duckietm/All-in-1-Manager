@@ -204,6 +204,7 @@ dependencies = [
 name = "aio-plugin-host"
 version = "2.0.20"
 dependencies = [
+ "aio-plugin-host",
  "anyhow",
  "serde",
  "serde_json",

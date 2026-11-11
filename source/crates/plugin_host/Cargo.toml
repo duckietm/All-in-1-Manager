@@ -12,6 +12,11 @@ serde_json.workspace = true
 zip.workspace = true
 wasmtime.workspace = true
 
+[features]
+# Failure-injection hooks for the tests only.
+test-hooks = []
+
 [dev-dependencies]
+aio-plugin-host = { path = ".", features = ["test-hooks"] }
 tempfile.workspace = true
 wit-parser.workspace = true

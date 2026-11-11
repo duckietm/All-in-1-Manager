@@ -1342,18 +1342,30 @@ page has the rest:
   A tile whose end date passed is marked *Ended*: the emulator no longer sends it (an emulator before that fix kept
   showing it for good), so clear the date to show it again, or remove it. **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails
   halfway is not rolled back: save again.
-- **Limited** (the second tab) lists every limited series: its offer and page, and how many are sold of how many,
+- **Club gifts** (the second tab): the free gifts Habbo Club members choose in the catalogue. A member gets one gift
+  for every started 31 days of HC (all their HC time, earlier memberships too) minus the gifts already taken
+  (`users_settings.hc_gifts_claimed`). The gifts are the offers of the page with the layout `club_gift`: the emulator
+  uses one such page, and only when it is visible, enabled and open to every rank. With no such page, **Make the Club
+  gifts page** makes one (at the top of the catalogue; move it in the Catalogue explorer); a page the emulator does
+  not use says why, with **Show it to every member**. Every gift shows its furni (name, class name and icon, from this
+  computer's gamedata), **Can be chosen** (Straight away, after 1, 3 or 6 months, 1 or 2 years of HC, or any number of
+  days: the offer's `extradata`), the **VIP mark** (`club_only`) and ↑ ↓ for its place in the list (`order_number`);
+  **Save the changes** writes what changed, and **Remove** takes a gift away after asking (who chose it keeps it).
+  **Add a gift**: find a furni by name, class name or `items_base` id and press **Add**; it becomes a free offer named
+  `club_gift_<class name>` (unique on the page, as the game sends that name back), straight away, with the VIP mark.
+  Every change is in the History tab. Publish afterwards; to try it, give a player Habbo Club on the Players page.
+- **Limited** (the third tab) lists every limited series: its offer and page, and how many are sold of how many,
   with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
   the catalogue); a series never gets smaller, as its numbers already exist. **No longer limited** ends a series of
   which nothing is sold; **Remove with its sales** ends one that sold, after asking, and deletes its numbers and the
   record of who has which one for good (the furni players have keeps its number).
-- **Vouchers** (the third tab): the codes players type in the catalogue, with what each gives (credits, points of a
+- **Vouchers** (the fourth tab): the codes players type in the catalogue, with what each gives (credits, points of a
   type, an offer), how often it was used of how many uses (0: without end) and how often one player may use it (-1:
   without end), and a search. **New voucher**, **Save voucher**, **Delete voucher** (with the record of its uses, after
   asking); a code is 1 to 10 letters, digits, `-` or `_` and is never used twice, as the emulator matches it exactly.
   **Make codes** adds up to 500 vouchers with random codes (an optional prefix, then at least 4 easy-to-read letters and
   digits) that each give what the form shows. A voucher's **Used by** lists who used it and when.
-- **Checks** (the fourth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
+- **Checks** (the fifth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
   of them) and **offers that sell the same furni** (the same furni ids in any order, with the same extra data; for `wallpaper_single`, `floor_single` and
   `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Tick
   copies (or **Tick all but the first of each**) and **Delete ticked** removes
@@ -1364,14 +1376,14 @@ page has the rest:
   their song, limited series smaller than what is sold, pages under a missing page, loops in the tree, layouts the
   emulator does not know (it skips those pages), sibling pages with the same order number, wrong `includes`, and
   visible pages under a hidden one (players never reach them). Fix them in the explorers (right-click, Edit).
-- **History** (the fifth tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
+- **History** (the sixth tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
   explorers, Checks, Limited, imports), newest first: the same history Octane shows (`catalog_manager_history`).
   **Undo ...** puts what one operation changed back, in one go, when nothing changed those pages and offers since
   (otherwise it says which one did); the undo is recorded too. The Manager writes its changes there as the emulator
   does, raises `catalog_manager_state.revision` so Octane sees the catalogue changed, and takes the ids of new pages
   and offers from `catalog_id_sequences`, so Octane never makes a page or offer at an id that is already used. An
   emulator older than Catalog Studio has none of these tables: then nothing is recorded.
-- **Backups** (the sixth tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
+- **Backups** (the seventh tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
   file in the format of Octane's Catalog Studio, so a file exported there can be imported here and the other way
   round. **Import a file ...** never runs the file as SQL: only `INSERT`, `UPDATE` and `DELETE` of `catalog_pages` and
   `catalog_items` with plain values are read (anything else is refused), and you first see what would be new,

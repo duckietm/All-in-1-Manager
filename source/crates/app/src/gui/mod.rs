@@ -559,9 +559,9 @@ impl App {
             Page::CatalogManager => (
                 t("Catalogue").into(),
                 if session.is_none() {
-                    t("The catalogue's front page, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.").into()
+                    t("The catalogue's front page, club gifts, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.").into()
                 } else {
-                    tf("The catalogue of {host}: front page, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.", &[("host", &host)])
+                    tf("The catalogue of {host}: front page, club gifts, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.", &[("host", &host)])
                 },
             ),
             Page::Logs => (

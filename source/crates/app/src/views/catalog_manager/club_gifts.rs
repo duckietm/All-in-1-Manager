@@ -63,7 +63,7 @@ pub(super) struct Picker {
 }
 
 /// The club furni: their class names start with this.
-const PICKER_PREFIX: &str = "hc_";
+const PICKER_PREFIX: &str = "hc";
 
 /// The waiting times offered in the list, in days.
 fn presets() -> [(i64, &'static str); 6] {
@@ -500,7 +500,7 @@ pub(super) fn show(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: 
             actions.push(Action::SearchGiftFurni);
         }
         ui.add_space(8.0);
-        if ui.add_enabled(ready, widgets::primary_button(t("Choose HC furni ..."))).on_hover_text(t("Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.")).clicked() {
+        if ui.add_enabled(ready, widgets::primary_button(t("Choose HC furni ..."))).on_hover_text(t("Every furni whose class name starts with hc, as pictures: tick the ones you want and add them at once.")).clicked() {
             actions.push(Action::OpenGiftPicker);
         }
     });
@@ -530,7 +530,7 @@ pub(super) fn show(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: 
     }
 }
 
-/// The club furni window: a grid of every `hc_` furni with its icon and name; a click ticks one, and **Add** makes the
+/// The club furni window: a grid of every `hc` furni (hc_chr, hc2_..., hcsohva ...) with its icon and name; a click ticks one, and **Add** makes the
 /// ticked ones gifts. Furni that already is a gift is shown, greyed out.
 fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut FrontImages, taken: &[String], actions: &mut Vec<Action>) {
     let ready = s.session.is_some() && !s.busy;
@@ -542,8 +542,8 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
         .id(egui::Id::new("club-gift-picker"))
         .open(&mut open)
         .collapsible(false)
-        .resizable(true)
-        .default_size([760.0, 560.0])
+        .resizable(false)
+        .default_width(560.0)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(ctx, |ui| {
             let Some(list) = picker.furni.as_ref() else {
@@ -555,7 +555,7 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
             };
             ui.horizontal(|ui| {
                 ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut picker.filter).hint_text(t("Filter by name")).vertical_align(egui::Align::Center));
-                widgets::muted(ui, palette, &tf("{count} furni start with hc_", &[("count", &list.len().to_string())]), 12.0);
+                widgets::muted(ui, palette, &tf("{count} furni start with hc", &[("count", &list.len().to_string())]), 12.0);
             });
             let filter = picker.filter.trim().to_lowercase();
             let shown: Vec<&Furni> = list
@@ -572,13 +572,13 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
                 }
             });
             ui.add_space(4.0);
-            let footer = 46.0;
-            egui::ScrollArea::vertical().max_height((ui.available_height() - footer).max(120.0)).auto_shrink([false, false]).show(ui, |ui| {
+            // A fixed height: the list scrolls inside a window of about 560 x 440, whatever the screen.
+            egui::ScrollArea::vertical().max_height(290.0).min_scrolled_height(290.0).auto_shrink([false, false]).show(ui, |ui| {
                 if shown.is_empty() {
                     widgets::muted(ui, palette, t("No furni found."), 12.5);
                     return;
                 }
-                let tile = egui::vec2(112.0, 118.0);
+                let tile = egui::vec2(100.0, 106.0);
                 let gap = 6.0;
                 let per_row = (((ui.available_width() + gap) / (tile.x + gap)).floor() as usize).max(1);
                 for row in shown.chunks(per_row) {
@@ -600,7 +600,7 @@ fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut Fr
                             if gift {
                                 inner.set_opacity(0.45);
                             }
-                            icon_sized(&mut inner, palette, images, Some(furni), 64.0);
+                            icon_sized(&mut inner, palette, images, Some(furni), 56.0);
                             let name = if furni.public_name.trim().is_empty() { furni.item_name.as_str() } else { furni.public_name.trim() };
                             inner.add(egui::Label::new(RichText::new(name).size(11.5)).truncate());
                             inner.add(egui::Label::new(RichText::new(if gift { t("Already a gift").to_string() } else { furni.item_name.clone() }).size(10.5).color(palette.muted)).truncate());

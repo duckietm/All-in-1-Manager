@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+mod bundles;
 mod club_gifts;
 mod front_page;
 
@@ -47,6 +48,7 @@ enum Tab {
     #[default]
     FrontPage,
     ClubGifts,
+    Bundles,
     Limited,
     Vouchers,
     Checks,
@@ -85,6 +87,8 @@ struct State {
     front: FrontState,
     /// The Club gifts tab.
     gifts_tab: club_gifts::ClubGifts,
+    /// The Bundles tab.
+    bundles: bundles::BundlesTab,
     /// The limited series (None until the tab is opened), the sizes typed per offer, and the search.
     limited: Option<Vec<LimitedSeries>>,
     limited_sizes: std::collections::HashMap<i64, i64>,
@@ -270,6 +274,7 @@ impl Ctl {
         match tab {
             Tab::FrontPage => self.load_featured().await,
             Tab::ClubGifts => self.load_gifts().await,
+            Tab::Bundles => {}
             Tab::Limited => self.load_limited().await,
             Tab::Vouchers => self.load_vouchers(None).await,
             Tab::Checks => self.load_checks().await,
@@ -942,6 +947,11 @@ enum Action {
     SaveFeatured,
     ListFrontImages,
     FetchFrontImages,
+    OpenBundle(i64),
+    NewBundle,
+    SaveBundle,
+    SearchBundleAdd,
+    ResolveBundle,
     LoadGifts,
     MakeGiftPage,
     FixGiftPage(i64),
@@ -1010,6 +1020,11 @@ impl View for CatalogManagerView {
                 Action::SaveFeatured => ctl.spawn(|c| c.save_featured()),
                 Action::ListFrontImages => ctl.spawn(|c| c.list_front_images()),
                 Action::FetchFrontImages => ctl.spawn(|c| c.fetch_front_images()),
+                Action::OpenBundle(id) => ctl.spawn(move |c| c.open_bundle(id)),
+                Action::NewBundle => ctl.spawn(|c| c.new_bundle()),
+                Action::SaveBundle => ctl.spawn(|c| c.save_bundle()),
+                Action::SearchBundleAdd => ctl.spawn(|c| c.search_bundle_add()),
+                Action::ResolveBundle => ctl.spawn(|c| async move { c.resolve_bundle().await }),
                 Action::LoadGifts => ctl.spawn(|c| async move { c.load_gifts().await }),
                 Action::MakeGiftPage => ctl.spawn(|c| c.make_gift_page()),
                 Action::FixGiftPage(id) => ctl.spawn(move |c| c.fix_gift_page(id)),
@@ -1086,7 +1101,7 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
 
 fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontImages, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::ClubGifts, t("Club gifts")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::History, t("History")), (Tab::Backups, t("Backups"))] {
+        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::ClubGifts, t("Club gifts")), (Tab::Bundles, t("Bundles")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::History, t("History")), (Tab::Backups, t("Backups"))] {
             if ui.selectable_label(s.tab == tab, RichText::new(label).size(15.0)).clicked() && s.tab != tab {
                 s.tab = tab;
                 if tab == Tab::FrontPage && s.featured.is_none() && s.session.is_some() {
@@ -1135,6 +1150,12 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontI
     if s.tab == Tab::Vouchers {
         egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("catalog-vouchers").auto_shrink([false, false]).show(ui, |ui| vouchers(ui, palette, s, actions));
+        });
+        return;
+    }
+    if s.tab == Tab::Bundles {
+        egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("catalog-bundles").auto_shrink([false, false]).show(ui, |ui| bundles::show(ui, palette, s, images, actions));
         });
         return;
     }
@@ -1570,6 +1591,56 @@ fn sample(s: &mut State) {
     s.subtitle = "The catalogue of hotel on example.org, through the SSH tunnel.".into();
     // AIO_SCREENSHOT_TAB=gifts: the Club gifts tab with three gifts, one changed and a search.
     let tab = std::env::var("AIO_SCREENSHOT_TAB").unwrap_or_default();
+    // AIO_SCREENSHOT_TAB=bundles: a bundle with furni and an offer it follows.
+    if tab == "bundles" {
+        s.tab = Tab::Bundles;
+        let bundle = Page { id: 300, parent_id: 2, caption: "Sunny Café".into(), caption_save: "bundle_sunny_cafe".into(), layout: "single_bundle".into(), visible: true, enabled: true, min_rank: 1, ..Page::default() };
+        s.pages.push(bundle.clone());
+        s.pages.push(Page { id: 301, parent_id: 2, caption: "Dragon Lair".into(), layout: "single_bundle".into(), enabled: true, ..Page::default() });
+        let furni = |id: i64, item: &str, name: &str| catalog_admin::Furni { id, item_name: item.into(), public_name: name.into(), kind: "s".into(), sprite_id: id };
+        let offer = Offer { id: 9100, page_id: 300, catalog_name: "bundle_sunny_cafe".into(), item_ids: "@1234:2;230;5001:4".into(), cost_credits: 45, cost_points: 10, points_type: 5, amount: 1, ..Offer::default() };
+        let texts = aio_remote::bundle_admin::PageTexts {
+            headline: "catalog_bundle_header".into(),
+            teaser: "room_bundle_cafe".into(),
+            text1: "Everything for a sunny café".into(),
+            details: "Open your own <b>café</b> in one go: tables, lamps and a throne for the boss.".into(),
+            teaser_text: "In this bundle:".into(),
+            text2: "The furni go to your inventory.".into(),
+        };
+        let mut furni_map = std::collections::HashMap::new();
+        for f in [furni(230, "throne", "Throne"), furni(5001, "pillow*2", "Pillow"), furni(4501, "rare_dragonlamp*4", "Dragon Lamp")] {
+            furni_map.insert(f.id, f);
+        }
+        let mut offers = std::collections::HashMap::new();
+        offers.insert(1234, aio_remote::bundle_admin::OfferInfo { id: 1234, name: "rare_dragonlamp_4".into(), page: "Rares".into(), item_ids: "4501".into(), amount: 1 });
+        match std::env::var("AIO_SCREENSHOT_BUNDLE").as_deref() {
+            Ok("picture") => s.bundles.picture = Some((bundles::Picture::Teaser, String::new())),
+            Ok("add") => {
+                s.bundles.add = Some(bundles::AddWindow {
+                    kind: bundles::AddKind::Offer,
+                    search: "dragon".into(),
+                    furni: None,
+                    offers: Some(vec![
+                        aio_remote::bundle_admin::OfferInfo { id: 1234, name: "rare_dragonlamp_4".into(), page: "Rares".into(), item_ids: "4501".into(), amount: 1 },
+                        aio_remote::bundle_admin::OfferInfo { id: 1235, name: "rare_dragonlamp_set".into(), page: "Rares".into(), item_ids: "4501;4502;4503".into(), amount: 1 },
+                    ]),
+                })
+            }
+            _ => {}
+        }
+        s.bundles.selected = Some(300);
+        s.bundles.editor = Some(bundles::Editor {
+            page_saved: bundle.clone(),
+            page: bundle,
+            texts_saved: texts.clone(),
+            texts,
+            offer_saved: offer.clone(),
+            offer,
+            offers,
+            furni: furni_map,
+            extra_offers: 0,
+        });
+    }
     if tab == "gifts" || tab == "giftpicker" {
         s.tab = Tab::ClubGifts;
         s.pages.push(Page { id: 212, parent_id: 3, caption: "Clubcadeaus".into(), caption_save: "club_gifts".into(), layout: "club_gift".into(), visible: true, enabled: true, min_rank: 1, ..Page::default() });

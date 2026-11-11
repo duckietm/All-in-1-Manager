@@ -23,9 +23,17 @@
 //!   [`HostServices`]; `file-read` / `file-write` only inside `<plugin dir>/data/` (see
 //!   [`resolve_private`]), with a quota of [`MAX_DATA_BYTES`] / [`MAX_DATA_ENTRIES`] and files of at most
 //!   [`MAX_FILE_READ`]; a `picked-file` wraps the path the user picked (the guest sees only the file
-//!   name); `open-import-preview` hands the picked file's bytes to the Manager. The permission-gated
-//!   imports (`run-script`, `sql-select`, `sql-write`, `http-get`, `tcp-connect` and the connection
-//!   methods) are fail-closed: they return `"permission denied"` until Tasks 5/6 wire the checks.
+//!   name); `open-import-preview` hands the picked file's bytes to the Manager;
+//! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
+//!   `Err("permission denied...")` to the guest and a sanitised `Warn` line in the plugin log):
+//!   `sql-select` through [`crate::sql::build_select`], then [`HostServices::sql_select`];
+//!   `sql-write` through [`crate::sql::build_writes`], then still refused (TODO Task 6: preview and
+//!   approval); `run-script` refused (TODO Task 6); `http-get` through [`crate::net::check_http`], then
+//!   [`HostServices::http_get`], bodies over [`crate::net::MAX_HTTP_BODY`] refused; `tcp-connect` through
+//!   [`crate::net::check_tcp`], then a tokio `TcpStream` to `127.0.0.1:<port>` owned by the runtime: at
+//!   most [`crate::net::MAX_TCP_CONNECTIONS`] open at once, `recv` returns at most
+//!   [`crate::net::MAX_TCP_RECV`] bytes, and every connection is closed when the instance is dropped or
+//!   poisoned.
 //!
 //! The watchdog uses `tokio::time`: calls must run inside a tokio runtime (the app's).
 //!
@@ -38,7 +46,9 @@
 //! into look-alike types would add code without adding safety. Note: a tree comes from the guest and is
 //! untrusted; indices may be out of range or form cycles (the renderer must check them).
 
+use std::collections::HashMap;
 use std::io;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Component as PathComponent, Path, PathBuf};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -46,17 +56,23 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 use wasmtime::component::{Component, HasSelf, Linker, Resource, ResourceTable};
 use wasmtime::{Config, Engine, ResourceLimiter, Store, Trap, UpdateDeadline};
 use wasmtime_wasi::cli::{IsTerminal, StdoutStream};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::bindings::aio::plugin::host::{Host, HostPickedFile, HostTcpConnection};
-use crate::bindings::aio::plugin::types::{LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, WriteOp};
+use crate::bindings::aio::plugin::types::{
+    LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
+};
 use crate::bindings::Plugin;
 use crate::manifest::Manifest;
-use crate::services::{HostServices, Level};
+use crate::net::{check_http, check_tcp, MAX_HTTP_BODY, MAX_TCP_CONNECTIONS, MAX_TCP_RECV};
+use crate::permissions::Permission;
+use crate::services::{HostServices, Level, SqlValue};
+use crate::sql::{build_select, build_writes};
 
 pub use crate::bindings::aio::plugin::types::{
     BannerData, BannerKind, ButtonData, CardData, ChangedData, CheckboxData, InputData, ProgressData, SelectData,
@@ -227,7 +243,7 @@ impl CallClock {
 
 /// Replaces control characters (C0, DEL, C1; tab excepted) and bidi overrides / isolates with U+FFFD and
 /// cuts the text to [`MAX_LOG_ENTRY`] bytes.
-fn sanitise(text: &str) -> String {
+pub(crate) fn sanitise(text: &str) -> String {
     let mut out = String::with_capacity(text.len().min(MAX_LOG_ENTRY));
     for c in text.chars() {
         let bidi = matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
@@ -303,10 +319,14 @@ pub struct PickedFile {
     opened: bool,
 }
 
-/// A local TCP connection. Never created yet: `tcp-connect` is fail-closed until Task 6.
+/// A local TCP connection handle. The stream itself lives in `HostState::tcp` under `id`, so that
+/// poisoning the instance can close every connection at once.
 pub struct TcpConnection {
-    _private: (),
+    id: u64,
 }
+
+/// How long `tcp-connect` waits for the local port to answer.
+const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The store data of one plugin instance.
 pub struct HostState {
@@ -318,6 +338,11 @@ pub struct HostState {
     limits: Limits,
     clock: Arc<CallClock>,
     log: Arc<LogSink>,
+    /// The manifest's permissions.
+    granted: Vec<Permission>,
+    /// Open local TCP connections by id (at most [`MAX_TCP_CONNECTIONS`]).
+    tcp: HashMap<u64, TcpStream>,
+    next_tcp: u64,
 }
 
 impl WasiView for HostState {
@@ -337,6 +362,30 @@ impl HostState {
 
     fn picked(&self, file: &Resource<PickedFile>) -> Result<&PickedFile, String> {
         self.table.get(file).map_err(|_| "invalid file handle".to_string())
+    }
+
+    /// Logs a refusal (sanitised, through the log sink) and hands it back for the guest.
+    fn refused(&self, e: String) -> String {
+        let reason = e.strip_prefix(DENIED).map(|r| r.trim_start_matches(':').trim_start()).unwrap_or(&e);
+        let reason = if reason.is_empty() { "refused" } else { reason };
+        self.log.log(Level::Warn, &PluginError::Denied(reason.to_string()).to_string());
+        e
+    }
+
+    /// The open stream behind a connection handle.
+    fn stream(&mut self, conn: &Resource<TcpConnection>) -> Result<&mut TcpStream, String> {
+        let id = self.table.get(conn).map_err(|_| "invalid connection handle".to_string())?.id;
+        self.tcp.get_mut(&id).ok_or_else(|| "the connection is closed".to_string())
+    }
+}
+
+fn to_wit(v: SqlValue) -> WitValue {
+    match v {
+        SqlValue::Null => WitValue::Null,
+        SqlValue::Int(i) => WitValue::Int(i),
+        SqlValue::Float(f) => WitValue::Float(f),
+        SqlValue::Text(s) => WitValue::Text(s),
+        SqlValue::Bytes(b) => WitValue::Bytes(b),
     }
 }
 
@@ -510,24 +559,60 @@ impl Host for HostState {
         self.log.status(&text);
     }
 
-    async fn run_script(&mut self, _script: String, _as_root: bool) -> Result<WitScriptResult, String> {
+    async fn run_script(&mut self, _script: String, as_root: bool) -> Result<WitScriptResult, String> {
+        let needed = if as_root { Permission::SshRoot } else { Permission::Ssh };
+        if !self.granted.contains(&needed) {
+            return Err(self.refused(format!("{DENIED}: running a script needs the '{needed}' permission")));
+        }
+        // TODO(Task 6): show the script, wait for the user's approval, then `HostServices::run_script`.
+        self.refused(format!("{DENIED}: scripts need the user's approval, which is not available yet"));
         Err(DENIED.into())
     }
 
-    async fn sql_select(&mut self, _query: Select) -> Result<WitRows, String> {
+    async fn sql_select(&mut self, query: Select) -> Result<WitRows, String> {
+        let (sql, params) = build_select(&query, &self.granted).map_err(|e| self.refused(e))?;
+        let rows = self.services.sql_select(sql, params).await?;
+        Ok(WitRows {
+            columns: rows.columns,
+            rows: rows.rows.into_iter().map(|r| r.into_iter().map(to_wit).collect()).collect(),
+        })
+    }
+
+    async fn sql_write(&mut self, ops: Vec<WriteOp>) -> Result<u64, String> {
+        // Built now so that permission errors reach the plugin (and its developer) already.
+        let _batch = build_writes(&ops, &self.granted).map_err(|e| self.refused(e))?;
+        // TODO(Task 6): show `_batch.summary`, wait for the user's approval, then `HostServices::sql_write`.
+        self.refused(format!("{DENIED}: database writes need the user's approval, which is not available yet"));
         Err(DENIED.into())
     }
 
-    async fn sql_write(&mut self, _ops: Vec<WriteOp>) -> Result<u64, String> {
-        Err(DENIED.into())
+    async fn http_get(&mut self, url: String) -> Result<Vec<u8>, String> {
+        let url = check_http(&url, &self.granted).map_err(|e| self.refused(e))?;
+        let body = self.services.http_get(&url).await?;
+        if body.len() > MAX_HTTP_BODY {
+            return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
+        }
+        Ok(body)
     }
 
-    async fn http_get(&mut self, _url: String) -> Result<Vec<u8>, String> {
-        Err(DENIED.into())
-    }
-
-    async fn tcp_connect(&mut self, _port: u16) -> Result<Resource<TcpConnection>, String> {
-        Err(DENIED.into())
+    async fn tcp_connect(&mut self, port: u16) -> Result<Resource<TcpConnection>, String> {
+        check_tcp(port, &self.granted).map_err(|e| self.refused(e))?;
+        if self.tcp.len() >= MAX_TCP_CONNECTIONS {
+            return Err(self.refused(format!(
+                "{DENIED}: at most {MAX_TCP_CONNECTIONS} local connections may be open at once"
+            )));
+        }
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let stream = match tokio::time::timeout(TCP_CONNECT_TIMEOUT, TcpStream::connect(addr)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return Err(format!("connecting to port {port} failed ({:?})", e.kind())),
+            Err(_) => return Err(format!("connecting to port {port} timed out")),
+        };
+        let id = self.next_tcp;
+        self.next_tcp += 1;
+        let handle = self.table.push(TcpConnection { id }).map_err(|_| "too many handles".to_string())?;
+        self.tcp.insert(id, stream);
+        Ok(handle)
     }
 
     async fn file_read(&mut self, path: String) -> Result<Vec<u8>, String> {
@@ -657,18 +742,33 @@ impl HostPickedFile for HostState {
 }
 
 impl HostTcpConnection for HostState {
-    async fn send(&mut self, _conn: Resource<TcpConnection>, _data: Vec<u8>) -> Result<(), String> {
-        Err(DENIED.into())
+    async fn send(&mut self, conn: Resource<TcpConnection>, data: Vec<u8>) -> Result<(), String> {
+        let stream = self.stream(&conn)?;
+        stream.write_all(&data).await.map_err(|e| io_text(&e))
     }
 
-    async fn recv(&mut self, _conn: Resource<TcpConnection>, _max: u32) -> Result<Vec<u8>, String> {
-        Err(DENIED.into())
+    /// Reads what is available, at most `max` and at most [`MAX_TCP_RECV`] bytes; empty = peer closed.
+    async fn recv(&mut self, conn: Resource<TcpConnection>, max: u32) -> Result<Vec<u8>, String> {
+        if max == 0 {
+            return Err("max must be at least 1".into());
+        }
+        let stream = self.stream(&conn)?;
+        let mut buf = vec![0u8; (max as usize).min(MAX_TCP_RECV)];
+        let n = stream.read(&mut buf).await.map_err(|e| io_text(&e))?;
+        buf.truncate(n);
+        Ok(buf)
     }
 
-    async fn close(&mut self, _conn: Resource<TcpConnection>) {}
+    async fn close(&mut self, conn: Resource<TcpConnection>) {
+        if let Ok(c) = self.table.get(&conn) {
+            let id = c.id;
+            self.tcp.remove(&id);
+        }
+    }
 
     async fn drop(&mut self, conn: Resource<TcpConnection>) -> wasmtime::Result<()> {
-        self.table.delete(conn)?;
+        let c = self.table.delete(conn)?;
+        self.tcp.remove(&c.id);
         Ok(())
     }
 }
@@ -722,6 +822,9 @@ impl PluginInstance {
             limits: Limits::default(),
             clock: clock.clone(),
             log,
+            granted: manifest.permissions.clone(),
+            tcp: HashMap::new(),
+            next_tcp: 0,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -770,7 +873,7 @@ impl PluginInstance {
 
     fn enter(&mut self) -> Result<(), PluginError> {
         if self.in_call && self.poisoned.is_none() {
-            self.poisoned = Some(PluginError::Trapped("a previous call was cancelled".into()));
+            self.poison(PluginError::Trapped("a previous call was cancelled".into()));
         }
         if let Some(e) = &self.poisoned {
             return Err(e.clone());
@@ -783,7 +886,18 @@ impl PluginInstance {
     fn leave<R>(&mut self, result: Result<R, PluginError>) -> Result<R, PluginError> {
         disarm(&mut self.store);
         self.in_call = false;
-        result.inspect_err(|e| self.poisoned = Some(e.clone()))
+        result.inspect_err(|e| self.poison(e.clone()))
+    }
+
+    /// Marks the instance unusable and closes its local TCP connections.
+    fn poison(&mut self, e: PluginError) {
+        self.poisoned = Some(e);
+        self.store.data_mut().tcp.clear();
+    }
+
+    /// Local TCP connections open now.
+    pub fn open_connections(&self) -> usize {
+        self.store.data().tcp.len()
     }
 }
 

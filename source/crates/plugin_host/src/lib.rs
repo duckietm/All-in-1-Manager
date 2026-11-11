@@ -16,10 +16,12 @@ pub mod bindings {
 }
 
 pub mod manifest;
+pub mod net;
 pub mod package;
 pub mod permissions;
 pub mod runtime;
 pub mod services;
+pub mod sql;
 
 pub use async_trait::async_trait;
 

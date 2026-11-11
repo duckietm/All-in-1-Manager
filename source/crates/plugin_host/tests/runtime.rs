@@ -228,11 +228,11 @@ async fn gated_imports_are_denied() {
     let dir = install_hello(root.path(), &support::hello_aiop());
     let mut inst = load(&dir, Arc::new(Fake::default())).await;
     let host = inst.host_for_tests();
-    assert_eq!(host.run_script("id".into(), true).await.unwrap_err(), "permission denied");
+    assert!(host.run_script("id".into(), true).await.unwrap_err().starts_with("permission denied"));
     let q = Select { table: "users".into(), columns: vec!["id".into()], conditions: vec![], limit: None };
-    assert_eq!(host.sql_select(q).await.unwrap_err(), "permission denied");
-    assert_eq!(host.sql_write(vec![]).await.unwrap_err(), "permission denied");
-    assert_eq!(host.http_get("https://example.com/".into()).await.unwrap_err(), "permission denied");
+    assert!(host.sql_select(q).await.unwrap_err().starts_with("permission denied"));
+    assert!(host.sql_write(vec![]).await.unwrap_err().starts_with("permission denied"));
+    assert!(host.http_get("https://example.com/".into()).await.unwrap_err().starts_with("permission denied"));
     assert!(host.tcp_connect(9092).await.is_err());
 }
 

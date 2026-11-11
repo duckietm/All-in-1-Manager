@@ -75,6 +75,9 @@ pub trait HostServices: Send + Sync {
     async fn run_script(&self, req: ScriptRequest) -> Result<ScriptResult, String>;
     async fn sql_select(&self, sql: String, params: Vec<SqlValue>) -> Result<Rows, String>;
     async fn sql_write(&self, batch: WriteBatch) -> Result<u64, String>;
+    /// `url` passed `crate::net::check_http` (rebuilt from its checked parts). The implementation must not
+    /// follow a redirect to another host, must stop reading past `crate::net::MAX_HTTP_BODY` bytes, and
+    /// returns a non-2xx status as `Err("HTTP <code>")`.
     async fn http_get(&self, url: &str) -> Result<Vec<u8>, String>;
     /// A line of text from the user; `None` when cancelled.
     async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String>;

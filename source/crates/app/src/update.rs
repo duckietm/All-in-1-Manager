@@ -74,8 +74,10 @@ fn client() -> reqwest::Client {
 }
 
 /// True for a build that can replace itself: a release build (cargo run of a debug build never offers an update).
+/// Never on macOS: the releases have no macOS program, and taking the Linux one would replace a working build with a
+/// file that does not start. A macOS build is updated by building it again from the sources.
 pub fn can_update() -> bool {
-    !cfg!(debug_assertions) && std::env::current_exe().is_ok()
+    !cfg!(debug_assertions) && !cfg!(target_os = "macos") && std::env::current_exe().is_ok()
 }
 
 /// The newest published release when it is newer than this build, or None. Never fails.

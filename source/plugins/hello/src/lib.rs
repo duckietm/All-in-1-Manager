@@ -49,6 +49,8 @@ fn read_count() -> u64 {
 struct Hello;
 
 impl Guest for Hello {
+    // With the `runaway` feature everything after the loop is unreachable on purpose.
+    #[cfg_attr(feature = "runaway", allow(unreachable_code, unused_variables))]
     fn render() -> UiTree {
         // Test variants (see Cargo.toml). Compiled out of the default build.
         #[cfg(feature = "runaway")]

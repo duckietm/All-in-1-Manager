@@ -50,8 +50,8 @@ def main():
         fail("manifest.json has no id")
 
     try:
-        installed = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, text=True).stdout
-        if TARGET not in installed.split():
+        rustup = subprocess.run(["rustup", "target", "list", "--installed"], capture_output=True, encoding="utf-8", errors="replace")
+        if rustup.returncode == 0 and TARGET not in rustup.stdout.split():
             fail(MISSING)
     except FileNotFoundError:
         pass  # no rustup: let cargo report what is missing
@@ -60,9 +60,9 @@ def main():
     cmd = ["cargo", "build", "--release", "--target", TARGET, "--quiet"]
     target_dir = None
     if args.features:
-        target_dir = plugin_dir / "target" / f"features-{args.features.replace(',', '+')}"
+        target_dir = plugin_dir / "target" / ("features-" + re.sub(r"[^A-Za-z0-9_+-]", "_", args.features))
         cmd += ["--features", args.features, "--target-dir", str(target_dir)]
-    result = subprocess.run(cmd, cwd=plugin_dir, capture_output=True, text=True)
+    result = subprocess.run(cmd, cwd=plugin_dir, capture_output=True, encoding="utf-8", errors="replace")
     if result.returncode != 0:
         output = result.stdout + result.stderr
         if TARGET in output and "may not be installed" in output:
@@ -72,7 +72,7 @@ def main():
 
     if target_dir is None:
         # The plugin may be a member of a workspace, which owns the target dir.
-        meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=plugin_dir, capture_output=True, text=True)
+        meta = subprocess.run(["cargo", "metadata", "--format-version", "1", "--no-deps"], cwd=plugin_dir, capture_output=True, encoding="utf-8", errors="replace")
         if meta.returncode != 0:
             fail("cargo metadata failed:\n" + meta.stderr)
         target_dir = Path(json.loads(meta.stdout)["target_directory"])

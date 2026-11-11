@@ -1937,8 +1937,8 @@ recorded.
 ## Updating the installer itself
 
 **Renamed from All-in-1 Installer.** The repository was `duckietm/All-in-1-installer` and the program
-`all-in-1-installer`. Releases still carry `all-in-1-installer-windows-x64.exe` / `-linux-x64` next to the new names,
-so a version from before the rename updates itself to the All-in-1 Manager. Its settings stay: the `configuration`
+`all-in-1-installer`. Releases carry only the new names (`all-in-1-manager-windows-x64.exe` / `-linux-x64`), so a
+version from before the rename no longer finds an update: download the All-in-1 Manager by hand once. Its settings stay: the `configuration`
 folder next to the program, or `All-in-1 Installer\configuration` in the user's data folder while that one exists;
 files the installer wrote on a server are recognised by both names, and the old history files are still read.
 

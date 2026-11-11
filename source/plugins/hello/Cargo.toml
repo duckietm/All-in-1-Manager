@@ -1,0 +1,20 @@
+[package]
+name = "hello"
+version = "1.0.0"
+edition = "2021"
+publish = false
+description = "Example All-in-1 Manager plugin: a greeting form with a persisted counter"
+
+[lib]
+# A component is a cdylib built for wasm32-wasip2.
+crate-type = ["cdylib"]
+
+[dependencies]
+wit-bindgen = "0.63"
+
+[features]
+# Test-only variants used by the host's sandbox tests. The default build has neither.
+# `render` never returns (the host must interrupt it after 5 s).
+runaway = []
+# `render` allocates and touches 80 MiB (the host limits memory to 64 MiB).
+hog = []

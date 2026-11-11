@@ -1,0 +1,15 @@
+{
+  "id": "hello",
+  "name": "Hello",
+  "version": "1.0.0",
+  "author": "All-in-1 Manager",
+  "description": "Example plugin: greets you and counts the greetings.",
+  "api": "1.0",
+  "permissions": ["files"],
+  "page_title": "Hello",
+  "tile": {
+    "title": "Hello",
+    "description": "Example plugin: say hello and keep count.",
+    "color": "#4f8cff"
+  }
+}

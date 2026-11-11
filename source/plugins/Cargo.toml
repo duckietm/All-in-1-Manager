@@ -1,0 +1,10 @@
+# The example plugins live in their own workspace: they are built for wasm32-wasip2 (see
+# source/tools/pack_plugin.py) and are excluded from the main workspace.
+[workspace]
+resolver = "2"
+members = ["hello"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["source/plugins"]
 members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/plugin_host", "source/crates/app"]
 
 [workspace.package]

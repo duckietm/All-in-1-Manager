@@ -4,20 +4,30 @@
 //!
 //! * its own linear memory, at most [`MAX_MEMORY`] in total over all its memories (a `ResourceLimiter`
 //!   refuses to grow past it, so the guest's allocator fails and the guest traps; the host never aborts);
-//! * CPU time: each call into the guest (and the instantiation) may run [`CALL_LIMIT`] of guest time. A
-//!   ticker thread advances the engine's epoch every [`TICK`]; a call gets [`CALL_TICKS`] ticks, and the
-//!   epoch callback extends the deadline only by the time the call spent waiting for the user in a host
-//!   dialog. Past the limit the guest is interrupted ([`PluginError::TimedOut`]);
+//! * time: each call into the guest (and the instantiation) may take [`CALL_LIMIT`], not counting the time
+//!   spent waiting for the user in a host dialog. Two mechanisms enforce it: epoch interruption stops wasm
+//!   code (a ticker thread advances the engine's epoch every [`TICK`]; a call gets [`CALL_TICKS`] ticks and
+//!   the epoch callback extends the deadline only by the dialog time), and a wall-clock watchdog stops a
+//!   call parked in a host wait where no wasm runs (a WASI clock sleep or poll). Past the limit the call
+//!   fails with [`PluginError::TimedOut`];
 //! * WASI (a `wasm32-wasip2` std guest imports it): no preopened directories (no filesystem), no
 //!   environment variables, no arguments, stdin closed, TCP/UDP off and every address denied, no name
 //!   lookup. Clocks and random numbers are the host's. stdout and stderr become plugin log lines (Info and
 //!   Error);
+//! * the plugin log and status line, through one choke point (`LogSink`): every control character (C0,
+//!   DEL, C1; tab excepted) and every bidi override or isolate becomes U+FFFD, a newline starts a new
+//!   entry, each entry is cut to [`MAX_LOG_ENTRY`] bytes, and one call may emit at most
+//!   [`MAX_LOG_ENTRIES`] entries / [`MAX_LOG_BYTES`] bytes, then one [`LOG_TRUNCATED`] entry and nothing
+//!   more until the next call;
 //! * the `aio:plugin/host` imports: `log` / `status` / `ask` / `prompt-text` / the file dialogs go to
 //!   [`HostServices`]; `file-read` / `file-write` only inside `<plugin dir>/data/` (see
-//!   [`resolve_private`]); a `picked-file` wraps the path the user picked (the guest sees only the file
+//!   [`resolve_private`]), with a quota of [`MAX_DATA_BYTES`] / [`MAX_DATA_ENTRIES`] and files of at most
+//!   [`MAX_FILE_READ`]; a `picked-file` wraps the path the user picked (the guest sees only the file
 //!   name); `open-import-preview` hands the picked file's bytes to the Manager. The permission-gated
 //!   imports (`run-script`, `sql-select`, `sql-write`, `http-get`, `tcp-connect` and the connection
 //!   methods) are fail-closed: they return `"permission denied"` until Tasks 5/6 wire the checks.
+//!
+//! The watchdog uses `tokio::time`: calls must run inside a tokio runtime (the app's).
 //!
 //! A call that traps, times out or is cancelled (its future dropped) poisons the instance: every later
 //! call returns the same error without running guest code. The app reloads the plugin with a fresh
@@ -31,7 +41,7 @@
 use std::io;
 use std::path::{Component as PathComponent, Path, PathBuf};
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -65,8 +75,18 @@ pub const CALL_LIMIT: Duration = Duration::from_secs(5);
 pub const CALL_TICKS: u64 = 50;
 /// The largest private or picked file handed to a guest (it must fit in its memory anyway).
 pub const MAX_FILE_READ: u64 = 32 * 1024 * 1024;
-/// Longest log or status line kept (bytes); the rest is cut.
-const MAX_LINE: usize = 16 * 1024;
+/// Longest log entry or status text kept (bytes); the rest is cut.
+pub const MAX_LOG_ENTRY: usize = 4 * 1024;
+/// Log entries (status texts included) one call may emit.
+pub const MAX_LOG_ENTRIES: usize = 1_000;
+/// Log bytes one call may emit.
+pub const MAX_LOG_BYTES: usize = 256 * 1024;
+/// The entry that replaces everything past the per-call log budget.
+pub const LOG_TRUNCATED: &str = "log truncated by the host";
+/// Total size of the files in a plugin's private folder.
+pub const MAX_DATA_BYTES: u64 = 64 * 1024 * 1024;
+/// Files and folders in a plugin's private folder.
+pub const MAX_DATA_ENTRIES: usize = 10_000;
 /// Longest relative path accepted by `file-read` / `file-write`.
 const MAX_PATH: usize = 255;
 /// Most folder levels in a private path.
@@ -155,6 +175,126 @@ impl ResourceLimiter for Limits {
     }
 }
 
+/// Time accounting of the current call, shared by the epoch callback, the watchdog and the dialog imports.
+#[derive(Default)]
+struct CallClock {
+    inner: Mutex<ClockState>,
+}
+
+#[derive(Default)]
+struct ClockState {
+    /// Start of the current call (None between calls).
+    started: Option<Instant>,
+    /// Dialog time of the current call, dialogs that ended.
+    waited: Duration,
+    /// Start of the dialog the call is waiting on now.
+    waiting_since: Option<Instant>,
+}
+
+impl CallClock {
+    fn lock(&self) -> MutexGuard<'_, ClockState> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn start(&self) {
+        *self.lock() = ClockState { started: Some(Instant::now()), ..ClockState::default() };
+    }
+
+    fn stop(&self) {
+        *self.lock() = ClockState::default();
+    }
+
+    fn begin_wait(&self) {
+        self.lock().waiting_since = Some(Instant::now());
+    }
+
+    fn end_wait(&self) {
+        let mut s = self.lock();
+        if let Some(since) = s.waiting_since.take() {
+            s.waited += since.elapsed();
+        }
+    }
+
+    /// Time the current call has used, dialog time excluded; None between calls.
+    fn used(&self) -> Option<Duration> {
+        let s = self.lock();
+        let started = s.started?;
+        let now = Instant::now();
+        let waited = s.waited + s.waiting_since.map(|w| now.duration_since(w)).unwrap_or_default();
+        Some(now.duration_since(started).saturating_sub(waited))
+    }
+}
+
+/// Replaces control characters (C0, DEL, C1; tab excepted) and bidi overrides / isolates with U+FFFD and
+/// cuts the text to [`MAX_LOG_ENTRY`] bytes.
+fn sanitise(text: &str) -> String {
+    let mut out = String::with_capacity(text.len().min(MAX_LOG_ENTRY));
+    for c in text.chars() {
+        let bidi = matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+        let c = if (c.is_control() && c != '\t') || bidi { '\u{FFFD}' } else { c };
+        if out.len() + c.len_utf8() > MAX_LOG_ENTRY {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[derive(Default)]
+struct Budget {
+    entries: usize,
+    bytes: usize,
+    truncated: bool,
+}
+
+/// The only way guest text reaches the log and the status line: sanitised, within the per-call budget.
+struct LogSink {
+    services: Arc<dyn HostServices>,
+    budget: Mutex<Budget>,
+}
+
+impl LogSink {
+    fn reset(&self) {
+        *self.budget.lock().unwrap_or_else(|e| e.into_inner()) = Budget::default();
+    }
+
+    /// Takes one entry of `len` bytes from the budget; false (after one truncation entry) once it is spent.
+    fn take(&self, len: usize) -> bool {
+        let mut b = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+        if b.truncated {
+            return false;
+        }
+        if b.entries >= MAX_LOG_ENTRIES || b.bytes + len > MAX_LOG_BYTES {
+            b.truncated = true;
+            drop(b);
+            self.services.log(Level::Warn, LOG_TRUNCATED);
+            return false;
+        }
+        b.entries += 1;
+        b.bytes += len;
+        true
+    }
+
+    /// One log entry per line of `text` (`\n` or `\r\n`; a final newline adds no empty entry).
+    fn log(&self, level: Level, text: &str) {
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        for line in text.split('\n') {
+            let entry = sanitise(line.strip_suffix('\r').unwrap_or(line));
+            if self.take(entry.len()) {
+                self.services.log(level, &entry);
+            }
+        }
+    }
+
+    /// The status line: one entry; a newline is replaced like any control character.
+    fn status(&self, text: &str) {
+        let entry = sanitise(text);
+        if self.take(entry.len()) {
+            self.services.status(&entry);
+        }
+    }
+}
+
 /// A file the user picked in a dialog. The guest gets a handle; the path stays here.
 pub struct PickedFile {
     path: PathBuf,
@@ -176,10 +316,8 @@ pub struct HostState {
     /// Canonical `<plugin dir>/data`.
     data: PathBuf,
     limits: Limits,
-    /// Start of the current call (None between calls).
-    call_started: Option<Instant>,
-    /// Time the current call spent waiting for the user in host dialogs; not counted as guest time.
-    host_wait: Duration,
+    clock: Arc<CallClock>,
+    log: Arc<LogSink>,
 }
 
 impl WasiView for HostState {
@@ -191,27 +329,15 @@ impl WasiView for HostState {
 impl HostState {
     /// Awaits a host service that waits for the user, excluding that time from the call's time limit.
     async fn waiting<F: std::future::Future>(&mut self, fut: F) -> F::Output {
-        let started = Instant::now();
+        self.clock.begin_wait();
         let out = fut.await;
-        self.host_wait += started.elapsed();
+        self.clock.end_wait();
         out
     }
 
     fn picked(&self, file: &Resource<PickedFile>) -> Result<&PickedFile, String> {
         self.table.get(file).map_err(|_| "invalid file handle".to_string())
     }
-}
-
-/// Cuts `text` to [`MAX_LINE`] bytes on a character boundary.
-fn clip(text: &str) -> &str {
-    if text.len() <= MAX_LINE {
-        return text;
-    }
-    let mut end = MAX_LINE;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
 }
 
 /// An I/O error as the guest sees it: the kind only, never a host path.
@@ -289,7 +415,7 @@ pub fn resolve_private(data: &Path, path: &str) -> Result<PathBuf, String> {
 
 /// Guest stdout or stderr: each line becomes a plugin log line.
 struct GuestOutput {
-    services: Arc<dyn HostServices>,
+    log: Arc<LogSink>,
     level: Level,
 }
 
@@ -301,12 +427,12 @@ impl IsTerminal for GuestOutput {
 
 impl StdoutStream for GuestOutput {
     fn async_stream(&self) -> Box<dyn AsyncWrite + Send + Sync> {
-        Box::new(LineWriter { services: self.services.clone(), level: self.level, pending: Vec::new() })
+        Box::new(LineWriter { log: self.log.clone(), level: self.level, pending: Vec::new() })
     }
 }
 
 struct LineWriter {
-    services: Arc<dyn HostServices>,
+    log: Arc<LogSink>,
     level: Level,
     pending: Vec<u8>,
 }
@@ -314,8 +440,7 @@ struct LineWriter {
 impl LineWriter {
     fn emit(&mut self, line: &[u8]) {
         let line = line.strip_suffix(b"\r").unwrap_or(line);
-        let text = String::from_utf8_lossy(line);
-        self.services.log(self.level, clip(&text));
+        self.log.log(self.level, &String::from_utf8_lossy(line));
     }
 
     fn push(&mut self, data: &[u8]) {
@@ -325,7 +450,7 @@ impl LineWriter {
                 self.emit(&line);
             } else {
                 self.pending.push(b);
-                if self.pending.len() >= MAX_LINE {
+                if self.pending.len() >= MAX_LOG_ENTRY {
                     let line = std::mem::take(&mut self.pending);
                     self.emit(&line);
                 }
@@ -373,7 +498,7 @@ impl Host for HostState {
             LogLevel::Warn => Level::Warn,
             LogLevel::Error => Level::Error,
         };
-        self.services.log(level, clip(&text));
+        self.log.log(level, &text);
     }
 
     async fn ask(&mut self, question: String) -> bool {
@@ -382,7 +507,7 @@ impl Host for HostState {
     }
 
     async fn status(&mut self, text: String) {
-        self.services.status(clip(&text));
+        self.log.status(&text);
     }
 
     async fn run_script(&mut self, _script: String, _as_root: bool) -> Result<WitScriptResult, String> {
@@ -411,7 +536,15 @@ impl Host for HostState {
     }
 
     async fn file_write(&mut self, path: String, data: Vec<u8>) -> Result<(), String> {
+        // Every check comes before anything is created, so a refused write leaves nothing behind.
+        if data.len() as u64 > MAX_FILE_READ {
+            return Err(format!("file larger than {} MiB", MAX_FILE_READ / (1024 * 1024)));
+        }
         let target = resolve_private(&self.data, &path)?;
+        if target.is_dir() {
+            return Err("a folder has that name".into());
+        }
+        check_quota(&self.data, &target, data.len() as u64)?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).map_err(|e| io_text(&e))?;
         }
@@ -455,6 +588,41 @@ impl Host for HostState {
         self.services.open_import_preview(name, bytes);
         Ok(())
     }
+}
+
+/// Size of the files and number of files and folders under `root` (links are counted, never followed).
+fn usage(root: &Path) -> io::Result<(u64, usize)> {
+    let (mut bytes, mut entries) = (0u64, 0usize);
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder)? {
+            let path = entry?.path();
+            let meta = std::fs::symlink_metadata(&path)?;
+            entries += 1;
+            if meta.is_dir() {
+                folders.push(path);
+            } else {
+                bytes += meta.len();
+            }
+        }
+    }
+    Ok((bytes, entries))
+}
+
+/// Refuses a write of `len` bytes to `target` (inside `data`) that would take the private folder past
+/// [`MAX_DATA_BYTES`] or [`MAX_DATA_ENTRIES`]. A file being replaced counts with its new size only.
+fn check_quota(data: &Path, target: &Path, len: u64) -> Result<(), String> {
+    let (used, entries) = usage(data).map_err(|e| io_text(&e))?;
+    let old = std::fs::symlink_metadata(target).map(|m| if m.is_file() { m.len() } else { 0 }).unwrap_or(0);
+    if used.saturating_sub(old) + len > MAX_DATA_BYTES {
+        return Err(format!("the private folder is full ({} MiB)", MAX_DATA_BYTES / (1024 * 1024)));
+    }
+    // The file itself, if new, and every folder still to be created.
+    let new_entries = target.ancestors().take_while(|p| *p != data).filter(|p| !p.exists()).count();
+    if entries + new_entries > MAX_DATA_ENTRIES {
+        return Err(format!("the private folder is full ({MAX_DATA_ENTRIES} files and folders)"));
+    }
+    Ok(())
 }
 
 fn file_name(path: &Path) -> String {
@@ -510,6 +678,8 @@ pub struct PluginInstance {
     store: Store<HostState>,
     plugin: Plugin,
     manifest: Manifest,
+    /// The same clock as the store's `HostState::clock`, reachable while the store is borrowed by a call.
+    clock: Arc<CallClock>,
     /// Set once a call trapped, timed out or was cancelled.
     poisoned: Option<PluginError>,
     /// True while a call runs; still true at the next call if the previous future was dropped.
@@ -535,9 +705,11 @@ impl PluginInstance {
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| anyhow::anyhow!("{e:#}"))?;
         Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| anyhow::anyhow!("{e:#}"))?;
 
+        let log = Arc::new(LogSink { services: services.clone(), budget: Mutex::default() });
+        let clock = Arc::new(CallClock::default());
         let wasi = WasiCtxBuilder::new()
-            .stdout(GuestOutput { services: services.clone(), level: Level::Info })
-            .stderr(GuestOutput { services: services.clone(), level: Level::Error })
+            .stdout(GuestOutput { log: log.clone(), level: Level::Info })
+            .stderr(GuestOutput { log: log.clone(), level: Level::Error })
             .allow_tcp(false)
             .allow_udp(false)
             .allow_ip_name_lookup(false)
@@ -548,17 +720,15 @@ impl PluginInstance {
             services,
             data,
             limits: Limits::default(),
-            call_started: None,
-            host_wait: Duration::ZERO,
+            clock: clock.clone(),
+            log,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
-        store.epoch_deadline_callback(|mut ctx| {
-            let state = ctx.data_mut();
-            let Some(started) = state.call_started else {
+        store.epoch_deadline_callback(|ctx| {
+            let Some(used) = ctx.data().clock.used() else {
                 return Ok(UpdateDeadline::Continue(CALL_TICKS));
             };
-            let used = started.elapsed().saturating_sub(state.host_wait);
             if used >= CALL_LIMIT {
                 return Ok(UpdateDeadline::Interrupt);
             }
@@ -568,10 +738,10 @@ impl PluginInstance {
 
         // Instantiation can run guest code (start functions): it is a call like any other.
         arm(&mut store);
-        let plugin = Plugin::instantiate_async(&mut store, &component, &linker).await;
+        let plugin = watchdog(&clock, Plugin::instantiate_async(&mut store, &component, &linker)).await;
         disarm(&mut store);
-        let plugin = plugin.map_err(|e| anyhow::anyhow!("{}", classify(e)))?;
-        Ok(PluginInstance { store, plugin, manifest, poisoned: None, in_call: false })
+        let plugin = plugin.map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(PluginInstance { store, plugin, manifest, clock, poisoned: None, in_call: false })
     }
 
     pub fn manifest(&self) -> &Manifest {
@@ -581,14 +751,14 @@ impl PluginInstance {
     /// The plugin's page.
     pub async fn render(&mut self) -> Result<UiTree, PluginError> {
         self.enter()?;
-        let result = self.plugin.call_render(&mut self.store).await;
+        let result = watchdog(&self.clock, self.plugin.call_render(&mut self.store)).await;
         self.leave(result)
     }
 
     /// Hands a user action to the plugin. The app renders again afterwards.
     pub async fn event(&mut self, e: UiEvent) -> Result<(), PluginError> {
         self.enter()?;
-        let result = self.plugin.call_on_event(&mut self.store, &e).await;
+        let result = watchdog(&self.clock, self.plugin.call_on_event(&mut self.store, &e)).await;
         self.leave(result)?.map_err(PluginError::Failed)
     }
 
@@ -610,26 +780,44 @@ impl PluginInstance {
         Ok(())
     }
 
-    fn leave<R>(&mut self, result: wasmtime::Result<R>) -> Result<R, PluginError> {
+    fn leave<R>(&mut self, result: Result<R, PluginError>) -> Result<R, PluginError> {
         disarm(&mut self.store);
         self.in_call = false;
-        result.map_err(|e| {
-            let e = classify(e);
-            self.poisoned = Some(e.clone());
-            e
-        })
+        result.inspect_err(|e| self.poisoned = Some(e.clone()))
     }
 }
 
 fn arm(store: &mut Store<HostState>) {
-    let state = store.data_mut();
-    state.call_started = Some(Instant::now());
-    state.host_wait = Duration::ZERO;
+    let state = store.data();
+    state.clock.start();
+    state.log.reset();
     store.set_epoch_deadline(CALL_TICKS);
 }
 
 fn disarm(store: &mut Store<HostState>) {
-    store.data_mut().call_started = None;
+    store.data().clock.stop();
+}
+
+/// Runs one guest call under the wall-clock limit: [`CALL_LIMIT`] by the call's clock, dialog waits
+/// excluded. Epoch interruption cannot stop a call parked in a host wait (a WASI sleep or poll, where no
+/// wasm runs); this does, by dropping the call future (wasmtime unwinds the guest's fiber). While wasm
+/// runs, the future is not polled, so a busy guest is stopped by the epoch instead.
+async fn watchdog<R>(
+    clock: &CallClock,
+    call: impl std::future::Future<Output = wasmtime::Result<R>>,
+) -> Result<R, PluginError> {
+    let mut call = std::pin::pin!(call);
+    loop {
+        let left = CALL_LIMIT.saturating_sub(clock.used().unwrap_or_default());
+        if left.is_zero() {
+            return Err(PluginError::TimedOut);
+        }
+        tokio::select! {
+            result = &mut call => return result.map_err(classify),
+            // While a dialog is open `used` stands still, so this just checks again later.
+            _ = tokio::time::sleep(left.max(Duration::from_millis(10))) => {}
+        }
+    }
 }
 
 fn classify(e: wasmtime::Error) -> PluginError {

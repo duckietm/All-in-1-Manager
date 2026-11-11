@@ -19,6 +19,8 @@ struct Fake {
     statuses: Mutex<Vec<String>>,
     open_pick: Mutex<Option<PathBuf>>,
     previews: Mutex<Vec<(String, Vec<u8>)>>,
+    /// How long the user takes to answer `ask`.
+    ask_delay: Duration,
 }
 
 impl Fake {
@@ -30,6 +32,7 @@ impl Fake {
 #[aio_plugin_host::async_trait]
 impl HostServices for Fake {
     async fn ask(&self, _q: String) -> bool {
+        tokio::time::sleep(self.ask_delay).await;
         true
     }
     fn log(&self, level: Level, text: &str) {
@@ -291,4 +294,106 @@ async fn memory_over_64_mib_traps() {
         fake.logs()
     );
     assert!(matches!(inst.render().await.unwrap_err(), PluginError::Trapped(_)));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sleeping_call_is_interrupted() {
+    // The guest waits in a WASI clock (no wasm runs, so no epoch check): the wall-clock watchdog stops it.
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop_with("sleeper"));
+    let mut inst = load(&dir, Arc::new(Fake::default())).await;
+    let start = Instant::now();
+    let err = inst.render().await.unwrap_err();
+    let took = start.elapsed();
+    assert!(matches!(err, PluginError::TimedOut), "{err:?}");
+    assert!(took >= Duration::from_millis(4500) && took < Duration::from_secs(6), "took {took:?}");
+    let start = Instant::now();
+    assert!(matches!(inst.render().await.unwrap_err(), PluginError::TimedOut));
+    assert!(start.elapsed() < Duration::from_millis(500));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waiting_for_a_dialog_does_not_time_out() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop_with("asker"));
+    let fake = Arc::new(Fake { ask_delay: Duration::from_secs(7), ..Fake::default() });
+    let mut inst = load(&dir, fake.clone()).await;
+    let start = Instant::now();
+    let tree = inst.render().await.unwrap();
+    assert!(start.elapsed() >= Duration::from_secs(7));
+    assert_eq!(texts(&tree), vec!["Greeted 0 times".to_string()]);
+    assert!(fake.logs().iter().any(|(_, t)| t == "asked: true"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn log_text_is_sanitised() {
+    use aio_plugin_host::bindings::aio::plugin::types::LogLevel;
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop());
+    let fake = Arc::new(Fake::default());
+    let mut inst = load(&dir, fake.clone()).await;
+    let host = inst.host_for_tests();
+    host.log(LogLevel::Warn, "a\nManager: SSH key verified\r\n\x1b[31mred\u{202e}txt\u{2066}\0\x7f\u{85}\tok".into()).await;
+    host.log(LogLevel::Info, "x".repeat(10_000)).await;
+    host.status("one\ntwo\u{202d}".into()).await;
+    let logs = fake.logs();
+    assert_eq!(logs[0], (Level::Warn, "a".to_string()));
+    assert_eq!(logs[1], (Level::Warn, "Manager: SSH key verified".to_string()));
+    assert_eq!(logs[2], (Level::Warn, "\u{fffd}[31mred\u{fffd}txt\u{fffd}\u{fffd}\u{fffd}\u{fffd}\tok".to_string()));
+    assert_eq!(logs[3].1.len(), 4096);
+    assert_eq!(logs.len(), 4);
+    assert_eq!(fake.statuses.lock().unwrap().clone(), vec!["one\u{fffd}two\u{fffd}".to_string()]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn log_budget_per_call() {
+    use aio_plugin_host::bindings::aio::plugin::types::LogLevel;
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop());
+    let fake = Arc::new(Fake::default());
+    let mut inst = load(&dir, fake.clone()).await;
+    let host = inst.host_for_tests();
+    for i in 0..1500 {
+        host.log(LogLevel::Info, format!("line {i}")).await;
+    }
+    let logs = fake.logs();
+    assert_eq!(logs.len(), 1001);
+    assert_eq!(logs[999].1, "line 999");
+    assert_eq!(logs[1000].1, "log truncated by the host");
+    // A new call resets the budget. Bytes count too: 256 KiB = 64 entries of 4 KiB.
+    inst.render().await.unwrap();
+    fake.logs.lock().unwrap().clear();
+    let host = inst.host_for_tests();
+    for _ in 0..100 {
+        host.log(LogLevel::Info, "y".repeat(4096)).await;
+    }
+    let logs = fake.logs();
+    assert_eq!(logs.len(), 65);
+    assert_eq!(logs[64].1, "log truncated by the host");
+    inst.render().await.unwrap();
+    fake.logs.lock().unwrap().clear();
+    inst.host_for_tests().log(LogLevel::Info, "again".into()).await;
+    assert_eq!(fake.logs(), vec![(Level::Info, "again".to_string())]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn private_folder_quota() {
+    const MIB: usize = 1024 * 1024;
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop());
+    let mut inst = load(&dir, Arc::new(Fake::default())).await;
+    let host = inst.host_for_tests();
+    // One file: at most 32 MiB (what file-read can give back).
+    assert!(host.file_write("big".into(), vec![1; 32 * MIB + 1]).await.is_err());
+    assert!(!dir.join("data/big").exists());
+    host.file_write("a".into(), vec![1; 30 * MIB]).await.unwrap();
+    host.file_write("b".into(), vec![1; 30 * MIB]).await.unwrap();
+    // 60 MiB used of 64: 5 MiB more do not fit, 4 MiB do.
+    assert!(host.file_write("sub/c".into(), vec![1; 5 * MIB]).await.is_err());
+    assert!(!dir.join("data/sub/c").exists());
+    host.file_write("c".into(), vec![1; 4 * MIB]).await.unwrap();
+    // Replacing a file counts its new size, not both.
+    host.file_write("a".into(), vec![2; 30 * MIB]).await.unwrap();
+    assert!(host.file_write("a".into(), vec![2; 31 * MIB]).await.is_err());
+    assert_eq!(std::fs::metadata(dir.join("data/a")).unwrap().len(), 30 * MIB as u64);
 }

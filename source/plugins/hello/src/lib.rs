@@ -57,6 +57,10 @@ impl Guest for Hello {
         loop {
             std::hint::black_box(());
         }
+        #[cfg(feature = "sleeper")]
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+        #[cfg(feature = "asker")]
+        host::log(LogLevel::Info, &format!("asked: {}", host::ask("Continue?")));
         #[cfg(feature = "hog")]
         {
             // Touch every page so the memory is really used, and keep it alive until the end.

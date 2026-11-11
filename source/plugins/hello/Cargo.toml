@@ -13,8 +13,12 @@ crate-type = ["cdylib"]
 wit-bindgen = "0.63"
 
 [features]
-# Test-only variants used by the host's sandbox tests. The default build has neither.
+# Test-only variants used by the host's sandbox tests. The default build has none of them.
 # `render` never returns (the host must interrupt it after 5 s).
 runaway = []
 # `render` allocates and touches 80 MiB (the host limits memory to 64 MiB).
 hog = []
+# `render` sleeps for an hour in a WASI clock wait (the host must interrupt it after 5 s).
+sleeper = []
+# `render` first asks the user a question (the time the user takes does not count).
+asker = []

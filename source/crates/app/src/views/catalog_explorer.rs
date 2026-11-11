@@ -1104,7 +1104,11 @@ impl Ctl {
     /// A new page under `parent` (hidden until Visible is ticked), then its editor to name it.
     async fn new_page(self, parent: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let page = catalog_admin::new_page(&self.lock().pages, parent, self.cat());
+        // One lock: `self.cat()` locks too, and a lock held for the call's arguments would wait on itself.
+        let page = {
+            let s = self.lock();
+            catalog_admin::new_page(&s.pages, parent, s.cat)
+        };
         self.with(generation, |s| s.busy = true);
         let saved = catalog_admin::save_page(&session, &database, self.cat(), &page).await;
         self.with(generation, |s| s.busy = false);

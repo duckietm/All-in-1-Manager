@@ -35,9 +35,12 @@ impl GamedataFile {
         }
     }
 
-    /// Where it is on the server (gamedata/config).
+    /// Where it is on the server (Settings → Gamedata layout; gamedata/config as standard).
     pub fn path(self) -> String {
-        format!("{}/config/{}", octane::gamedata(), self.file_name())
+        match self {
+            GamedataFile::Furnidata => octane::furnidata(),
+            GamedataFile::Texts => octane::gamedata_path("external_texts"),
+        }
     }
 }
 

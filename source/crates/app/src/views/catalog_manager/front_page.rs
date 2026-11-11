@@ -209,7 +209,7 @@ fn collect(root: &std::path::Path, relative: &str, depth: usize, out: &mut Vec<S
 
 /// The shell command that lists the server's promo and catalogue images, relative to c_images.
 pub(super) fn list_command() -> String {
-    let folder = format!("{}/c_images", aio_remote::octane::gamedata());
+    let folder = aio_remote::octane::gamedata_path("images");
     format!(
         "cd {} 2>/dev/null && find catalogue web_promo_small web_promo -maxdepth 2 -type f \\( -iname '*.png' -o -iname '*.gif' \\) 2>/dev/null | sort; true",
         aio_remote::server::shell_quote(&folder)

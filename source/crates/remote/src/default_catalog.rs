@@ -53,11 +53,11 @@ pub struct CatalogResult {
 
 /// The marker this addon writes: the version of the catalogue it installed.
 pub fn marker() -> String {
-    format!("{}/config/.all-in-1-catalog", octane::gamedata())
+    format!("{}/.all-in-1-catalog", octane::parent_folder(&octane::furnidata()))
 }
 
 pub fn furniture_data() -> String {
-    format!("{}/config/FurnitureData.json", octane::gamedata())
+    octane::furnidata()
 }
 
 /// What the packed catalogue has where the hotel's name goes (page texts, a bot's motto).
@@ -115,7 +115,7 @@ pub async fn inspect(server: &dyn Server) -> Result<CatalogState> {
         INSPECT,
         &[
             ("DatabaseName", &server_tools::database_name()),
-            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Gamedata", &shell_quote(&octane::gamedata())), ("Furnidata", &crate::server::shell_quote(&crate::octane::furnidata())),
             ("Directory", &emulator::directory()),
             ("Marker", &shell_quote(&marker())),
         ],
@@ -153,7 +153,8 @@ for table in items_base catalog_pages catalog_items items permission_ranks; do
     fail "$db has no $table table: run the Emulator step first (the emulator creates its tables when it starts)."
 done
 gamedata={{Gamedata}}
-config="$gamedata/config"
+furnidata={{Furnidata}}
+config=$(dirname "$furnidata")
 [ -d "$gamedata" ] || fail "$gamedata does not exist: run the Octane step first."
 
 echo "> Safety backup of $db first"
@@ -190,16 +191,16 @@ if ! mariadb "$db" < "$sql" > "$out" 2>&1; then
 fi
 echo "  done in $(( $(date +%s) - start )) seconds"
 
-echo "> $config/FurnitureData.json"
+echo "> $furnidata"
 install -d -o www-data -g www-data -m 2775 "$config"
 old=
-if [ -f "$config/FurnitureData.json" ]; then
-  old="$config/FurnitureData.json.bak-$(date +%Y%m%d-%H%M%S)"
-  cp -p "$config/FurnitureData.json" "$old"
+if [ -f "$furnidata" ]; then
+  old="$furnidata.bak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$furnidata" "$old"
   echo "  The old one is kept as $old"
   echo "OLD=$old"
 fi
-install -o www-data -g www-data -m 664 "$json" "$config/FurnitureData.json"
+install -o www-data -g www-data -m 664 "$json" "$furnidata"
 
 pages=$(mariadb -N "$db" -e 'SELECT COUNT(*) FROM catalog_pages')
 items=$(mariadb -N "$db" -e 'SELECT COUNT(*) FROM catalog_items')
@@ -217,7 +218,7 @@ if [ -n "$emulator" ]; then
   if ! (wait_loaded); then
     echo "> The emulator does not start with the new catalogue"
     restore_database
-    if [ -n "$old" ]; then cp -p "$old" "$config/FurnitureData.json"; else rm -f "$config/FurnitureData.json"; fi
+    if [ -n "$old" ]; then cp -p "$old" "$furnidata"; else rm -f "$furnidata"; fi
     start_emulator
     (wait_loaded) || true
     fail "The emulator does not start with the new catalogue (its log is above). The database and FurnitureData.json are as they were."
@@ -240,7 +241,7 @@ pub async fn install(server: &dyn Server, sql_file: &str, json_file: &str, versi
         INSTALL,
         &[
             ("DatabaseName", &server_tools::database_name()),
-            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Gamedata", &shell_quote(&octane::gamedata())), ("Furnidata", &crate::server::shell_quote(&crate::octane::furnidata())),
             ("BackupDirectory", &server_tools::backup_directory()),
             ("Directory", &emulator::directory()),
             ("LogDirectory", &emulator::log_directory()),
@@ -273,16 +274,17 @@ pub async fn install(server: &dyn Server, sql_file: &str, json_file: &str, versi
 
 const RESTORE: &str = r#"set -o pipefail
 safety={{Safety}}
-config={{Gamedata}}/config
+furnidata={{Furnidata}}
+config=$(dirname "$furnidata")
 [ -s "$safety" ] || fail "The safety backup $safety is missing: import a backup with Tools → Import full database."
 echo "> Putting the database back as it was ($(basename "$safety"))"
 gunzip -c "$safety" | mariadb || fail "Restoring failed: import $safety with Tools → Import full database."
 old={{Old}}
 if [ -n "$old" ] && [ -f "$old" ]; then
-  cp -p "$old" "$config/FurnitureData.json"
+  cp -p "$old" "$furnidata"
   echo "  FurnitureData.json as it was ($(basename "$old"))"
 elif [ -z "$old" ]; then
-  rm -f "$config/FurnitureData.json"
+  rm -f "$furnidata"
 fi
 rm -f {{Markers}}
 true"#;
@@ -293,7 +295,7 @@ pub async fn restore(server: &dyn Server, safety: &str, old: Option<&str>, log: 
     let body = fill(
         RESTORE,
         &[
-            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Gamedata", &shell_quote(&octane::gamedata())), ("Furnidata", &crate::server::shell_quote(&crate::octane::furnidata())),
             ("Markers", &format!("{} {}", shell_quote(&marker()), shell_quote(&crate::furniture_language::marker()))),
             ("Old", &shell_quote(old.unwrap_or(""))),
             ("Safety", &shell_quote(safety)),

@@ -3913,5 +3913,21 @@
   "{amount} credits": "{amount} kolikkoa",
   "{count} pictures": "{count} kuvaa",
   "The catalogue's front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "Luettelon etusivu, klubilahjat, paketit, rajoitetut sarjat, kupongit, tarkistukset ja varmuuskopiot; sivut ja tarjoukset ovat luettelon selaimessa.",
-  "The catalogue of {host}: front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "Palvelimen {host} luettelo: etusivu, klubilahjat, paketit, rajoitetut sarjat, kupongit, tarkistukset ja varmuuskopiot; sivut ja tarjoukset ovat luettelon selaimessa."
+  "The catalogue of {host}: front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "Palvelimen {host} luettelo: etusivu, klubilahjat, paketit, rajoitetut sarjat, kupongit, tarkistukset ja varmuuskopiot; sivut ja tarjoukset ovat luettelon selaimessa.",
+  "All back to the standard layout": "Kaikki takaisin vakiorakenteeseen",
+  "Avatar actions (HabboAvatarActions.json)": "Avatarin toiminnot (HabboAvatarActions.json)",
+  "Back to {value}": "Takaisin arvoon {value}",
+  "Effect map (EffectMap.json)": "Efektikartta (EffectMap.json)",
+  "External texts (ExternalTexts.json)": "Ulkoiset tekstit (ExternalTexts.json)",
+  "Figure data (FigureData.json)": "Hahmodata (FigureData.json)",
+  "Figure map (FigureMap.json)": "Hahmokartta (FigureMap.json)",
+  "Furniture (.hab / .nitro)": "Kalusteet (.hab / .nitro)",
+  "Furniture data (FurnitureData.json)": "Kalustedata (FurnitureData.json)",
+  "Gamedata layout (standard)": "Gamedatan rakenne (vakio)",
+  "Gamedata layout (your own)": "Gamedatan rakenne (oma)",
+  "Images (c_images)": "Kuvat (c_images)",
+  "Installs it as {file}, readable by NGINX.": "Asentaa sen nimellä {file}, NGINXin luettavaksi.",
+  "Product data (ProductData.json)": "Tuotedata (ProductData.json)",
+  "UI texts (UITexts.jsonc)": "Käyttöliittymän tekstit (UITexts.jsonc)",
+  "Where the files and folders are inside gamedata, for a hotel with its own structure. Write a path inside the gamedata folder (config/FurnitureData.json, bundled/furniture) or a full path starting with /. The editors, imports, language switches and Deploy Assets read and write these places. Your client's renderer-config must point to the same places.": "Missä tiedostot ja kansiot ovat gamedatan sisällä, hotellille jolla on oma rakenne. Kirjoita polku gamedata-kansion sisällä (config/FurnitureData.json, bundled/furniture) tai täysi polku, joka alkaa merkillä /. Editorit, tuonnit, kielen vaihdot ja Deploy Assets lukevat ja kirjoittavat näihin paikkoihin. Asiakasohjelman renderer-configin täytyy osoittaa samoihin paikkoihin."
 }

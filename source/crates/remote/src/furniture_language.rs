@@ -50,7 +50,7 @@ pub fn xml_url(language: FurniLanguage) -> String {
 
 /// The marker with the code of the furniture language this installer put in gamedata/config.
 pub fn marker() -> String {
-    format!("{}/config/.all-in-1-furni-language", octane::gamedata())
+    format!("{}/.all-in-1-furni-language", octane::parent_folder(&octane::furnidata()))
 }
 
 /// Downloads the hotel's furnidata XML (on this computer).
@@ -391,7 +391,8 @@ cat > "$sql"
 [ -s "$json" ] || fail "The uploaded FurnitureData.json is missing or empty."
 mariadb -N "$db" -e 'SELECT 1 FROM items_base LIMIT 1' >/dev/null 2>&1 || fail "The hotel database $db has no items_base: run the Emulator step first."
 gamedata={{Gamedata}}
-config="$gamedata/config"
+furnidata={{Furnidata}}
+config=$(dirname "$furnidata")
 [ -d "$gamedata" ] || fail "$gamedata does not exist: run the Octane step first."
 
 echo "> Safety backup of $db first"
@@ -424,16 +425,16 @@ if ! mariadb "$db" < "$sql" > "$out" 2>&1; then
   fail "Updating the database failed (see above). It is as it was before."
 fi
 
-echo "> $config/FurnitureData.json ({{Language}})"
+echo "> $furnidata ({{Language}})"
 install -d -o www-data -g www-data -m 2775 "$config"
 old=
-if [ -f "$config/FurnitureData.json" ]; then
-  old="$config/FurnitureData.json.bak-$(date +%Y%m%d-%H%M%S)"
-  cp -p "$config/FurnitureData.json" "$old"
+if [ -f "$furnidata" ]; then
+  old="$furnidata.bak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$furnidata" "$old"
   echo "  The old one is kept as $old"
   echo "OLD=$old"
 fi
-install -o www-data -g www-data -m 664 "$json" "$config/FurnitureData.json"
+install -o www-data -g www-data -m 664 "$json" "$furnidata"
 
 if [ -n "$emulator" ]; then
   echo "> Starting the emulator"
@@ -441,7 +442,7 @@ if [ -n "$emulator" ]; then
   if ! (wait_loaded); then
     echo "> The emulator does not start with the new furniture data"
     restore_database
-    if [ -n "$old" ]; then cp -p "$old" "$config/FurnitureData.json"; else rm -f "$config/FurnitureData.json"; fi
+    if [ -n "$old" ]; then cp -p "$old" "$furnidata"; else rm -f "$furnidata"; fi
     start_emulator
     (wait_loaded) || true
     fail "The emulator does not start with the new furniture data (its log is above). The database and FurnitureData.json are as they were."
@@ -465,7 +466,7 @@ pub async fn apply(server: &dyn Server, json_file: &str, language: FurniLanguage
         APPLY,
         &[
             ("DatabaseName", &server_tools::database_name()),
-            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Gamedata", &shell_quote(&octane::gamedata())), ("Furnidata", &crate::server::shell_quote(&crate::octane::furnidata())),
             ("BackupDirectory", &server_tools::backup_directory()),
             ("Directory", &emulator::directory()),
             ("LogDirectory", &emulator::log_directory()),
@@ -555,13 +556,14 @@ pub async fn mark(server: &dyn Server, language: FurniLanguage) -> Result<()> {
 
 const RESTORE: &str = r#"set -o pipefail
 safety={{Safety}}
-config={{Gamedata}}/config
+furnidata={{Furnidata}}
+config=$(dirname "$furnidata")
 [ -s "$safety" ] || fail "The safety backup $safety is missing: import a backup with Tools → Import full database."
 echo "> Putting the database back as it was ($(basename "$safety"))"
 gunzip -c "$safety" | mariadb || fail "Restoring failed: import $safety with Tools → Import full database."
 old={{Old}}
 if [ -n "$old" ] && [ -f "$old" ]; then
-  cp -p "$old" "$config/FurnitureData.json"
+  cp -p "$old" "$furnidata"
   echo "  FurnitureData.json as it was ($(basename "$old"))"
 fi
 previous={{Previous}}
@@ -575,7 +577,7 @@ pub async fn restore(server: &dyn Server, safety: &str, old: Option<&str>, previ
     let body = fill(
         RESTORE,
         &[
-            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Gamedata", &shell_quote(&octane::gamedata())), ("Furnidata", &crate::server::shell_quote(&crate::octane::furnidata())),
             ("Marker", &shell_quote(&marker())),
             ("Old", &shell_quote(old.unwrap_or(""))),
             ("Previous", &shell_quote(&previous)),
@@ -593,7 +595,7 @@ pub async fn installed(server: &dyn Server) -> Result<Option<String>> {
 
 /// The hotel's FurnitureData.json now (for the furni the official furnidata does not have), or None.
 pub async fn current_furniture_data(server: &dyn Server) -> Result<Option<Value>> {
-    let result = server.run_as_root(&format!("cat {} 2>/dev/null", shell_quote(&format!("{}/config/FurnitureData.json", octane::gamedata())))).await?;
+    let result = server.run_as_root(&format!("cat {} 2>/dev/null", shell_quote(&octane::furnidata()))).await?;
     Ok(serde_json::from_str(result.output.trim_start_matches('\u{feff}')).ok())
 }
 

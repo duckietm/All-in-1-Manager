@@ -168,7 +168,7 @@ mariadb -N -B -r "$db" -e "SELECT 'C', id, offer_id, catalog_name FROM catalog_i
 
 /// The server's FurnitureData.json (gamedata/config).
 pub fn furniture_data_path() -> String {
-    format!("{}/config/FurnitureData.json", crate::octane::gamedata())
+    crate::octane::furnidata()
 }
 
 /// Parses READ's output: (database, catalogue items).

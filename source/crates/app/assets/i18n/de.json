@@ -3913,5 +3913,21 @@
   "{amount} credits": "{amount} Credits",
   "{count} pictures": "{count} Bilder",
   "The catalogue's front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "Startseite, Club-Geschenke, Bundles, Limited-Serien, Gutscheine, Prüfungen und Backups des Katalogs; Seiten und Angebote sind im Katalog-Explorer.",
-  "The catalogue of {host}: front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "Der Katalog von {host}: Startseite, Club-Geschenke, Bundles, Limited-Serien, Gutscheine, Prüfungen und Backups; Seiten und Angebote sind im Katalog-Explorer."
+  "The catalogue of {host}: front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "Der Katalog von {host}: Startseite, Club-Geschenke, Bundles, Limited-Serien, Gutscheine, Prüfungen und Backups; Seiten und Angebote sind im Katalog-Explorer.",
+  "All back to the standard layout": "Alles zurück zum Standardaufbau",
+  "Avatar actions (HabboAvatarActions.json)": "Avatar-Aktionen (HabboAvatarActions.json)",
+  "Back to {value}": "Zurück zu {value}",
+  "Effect map (EffectMap.json)": "Effektkarte (EffectMap.json)",
+  "External texts (ExternalTexts.json)": "Externe Texte (ExternalTexts.json)",
+  "Figure data (FigureData.json)": "Figurdaten (FigureData.json)",
+  "Figure map (FigureMap.json)": "Figurkarte (FigureMap.json)",
+  "Furniture (.hab / .nitro)": "Möbel (.hab / .nitro)",
+  "Furniture data (FurnitureData.json)": "Möbeldaten (FurnitureData.json)",
+  "Gamedata layout (standard)": "Gamedata-Aufbau (Standard)",
+  "Gamedata layout (your own)": "Gamedata-Aufbau (eigener)",
+  "Images (c_images)": "Bilder (c_images)",
+  "Installs it as {file}, readable by NGINX.": "Installiert sie als {file}, lesbar für NGINX.",
+  "Product data (ProductData.json)": "Produktdaten (ProductData.json)",
+  "UI texts (UITexts.jsonc)": "UI-Texte (UITexts.jsonc)",
+  "Where the files and folders are inside gamedata, for a hotel with its own structure. Write a path inside the gamedata folder (config/FurnitureData.json, bundled/furniture) or a full path starting with /. The editors, imports, language switches and Deploy Assets read and write these places. Your client's renderer-config must point to the same places.": "Wo die Dateien und Ordner in gamedata liegen, für ein Hotel mit eigenem Aufbau. Gib einen Pfad im gamedata-Ordner an (config/FurnitureData.json, bundled/furniture) oder einen vollständigen Pfad, der mit / beginnt. Die Editoren, Importe, Sprachwechsel und Deploy Assets lesen und schreiben an diesen Orten. Die renderer-config deines Clients muss auf dieselben Orte zeigen."
 }

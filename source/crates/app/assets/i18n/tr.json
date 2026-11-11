@@ -3913,5 +3913,21 @@
   "{amount} credits": "{amount} kredi",
   "{count} pictures": "{count} resim",
   "The catalogue's front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "Kataloğun ön sayfası, kulüp hediyeleri, paketler, sınırlı serileri, kuponları, kontrolleri ve yedekleri; sayfalar ve teklifler katalog gezginindedir.",
-  "The catalogue of {host}: front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "{host} kataloğu: ön sayfa, kulüp hediyeleri, paketler, sınırlı seriler, kuponlar, kontroller ve yedekler; sayfalar ve teklifler katalog gezginindedir."
+  "The catalogue of {host}: front page, club gifts, bundles, limited series, vouchers, checks and backups; pages and offers are in the Catalogue explorer.": "{host} kataloğu: ön sayfa, kulüp hediyeleri, paketler, sınırlı seriler, kuponlar, kontroller ve yedekler; sayfalar ve teklifler katalog gezginindedir.",
+  "All back to the standard layout": "Hepsini standart yapıya döndür",
+  "Avatar actions (HabboAvatarActions.json)": "Avatar hareketleri (HabboAvatarActions.json)",
+  "Back to {value}": "{value} değerine dön",
+  "Effect map (EffectMap.json)": "Efekt haritası (EffectMap.json)",
+  "External texts (ExternalTexts.json)": "Harici metinler (ExternalTexts.json)",
+  "Figure data (FigureData.json)": "Figür verisi (FigureData.json)",
+  "Figure map (FigureMap.json)": "Figür haritası (FigureMap.json)",
+  "Furniture (.hab / .nitro)": "Mobi (.hab / .nitro)",
+  "Furniture data (FurnitureData.json)": "Mobi verisi (FurnitureData.json)",
+  "Gamedata layout (standard)": "Gamedata yapısı (standart)",
+  "Gamedata layout (your own)": "Gamedata yapısı (kendi yapın)",
+  "Images (c_images)": "Resimler (c_images)",
+  "Installs it as {file}, readable by NGINX.": "{file} olarak kurar, NGINX tarafından okunabilir.",
+  "Product data (ProductData.json)": "Ürün verisi (ProductData.json)",
+  "UI texts (UITexts.jsonc)": "Arayüz metinleri (UITexts.jsonc)",
+  "Where the files and folders are inside gamedata, for a hotel with its own structure. Write a path inside the gamedata folder (config/FurnitureData.json, bundled/furniture) or a full path starting with /. The editors, imports, language switches and Deploy Assets read and write these places. Your client's renderer-config must point to the same places.": "Kendi yapısı olan bir otel için dosya ve klasörlerin gamedata içinde nerede olduğu. gamedata klasörü içinde bir yol (config/FurnitureData.json, bundled/furniture) ya da / ile başlayan tam bir yol yaz. Düzenleyiciler, içe aktarmalar, dil değişiklikleri ve Deploy Assets bu yerlerde okur ve yazar. İstemcinin renderer-config dosyası da aynı yerleri göstermeli."
 }

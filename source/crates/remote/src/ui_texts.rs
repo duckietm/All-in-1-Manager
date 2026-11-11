@@ -25,7 +25,7 @@ impl UiTextsState {
 }
 
 pub fn target() -> String {
-    format!("{}/config/UITexts.jsonc", crate::octane::gamedata())
+    crate::octane::gamedata_path("ui_texts")
 }
 
 const RAW_URL: &str = "https://raw.githubusercontent.com/duckietm/Octane/main/public/configuration";

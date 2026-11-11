@@ -3840,5 +3840,16 @@
   "of the credits spent in the catalogue since the last payday": "son ödeme gününden beri katalogda harcanan kredilerin",
   "{count} gifts taken (the number the emulator counts, also from before the record).": "{count} hediye alındı (emülatörün saydığı sayı, kayıttan öncekiler dahil).",
   "{days} days": "{days} gün",
-  "{spent} back from spending, {streak} streak bonus": "Harcamadan {spent} geri, {streak} seri bonusu"
+  "{spent} back from spending, {streak} streak bonus": "Harcamadan {spent} geri, {streak} seri bonusu",
+  "Add 1 gift": "1 hediye ekle",
+  "Add {count} gifts": "{count} hediye ekle",
+  "Choose HC furni": "HC mobilerini seç",
+  "Choose HC furni ...": "HC mobilerini seç ...",
+  "Each gift is free, can be chosen straight away and has the VIP mark.": "Her hediye ücretsizdir, hemen seçilebilir ve VIP işareti vardır.",
+  "Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.": "Sınıf adı hc_ ile başlayan tüm mobiler, resim olarak: istediklerini işaretle ve hepsini bir kerede ekle.",
+  "Filter by name": "Ada göre süz",
+  "Reading the HC furni ...": "HC mobileri okunuyor ...",
+  "{count} club gifts added. Publish to put them in the hotel.": "{count} kulüp hediyesi eklendi. Otele koymak için yayınla.",
+  "{count} furni start with hc_": "{count} mobi hc_ ile başlıyor",
+  "{count} gifts added, then: {error}": "{count} hediye eklendi, sonra: {error}"
 }

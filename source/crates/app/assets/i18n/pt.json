@@ -3840,5 +3840,16 @@
   "of the credits spent in the catalogue since the last payday": "dos créditos gastos no catálogo desde o último dia de pagamento",
   "{count} gifts taken (the number the emulator counts, also from before the record).": "{count} presentes pegos (o número que o emulador conta, também de antes do registro).",
   "{days} days": "{days} dias",
-  "{spent} back from spending, {streak} streak bonus": "{spent} de volta dos gastos, {streak} de bônus de sequência"
+  "{spent} back from spending, {streak} streak bonus": "{spent} de volta dos gastos, {streak} de bônus de sequência",
+  "Add 1 gift": "Adicionar 1 presente",
+  "Add {count} gifts": "Adicionar {count} presentes",
+  "Choose HC furni": "Escolher mobis HC",
+  "Choose HC furni ...": "Escolher mobis HC ...",
+  "Each gift is free, can be chosen straight away and has the VIP mark.": "Cada presente é grátis, pode ser escolhido na hora e tem a marca VIP.",
+  "Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.": "Todos os mobis cujo nome de classe começa com hc_, em imagens: marque os que você quer e adicione todos de uma vez.",
+  "Filter by name": "Filtrar por nome",
+  "Reading the HC furni ...": "Lendo os mobis HC ...",
+  "{count} club gifts added. Publish to put them in the hotel.": "{count} presentes do clube adicionados. Publique para levá-los ao hotel.",
+  "{count} furni start with hc_": "{count} mobis começam com hc_",
+  "{count} gifts added, then: {error}": "{count} presentes adicionados, depois: {error}"
 }

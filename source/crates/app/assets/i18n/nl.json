@@ -3840,5 +3840,16 @@
   "of the credits spent in the catalogue since the last payday": "van de credits die sinds de laatste payday in de catalogus zijn uitgegeven",
   "{count} gifts taken (the number the emulator counts, also from before the record).": "{count} cadeaus genomen (het aantal dat de emulator telt, ook van voor het bijhouden).",
   "{days} days": "{days} dagen",
-  "{spent} back from spending, {streak} streak bonus": "{spent} terug van uitgaven, {streak} reeksbonus"
+  "{spent} back from spending, {streak} streak bonus": "{spent} terug van uitgaven, {streak} reeksbonus",
+  "Add 1 gift": "1 cadeau toevoegen",
+  "Add {count} gifts": "{count} cadeaus toevoegen",
+  "Choose HC furni": "HC-meubi kiezen",
+  "Choose HC furni ...": "HC-meubi kiezen ...",
+  "Each gift is free, can be chosen straight away and has the VIP mark.": "Elk cadeau is gratis, kan meteen gekozen worden en heeft het VIP-teken.",
+  "Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.": "Alle meubi waarvan de klassenaam met hc_ begint, als plaatjes: vink aan wat je wilt en voeg ze in één keer toe.",
+  "Filter by name": "Filter op naam",
+  "Reading the HC furni ...": "De HC-meubi worden gelezen ...",
+  "{count} club gifts added. Publish to put them in the hotel.": "{count} clubcadeaus toegevoegd. Publiceer om ze in het hotel te zetten.",
+  "{count} furni start with hc_": "{count} meubi beginnen met hc_",
+  "{count} gifts added, then: {error}": "{count} cadeaus toegevoegd, daarna: {error}"
 }

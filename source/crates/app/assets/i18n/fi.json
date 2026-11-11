@@ -3840,5 +3840,16 @@
   "of the credits spent in the catalogue since the last payday": "krediiteistä, jotka on käytetty katalogissa edellisen palkkapäivän jälkeen",
   "{count} gifts taken (the number the emulator counts, also from before the record).": "{count} lahjaa otettu (emulaattorin laskema määrä, myös ajalta ennen kirjausta).",
   "{days} days": "{days} päivää",
-  "{spent} back from spending, {streak} streak bonus": "{spent} takaisin kulutuksesta, {streak} putkibonus"
+  "{spent} back from spending, {streak} streak bonus": "{spent} takaisin kulutuksesta, {streak} putkibonus",
+  "Add 1 gift": "Lisää 1 lahja",
+  "Add {count} gifts": "Lisää {count} lahjaa",
+  "Choose HC furni": "Valitse HC-kalusteet",
+  "Choose HC furni ...": "Valitse HC-kalusteet ...",
+  "Each gift is free, can be chosen straight away and has the VIP mark.": "Jokainen lahja on ilmainen, valittavissa heti ja siinä on VIP-merkki.",
+  "Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.": "Kaikki kalusteet, joiden luokan nimi alkaa hc_, kuvina: rastita haluamasi ja lisää ne kerralla.",
+  "Filter by name": "Suodata nimellä",
+  "Reading the HC furni ...": "HC-kalusteita luetaan ...",
+  "{count} club gifts added. Publish to put them in the hotel.": "{count} klubilahjaa lisätty. Julkaise, niin ne tulevat hotelliin.",
+  "{count} furni start with hc_": "{count} kalustetta alkaa hc_",
+  "{count} gifts added, then: {error}": "{count} lahjaa lisätty, sitten: {error}"
 }

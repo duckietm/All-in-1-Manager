@@ -1247,6 +1247,27 @@ pub async fn search_furni(session: &SqlSession, database: &str, text: &str) -> R
     Ok(rows.iter().map(|row| furni_from_row(row)).collect())
 }
 
+/// The most furni [`furni_with_prefix`] lists.
+pub const MAX_PREFIX_FURNI: i64 = 2000;
+
+/// Every furni whose class name starts with `prefix` (`hc_` for the club furni), by class name; `%` and `_` in the
+/// prefix are matched as themselves.
+pub fn furni_prefix_sql(database: &str) -> String {
+    format!(
+        "SELECT id, item_name, public_name, type, sprite_id FROM {}.items_base WHERE item_name LIKE ? ORDER BY item_name, id LIMIT {MAX_PREFIX_FURNI}",
+        quote(database)
+    )
+}
+
+pub fn furni_prefix_param(prefix: &str) -> SqlValue {
+    SqlValue::Text(format!("{}%", prefix.trim().replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")))
+}
+
+pub async fn furni_with_prefix(session: &SqlSession, database: &str, prefix: &str) -> Result<Vec<Furni>> {
+    let rows = session.select(&furni_prefix_sql(database), vec![furni_prefix_param(prefix)]).await?;
+    Ok(rows.iter().map(|row| furni_from_row(row)).collect())
+}
+
 pub async fn furni_by_ids(session: &SqlSession, database: &str, ids: &[i64]) -> Result<Vec<Furni>> {
     if ids.is_empty() {
         return Ok(Vec::new());
@@ -2208,6 +2229,8 @@ mod tests {
         assert_eq!((gift.catalog_name.as_str(), gift.item_ids.as_str(), gift.page_id, gift.order_number), ("club_gift_hc_chr_2", "4501", 212, 5));
         assert_eq!((gift.cost_credits, gift.cost_points, gift.amount, gift.club_only, gift.have_offer, gift.extradata.as_str()), (0, 0, 1, true, false, "0"));
         assert_eq!(offer_problem(&gift), None);
+        assert_eq!(furni_prefix_param("hc_"), SqlValue::Text("hc\\_%".into()));
+        assert!(furni_prefix_sql("hotel").contains("item_name LIKE ?"));
         let made = new_club_gift_page(&pages);
         assert_eq!((made.layout.as_str(), made.parent_id, made.visible, made.enabled), ("club_gift", -1, true, true));
         assert_eq!(club_gift_page_problem(&made), None);

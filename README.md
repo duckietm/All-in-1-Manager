@@ -1353,6 +1353,9 @@ page has the rest:
   **Save the changes** writes what changed, and **Remove** takes a gift away after asking (who chose it keeps it).
   **Add a gift**: find a furni by name, class name or `items_base` id and press **Add**; it becomes a free offer named
   `club_gift_<class name>` (unique on the page, as the game sends that name back), straight away, with the VIP mark.
+  **Choose HC furni ...** opens a window with every furni whose class name starts with `hc_`, as pictures with their
+  names and a filter: click to tick (or **Tick all shown**) and **Add N gifts** adds them all at once, in that order.
+  Furni that already is a gift is greyed out.
   Every change is in the History tab. Publish afterwards; to try it, give a player Habbo Club on the Players page.
 - **Limited** (the third tab) lists every limited series: its offer and page, and how many are sold of how many,
   with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads

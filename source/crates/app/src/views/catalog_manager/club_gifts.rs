@@ -49,7 +49,21 @@ pub(super) struct ClubGifts {
     pub search: String,
     /// The furni found for adding (None before a search).
     pub results: Option<Vec<Furni>>,
+    /// The window of the club furni to choose from (Some while it is open).
+    pub picker: Option<Picker>,
 }
+
+/// The club furni window: every furni whose class name starts with [`PICKER_PREFIX`], a filter, and the ones ticked.
+#[derive(Default)]
+pub(super) struct Picker {
+    /// None while it loads.
+    pub furni: Option<Vec<Furni>>,
+    pub filter: String,
+    pub ticked: std::collections::BTreeSet<i64>,
+}
+
+/// The club furni: their class names start with this.
+const PICKER_PREFIX: &str = "hc_";
 
 /// The waiting times offered in the list, in days.
 fn presets() -> [(i64, &'static str); 6] {
@@ -194,32 +208,70 @@ impl Ctl {
     }
 
     /// Adds the furni as a gift at the end of the list: free, straight away, with the VIP mark.
-    pub(super) async fn add_gift(self, furni: Furni) {
+    /// Adds the furni as gifts at the end of the list, in this order: free, straight away, with the VIP mark.
+    pub(super) async fn add_gifts(self, list: Vec<Furni>) {
         let Some((generation, session, database)) = self.session() else { return };
-        let (page, gifts) = {
+        let (page, mut gifts) = {
             let s = self.lock();
             (s.gifts_tab.page, s.gifts_tab.gifts.as_ref().map(|g| g.iter().map(|g| g.saved.clone()).collect::<Vec<_>>()).unwrap_or_default())
         };
         let Some(page) = page else { return };
-        let gift = catalog_admin::new_club_gift(&furni, page, &gifts);
-        if let Some(problem) = catalog_admin::offer_problem(&gift) {
-            self.with(generation, |s| s.status = Status::error(t(&problem).to_string()));
+        if list.is_empty() {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let saved = catalog_admin::save_offer(&session, &database, Catalogue::Normal, &gift).await;
-        let name = if furni.public_name.trim().is_empty() { furni.item_name.clone() } else { furni.public_name.trim().to_string() };
+        let mut added = Vec::new();
+        let mut failed = None;
+        for furni in &list {
+            // Each new gift goes after the last one and gets a name none of the others has.
+            let mut gift = catalog_admin::new_club_gift(furni, page, &gifts);
+            if let Some(problem) = catalog_admin::offer_problem(&gift) {
+                failed = Some(t(&problem).to_string());
+                break;
+            }
+            match catalog_admin::save_offer(&session, &database, Catalogue::Normal, &gift).await {
+                Ok(id) => {
+                    gift.id = id;
+                    gifts.push(gift);
+                    added.push(if furni.public_name.trim().is_empty() { furni.item_name.clone() } else { furni.public_name.trim().to_string() });
+                }
+                Err(error) => {
+                    failed = Some(error.to_string());
+                    break;
+                }
+            }
+        }
         self.with(generation, |s| {
             s.busy = false;
-            match saved {
-                Ok(_) => {
-                    s.unpublished = true;
-                    s.status = Status::ok(tf("{name} is a club gift now. Publish to put it in the hotel.", &[("name", &name)]));
-                }
-                Err(error) => s.status = Status::error(error.to_string()),
+            if !added.is_empty() {
+                s.unpublished = true;
             }
+            s.status = match (failed, added.len()) {
+                (Some(error), 0) => Status::error(error),
+                (Some(error), n) => Status::error(tf("{count} gifts added, then: {error}", &[("count", &n.to_string()), ("error", &error)])),
+                (None, 1) => Status::ok(tf("{name} is a club gift now. Publish to put it in the hotel.", &[("name", &added[0])])),
+                (None, n) => Status::ok(tf("{count} club gifts added. Publish to put them in the hotel.", &[("count", &n.to_string())])),
+            };
         });
         self.load_gifts().await;
+    }
+
+    /// Opens the club furni window and reads the furni into it.
+    pub(super) async fn open_gift_picker(self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        self.with(generation, |s| s.gifts_tab.picker = Some(Picker::default()));
+        let found = catalog_admin::furni_with_prefix(&session, &database, PICKER_PREFIX).await;
+        self.with(generation, |s| match found {
+            Ok(found) => {
+                if let Some(picker) = s.gifts_tab.picker.as_mut() {
+                    picker.furni = Some(found);
+                }
+            }
+            Err(error) => {
+                s.gifts_tab.picker = None;
+                s.status = Status::error(error.to_string());
+            }
+        });
     }
 
     pub(super) async fn remove_gift(self, id: i64) {
@@ -274,12 +326,16 @@ impl Ctl {
 
 /// The furni's icon from this computer's gamedata, or an empty square of the same size.
 fn icon(ui: &mut egui::Ui, palette: &Palette, images: &mut FrontImages, furni: Option<&Furni>) {
-    let size = egui::vec2(40.0, 40.0);
+    icon_sized(ui, palette, images, furni, 40.0);
+}
+
+fn icon_sized(ui: &mut egui::Ui, palette: &Palette, images: &mut FrontImages, furni: Option<&Furni>, side: f32) {
+    let size = egui::vec2(side, side);
     let texture = furni.and_then(|f| images.furni_icon(&f.item_name));
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     ui.painter().rect_filled(rect, 6.0, palette.surface);
     if let Some(texture) = texture {
-        let scale = (size.x / texture.size_vec2().x).min(size.y / texture.size_vec2().y).min(2.0);
+        let scale = (size.x / texture.size_vec2().x).min(size.y / texture.size_vec2().y).min(3.0);
         let shown = egui::Rect::from_center_size(rect.center(), texture.size_vec2() * scale);
         ui.painter().image(texture.id(), shown, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
     }
@@ -443,7 +499,12 @@ pub(super) fn show(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: 
         if (ui.add_enabled(ready, small(t("Search"))).clicked() || enter) && ready {
             actions.push(Action::SearchGiftFurni);
         }
+        ui.add_space(8.0);
+        if ui.add_enabled(ready, widgets::primary_button(t("Choose HC furni ..."))).on_hover_text(t("Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.")).clicked() {
+            actions.push(Action::OpenGiftPicker);
+        }
     });
+    picker(ui.ctx(), palette, s, images, &taken, actions);
     let Some(results) = s.gifts_tab.results.as_ref() else { return };
     if results.is_empty() {
         widgets::muted(ui, palette, t("No furni found."), 12.5);
@@ -463,8 +524,118 @@ pub(super) fn show(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: 
             if already {
                 widgets::muted(ui, palette, t("Already a gift"), 12.0);
             } else if ui.add_enabled(ready, small(t("Add"))).clicked() {
-                actions.push(Action::AddGift(furni.clone()));
+                actions.push(Action::AddGifts(vec![furni.clone()]));
             }
         });
+    }
+}
+
+/// The club furni window: a grid of every `hc_` furni with its icon and name; a click ticks one, and **Add** makes the
+/// ticked ones gifts. Furni that already is a gift is shown, greyed out.
+fn picker(ctx: &egui::Context, palette: &Palette, s: &mut State, images: &mut FrontImages, taken: &[String], actions: &mut Vec<Action>) {
+    let ready = s.session.is_some() && !s.busy;
+    let Some(picker) = s.gifts_tab.picker.as_mut() else { return };
+    let is_gift = |id: i64| taken.iter().any(|ids| catalog_admin::item_ids(ids).unwrap_or_default().contains(&id));
+    let mut open = true;
+    let mut close = false;
+    egui::Window::new(t("Choose HC furni"))
+        .id(egui::Id::new("club-gift-picker"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_size([760.0, 560.0])
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            let Some(list) = picker.furni.as_ref() else {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    widgets::muted(ui, palette, t("Reading the HC furni ..."), 12.5);
+                });
+                return;
+            };
+            ui.horizontal(|ui| {
+                ui.add_sized([260.0, FIELD_HEIGHT], egui::TextEdit::singleline(&mut picker.filter).hint_text(t("Filter by name")).vertical_align(egui::Align::Center));
+                widgets::muted(ui, palette, &tf("{count} furni start with hc_", &[("count", &list.len().to_string())]), 12.0);
+            });
+            let filter = picker.filter.trim().to_lowercase();
+            let shown: Vec<&Furni> = list
+                .iter()
+                .filter(|f| filter.is_empty() || f.item_name.to_lowercase().contains(&filter) || f.public_name.to_lowercase().contains(&filter) || f.id.to_string() == filter)
+                .collect();
+            ui.horizontal(|ui| {
+                let free: Vec<i64> = shown.iter().filter(|f| !is_gift(f.id)).map(|f| f.id).collect();
+                if ui.add_enabled(!free.is_empty(), small(t("Tick all shown"))).clicked() {
+                    picker.ticked.extend(free);
+                }
+                if ui.add_enabled(!picker.ticked.is_empty(), small(t("Untick all"))).clicked() {
+                    picker.ticked.clear();
+                }
+            });
+            ui.add_space(4.0);
+            let footer = 46.0;
+            egui::ScrollArea::vertical().max_height((ui.available_height() - footer).max(120.0)).auto_shrink([false, false]).show(ui, |ui| {
+                if shown.is_empty() {
+                    widgets::muted(ui, palette, t("No furni found."), 12.5);
+                    return;
+                }
+                let tile = egui::vec2(112.0, 118.0);
+                let gap = 6.0;
+                let per_row = (((ui.available_width() + gap) / (tile.x + gap)).floor() as usize).max(1);
+                for row in shown.chunks(per_row) {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for furni in row {
+                            let gift = is_gift(furni.id);
+                            let ticked = picker.ticked.contains(&furni.id);
+                            let (rect, response) = ui.allocate_exact_size(tile, if gift { egui::Sense::hover() } else { egui::Sense::click() });
+                            let (fill, stroke) = if ticked {
+                                (palette.accent_text.gamma_multiply(0.18), egui::Stroke::new(2.0_f32, palette.accent_text))
+                            } else if response.hovered() && !gift {
+                                (palette.surface, egui::Stroke::new(1.0_f32, palette.accent_text.gamma_multiply(0.6)))
+                            } else {
+                                (palette.surface, egui::Stroke::new(1.0_f32, palette.card_border))
+                            };
+                            ui.painter().rect(rect, 8.0, fill, stroke, egui::StrokeKind::Inside);
+                            let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink(6.0)).layout(egui::Layout::top_down(egui::Align::Center)));
+                            if gift {
+                                inner.set_opacity(0.45);
+                            }
+                            icon_sized(&mut inner, palette, images, Some(furni), 64.0);
+                            let name = if furni.public_name.trim().is_empty() { furni.item_name.as_str() } else { furni.public_name.trim() };
+                            inner.add(egui::Label::new(RichText::new(name).size(11.5)).truncate());
+                            inner.add(egui::Label::new(RichText::new(if gift { t("Already a gift").to_string() } else { furni.item_name.clone() }).size(10.5).color(palette.muted)).truncate());
+                            if ticked {
+                                ui.painter().text(rect.right_top() + egui::vec2(-8.0, 6.0), egui::Align2::RIGHT_TOP, "✔", egui::FontId::proportional(15.0), palette.accent_text);
+                            }
+                            let response = response.on_hover_text(format!("{name}\n{} · #{}", furni.item_name, furni.id));
+                            if response.clicked() && !gift {
+                                if ticked {
+                                    picker.ticked.remove(&furni.id);
+                                } else {
+                                    picker.ticked.insert(furni.id);
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(gap);
+                }
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                let count = picker.ticked.len();
+                let label = if count == 1 { t("Add 1 gift").to_string() } else { tf("Add {count} gifts", &[("count", &count.to_string())]) };
+                if ui.add_enabled(ready && count > 0, widgets::primary_button(&label)).clicked() {
+                    let chosen: Vec<Furni> = list.iter().filter(|f| picker.ticked.contains(&f.id)).cloned().collect();
+                    actions.push(Action::AddGifts(chosen));
+                    close = true;
+                }
+                if ui.add(small(t("Cancel"))).clicked() {
+                    close = true;
+                }
+                widgets::muted(ui, palette, t("Each gift is free, can be chosen straight away and has the VIP mark."), 12.0);
+            });
+        });
+    if !open || close {
+        s.gifts_tab.picker = None;
     }
 }

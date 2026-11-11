@@ -946,7 +946,8 @@ enum Action {
     MakeGiftPage,
     FixGiftPage(i64),
     SearchGiftFurni,
-    AddGift(catalog_admin::Furni),
+    AddGifts(Vec<catalog_admin::Furni>),
+    OpenGiftPicker,
     RemoveGift(i64),
     SaveGifts,
     LoadLimited,
@@ -1013,7 +1014,8 @@ impl View for CatalogManagerView {
                 Action::MakeGiftPage => ctl.spawn(|c| c.make_gift_page()),
                 Action::FixGiftPage(id) => ctl.spawn(move |c| c.fix_gift_page(id)),
                 Action::SearchGiftFurni => ctl.spawn(|c| c.search_gift_furni()),
-                Action::AddGift(furni) => ctl.spawn(move |c| c.add_gift(furni)),
+                Action::AddGifts(list) => ctl.spawn(move |c| c.add_gifts(list)),
+                Action::OpenGiftPicker => ctl.spawn(|c| c.open_gift_picker()),
                 Action::RemoveGift(id) => ctl.spawn(move |c| c.remove_gift(id)),
                 Action::SaveGifts => ctl.spawn(|c| c.save_gifts()),
                 Action::LoadLimited => ctl.spawn(|c| async move { c.load_limited().await }),
@@ -1567,7 +1569,8 @@ fn sample(s: &mut State) {
     }
     s.subtitle = "The catalogue of hotel on example.org, through the SSH tunnel.".into();
     // AIO_SCREENSHOT_TAB=gifts: the Club gifts tab with three gifts, one changed and a search.
-    if std::env::var("AIO_SCREENSHOT_TAB").as_deref() == Ok("gifts") {
+    let tab = std::env::var("AIO_SCREENSHOT_TAB").unwrap_or_default();
+    if tab == "gifts" || tab == "giftpicker" {
         s.tab = Tab::ClubGifts;
         s.pages.push(Page { id: 212, parent_id: 3, caption: "Clubcadeaus".into(), caption_save: "club_gifts".into(), layout: "club_gift".into(), visible: true, enabled: true, min_rank: 1, ..Page::default() });
         let furni = |id: i64, item: &str, name: &str| catalog_admin::Furni { id, item_name: item.into(), public_name: name.into(), kind: "s".into(), sprite_id: id };
@@ -1585,6 +1588,15 @@ fn sample(s: &mut State) {
         s.gifts_tab.gifts = Some(gifts);
         s.gifts_tab.search = "throne".into();
         s.gifts_tab.results = Some(vec![furni(230, "throne", "Throne"), furni(4501, "hc_chr", "HC Chair")]);
+        // AIO_SCREENSHOT_TAB=giftpicker: the club furni window open, two ticked.
+        if tab == "giftpicker" {
+            let names = [("hc_bkshlf", "Medieval Bookcase"), ("hc_chr", "HC Chair"), ("hc_crtn", "Purple Curtain"), ("hc_dsk", "Study Desk"), ("hc_frplc", "Heavy Fireplace"), ("hc_lmp", "HC Lamp"), ("hc_machine", "Weird Science Machine"), ("hc_rntgn", "X-Ray Divider"), ("hc_tbl", "HC Table"), ("hc_trll", "Drinks Trolley"), ("hc_tv", "Mega TV Set"), ("hc_wall_lamp", "Bubble Lamp")];
+            let list: Vec<catalog_admin::Furni> = names.iter().enumerate().map(|(i, (item, name))| furni(4490 + i as i64, item, name)).collect();
+            let mut ticked = std::collections::BTreeSet::new();
+            ticked.insert(4492);
+            ticked.insert(4494);
+            s.gifts_tab.picker = Some(club_gifts::Picker { furni: Some(list), filter: String::new(), ticked });
+        }
     }
 }
 

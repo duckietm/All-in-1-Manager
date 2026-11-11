@@ -3840,5 +3840,16 @@
   "of the credits spent in the catalogue since the last payday": "dei crediti spesi nel catalogo dall'ultimo giorno di paga",
   "{count} gifts taken (the number the emulator counts, also from before the record).": "{count} regali presi (il numero che conta l'emulatore, anche da prima della registrazione).",
   "{days} days": "{days} giorni",
-  "{spent} back from spending, {streak} streak bonus": "{spent} restituiti dalla spesa, {streak} di bonus serie"
+  "{spent} back from spending, {streak} streak bonus": "{spent} restituiti dalla spesa, {streak} di bonus serie",
+  "Add 1 gift": "Aggiungi 1 regalo",
+  "Add {count} gifts": "Aggiungi {count} regali",
+  "Choose HC furni": "Scegli furni HC",
+  "Choose HC furni ...": "Scegli furni HC ...",
+  "Each gift is free, can be chosen straight away and has the VIP mark.": "Ogni regalo è gratis, si può scegliere subito e ha il segno VIP.",
+  "Every furni whose class name starts with hc_, as pictures: tick the ones you want and add them at once.": "Tutti i furni il cui nome di classe inizia con hc_, come immagini: spunta quelli che vuoi e aggiungili tutti insieme.",
+  "Filter by name": "Filtra per nome",
+  "Reading the HC furni ...": "Lettura dei furni HC ...",
+  "{count} club gifts added. Publish to put them in the hotel.": "{count} regali del club aggiunti. Pubblica per portarli nell'hotel.",
+  "{count} furni start with hc_": "{count} furni iniziano con hc_",
+  "{count} gifts added, then: {error}": "{count} regali aggiunti, poi: {error}"
 }

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use aio_plugin_host::approvals::Approvals;
 use aio_plugin_host::bindings::aio::plugin::host::Host;
 use aio_plugin_host::runtime::{engine, resolve_private, PluginError, PluginInstance, UiElement, UiEvent, UiTree};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
@@ -75,7 +76,7 @@ fn install_hello(root: &Path, aiop: &[u8]) -> PathBuf {
 
 async fn load(dir: &Path, services: Arc<Fake>) -> PluginInstance {
     let pkg_manifest = aio_plugin_host::installed(dir.parent().unwrap()).into_iter().next().unwrap();
-    PluginInstance::load(&engine(), dir, pkg_manifest, services).await.unwrap()
+    PluginInstance::load(&engine(), dir, pkg_manifest, services, Arc::new(Approvals::new())).await.unwrap()
 }
 
 fn texts(tree: &UiTree) -> Vec<String> {

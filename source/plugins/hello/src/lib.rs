@@ -61,6 +61,11 @@ impl Guest for Hello {
         std::thread::sleep(std::time::Duration::from_secs(3600));
         #[cfg(feature = "asker")]
         host::log(LogLevel::Info, &format!("asked: {}", host::ask("Continue?")));
+        #[cfg(feature = "scripter")]
+        match host::run_script("echo hi", false) {
+            Ok(r) => host::log(LogLevel::Info, &format!("script: {} {}", r.exit_code, r.output.trim_end())),
+            Err(e) => host::log(LogLevel::Error, &format!("script failed: {e}")),
+        }
         #[cfg(feature = "hog")]
         {
             // Touch every page so the memory is really used, and keep it alive until the end.

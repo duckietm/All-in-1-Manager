@@ -10,6 +10,7 @@ use aio_plugin_host::bindings::aio::plugin::host::{Host, HostTcpConnection};
 use aio_plugin_host::bindings::aio::plugin::types::{
     CompareOp, Condition, DeleteOp, InsertOp, Select, SqlValue as WitValue, UpdateOp, WriteOp,
 };
+use aio_plugin_host::approvals::Approvals;
 use aio_plugin_host::net::{check_http, check_tcp, MAX_TCP_CONNECTIONS};
 use aio_plugin_host::runtime::{engine, PluginInstance};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
@@ -396,14 +397,14 @@ impl HostServices for Fake {
     }
     fn status(&self, _text: &str) {}
     async fn run_script(&self, _req: ScriptRequest) -> Result<ScriptResult, String> {
-        panic!("run_script reached the services (approvals come with Task 6)")
+        panic!("run_script reached the services (these tests never approve)")
     }
     async fn sql_select(&self, sql: String, params: Vec<SqlValue>) -> Result<Rows, String> {
         self.selects.lock().unwrap().push((sql, params));
         Ok(Rows { columns: vec!["id".into()], rows: vec![vec![SqlValue::Int(1)]] })
     }
     async fn sql_write(&self, _batch: WriteBatch) -> Result<u64, String> {
-        panic!("sql_write reached the services (approvals come with Task 6)")
+        panic!("sql_write reached the services (these tests never approve)")
     }
     async fn http_get(&self, url: &str) -> Result<Vec<u8>, String> {
         self.gets.lock().unwrap().push(url.to_string());
@@ -431,7 +432,7 @@ async fn hello_variant(aiop: &[u8], root: &Path, permissions: &[&str], fake: Arc
     let dir = install(&pkg, root).unwrap();
     let mut manifest = pkg.manifest.clone();
     manifest.permissions = perms(permissions);
-    PluginInstance::load(&engine(), &dir, manifest, fake).await.unwrap()
+    PluginInstance::load(&engine(), &dir, manifest, fake, Arc::new(Approvals::new())).await.unwrap()
 }
 
 fn warned(fake: &Fake, needle: &str) -> bool {
@@ -460,14 +461,12 @@ async fn runtime_sql_select_is_checked_then_live() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn runtime_sql_write_and_scripts_stay_fail_closed() {
+async fn runtime_sql_write_and_scripts_are_checked_before_approval() {
+    // Valid requests wait for the user's approval (tests/approvals.rs); refused ones never reach the queue.
     let root = tempfile::tempdir().unwrap();
     let fake = Arc::new(Fake::default());
-    let mut inst = hello_with(root.path(), &["sql:write:rooms", "ssh", "ssh:root"], fake.clone()).await;
+    let mut inst = hello_with(root.path(), &["sql:write:rooms"], fake.clone()).await;
     let host = inst.host_for_tests();
-    let del = WriteOp::Delete(DeleteOp { table: "rooms".into(), conditions: vec![cond("id", CompareOp::Eq, WitValue::Int(1))] });
-    // A valid batch is built but not applied until approvals exist (Task 6).
-    assert_eq!(host.sql_write(vec![del]).await.unwrap_err(), "permission denied");
     // A batch the permissions refuse says why.
     let bad = WriteOp::Delete(DeleteOp { table: "users".into(), conditions: vec![cond("id", CompareOp::Eq, WitValue::Int(1))] });
     let e = host.sql_write(vec![bad]).await.unwrap_err();
@@ -667,7 +666,7 @@ async fn slow_hello(root: &Path, delay: Option<std::time::Duration>) -> PluginIn
     let dir = install(&pkg, root).unwrap();
     let mut manifest = pkg.manifest.clone();
     manifest.permissions = perms(&["sql:read:rooms", "http:api.example.com"]);
-    PluginInstance::load(&engine(), &dir, manifest, Arc::new(Slow { delay })).await.unwrap()
+    PluginInstance::load(&engine(), &dir, manifest, Arc::new(Slow { delay }), Arc::new(Approvals::new())).await.unwrap()
 }
 
 #[tokio::test]

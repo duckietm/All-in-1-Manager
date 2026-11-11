@@ -30,8 +30,12 @@
 //! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
 //!   `Err("permission denied...")` to the guest and a sanitised `Warn` line in the plugin log):
 //!   `sql-select` through [`crate::sql::build_select`], then [`HostServices::sql_select`];
-//!   `sql-write` through [`crate::sql::build_writes`], then still refused (TODO Task 6: preview and
-//!   approval); `run-script` refused (TODO Task 6); `http-get` through [`crate::net::check_http`], then
+//!   `sql-write` through [`crate::sql::build_writes`], then the user's approval
+//!   ([`crate::approvals::Approvals`]), then [`HostServices::sql_write`] under [`SQL_TIMEOUT`];
+//!   `run-script` (`ssh`, or `ssh:root` for root) through [`crate::approvals::check_script`] (at most
+//!   [`crate::approvals::MAX_SCRIPT`], nothing the preview would alter), then the user's approval, then
+//!   [`HostServices::run_script`] under [`SCRIPT_TIMEOUT`]; neither the approval wait nor the run
+//!   counts against [`CALL_LIMIT`]; `http-get` through [`crate::net::check_http`], then
 //!   [`HostServices::http_get`], bodies over [`crate::net::MAX_HTTP_BODY`] refused; `tcp-connect` through
 //!   [`crate::net::check_tcp`], then a tokio `TcpStream` to `127.0.0.1:<port>` owned by the runtime: at
 //!   most [`crate::net::MAX_TCP_CONNECTIONS`] open at once, `recv` returns at most
@@ -66,6 +70,7 @@ use wasmtime::{Config, Engine, ResourceLimiter, Store, Trap, UpdateDeadline};
 use wasmtime_wasi::cli::{IsTerminal, StdoutStream};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
+use crate::approvals::{check_script, Approvals, Decision, Pending};
 use crate::bindings::aio::plugin::host::{Host, HostPickedFile, HostTcpConnection};
 use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
@@ -74,7 +79,7 @@ use crate::bindings::Plugin;
 use crate::manifest::Manifest;
 use crate::net::{check_http, check_tcp, MAX_HTTP_BODY, MAX_TCP_CONNECTIONS, MAX_TCP_RECV};
 use crate::permissions::Permission;
-use crate::services::{HostServices, Level, SqlValue};
+use crate::services::{HostServices, Level, ScriptRequest, SqlValue};
 use crate::sql::{build_select, build_writes};
 
 pub use crate::bindings::aio::plugin::types::{
@@ -244,17 +249,23 @@ impl CallClock {
     }
 }
 
+/// True for a character [`sanitise`] replaces: control characters (C0, DEL, C1; tab excepted), bidi
+/// overrides / isolates and the invisible characters listed there.
+pub(crate) fn replaced(c: char) -> bool {
+    let bidi = matches!(
+        c,
+        '\u{200B}'..='\u{200F}' | '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
+    );
+    (c.is_control() && c != '\t') || bidi
+}
+
 /// Replaces control characters (C0, DEL, C1; tab excepted), bidi overrides / isolates and invisible
 /// characters (U+200B-U+200F zero-width and direction marks, U+2028/U+2029 separators, U+FEFF) with U+FFFD and
 /// cuts the text to [`MAX_LOG_ENTRY`] bytes.
 pub(crate) fn sanitise(text: &str) -> String {
     let mut out = String::with_capacity(text.len().min(MAX_LOG_ENTRY));
     for c in text.chars() {
-        let bidi = matches!(
-            c,
-            '\u{200B}'..='\u{200F}' | '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
-        );
-        let c = if (c.is_control() && c != '\t') || bidi { '\u{FFFD}' } else { c };
+        let c = if replaced(c) { '\u{FFFD}' } else { c };
         if out.len() + c.len_utf8() > MAX_LOG_ENTRY {
             break;
         }
@@ -340,6 +351,9 @@ pub const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
 pub const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Longest wait for one `recv`.
 pub const TCP_RECV_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest run of an approved script, counted from the approval (an approved write batch has
+/// [`SQL_TIMEOUT`]).
+pub const SCRIPT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// While alive, the call clock is paused (a dialog or host I/O); ends the pause on drop, also when the
 /// call is cancelled mid-wait.
@@ -380,6 +394,9 @@ pub struct HostState {
     /// Open local TCP connections by id (at most [`MAX_TCP_CONNECTIONS`]).
     tcp: HashMap<u64, TcpStream>,
     next_tcp: u64,
+    /// The manifest id (scripts and write batches are queued in its name).
+    plugin: String,
+    approvals: Arc<Approvals>,
 }
 
 impl WasiView for HostState {
@@ -405,6 +422,14 @@ impl HostState {
         let reason = if reason.is_empty() { "refused" } else { reason };
         self.log.log(Level::Warn, &PluginError::Denied(reason.to_string()).to_string());
         e
+    }
+
+    /// Queues `p` for the user and waits for the decision (no time limit). A guest call is synchronous,
+    /// so an instance has at most one request in the queue.
+    fn approve(&self, p: Pending) -> impl std::future::Future<Output = Decision> + Send + 'static {
+        debug_assert!(!self.approvals.has_pending_for(&self.plugin), "one pending request per instance");
+        let approvals = self.approvals.clone();
+        async move { approvals.request(p).await }
     }
 
     /// The open stream behind a connection handle.
@@ -594,14 +619,21 @@ impl Host for HostState {
         self.log.status(&text);
     }
 
-    async fn run_script(&mut self, _script: String, as_root: bool) -> Result<WitScriptResult, String> {
+    async fn run_script(&mut self, script: String, as_root: bool) -> Result<WitScriptResult, String> {
         let needed = if as_root { Permission::SshRoot } else { Permission::Ssh };
         if !self.granted.contains(&needed) {
             return Err(self.refused(format!("{DENIED}: running a script needs the '{needed}' permission")));
         }
-        // TODO(Task 6): show the script, wait for the user's approval, then `HostServices::run_script`.
-        self.refused(format!("{DENIED}: scripts need the user's approval, which is not available yet"));
-        Err(DENIED.into())
+        check_script(&script).map_err(|e| self.refused(e))?;
+        let pending = Pending::Script { plugin: self.plugin.clone(), script: script.clone(), as_root };
+        // The user's time and the script's run do not count against the call (Ruling 14).
+        let _paused = Paused::begin(&self.clock);
+        if self.approve(pending).await == Decision::Rejected {
+            return Err("the user rejected the script".into());
+        }
+        let req = ScriptRequest { plugin: self.plugin.clone(), script, as_root };
+        let r = limited("the script", SCRIPT_TIMEOUT, self.services.clone().run_script(req)).await?;
+        Ok(WitScriptResult { exit_code: r.exit_code, output: r.output, error: r.error })
     }
 
     async fn sql_select(&mut self, query: Select) -> Result<WitRows, String> {
@@ -616,10 +648,14 @@ impl Host for HostState {
 
     async fn sql_write(&mut self, ops: Vec<WriteOp>) -> Result<u64, String> {
         // Built now so that permission errors reach the plugin (and its developer) already.
-        let _batch = build_writes(&ops, &self.granted).map_err(|e| self.refused(e))?;
-        // TODO(Task 6): show `_batch.summary`, wait for the user's approval, then `HostServices::sql_write`.
-        self.refused(format!("{DENIED}: database writes need the user's approval, which is not available yet"));
-        Err(DENIED.into())
+        let batch = build_writes(&ops, &self.granted).map_err(|e| self.refused(e))?;
+        let pending = Pending::Writes { plugin: self.plugin.clone(), batch: batch.clone() };
+        let _paused = Paused::begin(&self.clock);
+        if self.approve(pending).await == Decision::Rejected {
+            return Err("the user rejected the database changes".into());
+        }
+        // Exactly the batch that was shown.
+        limited("the database changes", SQL_TIMEOUT, self.services.clone().sql_write(batch)).await
     }
 
     async fn http_get(&mut self, url: String) -> Result<Vec<u8>, String> {
@@ -825,8 +861,15 @@ pub struct PluginInstance {
 impl PluginInstance {
     /// Loads the installed plugin folder `dir` (`<root>/<id>/`): compiles `dir/plugin.wasm` and
     /// instantiates it under the limits above. `dir/data/` is created if missing; it is the only folder
-    /// `file-read` / `file-write` touch. Compiling is CPU heavy: call this on a worker thread.
-    pub async fn load(engine: &Engine, dir: &Path, manifest: Manifest, services: Arc<dyn HostServices>) -> Result<Self> {
+    /// `file-read` / `file-write` touch. Scripts and write batches wait in `approvals` (shared with the
+    /// app, which shows them to the user). Compiling is CPU heavy: call this on a worker thread.
+    pub async fn load(
+        engine: &Engine,
+        dir: &Path,
+        manifest: Manifest,
+        services: Arc<dyn HostServices>,
+        approvals: Arc<Approvals>,
+    ) -> Result<Self> {
         let wasm = std::fs::read(dir.join("plugin.wasm")).with_context(|| format!("reading {}", dir.display()))?;
         let data = dir.join("data");
         std::fs::create_dir_all(&data).with_context(|| format!("creating {}", data.display()))?;
@@ -861,6 +904,8 @@ impl PluginInstance {
             granted: manifest.permissions.clone(),
             tcp: HashMap::new(),
             next_tcp: 0,
+            plugin: manifest.id.clone(),
+            approvals,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -925,15 +970,25 @@ impl PluginInstance {
         result.inspect_err(|e| self.poison(e.clone()))
     }
 
-    /// Marks the instance unusable and closes its local TCP connections.
+    /// Marks the instance unusable, closes its local TCP connections and rejects its queued requests.
     fn poison(&mut self, e: PluginError) {
         self.poisoned = Some(e);
-        self.store.data_mut().tcp.clear();
+        let state = self.store.data_mut();
+        state.tcp.clear();
+        state.approvals.reject_all_for(&state.plugin);
     }
 
     /// Local TCP connections open now.
     pub fn open_connections(&self) -> usize {
         self.store.data().tcp.len()
+    }
+}
+
+impl Drop for PluginInstance {
+    /// Closing the page drops the instance: whatever it still has in the approval queue is rejected.
+    fn drop(&mut self) {
+        let state = self.store.data();
+        state.approvals.reject_all_for(&state.plugin);
     }
 }
 

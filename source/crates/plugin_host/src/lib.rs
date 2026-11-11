@@ -15,6 +15,7 @@ pub mod bindings {
     });
 }
 
+pub mod approvals;
 pub mod manifest;
 pub mod net;
 pub mod package;

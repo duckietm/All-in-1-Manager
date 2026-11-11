@@ -22,3 +22,5 @@ hog = []
 sleeper = []
 # `render` first asks the user a question (the time the user takes does not count).
 asker = []
+# `render` first runs a script on the server (permission `ssh`; waits for the user's approval).
+scripter = []

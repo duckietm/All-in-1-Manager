@@ -3878,5 +3878,14 @@
   "{plugin} is removed.": "{plugin} kaldırıldı.",
   "{plugin} {version} is installed.": "{plugin} {version} kuruldu.",
   "{plugin}: the file could not be saved: {error}": "{plugin}: dosya kaydedilemedi: {error}",
-  "⚠ Runs as root": "⚠ root olarak çalışır"
+  "⚠ Runs as root": "⚠ root olarak çalışır",
+  "Answers nothing and closes the plugin; Reload starts it again": "Yanıt vermez ve eklentiyi kapatır; Yeniden yükle onu tekrar başlatır",
+  "Choose a file …": "Dosya seç …",
+  "Different author": "Farklı yazar",
+  "Stop this plugin": "Bu eklentiyi durdur",
+  "The installed plugin is by {author}. This package is treated as another plugin: it does not get the installed plugin's private data, which is kept aside.": "Yüklü eklenti {author} tarafından yapılmış. Bu paket başka bir eklenti olarak ele alınır: yüklü eklentinin özel verilerini almaz, bu veriler bir kenara konur.",
+  "The plugin wants you to choose a file to open. It can read that one file, nothing else.": "Eklenti açmak için bir dosya seçmenizi istiyor. Yalnızca o dosyayı okuyabilir, başka hiçbir şeyi değil.",
+  "The plugin wants you to choose where to save a file. It can write that one file, nothing else.": "Eklenti bir dosyanın nereye kaydedileceğini seçmenizi istiyor. Yalnızca o dosyaya yazabilir, başka hiçbir şeye değil.",
+  "its exports folder {folder} is full (at most {files} files and {size} MiB): delete files there first": "dışa aktarma klasörü {folder} dolu (en fazla {files} dosya ve {size} MiB): önce oradan dosya silin",
+  "wants to run this script on the server as the login user {user}:": "bu betiği sunucuda oturum kullanıcısı {user} olarak çalıştırmak istiyor:"
 }

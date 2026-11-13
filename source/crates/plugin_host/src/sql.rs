@@ -14,7 +14,7 @@
 //!   SSO ticket takes over an account);
 //! * a select returns at most [`MAX_LIMIT`] rows ([`DEFAULT_LIMIT`] when the plugin gives none);
 //! * an update or delete needs at least one condition; a batch holds 1..=[`MAX_WRITE_OPS`] operations,
-//!   refused as a whole if any operation is.
+//!   refused as a whole if any operation is, or if its values total more than [`MAX_WRITE_BYTES`].
 //!
 //! Every statement runs on the hotel database the Manager connects to; the builder never names a
 //! database.
@@ -30,6 +30,9 @@ pub const DEFAULT_LIMIT: u32 = 1_000;
 pub const MAX_LIMIT: u32 = 10_000;
 /// Most operations in one write batch.
 pub const MAX_WRITE_OPS: usize = 1_000;
+/// Most parameter data in one write batch (bytes of text and binary values; 8 per number), so the approval card,
+/// which shows every value in full, stays small enough to draw.
+pub const MAX_WRITE_BYTES: usize = 8 * 1024 * 1024;
 /// Most columns a select names or an insert / update sets.
 pub const MAX_COLUMNS: usize = 256;
 /// Most conditions of one statement.
@@ -247,6 +250,24 @@ fn assignments(
     Ok(out)
 }
 
+/// The parameter data of a batch as [`MAX_WRITE_BYTES`] counts it (saturating, never overflows).
+fn write_bytes(ops: &[WriteOp]) -> usize {
+    let size = |v: &WitValue| match v {
+        WitValue::Text(s) => s.len(),
+        WitValue::Bytes(b) => b.len(),
+        _ => 8,
+    };
+    let conditions = |list: &[Condition]| list.iter().fold(0usize, |n, c| n.saturating_add(size(&c.value)));
+    let values = |list: &[(String, WitValue)]| list.iter().fold(0usize, |n, (_, v)| n.saturating_add(size(v)));
+    ops.iter().fold(0usize, |n, op| {
+        n.saturating_add(match op {
+            WriteOp::Insert(i) => values(&i.values),
+            WriteOp::Update(u) => values(&u.set).saturating_add(conditions(&u.conditions)),
+            WriteOp::Delete(d) => conditions(&d.conditions),
+        })
+    })
+}
+
 /// Builds the checked, parameterised statements of a write batch and one summary line per statement.
 pub fn build_writes(ops: &[WriteOp], granted: &[Permission]) -> Result<WriteBatch, String> {
     if ops.is_empty() {
@@ -254,6 +275,12 @@ pub fn build_writes(ops: &[WriteOp], granted: &[Permission]) -> Result<WriteBatc
     }
     if ops.len() > MAX_WRITE_OPS {
         return Err(deny(format!("more than {MAX_WRITE_OPS} operations in one batch")));
+    }
+    if write_bytes(ops) > MAX_WRITE_BYTES {
+        return Err(deny(format!(
+            "the changes are too large to show (more than {} MiB of values in one batch)",
+            MAX_WRITE_BYTES / (1024 * 1024)
+        )));
     }
     let mut batch = WriteBatch::default();
     for op in ops {

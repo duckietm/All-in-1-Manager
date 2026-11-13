@@ -500,6 +500,19 @@ fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
             }
         }
         ui.label(tf("By {author}", &[("author", &display_safe(&manifest.author, 60))]));
+        if let Consent::Install(pending) = &*waiting {
+            if let (true, Some(old)) = (pending.author_changed(), pending.previous.as_ref()) {
+                ui.add_space(4.0);
+                ui.label(RichText::new(t("Different author")).strong().color(palette.error_text));
+                ui.label(
+                    RichText::new(tf(
+                        "The installed plugin is by {author}. This package is treated as another plugin: it does not get the installed plugin's private data, which is kept aside.",
+                        &[("author", &display_safe(&old.author, 60))],
+                    ))
+                    .color(palette.error_text),
+                );
+            }
+        }
         ui.add_space(6.0);
         match &*waiting {
             Consent::Install(_) => not_verified(ui, palette, t("Not verified — installed from a file")),
@@ -510,14 +523,19 @@ fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
         }
         ui.add_space(8.0);
         ui.label(RichText::new(t("This plugin will be able to:")).strong());
-        for permission in &manifest.permissions {
-            let color = if external::is_sensitive(permission) { palette.warning_text } else { ui.visuals().text_color() };
-            let mut text = format!("• {}", external::permission_text(permission));
-            if is_new(permission) {
-                text = format!("{text}  [{}]", t("new in this version"));
+        // The sensitive ones first, and the list scrolls, so Install and Cancel stay on screen however long it is.
+        let mut listed: Vec<&aio_plugin_host::Permission> = manifest.permissions.iter().collect();
+        listed.sort_by_key(|p| !external::is_sensitive(p));
+        egui::ScrollArea::vertical().id_salt("consent-permissions").max_height(260.0).auto_shrink([false, true]).show(ui, |ui| {
+            for permission in listed {
+                let color = if external::is_sensitive(permission) { palette.warning_text } else { ui.visuals().text_color() };
+                let mut text = format!("• {}", external::permission_text(permission));
+                if is_new(permission) {
+                    text = format!("{text}  [{}]", t("new in this version"));
+                }
+                ui.label(RichText::new(text).color(color));
             }
-            ui.label(RichText::new(text).color(color));
-        }
+        });
         if manifest.permissions.is_empty() {
             widgets::muted(ui, palette, t("It asks for no permission."), 12.5);
         }

@@ -7,7 +7,7 @@
 //! MariaDB session it held (the next call opens a new one), so no half-read connection is ever reused.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use aio_plugin_host::net::MAX_HTTP_BODY;
@@ -17,7 +17,7 @@ use aio_remote::sql_session::{SqlSession, SqlValue as DbValue};
 use aio_remote::Server;
 use parking_lot::Mutex;
 
-use crate::gui::dialogs::Choice;
+use crate::gui::dialogs::{Choice, InputReply};
 use crate::gui::log_view::LogLines;
 use crate::gui::Shared;
 use crate::i18n::{t, tf};
@@ -26,6 +26,24 @@ use crate::i18n::{t, tf};
 const LOG_LINES: usize = 2_000;
 /// Longest dialog text taken from a plugin.
 const DIALOG_TEXT: usize = 1_000;
+/// Most files in a plugin's exports folder (`open-import-preview`).
+pub const MAX_EXPORT_FILES: usize = 100;
+/// Most bytes in a plugin's exports folder.
+pub const MAX_EXPORT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// What the user answered in a plugin's dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    Yes,
+    No,
+    /// "Stop this plugin": the page drops the instance.
+    Stop,
+}
+
+/// The "Stop this plugin" answer every plugin dialog offers, so a plugin that keeps asking cannot lock the user out.
+fn stop_choice() -> Choice<Answer> {
+    Choice::new(t("Stop this plugin"), t("Answers nothing and closes the plugin; Reload starts it again"), Answer::Stop)
+}
 
 /// What the plugin produced for its page besides the tree: its log and the last file it handed over.
 #[derive(Default)]
@@ -56,11 +74,14 @@ struct Login {
     server: Weak<dyn Server>,
     host: String,
     port: u16,
+    /// The user a script without root runs as (shown on the approval card).
+    user: String,
 }
 
 impl Login {
     fn of(server: &Arc<dyn Server>) -> Self {
-        Self { server: Arc::downgrade(server), host: server.login().host.clone(), port: server.login().port }
+        let user = Some(server.login_user()).filter(|u| !u.is_empty()).unwrap_or_else(|| server.login().user.clone());
+        Self { server: Arc::downgrade(server), host: server.login().host.clone(), port: server.login().port, user }
     }
 
     /// True when `server` is this very login: still alive, the same object, the same host and port.
@@ -107,6 +128,10 @@ pub struct AppServices {
     http: reqwest::Client,
     /// Opened on the first database call. Taken out while a call uses it, so a cancelled call drops it.
     database: tokio::sync::Mutex<Option<Database>>,
+    /// What "Stop this plugin" in a dialog does (the page sets it: it drops the instance).
+    stopper: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
+    /// Set by "Stop this plugin": from then on every dialog gets the cancel answer without being shown.
+    stopped: AtomicBool,
 }
 
 impl AppServices {
@@ -121,7 +146,65 @@ impl AppServices {
             bound: Mutex::new(None),
             http: http_client(),
             database: tokio::sync::Mutex::new(None),
+            stopper: Mutex::new(None),
+            stopped: AtomicBool::new(false),
         }
+    }
+
+    /// Sets what "Stop this plugin" in one of its dialogs does.
+    pub fn on_stop(&self, stop: impl Fn() + Send + Sync + 'static) {
+        *self.stopper.lock() = Some(Box::new(stop));
+    }
+
+    /// "Stop this plugin" was chosen: no more dialogs, and the page drops the instance.
+    fn stop_plugin(&self) {
+        if !self.stopped.swap(true, Ordering::AcqRel) {
+            if let Some(stop) = self.stopper.lock().as_ref() {
+                stop();
+            }
+        }
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
+    }
+
+    /// A question with Yes / No / Stop this plugin; closing it answers No.
+    async fn choose(&self, heading: &str, message: &str, yes: &str) -> bool {
+        if self.is_stopped() {
+            return false;
+        }
+        let options = vec![Choice::new(yes, "", Answer::Yes).primary(), Choice::new(t("No"), "", Answer::No), stop_choice()];
+        match self.shared.dialogs.choose(&self.asks(), heading, message, Answer::No, options).await {
+            Answer::Yes => true,
+            Answer::No => false,
+            Answer::Stop => {
+                self.stop_plugin();
+                false
+            }
+        }
+    }
+
+    /// Before a native file dialog (which cannot carry a button of ours): the plugin's request in a Manager dialog with
+    /// "Choose a file …", Cancel and "Stop this plugin". True to open the file dialog.
+    async fn before_picking(&self, title: &str, message: &str) -> bool {
+        if self.is_stopped() {
+            return false;
+        }
+        let options = vec![Choice::new(t("Choose a file …"), "", Answer::Yes).primary(), Choice::new(t("Cancel"), "", Answer::No), stop_choice()];
+        match self.shared.dialogs.choose(&self.asks(), &display_safe(title, 120), message, Answer::No, options).await {
+            Answer::Yes => true,
+            Answer::No => false,
+            Answer::Stop => {
+                self.stop_plugin();
+                false
+            }
+        }
+    }
+
+    /// The user a script without root runs as on the server of the waiting request.
+    pub fn bound_user(&self) -> Option<String> {
+        self.bound.lock().as_ref().map(|b| b.user.clone())
     }
 
     /// Approved work counted as running: executing now, or approved and about to start.
@@ -332,10 +415,30 @@ fn file_dialog(asks: &str, title: &str, exts: &[String]) -> rfd::AsyncFileDialog
     dialog
 }
 
+/// Files and bytes in `folder` (not in its subfolders, which the exports never make).
+fn folder_usage(folder: &Path) -> std::io::Result<(usize, u64)> {
+    let (mut files, mut bytes) = (0usize, 0u64);
+    for entry in std::fs::read_dir(folder)? {
+        let meta = entry?.metadata()?;
+        files += 1;
+        bytes = bytes.saturating_add(meta.len());
+    }
+    Ok((files, bytes))
+}
+
 /// Saves `bytes` in `folder` (the plugin's exports folder, Ruling 18) under a safe form of `name`, as
-/// `<stem>-2.<ext>`, `-3`, … when that file exists already (nothing is overwritten); returns the file.
+/// `<stem>-2.<ext>`, `-3`, … when that file exists already (nothing is overwritten); returns the file. Refused when the
+/// folder would then hold more than [`MAX_EXPORT_FILES`] files or [`MAX_EXPORT_BYTES`].
 pub fn save_export(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     std::fs::create_dir_all(folder)?;
+    let (files, used) = folder_usage(folder)?;
+    if files >= MAX_EXPORT_FILES || used.saturating_add(bytes.len() as u64) > MAX_EXPORT_BYTES {
+        let (files, size) = (MAX_EXPORT_FILES.to_string(), (MAX_EXPORT_BYTES / (1024 * 1024)).to_string());
+        return Err(std::io::Error::other(tf(
+            "its exports folder {folder} is full (at most {files} files and {size} MiB): delete files there first",
+            &[("folder", &folder.display().to_string()), ("files", &files), ("size", &size)],
+        )));
+    }
     let name = export_name(name);
     let (stem, ext) = match name.rfind('.') {
         Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
@@ -359,8 +462,7 @@ pub fn save_export(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<P
 impl HostServices for AppServices {
     async fn ask(&self, question: String) -> bool {
         // Closing the question (Escape, a click outside) answers No.
-        let options = vec![Choice::new(t("Yes"), "", true).primary(), Choice::new(t("No"), "", false)];
-        self.shared.dialogs.choose(&self.asks(), &display_safe(&question, DIALOG_TEXT), "", false, options).await
+        self.choose(&display_safe(&question, DIALOG_TEXT), "", t("Yes")).await
     }
 
     fn log(&self, level: Level, text: &str) {
@@ -422,16 +524,32 @@ impl HostServices for AppServices {
     }
 
     async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String> {
+        if self.is_stopped() {
+            return None;
+        }
         let dialogs = self.shared.dialogs.clone();
         let (title, label, default) = (display_safe(&title, DIALOG_TEXT), display_safe(&label, DIALOG_TEXT), display_safe(&default, DIALOG_TEXT));
-        dialogs.input(&self.asks(), &title, "", &label, &default, false, t("OK"), None).await
+        match dialogs.input_or(&self.asks(), &title, "", &label, &default, false, t("OK"), Some(t("Stop this plugin")), None).await {
+            InputReply::Ok(text) => Some(text),
+            InputReply::Cancel => None,
+            InputReply::Extra => {
+                self.stop_plugin();
+                None
+            }
+        }
     }
 
     async fn pick_open_file(&self, title: String, extensions: Vec<String>) -> Option<PathBuf> {
+        if !self.before_picking(&title, t("The plugin wants you to choose a file to open. It can read that one file, nothing else.")).await {
+            return None;
+        }
         file_dialog(&self.asks(), &title, &extensions).pick_file().await.map(|f| f.path().to_path_buf())
     }
 
     async fn pick_save_file(&self, title: String, suggested: String, extensions: Vec<String>) -> Option<PathBuf> {
+        if !self.before_picking(&title, t("The plugin wants you to choose where to save a file. It can write that one file, nothing else.")).await {
+            return None;
+        }
         let dialog = file_dialog(&self.asks(), &title, &extensions).set_file_name(export_name(&suggested));
         dialog.save_file().await.map(|f| f.path().to_path_buf())
     }
@@ -668,6 +786,121 @@ mod tests {
         let app = services(&shared, dir.path());
         assert_eq!(app.sql_select("SELECT 1".into(), vec![]).await.unwrap_err(), "Not connected");
         assert_eq!(app.sql_write(WriteBatch::default()).await.unwrap_err(), "Not connected");
+    }
+
+    /// Waits until a dialog is open, then answers it with `index` (see `Dialogs::answer_for_tests`).
+    async fn answer(shared: &Shared, index: usize) {
+        let start = std::time::Instant::now();
+        while !shared.dialogs.is_open() {
+            assert!(start.elapsed() < std::time::Duration::from_secs(10), "no dialog opened");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert!(shared.dialogs.answer_for_tests(index));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn every_dialog_offers_stop_this_plugin() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = Arc::new(services(&shared, dir.path()));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let counted = stops.clone();
+        app.on_stop(move || {
+            counted.fetch_add(1, Ordering::AcqRel);
+        });
+
+        // Yes / No answer the question; the third choice stops the plugin.
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.ask("Again?".into()).await });
+        answer(&shared, 0).await;
+        assert!(task.await.unwrap());
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.prompt_text("Name".into(), "Your name".into(), "Ann".into()).await });
+        answer(&shared, 0).await;
+        assert_eq!(task.await.unwrap().as_deref(), Some("Ann"));
+        assert_eq!(stops.load(Ordering::Acquire), 0);
+
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.ask("Again?".into()).await });
+        answer(&shared, 2).await;
+        assert!(!task.await.unwrap(), "Stop answers no");
+        assert_eq!(stops.load(Ordering::Acquire), 1, "the page drops the instance");
+
+        // Stopped: every further dialog gets the cancel answer at once, without showing anything.
+        assert!(!app.ask("Again?".into()).await);
+        assert_eq!(app.prompt_text("t".into(), "l".into(), "d".into()).await, None);
+        assert_eq!(app.pick_open_file("t".into(), vec![]).await, None);
+        assert_eq!(app.pick_save_file("t".into(), "x.sql".into(), vec![]).await, None);
+        assert!(!shared.dialogs.is_open());
+        assert_eq!(stops.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_and_file_dialogs_offer_stop_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let make = |stops: &Arc<AtomicUsize>| {
+            let app = Arc::new(services(&shared, dir.path()));
+            let counted = stops.clone();
+            app.on_stop(move || {
+                counted.fetch_add(1, Ordering::AcqRel);
+            });
+            app
+        };
+        let stops = Arc::new(AtomicUsize::new(0));
+
+        let app = make(&stops);
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.prompt_text("Name".into(), "Your name".into(), "Ann".into()).await });
+        answer(&shared, 2).await;
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(stops.load(Ordering::Acquire), 1);
+
+        // Before a native file dialog, the request is shown in a Manager dialog: Cancel, then Stop.
+        let app = make(&stops);
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.pick_open_file("Pick".into(), vec![]).await });
+        answer(&shared, 1).await;
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(stops.load(Ordering::Acquire), 1);
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.pick_save_file("Save".into(), "x.sql".into(), vec![]).await });
+        answer(&shared, 2).await;
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(stops.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test]
+    async fn the_card_names_the_login_user() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = services(&shared, dir.path());
+        let recorder = Arc::new(Recorder::new());
+        let server: Arc<dyn Server> = recorder.clone();
+        shared.set_session_for_tests(Some(server));
+        assert_eq!(app.bound_user(), None);
+        app.before_approval();
+        let expected = Some(recorder.login_user()).filter(|u| !u.is_empty()).unwrap_or_else(|| recorder.login().user.clone());
+        assert_eq!(app.bound_user(), Some(expected));
+    }
+
+    #[test]
+    fn exports_have_a_quota() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("ext-exports").join("demo");
+        for _ in 0..MAX_EXPORT_FILES {
+            save_export(&folder, "dump.sql", b"x").unwrap();
+        }
+        let error = save_export(&folder, "dump.sql", b"x").unwrap_err().to_string();
+        assert!(error.contains("is full"), "{error}");
+        assert_eq!(std::fs::read_dir(&folder).unwrap().count(), MAX_EXPORT_FILES, "nothing more was written");
+
+        // The size cap: one file that would pass the total is refused before anything is written.
+        let other = dir.path().join("ext-exports").join("big");
+        save_export(&other, "a.bin", &vec![0u8; 1024]).unwrap();
+        std::fs::File::create(other.join("huge.bin")).unwrap().set_len(MAX_EXPORT_BYTES - 1024).unwrap();
+        assert!(save_export(&other, "b.bin", b"x").is_err());
+        assert_eq!(std::fs::read_dir(&other).unwrap().count(), 2);
     }
 
     #[test]

@@ -32,18 +32,29 @@ impl<T> Choice<T> {
     }
 }
 
+/// The answer of a [`Dialogs::input_or`] text field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputReply {
+    Ok(String),
+    /// Cancel, Escape or a click outside.
+    Cancel,
+    /// The extra button.
+    Extra,
+}
+
 enum Kind {
     /// Answers with the index of the option, or None when the window is closed.
     Choice { options: Vec<(String, String, bool)>, reply: Option<oneshot::Sender<Option<usize>>> },
-    /// A text (or password) with OK / Cancel; None when cancelled.
+    /// A text (or password) with OK / Cancel and an optional extra button.
     Input {
         label: String,
         value: String,
         password: bool,
         ok: String,
+        extra: Option<String>,
         check: Option<Box<dyn Fn(&str) -> Option<String> + Send>>,
         problem: Option<String>,
-        reply: Option<oneshot::Sender<Option<String>>>,
+        reply: Option<oneshot::Sender<InputReply>>,
     },
 }
 
@@ -107,6 +118,26 @@ impl Dialogs {
         ok: &str,
         check: Option<Box<dyn Fn(&str) -> Option<String> + Send>>,
     ) -> Option<String> {
+        match self.input_or(window_title, heading, message, label, value, password, ok, None, check).await {
+            InputReply::Ok(text) => Some(text),
+            _ => None,
+        }
+    }
+
+    /// [`Dialogs::input`] with an extra button next to Cancel (`extra`, when given).
+    #[allow(clippy::too_many_arguments)]
+    pub async fn input_or(
+        &self,
+        window_title: &str,
+        heading: &str,
+        message: &str,
+        label: &str,
+        value: &str,
+        password: bool,
+        ok: &str,
+        extra: Option<&str>,
+        check: Option<Box<dyn Fn(&str) -> Option<String> + Send>>,
+    ) -> InputReply {
         let (sender, receiver) = oneshot::channel();
         self.push(Dialog {
             window_title: window_title.into(),
@@ -118,12 +149,34 @@ impl Dialogs {
                 value: value.into(),
                 password,
                 ok: ok.into(),
+                extra: extra.map(str::to_string),
                 check,
                 problem: None,
                 reply: Some(sender),
             },
         });
-        receiver.await.ok().flatten()
+        receiver.await.unwrap_or(InputReply::Cancel)
+    }
+
+    /// Test hook: answers the newest question as if the user clicked choice `index` (a choice dialog) or, for a text
+    /// field, OK with its text (`index` 0), Cancel (1) or the extra button (2). False when no question is open.
+    #[cfg(test)]
+    pub fn answer_for_tests(&self, index: usize) -> bool {
+        let Some(dialog) = self.queue.lock().pop() else { return false };
+        match dialog.kind {
+            Kind::Choice { reply, .. } => {
+                let _ = reply.map(|r| r.send(Some(index)));
+            }
+            Kind::Input { reply, value, .. } => {
+                let answer = match index {
+                    0 => InputReply::Ok(value),
+                    1 => InputReply::Cancel,
+                    _ => InputReply::Extra,
+                };
+                let _ = reply.map(|r| r.send(answer));
+            }
+        }
+        true
     }
 
     /// Draws the newest question; the others wait behind it.
@@ -160,7 +213,7 @@ impl Dialogs {
                                 }
                             }
                         }
-                        Kind::Input { label, value, password, ok, check, problem, reply } => {
+                        Kind::Input { label, value, password, ok, extra, check, problem, reply } => {
                             ui.label(RichText::new(label.as_str()).strong());
                             let field = ui.add(egui::TextEdit::singleline(value).password(*password).desired_width(f32::INFINITY));
                             if !field.has_focus() && problem.is_none() {
@@ -174,17 +227,18 @@ impl Dialogs {
                             ui.horizontal(|ui| {
                                 let ok_clicked = ui.add(widgets::primary_button(ok)).clicked() || enter;
                                 let cancel = ui.add(widgets::secondary_button(t("Cancel"))).clicked();
+                                let extra_clicked = extra.as_deref().is_some_and(|label| ui.add(widgets::secondary_button(label)).clicked());
                                 if ok_clicked {
                                     *problem = check.as_ref().and_then(|c| c(value));
                                     if problem.is_none() {
                                         if let Some(sender) = reply.take() {
-                                            let _ = sender.send(Some(value.clone()));
+                                            let _ = sender.send(InputReply::Ok(value.clone()));
                                         }
                                         close = true;
                                     }
-                                } else if cancel {
+                                } else if cancel || extra_clicked {
                                     if let Some(sender) = reply.take() {
-                                        let _ = sender.send(None);
+                                        let _ = sender.send(if extra_clicked { InputReply::Extra } else { InputReply::Cancel });
                                     }
                                     close = true;
                                 }
@@ -204,7 +258,7 @@ impl Dialogs {
                 }
                 Kind::Input { reply, .. } => {
                     if let Some(sender) = reply.take() {
-                        let _ = sender.send(None);
+                        let _ = sender.send(InputReply::Cancel);
                     }
                 }
             }

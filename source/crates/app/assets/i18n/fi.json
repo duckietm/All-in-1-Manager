@@ -3878,5 +3878,14 @@
   "{plugin} is removed.": "{plugin} on poistettu.",
   "{plugin} {version} is installed.": "{plugin} {version} on asennettu.",
   "{plugin}: the file could not be saved: {error}": "{plugin}: tiedostoa ei voitu tallentaa: {error}",
-  "⚠ Runs as root": "⚠ Toimii rootina"
+  "⚠ Runs as root": "⚠ Toimii rootina",
+  "Answers nothing and closes the plugin; Reload starts it again": "Ei vastaa mitään ja sulkee laajennuksen; Lataa uudelleen käynnistää sen taas",
+  "Choose a file …": "Valitse tiedosto …",
+  "Different author": "Eri tekijä",
+  "Stop this plugin": "Pysäytä tämä laajennus",
+  "The installed plugin is by {author}. This package is treated as another plugin: it does not get the installed plugin's private data, which is kept aside.": "Asennetun laajennuksen tekijä on {author}. Tätä pakettia kohdellaan eri laajennuksena: se ei saa asennetun laajennuksen yksityisiä tietoja, ne siirretään sivuun.",
+  "The plugin wants you to choose a file to open. It can read that one file, nothing else.": "Laajennus pyytää sinua valitsemaan avattavan tiedoston. Se voi lukea vain sen yhden tiedoston, ei mitään muuta.",
+  "The plugin wants you to choose where to save a file. It can write that one file, nothing else.": "Laajennus pyytää sinua valitsemaan, mihin tiedosto tallennetaan. Se voi kirjoittaa vain sen yhden tiedoston, ei mitään muuta.",
+  "its exports folder {folder} is full (at most {files} files and {size} MiB): delete files there first": "sen vientikansio {folder} on täynnä (enintään {files} tiedostoa ja {size} MiB): poista ensin tiedostoja sieltä",
+  "wants to run this script on the server as the login user {user}:": "haluaa ajaa tämän skriptin palvelimella kirjautumiskäyttäjänä {user}:"
 }

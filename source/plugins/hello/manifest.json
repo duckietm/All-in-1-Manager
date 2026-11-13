@@ -11,5 +11,6 @@
     "title": "Hello",
     "description": "Example plugin: say hello and keep count.",
     "color": "#4f8cff"
-  }
+  },
+  "dev_wasm": "target/wasm32-wasip2/release/hello.wasm"
 }

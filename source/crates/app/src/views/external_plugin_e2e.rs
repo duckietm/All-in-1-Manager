@@ -43,6 +43,20 @@ struct Page {
     task: tokio::task::JoinHandle<()>,
 }
 
+#[test]
+fn the_hello_folder_loads_in_developer_mode() {
+    // Packing builds hello into its own folder (source/plugins/hello/.cargo/config.toml), where dev_wasm points.
+    support::hello_aiop();
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/hello");
+    let dir = tempfile::tempdir().unwrap();
+    let ext = ExternalPlugins::new(dir.path().join("ext"));
+    ext.set_developer(true, std::slice::from_ref(&folder));
+    let pending = ext.prepare_dev(&folder).unwrap();
+    assert_eq!(pending.manifest.id, "hello");
+    assert!(pending.wasm.ends_with("target/wasm32-wasip2/release/hello.wasm"), "{}", pending.wasm.display());
+    assert!(pending.wasm.starts_with(std::fs::canonicalize(&folder).unwrap()));
+}
+
 /// Starts the page task on an installed plugin, with `session` as the login.
 fn open(aiop: Vec<u8>, permissions: &[&str], session: Option<Arc<dyn Server>>) -> Page {
     let installed = install(aiop, permissions);
@@ -131,7 +145,7 @@ async fn a_script_waits_for_approval_then_runs_as_the_login_user() {
     let page = open(support::hello_aiop_with("scripter"), &["ssh"], Some(server));
     wait_for("the approval request", || !page.approvals.pending().is_empty()).await;
     let pending = page.approvals.pending().into_iter().next().unwrap();
-    assert_eq!(pending.1, Pending::Script { plugin: "hello".into(), script: "echo hi".into(), as_root: false });
+    assert_eq!(*pending.1, Pending::Script { plugin: "hello".into(), script: "echo hi".into(), as_root: false });
     assert_eq!(recorder.text(), "", "nothing runs before Approve");
     page.approvals.decide(pending.0, Decision::Approved);
     until(&page, "the page", |s| s.page.is_some()).await;

@@ -268,10 +268,7 @@ fn recover(s: &Slots, root: &Path, id: &str) -> Result<()> {
         .collect();
     if let Some(((_, winner), losers)) = found.split_first() {
         for (name, loser) in losers {
-            let backup = (1..1000)
-                .map(|n| root.join(if n == 1 { format!(".{id}.data-from-{name}") } else { format!(".{id}.data-from-{name}-{n}") }))
-                .find(|p| !p.exists())
-                .context("No free name to keep a second copy of the plugin data")?;
+            let backup = backup_name(root, id, name)?;
             std::fs::rename(loser, &backup).with_context(|| format!("Could not keep {} aside", loser.display()))?;
         }
         if *winner != live_data {
@@ -372,14 +369,55 @@ fn install_inner(pkg: &Package, root: &Path, inject: Inject) -> Result<PathBuf> 
 }
 
 
-/// Removes the plugin folder, its private data included.
+/// Installs `pkg` as another plugin that only happens to share the installed one's id (another author, Ruling 22):
+/// the installed plugin's private data is not handed over. Leftovers of an interrupted install are recovered first,
+/// so every piece of the old data is in `<id>/data`; that folder is then renamed to
+/// `.<id>.data-from-previous-author` (`-2`, `-3`, … if taken; never deleted, the admin can restore it by hand), and
+/// the new version starts with an empty `data/`. Returns the plugin folder and where the old data went, if it had any.
+pub fn install_without_data(pkg: &Package, root: &Path) -> Result<(PathBuf, Option<PathBuf>)> {
+    let id = &pkg.manifest.id;
+    if !valid_id(id) {
+        bail!("Invalid plugin id: {id}");
+    }
+    let s = Slots { live: root.join(id), partial: root.join(format!(".{id}.partial")), old: root.join(format!(".{id}.old")) };
+    let data = s.live.join("data");
+    let mut aside = None;
+    if root.exists() {
+        recover(&s, root, id)?;
+        // An empty `data/` holds nothing of the old plugin: it can stay.
+        if holds_data(&data) {
+            let backup = backup_name(root, id, "previous-author")?;
+            std::fs::rename(&data, &backup).context("Could not set the previous author's data aside")?;
+            aside = Some(backup);
+        }
+    }
+    Ok((install(pkg, root)?, aside))
+}
+
+/// A free `.<id>.data-from-<what>` name in `root` (`-2` … `-999` when taken).
+fn backup_name(root: &Path, id: &str, what: &str) -> Result<PathBuf> {
+    (1..1000)
+        .map(|n| root.join(if n == 1 { format!(".{id}.data-from-{what}") } else { format!(".{id}.data-from-{what}-{n}") }))
+        .find(|p| std::fs::symlink_metadata(p).is_err())
+        .context("No free name to keep a second copy of the plugin data")
+}
+
+/// Removes everything of the plugin in `root`: its folder with its private data, and the leftovers of an interrupted
+/// install (`.<id>.partial`, `.<id>.old`) and the data copies kept aside (`.<id>.data-from-*`), so nothing of it can
+/// come back with a later install of the same id.
 pub fn remove(id: &str, root: &Path) -> Result<()> {
     if !valid_id(id) {
         bail!("Invalid plugin id: {id}");
     }
-    let dir = root.join(id);
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).with_context(|| format!("Could not remove {}", dir.display()))?;
+    let mut targets = vec![root.join(id), root.join(format!(".{id}.partial")), root.join(format!(".{id}.old"))];
+    let aside = format!(".{id}.data-from-");
+    if let Ok(read) = std::fs::read_dir(root) {
+        targets.extend(read.flatten().filter(|e| e.file_name().to_string_lossy().starts_with(&aside)).map(|e| e.path()));
+    }
+    for target in targets {
+        let Ok(meta) = std::fs::symlink_metadata(&target) else { continue };
+        let removed = if meta.is_dir() { std::fs::remove_dir_all(&target) } else { std::fs::remove_file(&target) };
+        removed.with_context(|| format!("Could not remove {}", target.display()))?;
     }
     Ok(())
 }

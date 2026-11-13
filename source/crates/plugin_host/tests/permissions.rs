@@ -14,7 +14,7 @@ use aio_plugin_host::approvals::Approvals;
 use aio_plugin_host::net::{check_http, check_tcp, MAX_TCP_CONNECTIONS};
 use aio_plugin_host::runtime::{engine, PluginInstance};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
-use aio_plugin_host::sql::{build_select, build_writes, DEFAULT_LIMIT, MAX_LIMIT, MAX_WRITE_OPS};
+use aio_plugin_host::sql::{build_select, build_writes, DEFAULT_LIMIT, MAX_LIMIT, MAX_WRITE_BYTES, MAX_WRITE_OPS};
 use aio_plugin_host::{inspect, install, Permission};
 
 fn perms(list: &[&str]) -> Vec<Permission> {
@@ -276,6 +276,26 @@ fn batch_size_is_capped() {
     assert_eq!(build_writes(&vec![op.clone(); MAX_WRITE_OPS], &granted).unwrap().statements.len(), MAX_WRITE_OPS);
     denied(build_writes(&vec![op; MAX_WRITE_OPS + 1], &granted));
     denied(build_writes(&[], &granted));
+}
+
+#[test]
+fn oversized_batch_is_refused() {
+    // The approval card shows every value in full: a batch with more than 8 MiB of values cannot be shown.
+    let granted = perms(&["sql:write:rooms"]);
+    let insert = |len: usize| WriteOp::Insert(InsertOp { table: "rooms".into(), values: vec![("name".into(), WitValue::Text("x".repeat(len)))] });
+    let ops: Vec<WriteOp> = (0..8).map(|_| insert(1024 * 1024)).collect();
+    assert_eq!(build_writes(&ops, &granted).unwrap().statements.len(), 8, "exactly 8 MiB is fine");
+    let mut over = ops.clone();
+    over.push(insert(1));
+    let e = denied(build_writes(&over, &granted));
+    assert!(e.contains("too large to show"), "{e}");
+    // Bytes and condition values count too.
+    let update = WriteOp::Update(UpdateOp {
+        table: "rooms".into(),
+        set: vec![("data".into(), WitValue::Bytes(vec![0; MAX_WRITE_BYTES]))],
+        conditions: vec![cond("name", CompareOp::Eq, WitValue::Text("a".into()))],
+    });
+    denied(build_writes(&[update], &granted));
 }
 
 #[test]

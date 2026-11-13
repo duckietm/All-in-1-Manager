@@ -264,6 +264,100 @@ async fn picked_file_is_read_only_and_goes_to_the_preview() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn import_preview_of_a_file_over_32_mib_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop());
+    let picked = root.path().join("dump.sql");
+    // Sparse: no real 32 MiB written.
+    std::fs::File::create(&picked).unwrap().set_len(aio_plugin_host::runtime::MAX_FILE_READ + 1).unwrap();
+    let fake = Arc::new(Fake::default());
+    *fake.open_pick.lock().unwrap() = Some(picked);
+    let mut inst = load(&dir, fake.clone()).await;
+    let host = inst.host_for_tests();
+    let file = host.pick_open_file("Open".into(), vec![]).await.unwrap();
+    let error = host.open_import_preview(file).await.unwrap_err();
+    assert!(error.contains("larger than 32 MiB"), "{error}");
+    assert!(fake.previews.lock().unwrap().is_empty(), "nothing reaches the Manager");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_opens_at_most_20_dialogs() {
+    use aio_plugin_host::runtime::{DIALOGS_REFUSED, MAX_DIALOGS};
+    #[derive(Default)]
+    struct Counting {
+        inner: Fake,
+        shown: std::sync::atomic::AtomicUsize,
+    }
+    #[aio_plugin_host::async_trait]
+    impl HostServices for Counting {
+        async fn ask(&self, _q: String) -> bool {
+            self.shown.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            true
+        }
+        fn log(&self, level: Level, text: &str) {
+            self.inner.log(level, text)
+        }
+        fn status(&self, text: &str) {
+            self.inner.status(text)
+        }
+        async fn run_script(&self, req: ScriptRequest) -> Result<ScriptResult, String> {
+            self.inner.run_script(req).await
+        }
+        async fn sql_select(&self, sql: String, params: Vec<SqlValue>) -> Result<Rows, String> {
+            self.inner.sql_select(sql, params).await
+        }
+        async fn sql_write(&self, batch: WriteBatch) -> Result<u64, String> {
+            self.inner.sql_write(batch).await
+        }
+        async fn http_get(&self, url: &str) -> Result<Vec<u8>, String> {
+            self.inner.http_get(url).await
+        }
+        async fn prompt_text(&self, _t: String, _l: String, d: String) -> Option<String> {
+            self.shown.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            Some(d)
+        }
+        async fn pick_open_file(&self, _t: String, _e: Vec<String>) -> Option<PathBuf> {
+            self.shown.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            None
+        }
+        async fn pick_save_file(&self, _t: String, _s: String, _e: Vec<String>) -> Option<PathBuf> {
+            self.shown.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            None
+        }
+        fn open_import_preview(&self, name: String, bytes: Vec<u8>) {
+            self.inner.open_import_preview(name, bytes)
+        }
+    }
+
+    assert_eq!(MAX_DIALOGS, 20);
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop());
+    let services = Arc::new(Counting::default());
+    let manifest = aio_plugin_host::installed(root.path()).into_iter().next().unwrap();
+    let mut inst = PluginInstance::load(&engine(), &dir, manifest, services.clone(), Arc::new(Approvals::new())).await.unwrap();
+    let shown = || services.shown.load(std::sync::atomic::Ordering::Acquire);
+    let host = inst.host_for_tests();
+    for _ in 0..MAX_DIALOGS - 2 {
+        assert!(host.ask("Again?".into()).await);
+    }
+    assert_eq!(host.prompt_text("t".into(), "l".into(), "d".into()).await.as_deref(), Some("d"));
+    assert!(host.pick_open_file("t".into(), vec![]).await.is_none());
+    assert_eq!(shown(), MAX_DIALOGS);
+    // Past the budget: the cancel answer, nothing shown, one log line.
+    assert!(!host.ask("Again?".into()).await, "a refused question answers no");
+    assert_eq!(host.prompt_text("t".into(), "l".into(), "d".into()).await, None);
+    assert!(host.pick_save_file("t".into(), "x".into(), vec![]).await.is_none());
+    assert!(host.pick_open_file("t".into(), vec![]).await.is_none());
+    assert_eq!(shown(), MAX_DIALOGS);
+    let warned: Vec<_> = services.inner.logs().into_iter().filter(|(l, t)| *l == Level::Warn && t == DIALOGS_REFUSED).collect();
+    assert_eq!(warned.len(), 1, "said once per call");
+    // The next call has a fresh budget (each call into the guest starts one).
+    inst.render().await.unwrap();
+    assert!(inst.host_for_tests().ask("Again?".into()).await);
+    assert_eq!(shown(), MAX_DIALOGS + 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn runaway_call_is_interrupted() {
     let root = tempfile::tempdir().unwrap();
     let dir = install_hello(root.path(), &support::hello_aiop_with("runaway"));

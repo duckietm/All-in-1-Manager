@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use aio_plugin_host::package::{self, Package, MAX_PACKAGE, MAX_WASM};
+use aio_plugin_host::manifest::valid_id;
 use aio_plugin_host::{display_safe, Manifest, Permission};
 use parking_lot::Mutex;
 
@@ -41,6 +42,12 @@ impl Pending {
     /// Whether the permission is new compared with the installed version (never true for a first install).
     pub fn is_new_permission(&self, p: &Permission) -> bool {
         self.previous.as_ref().is_some_and(|old| !old.permissions.contains(p))
+    }
+
+    /// The installed plugin with this id has another author: this package is treated as a different plugin, which does
+    /// not get the installed one's private data (Ruling 22).
+    pub fn author_changed(&self) -> bool {
+        self.previous.as_ref().is_some_and(|old| old.author != self.package.manifest.author)
     }
 }
 
@@ -423,7 +430,11 @@ impl ExternalPlugins {
         }
         // An update replaces the folder: the running version lets go of its files first.
         wait_until_stopped(&pending.package.manifest.id)?;
-        let result = package::install(&pending.package, &self.root);
+        let result = match pending.author_changed() {
+            // Another author: the old plugin's private data is set aside, not handed over.
+            true => package::install_without_data(&pending.package, &self.root).map(|_| ()),
+            false => package::install(&pending.package, &self.root).map(|_| ()),
+        };
         self.reload();
         result?;
         Ok(pending.package.manifest.clone())
@@ -436,10 +447,18 @@ impl ExternalPlugins {
         self.commit(&pending)
     }
 
-    /// Deletes the plugin with its private data.
+    /// Deletes the plugin with its private data: its folder, what an interrupted install left, data copies kept aside,
+    /// and the private folder a developer version with this id used (`ext-dev/<id>/`). The files it handed to the
+    /// import (`ext-exports/<id>/`) are the user's and stay (Ruling 18).
     pub fn remove(&self, id: &str) -> Result<()> {
         wait_until_stopped(id)?;
-        let result = package::remove(id, &self.root);
+        let mut result = package::remove(id, &self.root);
+        if result.is_ok() && valid_id(id) {
+            let dev = self.dev_dir(id);
+            if std::fs::symlink_metadata(&dev).is_ok() {
+                result = std::fs::remove_dir_all(&dev).with_context(|| format!("Could not remove {}", dev.display()));
+            }
+        }
         self.reload();
         result
     }
@@ -516,8 +535,12 @@ mod tests {
     ];
 
     fn aiop(id: &str, version: &str, permissions: &[&str]) -> Vec<u8> {
+        aiop_by("Someone", id, version, permissions)
+    }
+
+    fn aiop_by(author: &str, id: &str, version: &str, permissions: &[&str]) -> Vec<u8> {
         let manifest = serde_json::json!({
-            "id": id, "name": "Demo", "version": version, "author": "Someone", "description": "A demo",
+            "id": id, "name": "Demo", "version": version, "author": author, "description": "A demo",
             "api": "1.0", "permissions": permissions, "page_title": "Demo",
         });
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
@@ -585,6 +608,70 @@ mod tests {
         assert!(!dir.path().join("ext/demo").exists());
     }
 
+    /// Every entry of `dir` (names), sorted.
+    fn entries(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir).map(|r| r.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect()).unwrap_or_default();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn remove_leaves_nothing_and_a_reinstall_starts_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ext");
+        let ext = ExternalPlugins::new(root.clone());
+        let file = dir.path().join("demo.aiop");
+        std::fs::write(&file, aiop("demo", "1.0.0", &[])).unwrap();
+        ext.install_file(&file).unwrap();
+        std::fs::write(root.join("demo/data/secret.txt"), b"mine").unwrap();
+        // What a crash during an install leaves, a copy kept aside, a developer version's data and an export.
+        for leftover in [".demo.partial/data", ".demo.old", ".demo.data-from-old", ".demo.data-from-partial-2"] {
+            std::fs::create_dir_all(root.join(leftover)).unwrap();
+            std::fs::write(root.join(leftover).join("x.txt"), b"left").unwrap();
+        }
+        std::fs::create_dir_all(ext.dev_dir("demo").join("data")).unwrap();
+        std::fs::write(ext.dev_dir("demo").join("data/dev.txt"), b"dev").unwrap();
+        std::fs::create_dir_all(ext.exports_dir("demo")).unwrap();
+        std::fs::write(ext.exports_dir("demo").join("export.sql"), b"saved").unwrap();
+        // Another plugin whose id starts the same is not touched.
+        std::fs::create_dir_all(root.join(".demo-two.data-from-old")).unwrap();
+
+        ext.remove("demo").unwrap();
+        assert_eq!(entries(&root), vec![".demo-two.data-from-old".to_string()]);
+        assert!(!ext.dev_dir("demo").exists());
+        assert!(ext.exports_dir("demo").join("export.sql").exists(), "files handed to the import are the user's (Ruling 18)");
+
+        ext.install_file(&file).unwrap();
+        assert!(entries(&root.join("demo/data")).is_empty(), "a reinstall starts with empty data");
+    }
+
+    #[test]
+    fn another_author_does_not_get_the_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ext");
+        let ext = ExternalPlugins::new(root.clone());
+        let file = dir.path().join("demo.aiop");
+        std::fs::write(&file, aiop("demo", "1.0.0", &[])).unwrap();
+        ext.install_file(&file).unwrap();
+        std::fs::write(root.join("demo/data/secret.txt"), b"mine").unwrap();
+
+        // The same author: an update, the data comes along.
+        std::fs::write(&file, aiop("demo", "1.1.0", &[])).unwrap();
+        let pending = ext.prepare(&file).unwrap();
+        assert!(!pending.author_changed());
+        ext.commit(&pending).unwrap();
+        assert_eq!(std::fs::read(root.join("demo/data/secret.txt")).unwrap(), b"mine");
+
+        // Another author: a different plugin; the data is set aside, not handed over.
+        std::fs::write(&file, aiop_by("Somebody else", "demo", "2.0.0", &[])).unwrap();
+        let pending = ext.prepare(&file).unwrap();
+        assert!(pending.author_changed());
+        ext.commit(&pending).unwrap();
+        assert_eq!(ext.list()[0].manifest.author, "Somebody else");
+        assert!(entries(&root.join("demo/data")).is_empty(), "the new author starts with empty data");
+        assert_eq!(std::fs::read(root.join(".demo.data-from-previous-author/secret.txt")).unwrap(), b"mine");
+    }
+
     /// A developer folder: manifest.json plus a wasm file (any bytes: nothing is run here).
     fn dev_folder(dir: &Path, name: &str, id: &str, permissions: &[&str], dev_wasm: Option<&str>) -> PathBuf {
         let folder = dir.join(name);
@@ -601,7 +688,7 @@ mod tests {
         if let Some(parent) = wasm.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
-        std::fs::write(wasm, b" asm   ").unwrap();
+        std::fs::write(wasm, b"\0asm\x01\0\0\0").unwrap();
         folder
     }
 
@@ -655,7 +742,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ext = ExternalPlugins::new(dir.path().join("ext"));
         ext.set_developer(true, &[]);
-        std::fs::write(dir.path().join("evil.wasm"), b" asm   ").unwrap();
+        std::fs::write(dir.path().join("evil.wasm"), b"\0asm\x01\0\0\0").unwrap();
         let up = dev_folder(dir.path(), "up", "up-plugin", &[], Some("../evil.wasm"));
         let error = ext.prepare_dev(&up).unwrap_err().to_string();
         assert!(error.contains("inside the folder"), "{error}");

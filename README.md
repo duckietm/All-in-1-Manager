@@ -1726,7 +1726,12 @@ On the **Plugins** page, **Install from file …** opens a file picker for a `.a
 installed a window shows the plugin's name, author, version and every permission it asks for, in plain words, with an
 **Install** button. Nothing is installed until you press it. An update of an installed plugin shows the same window,
 with the new permissions marked "new in this version". An update is installed only after you press **Install**: until
-then the old version stays as it was and keeps running. Removing a plugin deletes its folder and its private data, and a window says so first.
+then the old version stays as it was and keeps running. A package with the same id but **another author** is not an
+update: the window says so in red ("Different author"), and the new plugin does not get the old one's private data,
+which is set aside in `configuration/plugins/ext/.<id>.data-from-previous-author` (you can put it back by hand).
+Removing a plugin deletes its folder and its private data, everything an interrupted install left behind, the data set
+aside for it, and the private data of a developer version with the same id; a window says so first. A manifest lists
+at most 64 permissions, each one once.
 
 The plugin is stored in `configuration/plugins/ext/<id>/`. A plugin installed from a file always shows a red
 **Not verified** badge: nobody has checked its code. There is no official index yet, so every plugin is "not verified"
@@ -1753,9 +1758,9 @@ every column, in any table, whose name contains `password`, `token`, `secret` or
 
 **The approval card.** A plugin never changes the server or the database on its own. When it wants to run a script or
 write to the database, its page shows an **approval card** at the top, above the plugin's content, with the full
-script (or every statement with every value) and the name of the server. Nothing runs until you press **Approve**.
-**Reject** tells the plugin no; **Reject and stop this plugin** also closes it. A script that runs as root is marked
-"Runs as root". An approval belongs to the server that was logged in when the plugin asked: if the login changed in
+script (or every statement with every value), the name of the server and, for a script, the user it runs as. Nothing
+runs until you press **Approve**. **Reject** tells the plugin no; **Reject and stop this plugin** also closes it. A
+script that runs as root, or as a login user that is root, is marked "Runs as root". An approval belongs to the server that was logged in when the plugin asked: if the login changed in
 the meantime, Approve fails with "The server changed since the request" and nothing runs.
 
 **What runs where.** The plugin's code runs on your PC, inside the Manager, in a sandbox. It does not draw anything:
@@ -1776,9 +1781,14 @@ Manager's SSH tunnel to the hotel database, with the saved MariaDB account.
   32 MiB per file. Paths are relative and checked; a plugin cannot leave the folder, not even through a link. It
   cannot see the Manager's settings, your SSH keys or another plugin's data.
 - A file the plugin asks you to pick is handed over for one purpose only: a file you **open** is read-only for the
-  plugin, a file you **save** is write-only.
-- A file a plugin hands to the Catalogue manager's import is saved in `configuration/plugins/ext-exports/<id>/`,
-  outside the plugin's folder, so removing or updating the plugin does not delete it.
+  plugin, a file you **save** is write-only. Before the file dialog opens, a Manager window says what the plugin wants.
+- Every dialog of a plugin (a question, a text to type, choosing a file) has **Stop this plugin**, which closes it
+  like "Reject and stop". One call may open at most 20 dialogs; past that the plugin gets "cancelled" without anything
+  being shown, and its log says so.
+- A write batch holds at most 1,000 statements and 8 MiB of values, so the approval card can show all of it.
+- A file a plugin hands to the Catalogue manager's import (at most 32 MiB) is saved in
+  `configuration/plugins/ext-exports/<id>/`, outside the plugin's folder, so removing or updating the plugin does not
+  delete it. That folder holds at most 100 files and 256 MiB per plugin; past that the status line says it is full.
 - Every text a plugin supplies (names, labels, cells, log lines, dialog texts) has control, direction and invisible
   characters replaced before it is shown.
 - A plugin can only use the tables, hosts, ports and kinds of script it declared, and it only runs while its page is
@@ -1818,9 +1828,21 @@ optional tile. Build and pack it with:
 python source/tools/pack_plugin.py source/plugins/hello
 ```
 
-This builds the crate and writes `dist/hello.aiop`: a zip with `manifest.json`, `plugin.wasm` and, when present,
-`icon.png` and `i18n/<lang>.json` (the plugin's own texts per language). Install it from the Plugins page, or load the
-folder in developer mode.
+This builds the crate into `source/plugins/hello/target/` (its `.cargo/config.toml` sets that) and writes
+`dist/hello.aiop`: a zip with `manifest.json`, `plugin.wasm` and, when present, `icon.png` and `i18n/<lang>.json`.
+Install the `.aiop` from the Plugins page, or load the folder `source/plugins/hello` in developer mode: its
+`dev_wasm` points at the built file. The `i18n/` files are accepted in a package but not used yet: in API 1.0 a
+plugin's texts are shown as it writes them, and translating them comes in a later milestone.
+
+A plugin crate outside this repository needs the WIT file: copy the folder `source/wit/aio-plugin` (it holds
+`plugin.wit`) into your crate, for example as `wit/aio-plugin`, and point `wit-bindgen` at it:
+
+```rust
+wit_bindgen::generate!({ world: "plugin", path: "wit/aio-plugin" });
+```
+
+`source/plugins/hello/src/lib.rs` shows the rest: implement the generated `Guest` trait (`render` and `on-event`) and
+`export!` it.
 
 The official plugin index (reviewed sources, signed releases, revocation, an Available tab) comes in a later
 milestone. Until then plugins come from files and none of them is verified.

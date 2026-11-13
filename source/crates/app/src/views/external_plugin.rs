@@ -159,10 +159,24 @@ impl Running {
         let services = Arc::new(AppServices::new(shared.clone(), &info.manifest.name, exports, output.clone()));
         let ctx = shared.ctx.clone();
         let approvals = Arc::new(Approvals::with_notifier(move || ctx.request_repaint()));
+        // The card's text is built once per request, on the plugin's worker, never per frame.
+        approvals.set_formatter(plugin_approval::card_lines);
         let (sender, receiver) = mpsc::unbounded_channel();
         let host: Arc<dyn HostServices> = services.clone();
-        let task = shared.runtime.spawn(run(info.clone(), dir, host, approvals.clone(), state.clone(), receiver, shared.ctx.clone()));
-        Running { id: info.manifest.id.clone(), state, output, services, approvals, events: Some(sender), task: task.abort_handle() }
+        let task = shared.runtime.spawn(run(info.clone(), dir, host, approvals.clone(), state.clone(), receiver, shared.ctx.clone())).abort_handle();
+        // "Stop this plugin" in one of its dialogs: like "Reject and stop" on the approval card.
+        let (stop_task, stop_state, stop_approvals, stop_id, ctx) = (task.clone(), state.clone(), approvals.clone(), info.manifest.id.clone(), shared.ctx.clone());
+        services.on_stop(move || {
+            stop_task.abort();
+            stop_approvals.reject_all_for(&stop_id);
+            {
+                let mut s = stop_state.lock();
+                s.busy = false;
+                s.stopped = Some(t("you stopped it").to_string());
+            }
+            ctx.request_repaint();
+        });
+        Running { id: info.manifest.id.clone(), state, output, services, approvals, events: Some(sender), task }
     }
 
     /// Stops the task (at its next await; a running guest call ends within the call limit) and rejects whatever it
@@ -323,7 +337,11 @@ impl ExternalPluginView {
             });
         });
         ui.add_space(10.0);
-        let target = plugin_approval::Target { host: self.running.services.bound_host(), changed: self.running.services.server_changed() };
+        let target = plugin_approval::Target {
+            host: self.running.services.bound_host(),
+            user: self.running.services.bound_user(),
+            changed: self.running.services.server_changed(),
+        };
         match plugin_approval::show(ui, palette, &self.running.approvals, &self.info, &self.name, &target) {
             Outcome::Approve(id) => {
                 // Busy from the click on, so nothing (Reload, leaving the page) can cut the run off as it starts.

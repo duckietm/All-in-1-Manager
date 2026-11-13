@@ -3878,5 +3878,14 @@
   "{plugin} is removed.": "{plugin} is verwijderd.",
   "{plugin} {version} is installed.": "{plugin} {version} is geïnstalleerd.",
   "{plugin}: the file could not be saved: {error}": "{plugin}: het bestand kon niet worden opgeslagen: {error}",
-  "⚠ Runs as root": "⚠ Draait als root"
+  "⚠ Runs as root": "⚠ Draait als root",
+  "Answers nothing and closes the plugin; Reload starts it again": "Geeft geen antwoord en sluit de plugin; Herladen start hem opnieuw",
+  "Choose a file …": "Kies een bestand …",
+  "Different author": "Andere auteur",
+  "Stop this plugin": "Deze plugin stoppen",
+  "The installed plugin is by {author}. This package is treated as another plugin: it does not get the installed plugin's private data, which is kept aside.": "De geïnstalleerde plugin is van {author}. Dit pakket wordt als een andere plugin behandeld: het krijgt de privégegevens van de geïnstalleerde plugin niet, die worden apart gezet.",
+  "The plugin wants you to choose a file to open. It can read that one file, nothing else.": "De plugin vraagt je een bestand te kiezen om te openen. Hij kan alleen dat ene bestand lezen, verder niets.",
+  "The plugin wants you to choose where to save a file. It can write that one file, nothing else.": "De plugin vraagt je te kiezen waar een bestand wordt opgeslagen. Hij kan alleen dat ene bestand schrijven, verder niets.",
+  "its exports folder {folder} is full (at most {files} files and {size} MiB): delete files there first": "zijn exportmap {folder} is vol (hoogstens {files} bestanden en {size} MiB): verwijder daar eerst bestanden",
+  "wants to run this script on the server as the login user {user}:": "wil dit script op de server uitvoeren als de aanmeldgebruiker {user}:"
 }

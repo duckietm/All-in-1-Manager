@@ -23,10 +23,11 @@
 //!   [`MAX_LOG_ENTRIES`] entries / [`MAX_LOG_BYTES`] bytes, then one [`LOG_TRUNCATED`] entry and nothing
 //!   more until the next call;
 //! * the `aio:plugin/host` imports: `log` / `status` / `ask` / `prompt-text` / the file dialogs go to
-//!   [`HostServices`]; `file-read` / `file-write` only inside `<plugin dir>/data/` (see
+//!   [`HostServices`] (at most [`MAX_DIALOGS`] dialogs per call; past it they get the cancel answer and are not
+//!   shown); `file-read` / `file-write` only inside `<plugin dir>/data/` (see
 //!   [`resolve_private`]), with a quota of [`MAX_DATA_BYTES`] / [`MAX_DATA_ENTRIES`] and files of at most
 //!   [`MAX_FILE_READ`]; a `picked-file` wraps the path the user picked (the guest sees only the file
-//!   name); `open-import-preview` hands the picked file's bytes to the Manager;
+//!   name); `open-import-preview` hands the picked file's bytes (at most [`MAX_FILE_READ`]) to the Manager;
 //! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
 //!   `Err("permission denied...")` to the guest and a sanitised `Warn` line in the plugin log):
 //!   `sql-select` through [`crate::sql::build_select`], then [`HostServices::sql_select`];
@@ -111,6 +112,11 @@ pub const LOG_TRUNCATED: &str = "log truncated by the host";
 pub const MAX_DATA_BYTES: u64 = 64 * 1024 * 1024;
 /// Files and folders in a plugin's private folder.
 pub const MAX_DATA_ENTRIES: usize = 10_000;
+/// Dialogs (`ask`, `prompt-text`, the file pickers) one call may open. Past it, each dialog request gets the cancel
+/// answer without anything being shown, so a plugin cannot keep the user in a loop of dialogs.
+pub const MAX_DIALOGS: usize = 20;
+/// The log line written once a call goes past [`MAX_DIALOGS`].
+pub const DIALOGS_REFUSED: &str = "more than 20 dialogs in one call: further dialogs are cancelled without being shown";
 /// Longest relative path accepted by `file-read` / `file-write`.
 const MAX_PATH: usize = 255;
 /// Most folder levels in a private path.
@@ -393,6 +399,8 @@ pub struct HostState {
     /// The manifest id (scripts and write batches are queued in its name).
     plugin: String,
     approvals: Arc<Approvals>,
+    /// Dialogs opened by the current call (reset by each call; see [`MAX_DIALOGS`]).
+    dialogs: usize,
 }
 
 impl WasiView for HostState {
@@ -406,6 +414,19 @@ impl HostState {
     async fn waiting<F: std::future::Future>(&mut self, fut: F) -> F::Output {
         let _paused = Paused::begin(&self.clock);
         fut.await
+    }
+
+    /// Counts a dialog of the current call; false past [`MAX_DIALOGS`] (the first refusal is logged).
+    fn dialog_allowed(&mut self) -> bool {
+        if self.dialogs < MAX_DIALOGS {
+            self.dialogs += 1;
+            return true;
+        }
+        if self.dialogs == MAX_DIALOGS {
+            self.dialogs += 1;
+            self.log.log(Level::Warn, DIALOGS_REFUSED);
+        }
+        false
     }
 
     fn picked(&self, file: &Resource<PickedFile>) -> Result<&PickedFile, String> {
@@ -607,6 +628,9 @@ impl Host for HostState {
     }
 
     async fn ask(&mut self, question: String) -> bool {
+        if !self.dialog_allowed() {
+            return false;
+        }
         let services = self.services.clone();
         self.waiting(services.ask(question)).await
     }
@@ -710,11 +734,17 @@ impl Host for HostState {
     }
 
     async fn prompt_text(&mut self, title: String, label: String, default_value: String) -> Option<String> {
+        if !self.dialog_allowed() {
+            return None;
+        }
         let services = self.services.clone();
         self.waiting(services.prompt_text(title, label, default_value)).await
     }
 
     async fn pick_open_file(&mut self, title: String, extensions: Vec<String>) -> Option<Resource<PickedFile>> {
+        if !self.dialog_allowed() {
+            return None;
+        }
         let services = self.services.clone();
         let path = self.waiting(services.pick_open_file(title, extensions)).await?;
         self.table.push(PickedFile { path, opened: true }).ok()
@@ -726,6 +756,9 @@ impl Host for HostState {
         suggested_name: String,
         extensions: Vec<String>,
     ) -> Option<Resource<PickedFile>> {
+        if !self.dialog_allowed() {
+            return None;
+        }
         let services = self.services.clone();
         let path = self.waiting(services.pick_save_file(title, suggested_name, extensions)).await?;
         self.table.push(PickedFile { path, opened: false }).ok()
@@ -737,7 +770,7 @@ impl Host for HostState {
             return Err("a file picked for saving cannot be read".into());
         }
         let name = file_name(&picked.path);
-        let bytes = std::fs::read(&picked.path).map_err(|e| io_text(&e))?;
+        let bytes = read_limited(&picked.path)?;
         self.services.open_import_preview(name, bytes);
         Ok(())
     }
@@ -860,7 +893,7 @@ impl PluginInstance {
     /// Loads the installed plugin folder `dir` (`<root>/<id>/`): compiles `dir/plugin.wasm` and
     /// instantiates it under the limits above. `dir/data/` is created if missing; it is the only folder
     /// `file-read` / `file-write` touch. Scripts and write batches wait in `approvals` (shared with the
-    /// app, which shows them to the user). Compiling is CPU heavy: call this on a worker thread.
+    /// app, which shows them to the user). The compile runs on tokio's blocking pool.
     pub async fn load(
         engine: &Engine,
         dir: &Path,
@@ -900,7 +933,13 @@ impl PluginInstance {
             bail!("{} must be a folder inside {}, not a link", data.display(), dir_real.display());
         }
 
-        let component = Component::from_binary(engine, &wasm).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        // Compiling (Cranelift) is CPU work that cannot be cancelled: off the async workers, which the app's SSH
+        // tasks share.
+        let compiling = engine.clone();
+        let component = tokio::task::spawn_blocking(move || Component::from_binary(&compiling, &wasm))
+            .await
+            .context("compiling the plugin stopped")?
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
         let mut linker: Linker<HostState> = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| anyhow::anyhow!("{e:#}"))?;
         Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| anyhow::anyhow!("{e:#}"))?;
@@ -927,6 +966,7 @@ impl PluginInstance {
             next_tcp: 0,
             plugin: manifest.id.clone(),
             approvals,
+            dialogs: 0,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1014,9 +1054,10 @@ impl Drop for PluginInstance {
 }
 
 fn arm(store: &mut Store<HostState>) {
-    let state = store.data();
+    let state = store.data_mut();
     state.clock.start();
     state.log.reset();
+    state.dialogs = 0;
     store.set_epoch_deadline(CALL_TICKS);
 }
 

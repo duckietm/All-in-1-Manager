@@ -80,9 +80,13 @@ pub fn check_script(script: &str) -> Result<(), String> {
 }
 
 type Notifier = Arc<dyn Fn() + Send + Sync>;
+/// Turns a request into the lines its card shows (see [`Approvals::set_formatter`]).
+type Formatter = Arc<dyn Fn(&Pending) -> Vec<String> + Send + Sync>;
 
 struct Entry {
-    pending: Pending,
+    pending: Arc<Pending>,
+    /// What the card shows, built once when the request was queued.
+    card: Arc<[String]>,
     answer: oneshot::Sender<Decision>,
 }
 
@@ -97,6 +101,7 @@ struct State {
 pub struct Approvals {
     state: Mutex<State>,
     notifier: Mutex<Option<Notifier>>,
+    formatter: Mutex<Option<Formatter>>,
 }
 
 impl Approvals {
@@ -118,6 +123,21 @@ impl Approvals {
         *self.notifier.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(notify));
     }
 
+    /// Sets how a request becomes the lines of its card. It runs once per request, in [`Approvals::request`] (on the
+    /// plugin's worker thread, never on the window's), so the window only draws what is ready. Without one, the
+    /// lines are those of [`Pending::text`].
+    pub fn set_formatter(&self, format: impl Fn(&Pending) -> Vec<String> + Send + Sync + 'static) {
+        *self.formatter.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(format));
+    }
+
+    fn card_of(&self, p: &Pending) -> Arc<[String]> {
+        let formatter = self.formatter.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match formatter {
+            Some(format) => format(p).into(),
+            None => p.text().lines().map(str::to_string).collect::<Vec<_>>().into(),
+        }
+    }
+
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -134,11 +154,13 @@ impl Approvals {
     /// resolves as [`Decision::Rejected`].
     pub fn request(&self, p: Pending) -> impl Future<Output = Decision> + Send + '_ {
         let (answer, decision) = oneshot::channel();
+        // Built here, once, outside the lock.
+        let card = self.card_of(&p);
         let id = {
             let mut s = self.lock();
             let id = s.next;
             s.next += 1;
-            s.items.insert(id, Entry { pending: p, answer });
+            s.items.insert(id, Entry { pending: Arc::new(p), card, answer });
             id
         };
         self.notify();
@@ -150,9 +172,14 @@ impl Approvals {
         }
     }
 
-    /// The requests waiting for the user, oldest first.
-    pub fn pending(&self) -> Vec<(u64, Pending)> {
+    /// The requests waiting for the user, oldest first. Cheap: the requests are shared, not copied.
+    pub fn pending(&self) -> Vec<(u64, Arc<Pending>)> {
         self.lock().items.iter().map(|(id, e)| (*id, e.pending.clone())).collect()
+    }
+
+    /// The lines the card of request `id` shows, as built when it was queued; None once it left the queue.
+    pub fn card(&self, id: u64) -> Option<Arc<[String]>> {
+        self.lock().items.get(&id).map(|e| e.card.clone())
     }
 
     /// True while a request of `plugin` waits.

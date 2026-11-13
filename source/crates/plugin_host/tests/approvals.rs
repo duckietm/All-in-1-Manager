@@ -98,7 +98,7 @@ async fn hello(aiop: &[u8], root: &Path, permissions: &[&str], fake: Arc<Fake>, 
 }
 
 /// Waits (up to 10 s, real time) until `n` requests are pending.
-async fn wait_pending(a: &Approvals, n: usize) -> Vec<(u64, Pending)> {
+async fn wait_pending(a: &Approvals, n: usize) -> Vec<(u64, Arc<Pending>)> {
     for _ in 0..2000 {
         let p = a.pending();
         if p.len() == n {
@@ -130,7 +130,7 @@ async fn script_runs_only_after_approval() {
 
     let pending = wait_pending(&queue, 1).await;
     let (id, item) = &pending[0];
-    assert_eq!(*item, Pending::Script { plugin: "hello".into(), script: script.into(), as_root: false });
+    assert_eq!(**item, Pending::Script { plugin: "hello".into(), script: script.into(), as_root: false });
     assert_eq!(item.plugin(), "hello");
     // The admin sees exactly what will run.
     assert_eq!(item.text(), script);
@@ -170,7 +170,7 @@ async fn writes_run_only_after_approval() {
     });
     let pending = wait_pending(&queue, 1).await;
     let (id, item) = &pending[0];
-    let Pending::Writes { plugin, batch } = item else { panic!("{item:?}") };
+    let Pending::Writes { plugin, batch } = &**item else { panic!("{item:?}") };
     assert_eq!(plugin, "hello");
     assert_eq!(batch.statements.len(), 2);
     // The preview is the summary, one line per change, with plugin text sanitised.
@@ -244,7 +244,7 @@ async fn root_script_needs_ssh_root() {
         (plain, host.run_script("id".into(), true).await)
     });
     let p = wait_pending(&queue, 1).await;
-    assert_eq!(p[0].1, Pending::Script { plugin: "hello".into(), script: "id".into(), as_root: true });
+    assert_eq!(*p[0].1, Pending::Script { plugin: "hello".into(), script: "id".into(), as_root: true });
     queue.decide(p[0].0, Decision::Approved);
     let (plain, rooted) = call.await.unwrap();
     assert!(plain.unwrap_err().starts_with("permission denied"));

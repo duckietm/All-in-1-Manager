@@ -120,6 +120,31 @@ pub fn valid_id(id: &str) -> bool {
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
+/// Most permissions one manifest may list (the consent window lists every one of them).
+pub const MAX_PERMISSIONS: usize = 64;
+
+/// Refuses a permission listed twice, a table named twice for the same access (in one permission or across
+/// several) and an HTTP host listed twice (any case): a long list with repeats only hides what matters.
+fn check_duplicates(permissions: &[Permission]) -> Result<()> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut note = |key: String| -> Result<()> {
+        if seen.contains(&key) {
+            bail!("A permission is listed twice: {key}");
+        }
+        seen.push(key);
+        Ok(())
+    };
+    for p in permissions {
+        match p {
+            Permission::SqlRead(tables) => tables.iter().try_for_each(|t| note(format!("sql:read:{t}")))?,
+            Permission::SqlWrite(tables) => tables.iter().try_for_each(|t| note(format!("sql:write:{t}")))?,
+            Permission::Http(host) => note(format!("http:{}", host.to_ascii_lowercase()))?,
+            other => note(other.to_string())?,
+        }
+    }
+    Ok(())
+}
+
 impl Manifest {
     pub fn parse(json: &[u8]) -> Result<Manifest> {
         let raw: Raw = serde_json::from_slice(json).context("manifest.json is not valid")?;
@@ -145,7 +170,11 @@ impl Manifest {
                 bail!("A manifest text holds control or invisible characters");
             }
         }
+        if raw.permissions.len() > MAX_PERMISSIONS {
+            bail!("A manifest may list at most {MAX_PERMISSIONS} permissions");
+        }
         let permissions = raw.permissions.iter().map(|p| Permission::parse(p)).collect::<Result<Vec<_>>>()?;
+        check_duplicates(&permissions)?;
         Ok(Manifest {
             id: raw.id,
             name: raw.name,

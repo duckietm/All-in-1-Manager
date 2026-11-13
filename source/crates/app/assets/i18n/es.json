@@ -3878,5 +3878,14 @@
   "{plugin} is removed.": "{plugin} se ha eliminado.",
   "{plugin} {version} is installed.": "{plugin} {version} está instalado.",
   "{plugin}: the file could not be saved: {error}": "{plugin}: no se pudo guardar el archivo: {error}",
-  "⚠ Runs as root": "⚠ Se ejecuta como root"
+  "⚠ Runs as root": "⚠ Se ejecuta como root",
+  "Answers nothing and closes the plugin; Reload starts it again": "No responde nada y cierra el plugin; Recargar lo inicia de nuevo",
+  "Choose a file …": "Elegir un archivo …",
+  "Different author": "Autor diferente",
+  "Stop this plugin": "Detener este plugin",
+  "The installed plugin is by {author}. This package is treated as another plugin: it does not get the installed plugin's private data, which is kept aside.": "El plugin instalado es de {author}. Este paquete se trata como otro plugin: no recibe los datos privados del plugin instalado, que se guardan aparte.",
+  "The plugin wants you to choose a file to open. It can read that one file, nothing else.": "El plugin te pide que elijas un archivo para abrir. Podrá leer solo ese archivo, nada más.",
+  "The plugin wants you to choose where to save a file. It can write that one file, nothing else.": "El plugin te pide que elijas dónde guardar un archivo. Podrá escribir solo ese archivo, nada más.",
+  "its exports folder {folder} is full (at most {files} files and {size} MiB): delete files there first": "su carpeta de exportaciones {folder} está llena (como máximo {files} archivos y {size} MiB): borra antes algunos archivos",
+  "wants to run this script on the server as the login user {user}:": "quiere ejecutar este script en el servidor como el usuario de acceso {user}:"
 }

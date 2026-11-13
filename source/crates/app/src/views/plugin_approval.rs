@@ -3,6 +3,7 @@
 //! before Approve (the runtime waits in `Approvals::request`).
 
 use aio_plugin_host::approvals::{Approvals, Decision, Pending};
+use aio_plugin_host::display_safe;
 use aio_plugin_host::manifest::spoofing;
 use aio_plugin_host::services::{SqlValue, WriteBatch};
 use eframe::egui::{self, RichText};
@@ -79,6 +80,28 @@ pub fn writes_text(batch: &WriteBatch) -> String {
     out
 }
 
+/// Characters per line of the card: longer lines are cut into several, so every line has the same height and the card
+/// only lays out the lines in view, however long the batch is.
+pub const CARD_LINE: usize = 100;
+
+/// What the card of a request shows, cut into lines of at most [`CARD_LINE`] characters: the full script, or every
+/// statement with every value. Built once per request (the approval queue's formatter), never per frame.
+pub fn card_lines(pending: &Pending) -> Vec<String> {
+    let text = match pending {
+        Pending::Script { .. } => pending.text(),
+        Pending::Writes { batch, .. } => writes_text(batch),
+    };
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        if chars.is_empty() {
+            lines.push(String::new());
+        }
+        lines.extend(chars.chunks(CARD_LINE).map(|c| c.iter().collect::<String>()));
+    }
+    lines
+}
+
 /// The badges every external plugin carries: "Not verified" (red) and "Developer folder".
 pub fn badges(ui: &mut egui::Ui, palette: &Palette, info: &ExternalInfo) {
     if !info.verified {
@@ -89,17 +112,30 @@ pub fn badges(ui: &mut egui::Ui, palette: &Palette, info: &ExternalInfo) {
     }
 }
 
-/// The cards of every request of `info`'s plugin that waits for the user, oldest first.
-/// The server the waiting request was made on, and whether the login has changed since (Approve then runs nothing).
+/// The server the waiting request was made on, the user a script without root runs as there, and whether the login
+/// has changed since (Approve then runs nothing).
 #[derive(Debug, Clone, Default)]
 pub struct Target {
     pub host: Option<String>,
+    pub user: Option<String>,
     pub changed: bool,
 }
 
+/// Who a script runs as on the server: "root" with `as_root`, else the login user.
+pub fn runs_as(as_root: bool, target: &Target) -> Option<String> {
+    if as_root {
+        Some("root".into())
+    } else {
+        target.user.clone()
+    }
+}
+
+/// The cards of every request of `info`'s plugin that waits for the user, oldest first.
 pub fn show(ui: &mut egui::Ui, palette: &Palette, approvals: &Approvals, info: &ExternalInfo, name: &str, target: &Target) -> Outcome {
     let mut outcome = Outcome::Nothing;
     for (id, pending) in approvals.pending().into_iter().filter(|(_, p)| p.plugin() == info.manifest.id) {
+        // Built once when the request was queued; gone if it was decided meanwhile.
+        let Some(lines) = approvals.card(id) else { continue };
         let mut decision = None;
         let frame = widgets::card_frame(palette).stroke(egui::Stroke::new(2.0_f32, palette.warning_text)).inner_margin(egui::Margin::symmetric(20, 16));
         frame.show(ui, |ui| {
@@ -108,19 +144,24 @@ pub fn show(ui: &mut egui::Ui, palette: &Palette, approvals: &Approvals, info: &
                 ui.label(widgets::title_text(name, 17.0));
                 badges(ui, palette, info);
             });
-            let (what, text) = match &pending {
+            let what = match &*pending {
                 Pending::Script { as_root, .. } => {
-                    if *as_root {
+                    let user = runs_as(*as_root, target);
+                    if user.as_deref() == Some("root") {
                         ui.label(RichText::new(t("⚠ Runs as root")).size(18.0).strong().color(palette.error_text));
-                        (t("wants to run this script on the server as root, with full control of the server:").to_string(), pending.text())
+                    }
+                    if *as_root {
+                        t("wants to run this script on the server as root, with full control of the server:").to_string()
                     } else {
-                        (t("wants to run this script on the server as the login user:").to_string(), pending.text())
+                        match user {
+                            Some(user) => tf("wants to run this script on the server as the login user {user}:", &[("user", &display_safe(&user, 60))]),
+                            None => t("wants to run this script on the server as the login user:").to_string(),
+                        }
                     }
                 }
-                Pending::Writes { batch, .. } => (
-                    tf("wants to make these changes to the hotel database, in one transaction ({count} statements):", &[("count", &batch.statements.len().to_string())]),
-                    writes_text(batch),
-                ),
+                Pending::Writes { batch, .. } => {
+                    tf("wants to make these changes to the hotel database, in one transaction ({count} statements):", &[("count", &batch.statements.len().to_string())])
+                }
             };
             ui.label(RichText::new(what).size(13.5));
             let server = match &target.host {
@@ -133,9 +174,12 @@ pub fn show(ui: &mut egui::Ui, palette: &Palette, approvals: &Approvals, info: &
             }
             ui.add_space(4.0);
             egui::Frame::new().fill(palette.hover).corner_radius(6).inner_margin(8).show(ui, |ui| {
-                egui::ScrollArea::vertical().id_salt(("approval", id)).max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {
-                    let mut shown = text.as_str();
-                    ui.add(egui::TextEdit::multiline(&mut shown).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY).frame(false));
+                // Only the lines in view are laid out: a long batch costs no more per frame than a short one.
+                let row_height = ui.text_style_height(&egui::TextStyle::Monospace);
+                egui::ScrollArea::both().id_salt(("approval", id)).max_height(320.0).auto_shrink([false, true]).show_rows(ui, row_height, lines.len(), |ui, rows| {
+                    for line in &lines[rows] {
+                        ui.add(egui::Label::new(RichText::new(line.as_str()).monospace()).extend());
+                    }
                 });
             });
             ui.add_space(6.0);
@@ -188,6 +232,42 @@ mod tests {
         assert!(text.contains("?3 = NULL"));
         assert!(text.starts_with("1. UPDATE `rooms`"));
         assert!(!text.contains('\u{202E}'));
+    }
+
+    #[test]
+    fn card_lines_are_cut_and_built_once_per_request() {
+        let long = "y".repeat(CARD_LINE * 2 + 5);
+        let batch = WriteBatch { statements: vec![("INSERT INTO `rooms` (`name`) VALUES (?)".into(), vec![SqlValue::Text(long.clone())])], summary: vec![] };
+        let lines = card_lines(&Pending::Writes { plugin: "demo".into(), batch });
+        assert!(lines.iter().all(|l| l.chars().count() <= CARD_LINE), "{lines:?}");
+        assert_eq!(lines.concat().matches('y').count(), long.len(), "nothing is lost by the cut");
+        let script = card_lines(&Pending::Script { plugin: "demo".into(), script: "echo a\n\necho b".into(), as_root: false });
+        assert_eq!(script, vec!["echo a".to_string(), String::new(), "echo b".to_string()]);
+
+        // The queue builds the card once, when the request comes in; drawing it any number of times builds nothing.
+        let built = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let approvals = Approvals::new();
+        let counted = built.clone();
+        approvals.set_formatter(move |p| {
+            counted.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+            card_lines(p)
+        });
+        let request = approvals.request(Pending::Script { plugin: "demo".into(), script: "id".into(), as_root: false });
+        for _ in 0..5 {
+            let (id, _) = approvals.pending()[0].clone();
+            assert_eq!(approvals.card(id).unwrap().to_vec(), vec!["id".to_string()]);
+        }
+        assert_eq!(built.load(std::sync::atomic::Ordering::Acquire), 1);
+        drop(request);
+        assert!(approvals.pending().is_empty());
+    }
+
+    #[test]
+    fn a_script_names_who_it_runs_as() {
+        let target = Target { host: Some("hotel".into()), user: Some("deploy".into()), changed: false };
+        assert_eq!(runs_as(false, &target).as_deref(), Some("deploy"));
+        assert_eq!(runs_as(true, &target).as_deref(), Some("root"));
+        assert_eq!(runs_as(false, &Target::default()), None);
     }
 
     #[test]

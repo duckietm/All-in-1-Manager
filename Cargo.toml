@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["source/plugins"]
-members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/plugin_host", "source/crates/app"]
+members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/plugin_host", "source/crates/plugin_index", "source/crates/app"]
 
 [workspace.package]
 version = "2.0.20"
@@ -14,6 +14,7 @@ aio-assets = { path = "source/crates/assets" }
 aio-remote = { path = "source/crates/remote" }
 aio-terminal = { path = "source/crates/terminal" }
 aio-plugin-host = { path = "source/crates/plugin_host" }
+aio-plugin-index = { path = "source/crates/plugin_index" }
 
 anyhow = "1"
 thiserror = "2"
@@ -30,6 +31,7 @@ parking_lot = "0.12"
 rand = "0.8"
 base64 = "0.22"
 sha2 = "0.10"
+ed25519-dalek = "2.2"
 sha1 = "0.10"
 hmac = "0.12"
 aes = "0.8"

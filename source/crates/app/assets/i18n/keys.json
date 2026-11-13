@@ -3057,7 +3057,7 @@
   "This computer reaches the server from {client}.",
   "This date has passed: the emulator no longer sends the tile, so the hotel does not show it. Clear the date to show it again, or remove the tile.",
   "This emulator is older and cannot reload from here. {reload}",
-  "This file has comments or is not a list of settings: it is edited as text, so nothing in it is lost.",
+  "This file is not a list of settings: it is edited as text.",
   "This hotel's database has no catalogue history (catalog_manager_history): the emulator is older than Catalog Studio.",
   "This is the layout the installer uses now.",
   "This key has a password",

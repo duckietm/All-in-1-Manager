@@ -4016,5 +4016,6 @@
   "{file} saved. Players get it when they reload the hotel.": "{file} kaydedildi. Oyuncular oteli yeniden yüklediğinde alır.",
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} kaydedildi. Otel derlenmiş kopyayı sunuyor: kullanmak için Rebuild Octane'i (Araçlar) çalıştır.",
   "{folder} has no settings files: run the Octane step first.": "{folder} içinde ayar dosyası yok: önce Octane adımını çalıştır.",
-  "{key}  ({count})": "{key}  ({count})"
+  "{key}  ({count})": "{key}  ({count})",
+  "This file is not a list of settings: it is edited as text.": "Bu dosya bir ayar listesi değil: metin olarak düzenlenir."
 }

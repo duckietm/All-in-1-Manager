@@ -64,6 +64,17 @@ pub fn example_of(name: &str) -> String {
     }
 }
 
+/// The examples a file may have, the likeliest first: a hotel that keeps `ui-config.jsonc` still has Octane's
+/// `ui-config.example`, and the other way round.
+pub fn examples_of(name: &str) -> Vec<String> {
+    let stem = name.trim_end_matches(".jsonc").trim_end_matches(".json");
+    let mut list = vec![example_of(name), format!("{stem}.example"), format!("{stem}.jsonc.example")];
+    list.dedup();
+    let mut seen = std::collections::HashSet::new();
+    list.retain(|e| seen.insert(e.clone()));
+    list
+}
+
 fn public() -> String {
     octane::configuration_directory()
 }
@@ -104,6 +115,18 @@ pub fn parse_listing(output: &str) -> Vec<ConfigFile> {
                 }
             }
             _ => {}
+        }
+    }
+    // A hotel that keeps ui-config.jsonc: Octane's ui-config.example is its example, not a second file to make.
+    fn stem(name: &str) -> &str {
+        name.trim_end_matches(".jsonc").trim_end_matches(".json")
+    }
+    let made: Vec<String> = files.iter().filter(|f| f.size.is_some()).map(|f| stem(&f.name).to_string()).collect();
+    let examples: Vec<String> = files.iter().filter(|f| f.example).map(|f| stem(&f.name).to_string()).collect();
+    files.retain(|f| f.size.is_some() || !made.iter().any(|m| m == stem(&f.name)));
+    for file in files.iter_mut() {
+        if examples.iter().any(|e| e == stem(&file.name)) {
+            file.example = true;
         }
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
@@ -151,11 +174,18 @@ pub async fn load(server: &dyn Server, name: &str) -> Result<Loaded> {
     if !valid_name(name) {
         return Err(ServerError(format!("{name} is not a configuration file name.")).into());
     }
-    let example = read(server, &format!("{}/{}", public(), example_of(name))).await?.map(|b| String::from_utf8_lossy(&b).into_owned());
+    let mut example = None;
+    for candidate in examples_of(name) {
+        if let Some(bytes) = read(server, &format!("{}/{candidate}", public())).await? {
+            example = Some(String::from_utf8_lossy(&bytes).into_owned());
+            break;
+        }
+    }
     match read(server, &format!("{}/{name}", public())).await? {
         Some(bytes) => {
             let text = String::from_utf8_lossy(&bytes).into_owned();
-            Ok(Loaded { name: name.into(), layout: detect_layout(&text), sha256: sha256(&bytes), text, example })
+            let layout = if name.ends_with(".jsonc") { jsonc_layout(&text) } else { detect_layout(&text) };
+            Ok(Loaded { name: name.into(), layout, sha256: sha256(&bytes), text, example })
         }
         None => match &example {
             Some(text) => Ok(Loaded { name: name.into(), layout: detect_layout(text), sha256: String::new(), text: text.clone(), example }),
@@ -234,6 +264,246 @@ fn short_error(e: &serde_json::Error) -> String {
 /// `value` written the way the file was (its indent, BOM and closing newline).
 pub fn write(value: &Value, layout: &Layout) -> String {
     write_json(value, layout)
+}
+
+/// The comments of a .jsonc file, by the setting they belong to: the lines above a setting, a comment after its value
+/// on the same line, and what is before and after the whole file. A path is the keys from the top, joined by "\u{1}".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Comments {
+    pub head: Vec<String>,
+    pub before: std::collections::HashMap<String, Vec<String>>,
+    pub after: std::collections::HashMap<String, String>,
+    pub tail: Vec<String>,
+}
+
+enum Frame {
+    Object { key: Option<String> },
+    Array,
+}
+
+/// Finds the comments of a .jsonc text and the settings they belong to.
+pub fn comments(text: &str) -> Comments {
+    let chars: Vec<char> = text.trim_start_matches('\u{feff}').chars().collect();
+    let mut found = Comments::default();
+    let mut stack: Vec<Frame> = Vec::new();
+    let mut pending: Vec<String> = Vec::new();
+    // The setting whose value ended last, and whether a line break came since.
+    let mut last: Option<String> = None;
+    let mut newline_since = true;
+    let mut started = false;
+    let mut finished = false;
+    let path_of = |stack: &[Frame], key: &str| -> String {
+        // The keys of the objects around it (the innermost one is the object this key is in), then the key.
+        let parents = &stack[..stack.len().saturating_sub(1)];
+        let mut parts: Vec<String> = parents
+            .iter()
+            .filter_map(|f| match f {
+                Frame::Object { key: Some(k) } => Some(k.clone()),
+                _ => None,
+            })
+            .collect();
+        parts.push(key.to_string());
+        parts.join("\u{1}")
+    };
+    let current_path = |stack: &[Frame]| -> Option<String> {
+        match stack.last() {
+            Some(Frame::Object { key: Some(_) }) => {
+                let parts: Vec<String> = stack.iter().filter_map(|f| match f {
+                    Frame::Object { key: Some(k) } => Some(k.clone()),
+                    _ => None,
+                }).collect();
+                Some(parts.join("\u{1}"))
+            }
+            _ => None,
+        }
+    };
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        match c {
+            '/' if chars.get(i + 1) == Some(&'/') || chars.get(i + 1) == Some(&'*') => {
+                let start = i;
+                if chars[i + 1] == '/' {
+                    while i < chars.len() && chars[i] != '\n' {
+                        i += 1;
+                    }
+                } else {
+                    i += 2;
+                    while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                        i += 1;
+                    }
+                    i = (i + 2).min(chars.len());
+                }
+                let comment: String = chars[start..i].iter().collect::<String>().trim_end().to_string();
+                match (&last, newline_since) {
+                    (Some(path), false) if !comment.contains('\n') => {
+                        found.after.insert(path.clone(), comment);
+                    }
+                    _ if !started => found.head.push(comment),
+                    _ if finished => found.tail.push(comment),
+                    _ => pending.push(comment),
+                }
+                continue;
+            }
+            '\n' => newline_since = true,
+            '"' => {
+                // A string: a key when a ':' follows in an object.
+                let start = i + 1;
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    }
+                    i += 1;
+                }
+                let raw: String = chars[start..i.min(chars.len())].iter().collect();
+                let mut j = i + 1;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                let is_key = chars.get(j) == Some(&':') && matches!(stack.last(), Some(Frame::Object { .. }));
+                if is_key {
+                    let key = serde_json::from_str::<String>(&format!("\"{raw}\"")).unwrap_or(raw);
+                    let path = path_of(&stack, &key);
+                    if !pending.is_empty() {
+                        found.before.insert(path, std::mem::take(&mut pending));
+                    }
+                    if let Some(Frame::Object { key: slot }) = stack.last_mut() {
+                        *slot = Some(key);
+                    }
+                } else {
+                    last = current_path(&stack);
+                    newline_since = false;
+                }
+            }
+            '{' => {
+                started = true;
+                stack.push(Frame::Object { key: None });
+            }
+            '[' => {
+                started = true;
+                stack.push(Frame::Array);
+            }
+            '}' | ']' => {
+                stack.pop();
+                // Comments left at the end of an object or list belong to nothing: they go before its end, kept as
+                // the comments of its last setting.
+                pending.clear();
+                last = current_path(&stack);
+                newline_since = false;
+                if stack.is_empty() {
+                    finished = true;
+                    last = None;
+                }
+            }
+            ',' => {}
+            c if !c.is_whitespace() && !matches!(c, ':') => {
+                // A number, true, false or null: the value of the current setting.
+                while i + 1 < chars.len() && !matches!(chars[i + 1], ',' | '}' | ']' | '\n' | ' ' | '\t' | '\r' | '/') {
+                    i += 1;
+                }
+                last = current_path(&stack);
+                newline_since = false;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    found
+}
+
+/// `value` written as `layout` says, with the comments put back: above their setting, after its value, and around the
+/// whole file. Settings that are new have none; comments of settings that are gone are left out.
+pub fn write_with_comments(value: &Value, layout: &Layout, comments: &Comments) -> String {
+    let indent = layout.indent.clone().unwrap_or_else(|| "    ".into());
+    write_commented(value, layout, &indent, comments)
+}
+
+/// How a .jsonc text is laid out: like [`detect_layout`], but the indent read from its first indented line (a comment
+/// on the first line hides it from that one).
+pub fn jsonc_layout(text: &str) -> Layout {
+    let mut layout = detect_layout(text);
+    let first = text.lines().map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').collect::<String>()).find(|i| !i.is_empty());
+    if let Some(indent) = first {
+        layout.indent = Some(indent);
+    }
+    layout
+}
+
+fn write_commented(value: &Value, layout: &Layout, indent: &str, comments: &Comments) -> String {
+    let indent = indent.to_string();
+    let mut out = String::new();
+    if layout.bom {
+        out.push('\u{feff}');
+    }
+    for line in &comments.head {
+        out.push_str(line);
+        out.push('\n');
+    }
+    write_value(&mut out, value, &mut Vec::new(), 0, &indent, comments);
+    if !comments.tail.is_empty() {
+        out.push('\n');
+        out.push_str(&comments.tail.join("\n"));
+    }
+    if layout.trailing_newline || layout.indent.is_none() {
+        out.push('\n');
+    }
+    out
+}
+
+fn write_value(out: &mut String, value: &Value, path: &mut Vec<String>, depth: usize, indent: &str, comments: &Comments) {
+    let pad = |depth: usize| indent.repeat(depth);
+    match value {
+        Value::Object(map) if !map.is_empty() => {
+            out.push_str("{\n");
+            let count = map.len();
+            for (index, (key, item)) in map.iter().enumerate() {
+                path.push(key.clone());
+                let joined = path.join("\u{1}");
+                for line in comments.before.get(&joined).into_iter().flatten() {
+                    // The first line at the setting's indent; the rest of a /* */ comment as it was written.
+                    for (number, part) in line.lines().enumerate() {
+                        if number == 0 {
+                            out.push_str(&pad(depth + 1));
+                            out.push_str(part.trim_start());
+                        } else {
+                            out.push_str(part);
+                        }
+                        out.push('\n');
+                    }
+                }
+                out.push_str(&pad(depth + 1));
+                out.push_str(&serde_json::to_string(key).unwrap_or_default());
+                out.push_str(": ");
+                write_value(out, item, path, depth + 1, indent, comments);
+                if index + 1 < count {
+                    out.push(',');
+                }
+                if let Some(after) = comments.after.get(&joined) {
+                    out.push(' ');
+                    out.push_str(after);
+                }
+                out.push('\n');
+                path.pop();
+            }
+            out.push_str(&pad(depth));
+            out.push('}');
+        }
+        Value::Array(items) if !items.is_empty() => {
+            out.push_str("[\n");
+            for (index, item) in items.iter().enumerate() {
+                out.push_str(&pad(depth + 1));
+                write_value(out, item, path, depth + 1, indent, comments);
+                if index + 1 < items.len() {
+                    out.push(',');
+                }
+                out.push('\n');
+            }
+            out.push_str(&pad(depth));
+            out.push(']');
+        }
+        other => out.push_str(&serde_json::to_string(other).unwrap_or_default()),
+    }
 }
 
 /// `current` with every setting of `example` it lacks, in the example's order (objects inside too); its own values and
@@ -370,6 +640,11 @@ mod tests {
         assert_eq!(example_target("UITexts_en.jsonc.example"), None);
         assert_eq!(example_of("ui-config.json"), "ui-config.example");
         assert_eq!(example_of("radio-stations.jsonc"), "radio-stations.jsonc.example");
+        assert_eq!(examples_of("ui-config.jsonc"), vec!["ui-config.jsonc.example", "ui-config.example"]);
+        assert_eq!(examples_of("ui-config.json"), vec!["ui-config.example", "ui-config.jsonc.example"]);
+        // A hotel that keeps ui-config.jsonc: one entry, with Octane's example.
+        let files = parse_listing("P ui-config.jsonc 9\nE ui-config.example\nD ui-config.jsonc\n");
+        assert_eq!(files, vec![ConfigFile { name: "ui-config.jsonc".into(), size: Some(9), example: true, served: true }]);
         let files = parse_listing("P ui-config.json 120\nP news.json 4\nE ui-config.example\nE adsense.example\nE ads-frame.html.example\nD ui-config.json\nP ../evil.json 1\n");
         assert_eq!(
             files,
@@ -388,6 +663,30 @@ mod tests {
         assert!(parse("ui-config.json", text).is_err(), "a .json file has no comments");
         let problem = parse("x.json", "{\n \"a\": 1,\n \"b\" 2\n}").unwrap_err();
         assert!(problem.starts_with("line 3"), "{problem}");
+    }
+
+    #[test]
+    fn a_jsonc_file_keeps_its_comments_when_saved_from_the_form() {
+        let text = "// Radio stations of the hotel\n{\n    // The first station\n    \"stations\": [\n        \"https://radio.example/a\",\n    ],\n    \"volume\": 50, // 0 to 100\n    /* The player\n       settings */\n    \"player\": {\n        // Starts on its own\n        \"autoplay\": true,\n        \"url\": \"https://x/y // not a comment\"\n    },\n}\n// end\n";
+        let found = comments(text);
+        assert_eq!(found.head, vec!["// Radio stations of the hotel"]);
+        assert_eq!(found.before.get("stations").unwrap(), &vec!["// The first station".to_string()]);
+        assert_eq!(found.after.get("volume").unwrap(), "// 0 to 100");
+        assert_eq!(found.before.get("player\u{1}autoplay").unwrap(), &vec!["// Starts on its own".to_string()]);
+        assert!(found.before.get("player").unwrap()[0].starts_with("/* The player"));
+        assert_eq!(found.tail, vec!["// end"]);
+        let mut value = parse("radio.jsonc", text).unwrap();
+        value["volume"] = json!(80);
+        value["player"]["autoplay"] = json!(false);
+        let written = write_with_comments(&value, &jsonc_layout(text), &found);
+        assert!(written.contains("\n    \"volume\": 80"), "the file's own indent:\n{written}");
+        assert_eq!(parse("radio.jsonc", &written).unwrap(), value, "{written}");
+        for kept in ["// Radio stations of the hotel", "// The first station", "\"volume\": 80, // 0 to 100", "// Starts on its own", "/* The player", "settings */", "// end", "https://x/y // not a comment"] {
+            assert!(written.contains(kept), "{kept} lost:\n{written}");
+        }
+        // Without changes it reads back the same.
+        let again = write_with_comments(&parse("radio.jsonc", text).unwrap(), &jsonc_layout(text), &found);
+        assert_eq!(comments(&again), found, "{again}");
     }
 
     #[test]

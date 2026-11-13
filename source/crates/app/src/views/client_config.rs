@@ -31,7 +31,7 @@ enum Mode {
 /// The file being edited.
 struct Doc {
     loaded: Loaded,
-    /// The settings as edited (None: the file is edited as text only: a .jsonc file, or one that is not an object).
+    /// The settings as edited (None: the file is edited as text only, as it is not a list of settings).
     value: Option<Value>,
     saved_value: Option<Value>,
     /// The text as edited (Text mode) and as loaded.
@@ -42,12 +42,15 @@ struct Doc {
     problem: Option<String>,
     /// Settings this Octane version's example has that the file lacks.
     missing: Vec<String>,
+    /// A .jsonc file's comments, put back when it is saved from the form.
+    comments: Option<config::Comments>,
 }
 
 impl Doc {
     fn new(loaded: Loaded) -> Self {
         let jsonc = loaded.name.ends_with(".jsonc");
-        let value = if jsonc { None } else { config::parse(&loaded.name, &loaded.text).ok().filter(Value::is_object) };
+        let value = config::parse(&loaded.name, &loaded.text).ok().filter(Value::is_object);
+        let comments = jsonc.then(|| config::comments(&loaded.text));
         let mode = if value.is_some() { Mode::Form } else { Mode::Text };
         let mut doc = Doc {
             text: loaded.text.clone(),
@@ -57,6 +60,7 @@ impl Doc {
             mode,
             problem: None,
             missing: Vec::new(),
+            comments,
             loaded,
         };
         doc.check();
@@ -65,8 +69,10 @@ impl Doc {
 
     /// The text as it would be saved now.
     fn current_text(&self) -> String {
-        match (&self.mode, &self.value) {
-            (Mode::Form, Some(value)) => config::write(value, &self.loaded.layout),
+        match (&self.mode, &self.value, &self.comments) {
+            // A .jsonc file keeps its comments and its own indent.
+            (Mode::Form, Some(value), Some(comments)) => config::write_with_comments(value, &config::jsonc_layout(&self.text), comments),
+            (Mode::Form, Some(value), None) => config::write(value, &self.loaded.layout),
             _ => self.text.clone(),
         }
     }
@@ -96,8 +102,8 @@ impl Doc {
     }
 
     fn switch_to_text(&mut self) {
-        if let (Mode::Form, Some(value)) = (self.mode, &self.value) {
-            self.text = config::write(value, &self.loaded.layout);
+        if self.mode == Mode::Form && self.value.is_some() {
+            self.text = self.current_text();
         }
         self.mode = Mode::Text;
         self.check();
@@ -106,7 +112,10 @@ impl Doc {
     /// Back to the form: only when the text is valid JSON with settings in it.
     fn switch_to_form(&mut self) -> bool {
         match config::parse(&self.loaded.name, &self.text) {
-            Ok(value) if value.is_object() && !self.loaded.name.ends_with(".jsonc") => {
+            Ok(value) if value.is_object() => {
+                if self.comments.is_some() {
+                    self.comments = Some(config::comments(&self.text));
+                }
                 self.value = Some(value);
                 self.mode = Mode::Form;
                 self.check();
@@ -462,12 +471,12 @@ fn editor(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
 
     // The bar: form or text, the search, save and undo.
     let changed = doc.changed();
-    let can_form = !doc.loaded.name.ends_with(".jsonc") && doc.saved_value.is_some();
+    let can_form = doc.saved_value.is_some();
     ui.horizontal(|ui| {
         for (mode, label) in [(Mode::Form, t("Settings")), (Mode::Text, t("Text"))] {
             let enabled = mode == Mode::Text || can_form;
             let response = ui.add_enabled(enabled, egui::SelectableLabel::new(doc.mode == mode, RichText::new(label).size(13.0)));
-            let response = if mode == Mode::Form && !can_form { response.on_disabled_hover_text(t("This file has comments or is not a list of settings: it is edited as text, so nothing in it is lost.")) } else { response };
+            let response = if mode == Mode::Form && !can_form { response.on_disabled_hover_text(t("This file is not a list of settings: it is edited as text.")) } else { response };
             if response.clicked() && doc.mode != mode {
                 match mode {
                     Mode::Text => doc.switch_to_text(),
@@ -552,7 +561,8 @@ fn editor(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
             egui::ScrollArea::vertical().id_salt(("client-config-form", doc.loaded.name.clone())).auto_shrink([false, false]).show(ui, |ui| {
                 if let Some(Value::Object(map)) = doc.value.as_mut() {
                     let saved_map = saved.as_ref().and_then(Value::as_object);
-                    edited |= object_rows(ui, palette, map, saved_map, "", &query, 0);
+                    let notes = Notes { comments: doc.comments.as_ref(), path: String::new() };
+                    edited |= object_rows(ui, palette, map, saved_map, "", &query, 0, &notes);
                     if !query.is_empty() && !map.iter().any(|(k, v)| matches(k, v, &query, "")) {
                         widgets::muted(ui, palette, t("No setting matches the search."), 12.5);
                     }
@@ -619,7 +629,45 @@ fn hint(key: &str) -> Option<&'static str> {
 }
 
 /// The rows of an object's settings. Returns whether something was changed.
-fn object_rows(ui: &mut egui::Ui, palette: &Palette, map: &mut serde_json::Map<String, Value>, saved: Option<&serde_json::Map<String, Value>>, path: &str, query: &str, depth: usize) -> bool {
+/// A .jsonc file's comments, and where in the file the rows are: what the form shows as help beside the settings.
+struct Notes<'a> {
+    comments: Option<&'a config::Comments>,
+    /// The keys from the top, joined by "\u{1}" (as [`config::Comments`] has them).
+    path: String,
+}
+
+impl<'a> Notes<'a> {
+    fn child(&self, key: &str) -> Notes<'a> {
+        let path = if self.path.is_empty() { key.to_string() } else { format!("{}\u{1}{key}", self.path) };
+        Notes { comments: self.comments, path }
+    }
+
+    /// No comments for what is inside a list (they are not followed there).
+    fn none() -> Notes<'a> {
+        Notes { comments: None, path: String::new() }
+    }
+
+    fn above(&self) -> Vec<String> {
+        self.comments.and_then(|c| c.before.get(&self.path)).map(|lines| lines.iter().map(|l| comment_text(l)).filter(|l| !l.is_empty()).collect()).unwrap_or_default()
+    }
+
+    fn beside(&self) -> Option<String> {
+        self.comments.and_then(|c| c.after.get(&self.path)).map(|l| comment_text(l)).filter(|l| !l.is_empty())
+    }
+}
+
+/// A comment as help text: without its // or /* */ marks.
+fn comment_text(comment: &str) -> String {
+    let lines: Vec<String> = comment
+        .lines()
+        .map(|line| line.trim().trim_start_matches("//").trim_start_matches("/*").trim_end_matches("*/").trim_start_matches('*').trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    lines.join(" ")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn object_rows(ui: &mut egui::Ui, palette: &Palette, map: &mut serde_json::Map<String, Value>, saved: Option<&serde_json::Map<String, Value>>, path: &str, query: &str, depth: usize, notes: &Notes) -> bool {
     let mut edited = false;
     let keys: Vec<String> = map.keys().cloned().collect();
     for key in keys {
@@ -636,16 +684,20 @@ fn object_rows(ui: &mut egui::Ui, palette: &Palette, map: &mut serde_json::Map<S
             continue;
         }
         let before = saved.and_then(|m| m.get(&key));
-        edited |= setting(ui, palette, &key, value, before, &format!("{path}{key}."), query, depth);
+        edited |= setting(ui, palette, &key, value, before, &format!("{path}{key}."), query, depth, &notes.child(&key));
     }
     edited
 }
 
 /// One setting: its name and the editor for its kind of value.
 #[allow(clippy::too_many_arguments)]
-fn setting(ui: &mut egui::Ui, palette: &Palette, key: &str, value: &mut Value, saved: Option<&Value>, path: &str, query: &str, depth: usize) -> bool {
+fn setting(ui: &mut egui::Ui, palette: &Palette, key: &str, value: &mut Value, saved: Option<&Value>, path: &str, query: &str, depth: usize, notes: &Notes) -> bool {
     let changed = saved != Some(&*value);
     let mut edited = false;
+    // The file's own comment above the setting, as help.
+    for line in notes.above() {
+        ui.label(RichText::new(line).size(11.5).italics().color(palette.subtle));
+    }
     match value {
         Value::Object(map) => {
             let count = map.len();
@@ -654,7 +706,7 @@ fn setting(ui: &mut egui::Ui, palette: &Palette, key: &str, value: &mut Value, s
                 .open(if query.is_empty() { None } else { Some(true) })
                 .show(ui, |ui| {
                     let saved_map = saved.and_then(Value::as_object);
-                    edited |= object_rows(ui, palette, map, saved_map, path, query, depth + 1);
+                    edited |= object_rows(ui, palette, map, saved_map, path, query, depth + 1, notes);
                 });
             let amount = if count == 1 { t("1 setting").to_string() } else { tf("{count} settings", &[("count", &count.to_string())]) };
             let label = if changed { tf("{amount} · changed", &[("amount", &amount)]) } else { amount };
@@ -681,7 +733,7 @@ fn setting(ui: &mut egui::Ui, palette: &Palette, key: &str, value: &mut Value, s
                             ui.label(RichText::new(format!("{}", index + 1)).size(11.0).color(palette.subtle));
                             ui.vertical(|ui| {
                                 edited |= match item {
-                                    Value::Object(_) | Value::Array(_) => setting(ui, palette, &tf("Item {number}", &[("number", &(index + 1).to_string())]), item, before, &format!("{path}{index}."), query, depth + 1),
+                                    Value::Object(_) | Value::Array(_) => setting(ui, palette, &tf("Item {number}", &[("number", &(index + 1).to_string())]), item, before, &format!("{path}{index}."), query, depth + 1, &Notes::none()),
                                     _ => scalar(ui, palette, item, before, &format!("{path}{index}")),
                                 };
                             });
@@ -714,6 +766,9 @@ fn setting(ui: &mut egui::Ui, palette: &Palette, key: &str, value: &mut Value, s
             }
         });
         edited |= scalar(ui, palette, value, saved, path);
+        if let Some(note) = notes.beside() {
+            ui.label(RichText::new(note).size(11.5).italics().color(palette.subtle));
+        }
         if changed && saved.is_some() && ui.small_button("↺").on_hover_text(t("Back to the saved value")).clicked() {
             *value = saved.cloned().unwrap_or(Value::Null);
             edited = true;
@@ -808,7 +863,22 @@ fn sample(s: &mut State) {
         file("rarevalues-texts-en.json", true),
     ]);
     let which = std::env::var("AIO_SCREENSHOT_TAB").unwrap_or_default();
-    let (name, text) = if which == "renderer" {
+    let (name, text) = if which == "radio" {
+        (
+            "radio-stations.jsonc",
+            r##"// The stations of the hotel radio.
+{
+    // Shown in the radio window, in this order.
+    "stations": [
+        "https://radio.example.com/live",
+        "https://radio.example.com/chill",
+    ],
+    "volume": 50, // 0 to 100
+    "autoplay": false,
+}
+"##,
+        )
+    } else if which == "renderer" {
         (
             "renderer-config.json",
             r##"{

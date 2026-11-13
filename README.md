@@ -1751,8 +1751,11 @@ that is not made yet is marked *not made yet*; one the built client has no copy 
   **+ Add** and ✕. The important addresses of `renderer-config` (`socket.url`, `asset.url`, `furnidata.url`, ...) have a
   short help under them. **Search settings** finds a setting by name or value. A changed setting turns blue, with ↺ to
   put it back.
-- **Text** shows the file as text, checked while you type (the line and column of a mistake); a file with comments
-  (`.jsonc`) is only edited as text, so its comments stay.
+- **Text** shows the file as text, checked while you type (the line and column of a mistake).
+- A `.jsonc` file (JSON with comments, such as the radio and soundboard files, or a hotel's own `ui-config.jsonc`) opens
+  in the form too: its comments show as help above and beside their settings, and a save from the form keeps them where
+  they were (above their setting, after its value, at the top and end of the file) in the file's own indent. A hotel
+  that keeps `ui-config.jsonc` or `renderer-config.jsonc` gets one entry for it, with Octane's example.
 - When this Octane version's example has settings the file lacks, a bar lists them and **Add them** adds them with
   their example values, in the example's order (your own values and settings stay).
 

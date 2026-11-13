@@ -4016,5 +4016,6 @@
   "{file} saved. Players get it when they reload the hotel.": "{file} opgeslagen. Spelers krijgen het als ze het hotel opnieuw laden.",
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} opgeslagen. Het hotel serveert de gebouwde kopie: voer Rebuild Octane (Tools) uit om het te gebruiken.",
   "{folder} has no settings files: run the Octane step first.": "{folder} heeft geen instellingenbestanden: voer eerst de Octane-stap uit.",
-  "{key}  ({count})": "{key}  ({count})"
+  "{key}  ({count})": "{key}  ({count})",
+  "This file is not a list of settings: it is edited as text.": "Dit bestand is geen lijst met instellingen: het wordt als tekst bewerkt."
 }

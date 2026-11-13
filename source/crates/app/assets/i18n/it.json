@@ -4016,5 +4016,6 @@
   "{file} saved. Players get it when they reload the hotel.": "{file} salvato. I giocatori lo ricevono quando ricaricano l'hotel.",
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} salvato. L'hotel serve la copia compilata: esegui Rebuild Octane (Strumenti) per usarlo.",
   "{folder} has no settings files: run the Octane step first.": "{folder} non ha file di impostazioni: esegui prima il passaggio Octane.",
-  "{key}  ({count})": "{key}  ({count})"
+  "{key}  ({count})": "{key}  ({count})",
+  "This file is not a list of settings: it is edited as text.": "Questo file non è un elenco di impostazioni: si modifica come testo."
 }

@@ -4016,5 +4016,6 @@
   "{file} saved. Players get it when they reload the hotel.": "{file} tallennettu. Pelaajat saavat sen, kun he lataavat hotellin uudelleen.",
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} tallennettu. Hotelli tarjoaa käännetyn kopion: suorita Rebuild Octane (Työkalut) ottaaksesi sen käyttöön.",
   "{folder} has no settings files: run the Octane step first.": "Kansiossa {folder} ei ole asetustiedostoja: suorita ensin Octane-vaihe.",
-  "{key}  ({count})": "{key}  ({count})"
+  "{key}  ({count})": "{key}  ({count})",
+  "This file is not a list of settings: it is edited as text.": "Tämä tiedosto ei ole asetusluettelo: sitä muokataan tekstinä."
 }

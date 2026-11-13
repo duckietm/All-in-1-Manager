@@ -100,6 +100,8 @@ struct DevEntry {
     folder: PathBuf,
     /// What the user allowed in this session; None until they agree.
     granted: Option<Vec<Permission>>,
+    /// The plugin id the consent was given for: a manifest that now has another id is a different plugin.
+    granted_id: String,
     /// The last good read of the folder, or why it failed.
     loaded: Result<(Manifest, PathBuf), String>,
 }
@@ -263,9 +265,16 @@ impl ExternalPlugins {
         let mut old = std::mem::take(&mut dev.entries);
         dev.enabled = enabled;
         for folder in folders {
-            let granted = old.iter_mut().find(|e| e.folder == *folder).and_then(|e| e.granted.take());
+            let (mut granted, granted_id) = match old.iter_mut().find(|e| e.folder == *folder) {
+                Some(e) => (e.granted.take(), std::mem::take(&mut e.granted_id)),
+                None => (None, String::new()),
+            };
             let loaded = read_dev_folder(folder).map_err(|e| format!("{e:#}"));
-            dev.entries.push(DevEntry { folder: folder.clone(), granted, loaded });
+            // The folder now holds another plugin id: what was allowed was allowed for the old one.
+            if loaded.as_ref().is_ok_and(|(m, _)| m.id != granted_id) {
+                granted = None;
+            }
+            dev.entries.push(DevEntry { folder: folder.clone(), granted, granted_id, loaded });
         }
     }
 
@@ -295,7 +304,7 @@ impl ExternalPlugins {
                     Ok((manifest, _)) if seen.contains(&manifest.id) => DevState::Problem(t("id already used by another developer folder").to_string()),
                     Ok((manifest, _)) => {
                         seen.push(manifest.id.clone());
-                        if needs_consent(entry.granted.as_deref(), &manifest.permissions) {
+                        if entry.granted_id != manifest.id || needs_consent(entry.granted.as_deref(), &manifest.permissions) {
                             DevState::NeedsConsent(manifest.clone())
                         } else {
                             DevState::Ready(ExternalInfo { manifest: manifest.clone(), verified: false, dev: true })
@@ -313,6 +322,14 @@ impl ExternalPlugins {
             bail!("Developer mode is off");
         }
         let (manifest, wasm) = read_dev_folder(folder)?;
+        self.check_free(folder, &manifest)?;
+        let dev = self.dev.lock();
+        let previous = dev.entries.iter().find(|e| e.folder == folder && e.granted_id == manifest.id).and_then(|e| e.granted.clone());
+        Ok(DevPending { folder: folder.to_path_buf(), manifest, wasm, previous })
+    }
+
+    /// The id is not an installed plugin's and not another developer folder's.
+    fn check_free(&self, folder: &Path, manifest: &Manifest) -> Result<()> {
         if self.list.lock().iter().any(|i| i.manifest.id == manifest.id) {
             bail!("A plugin with the id {} is already installed", manifest.id);
         }
@@ -320,8 +337,7 @@ impl ExternalPlugins {
         if dev.entries.iter().any(|e| e.folder != folder && e.loaded.as_ref().is_ok_and(|(m, _)| m.id == manifest.id)) {
             bail!("Another developer folder already holds a plugin with the id {}", manifest.id);
         }
-        let previous = dev.entries.iter().find(|e| e.folder == folder).and_then(|e| e.granted.clone());
-        Ok(DevPending { folder: folder.to_path_buf(), manifest, wasm, previous })
+        Ok(())
     }
 
     /// Remembers the user's consent for what [`ExternalPlugins::prepare_dev`] showed. The folder is read again, and
@@ -331,11 +347,13 @@ impl ExternalPlugins {
         if manifest != pending.manifest || wasm != pending.wasm {
             bail!("The folder changed while you were deciding. Load it again.");
         }
+        // `read_dev_folder` ran `Manifest::parse` and the built-in id check; the id must be free as well.
+        self.check_free(&pending.folder, &manifest)?;
         let mut dev = self.dev.lock();
         if !dev.enabled {
             bail!("Developer mode is off");
         }
-        let entry = DevEntry { folder: pending.folder.clone(), granted: Some(manifest.permissions.clone()), loaded: Ok((manifest, wasm)) };
+        let entry = DevEntry { folder: pending.folder.clone(), granted: Some(manifest.permissions.clone()), granted_id: manifest.id.clone(), loaded: Ok((manifest, wasm)) };
         match dev.entries.iter_mut().find(|e| e.folder == pending.folder) {
             Some(existing) => *existing = entry,
             None => dev.entries.push(entry),
@@ -700,5 +718,34 @@ mod tests {
         // A broken manifest keeps what ran before and says why.
         std::fs::write(folder.join("manifest.json"), b"{").unwrap();
         assert!(ext.reload_dev("mine").is_err());
+    }
+
+    #[test]
+    fn dev_id_change_needs_consent_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let folder = dev_folder(dir.path(), "mine", "first", &["ssh"], None);
+        ext.set_developer(true, std::slice::from_ref(&folder));
+        allowed(&ext, &folder);
+        assert_eq!(ext.list().len(), 1);
+
+        // Same permissions, another id: it is another plugin.
+        dev_folder(dir.path(), "mine", "second", &["ssh"], None);
+        ext.set_developer(false, std::slice::from_ref(&folder));
+        ext.set_developer(true, std::slice::from_ref(&folder));
+        assert!(ext.list().is_empty(), "mode off/on must not carry the consent to a new id");
+        assert!(matches!(ext.dev_rows()[0].state, DevState::NeedsConsent(_)));
+        // "Check again" is the same call.
+        ext.set_developer(true, &ext.dev_folders());
+        assert!(ext.list().is_empty());
+        assert!(ext.prepare_dev(&folder).unwrap().previous.is_none());
+
+        // Going back to the first id does not revive the old consent either.
+        dev_folder(dir.path(), "mine", "first", &["ssh"], None);
+        ext.set_developer(true, &ext.dev_folders());
+        assert!(ext.list().is_empty());
+        let pending = ext.prepare_dev(&folder).unwrap();
+        ext.accept_dev(&pending).unwrap();
+        assert_eq!(ext.list()[0].manifest.id, "first");
     }
 }

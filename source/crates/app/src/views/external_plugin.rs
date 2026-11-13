@@ -196,6 +196,8 @@ pub struct ExternalPluginView {
     generation: u64,
     /// What the user typed into the inputs, by input id, until the plugin draws the page again.
     inputs: HashMap<String, String>,
+    /// A developer plugin's folder is being read again (off the window's thread): its result, when it is there.
+    reloading: Option<Arc<Mutex<Option<anyhow::Result<external::DevReload>>>>>,
 }
 
 impl ExternalPluginView {
@@ -209,7 +211,7 @@ impl ExternalPluginView {
 
     fn open_in(info: ExternalInfo, index: u16, dir: PathBuf, exports: PathBuf, shared: &Shared) -> Self {
         let running = Running::start(&info, dir.clone(), exports.clone(), shared);
-        Self { name: display_safe(&info.manifest.name, 80), info, index, dir, exports, running, page: None, generation: 0, inputs: HashMap::new() }
+        Self { name: display_safe(&info.manifest.name, 80), info, index, dir, exports, running, page: None, generation: 0, inputs: HashMap::new(), reloading: None }
     }
 
     pub fn id(&self) -> &str {
@@ -235,26 +237,49 @@ impl ExternalPluginView {
             return;
         }
         if self.info.dev {
-            // Reload re-reads manifest.json and the wasm path from the author's folder.
-            let plugins = external::plugins();
-            match plugins.reload_dev(&self.info.manifest.id) {
-                Ok(external::DevReload::Reloaded) => {
-                    if let Some(info) = plugins.index_of(&self.info.manifest.id).and_then(|i| plugins.get(i)) {
-                        self.name = display_safe(&info.manifest.name, 80);
-                        self.info = info;
-                    }
-                }
-                Ok(external::DevReload::NeedsConsent) => {
-                    // The plugin leaves the list; the window closes this page and the Plugins page asks.
-                    shared.set_status(&tf("{plugin} asks for more permissions: review them on the Plugins page.", &[("plugin", &self.name)]));
-                    return;
-                }
-                Err(error) => {
-                    shared.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &display_safe(&format!("{error:#}"), 300))]));
-                    return;
-                }
+            // Reload re-reads manifest.json and the wasm path from the author's folder, off the window's thread.
+            if self.reloading.is_some() {
+                return;
             }
+            let slot = Arc::new(Mutex::new(None));
+            self.reloading = Some(slot.clone());
+            let (id, ctx) = (self.info.manifest.id.clone(), shared.ctx.clone());
+            shared.spawn(async move {
+                let result = match tokio::task::spawn_blocking(move || external::plugins().reload_dev(&id)).await {
+                    Ok(result) => result,
+                    Err(error) => Err(anyhow::anyhow!("{error}")),
+                };
+                *slot.lock() = Some(result);
+                ctx.request_repaint();
+            });
+            return;
         }
+        self.start_again(shared);
+    }
+
+    /// Finishes a developer plugin's Reload once the folder has been read.
+    fn poll_reload(&mut self, shared: &Shared) {
+        let Some(slot) = &self.reloading else { return };
+        let Some(result) = slot.lock().take() else { return };
+        self.reloading = None;
+        let plugins = external::plugins();
+        match result {
+            Ok(external::DevReload::Reloaded) => {
+                if let Some(info) = plugins.index_of(&self.info.manifest.id).and_then(|i| plugins.get(i)) {
+                    self.name = display_safe(&info.manifest.name, 80);
+                    self.info = info;
+                }
+                self.start_again(shared);
+            }
+            Ok(external::DevReload::NeedsConsent) => {
+                // The plugin leaves the list; the window closes this page and the Plugins page asks.
+                shared.set_status(&tf("{plugin} asks for more permissions: review them on the Plugins page.", &[("plugin", &self.name)]));
+            }
+            Err(error) => shared.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &display_safe(&format!("{error:#}"), 300))])),
+        }
+    }
+
+    fn start_again(&mut self, shared: &Shared) {
         self.running = Running::start(&self.info, self.dir.clone(), self.exports.clone(), shared);
         self.page = None;
         self.generation = 0;
@@ -277,6 +302,7 @@ impl ExternalPluginView {
     /// The part above the scrolling content: the plugin's name, Reload, and the approval cards, so a request is
     /// always in view.
     pub fn show_pinned(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        self.poll_reload(shared);
         let (busy, stopped) = {
             let s = self.running.state.lock();
             (s.busy, s.stopped.is_some())

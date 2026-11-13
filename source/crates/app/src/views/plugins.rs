@@ -359,11 +359,15 @@ fn forget_folder(shared: &Shared, folder: &Path) {
 
 /// Reload on a developer plugin's card: re-reads the folder; a plugin that asks for more is off until the user agrees.
 fn reload_folder(shared: &Shared, id: &str) {
-    match external::plugins().reload_dev(id) {
-        Ok(external::DevReload::Reloaded) => shared.set_status(t("Reloaded from the folder.")),
-        Ok(external::DevReload::NeedsConsent) => shared.set_status(t("The plugin asks for more permissions: review them below.")),
-        Err(error) => shared.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &safe(&format!("{error:#}")))])),
-    }
+    let (status, id) = (shared.clone(), id.to_string());
+    shared.spawn(async move {
+        match tokio::task::spawn_blocking(move || external::plugins().reload_dev(&id)).await {
+            Ok(Ok(external::DevReload::Reloaded)) => status.set_status(t("Reloaded from the folder.")),
+            Ok(Ok(external::DevReload::NeedsConsent)) => status.set_status(t("The plugin asks for more permissions: review them below.")),
+            Ok(Err(error)) => status.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &safe(&format!("{error:#}")))])),
+            Err(error) => status.set_status(&error.to_string()),
+        }
+    });
 }
 
 /// A folder whose plugin asks for permissions the user has not agreed to (yet, or since they grew).
@@ -403,8 +407,13 @@ fn dev_problem_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, row: 
                     forget_folder(shared, &row.folder);
                 }
                 if ui.add(widgets::secondary_button(t("Check again"))).clicked() {
-                    let plugins = external::plugins();
-                    plugins.set_developer(true, &plugins.dev_folders());
+                    shared.spawn(async {
+                        let _ = tokio::task::spawn_blocking(|| {
+                            let plugins = external::plugins();
+                            plugins.set_developer(true, &plugins.dev_folders());
+                        })
+                        .await;
+                    });
                 }
             });
         });

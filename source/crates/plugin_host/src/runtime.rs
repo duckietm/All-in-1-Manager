@@ -882,7 +882,16 @@ impl PluginInstance {
         services: Arc<dyn HostServices>,
         approvals: Arc<Approvals>,
     ) -> Result<Self> {
-        let wasm = std::fs::read(wasm_file).with_context(|| format!("reading {}", wasm_file.display()))?;
+        // The same limit as a package's plugin.wasm, checked before the whole file is read.
+        let mut wasm = Vec::new();
+        {
+            use std::io::Read;
+            let file = std::fs::File::open(wasm_file).with_context(|| format!("reading {}", wasm_file.display()))?;
+            file.take(crate::package::MAX_WASM + 1).read_to_end(&mut wasm).with_context(|| format!("reading {}", wasm_file.display()))?;
+            if wasm.len() as u64 > crate::package::MAX_WASM {
+                bail!("plugin.wasm is larger than 24 MiB");
+            }
+        }
         let data = dir.join("data");
         std::fs::create_dir_all(&data).with_context(|| format!("creating {}", data.display()))?;
         let dir_real = std::fs::canonicalize(dir)?;

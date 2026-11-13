@@ -78,6 +78,8 @@ pub enum Page {
     Settings,
     Plugins,
     About,
+    /// The page of an external plugin: its index in `plugins::external::plugins().list()`.
+    External(u16),
 }
 
 /// What every page gets: the login, the runtime for its tasks, the questions, and the status line.
@@ -136,6 +138,27 @@ impl Shared {
             future.await;
             ctx.request_repaint();
         });
+    }
+}
+
+#[cfg(test)]
+impl Shared {
+    /// A `Shared` without a window: for tests of what pages and plugins do with it.
+    pub fn for_tests(runtime: tokio::runtime::Handle) -> Self {
+        let ctx = egui::Context::default();
+        Shared {
+            runtime,
+            dialogs: Dialogs::new(ctx.clone()),
+            ctx,
+            session: Arc::new(Mutex::new(None)),
+            status: Arc::new(Mutex::new(String::new())),
+            dry_run: false,
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn set_session_for_tests(&self, server: Option<Arc<dyn Server>>) {
+        *self.session.lock() = server;
     }
 }
 
@@ -242,6 +265,8 @@ pub struct App {
     about: views::about::AboutView,
     plugins: views::plugins::PluginsView,
     dashboard: views::dashboard::Dashboard,
+    /// The open external plugin page (its running instance); None on every other page.
+    external: Option<views::external_plugin::ExternalPluginView>,
     /// The connection was lost: the login opens again as soon as nothing runs any more.
     login_pending: bool,
     last_watch: f64,
@@ -295,6 +320,7 @@ impl App {
             about: views::about::AboutView::new(&shared),
             plugins: views::plugins::PluginsView,
             dashboard: views::dashboard::Dashboard::new(&shared),
+            external: None,
             shared,
             login_pending: false,
             last_watch: 0.0,
@@ -666,6 +692,16 @@ impl App {
             Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, and your own SSH keys.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
+            Page::External(index) => {
+                let info = self.external.as_ref().map(|v| v.info().clone()).or_else(|| crate::plugins::external::plugins().get(index as usize));
+                match info {
+                    Some(info) => (
+                        aio_plugin_host::display_safe(&info.manifest.page_title, 80),
+                        aio_plugin_host::display_safe(&info.manifest.description, 200),
+                    ),
+                    None => (t("Plugins").into(), String::new()),
+                }
+            }
         };
         (title, subtitle)
     }
@@ -773,6 +809,18 @@ impl App {
                             }
                         }
                     }
+                    // External plugins that are on, under their own heading; their page titles are plugin text.
+                    let external = crate::plugins::external_pages();
+                    if !external.is_empty() {
+                        ui.add_space(14.0);
+                        let open = collapse::heading(ui, "sidebar:plugins", t("PLUGINS"), 10.5, Fixed::sidebar_muted(), 12.0);
+                        ui.add_space(2.0);
+                        for (page, info) in external {
+                            if open || selected(page) {
+                                nav(ui, &aio_plugin_host::display_safe(&info.manifest.page_title, 26), Icon::Puzzle, page);
+                            }
+                        }
+                    }
                 });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
                     ui.label(RichText::new(t("Targets Ubuntu Server and Debian")).size(11.5).color(Fixed::sidebar_muted()));
@@ -841,7 +889,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History | Page::Plugins => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History | Page::Plugins | Page::External(_) => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -889,7 +937,41 @@ impl App {
         Some(wizard.status()).filter(|s| s != t("Ready."))
     }
 
+    /// Keeps the external plugin instance in step with the page: one while its page is open, none otherwise. The open
+    /// page follows its plugin by id when the list changes, and closes (to the Plugins page) when the plugin is gone or
+    /// switched off.
+    fn sync_external(&mut self) {
+        let Page::External(index) = self.page else {
+            self.external = None;
+            return;
+        };
+        let list = crate::plugins::external::plugins();
+        if let Some(view) = &mut self.external {
+            if view.index == index {
+                let now = list.index_of(view.id()).and_then(|i| u16::try_from(i).ok()).filter(|i| crate::plugins::page_visible(Page::External(*i)));
+                match now {
+                    Some(now) => {
+                        view.index = now;
+                        self.page = Page::External(now);
+                    }
+                    None => {
+                        self.external = None;
+                        self.page = Page::Plugins;
+                    }
+                }
+                return;
+            }
+        }
+        // Another plugin's page was chosen: the old instance goes first.
+        self.external = None;
+        match list.get(index as usize).filter(|_| crate::plugins::page_visible(self.page)) {
+            Some(info) => self.external = Some(views::external_plugin::ExternalPluginView::open(info, index, &self.shared)),
+            None => self.page = Page::Plugins,
+        }
+    }
+
     fn page(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        self.sync_external();
         let shared = self.shared.clone();
         let session = shared.session();
         let page = self.page;
@@ -969,6 +1051,11 @@ impl App {
                 scroll(ui, |ui| open = self.plugins.show(ui, palette, &shared));
                 if let Some(page) = open {
                     self.navigate(page);
+                }
+            }
+            Page::External(_) => {
+                if let Some(view) = self.external.as_mut() {
+                    scroll(ui, |ui| view.show(ui, palette, &shared));
                 }
             }
             Page::Addons => {

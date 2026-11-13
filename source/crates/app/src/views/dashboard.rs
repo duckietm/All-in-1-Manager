@@ -121,7 +121,9 @@ impl Dashboard {
         ui.add_space(18.0);
 
         // Only what the Plugins page has switched on; a section with nothing left is left out.
-        for (heading, entries) in [(t("ADDONS"), addons::visible(addons::entries())), (t("ASSETS"), addons::visible(addons::asset_entries()))] {
+        let mut addon_entries = addons::visible(addons::entries());
+        addon_entries.extend(addons::external_entries());
+        for (heading, entries) in [(t("ADDONS"), addon_entries), (t("ASSETS"), addons::visible(addons::asset_entries()))] {
             if entries.is_empty() {
                 continue;
             }

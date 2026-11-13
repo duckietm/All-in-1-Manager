@@ -25,6 +25,8 @@ pub mod services;
 pub mod sql;
 
 pub use async_trait::async_trait;
+/// The engine type of [`runtime::engine`], for apps that keep one without depending on wasmtime.
+pub use wasmtime::Engine;
 
 pub use manifest::{display_safe, Manifest, Tile};
 #[cfg(feature = "test-hooks")]

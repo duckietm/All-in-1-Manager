@@ -113,6 +113,33 @@ pub fn asset_entries() -> Vec<Entry> {
     ]
 }
 
+/// The colour of an external plugin's tile when its manifest gives none that is `#rrggbb`.
+const EXTERNAL_COLOR: &str = "#4F5FE6";
+
+/// A manifest tile colour: exactly `#rrggbb`, else the default.
+pub fn tile_color(color: &str) -> Color32 {
+    let valid = color.len() == 7 && color.starts_with('#') && color[1..].bytes().all(|b| b.is_ascii_hexdigit());
+    hex(if valid { color } else { EXTERNAL_COLOR })
+}
+
+/// The tiles of the external plugins that are on and have one (manifest `tile`). Their texts are plugin-supplied.
+pub fn external_entries() -> Vec<Entry> {
+    crate::plugins::external_pages()
+        .into_iter()
+        .filter_map(|(page, info)| {
+            let tile = info.manifest.tile?;
+            Some(Entry {
+                title: aio_plugin_host::display_safe(&tile.title, 40),
+                description: aio_plugin_host::display_safe(&tile.description, 160),
+                icon: Icon::Puzzle,
+                color: tile_color(&tile.color),
+                scene: Scene::Room,
+                page,
+            })
+        })
+        .collect()
+}
+
 /// Only the buttons of plugins that are switched on (the Plugins page).
 pub fn visible(mut entries: Vec<Entry>) -> Vec<Entry> {
     entries.retain(|e| crate::plugins::page_visible(e.page));
@@ -159,10 +186,24 @@ pub fn grid(ui: &mut egui::Ui, palette: &Palette, entries: &[Entry], height: f32
 /// The Addons page.
 pub fn show(ui: &mut egui::Ui, palette: &Palette) -> Option<Page> {
     ui.add_space(4.0);
-    let entries = visible(entries());
+    let mut entries = visible(entries());
+    entries.extend(external_entries());
     if entries.is_empty() {
         crate::gui::widgets::muted(ui, palette, t("Every addon is switched off: switch them on again on the Plugins page."), 13.5);
         return None;
     }
     grid(ui, palette, &entries, 140.0, palette.surface)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tile_colors_must_be_rrggbb() {
+        assert_eq!(tile_color("#4f8cff"), hex("#4f8cff"));
+        for bad in ["4f8cff", "#4f8cf", "#4f8cffaa", "#zzzzzz", "red", "", "#ｆｆｆｆｆｆ"] {
+            assert_eq!(tile_color(bad), hex(EXTERNAL_COLOR), "{bad}");
+        }
+    }
 }

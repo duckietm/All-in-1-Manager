@@ -7,6 +7,7 @@
 
 pub mod external;
 pub mod packs;
+pub mod services;
 
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
@@ -135,14 +136,29 @@ pub fn set_enabled(id: &str, enabled: bool) {
     let _ = settings.save();
 }
 
-/// Whether the page is in the menus: always for the core pages, else when its plugin is on.
+/// Whether the page is in the menus: always for the core pages, else when its plugin is on. An external plugin's
+/// page when the plugin is installed and on.
 pub fn page_visible(page: Page) -> bool {
+    if let Page::External(index) = page {
+        return external::plugins().get(index as usize).is_some_and(|i| is_enabled(&external::settings_id(&i.manifest.id)));
+    }
     plugin_for(page).is_none_or(|p| is_enabled(p.id))
+}
+
+/// The installed external plugins that are on, with their pages (sidebar, tiles).
+pub fn external_pages() -> Vec<(Page, external::ExternalInfo)> {
+    external::plugins()
+        .list()
+        .into_iter()
+        .enumerate()
+        .filter(|(_, i)| is_enabled(&external::settings_id(&i.manifest.id)))
+        .filter_map(|(n, i)| u16::try_from(n).ok().map(|n| (Page::External(n), i)))
+        .collect()
 }
 
 /// Whether the Addons page has anything to show.
 pub fn any_addon_visible() -> bool {
-    crate::views::addons::entries().iter().any(|e| page_visible(e.page))
+    crate::views::addons::entries().iter().any(|e| page_visible(e.page)) || !crate::views::addons::external_entries().is_empty()
 }
 
 #[cfg(test)]

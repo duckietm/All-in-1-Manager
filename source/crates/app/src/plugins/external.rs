@@ -5,9 +5,11 @@
 //! Switching one on or off uses the same store as the built-in plugins (`DisabledPlugins`), under the id
 //! `ext:<id>`, so a third-party id can never collide with a built-in one.
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use aio_plugin_host::package::{self, Package, MAX_PACKAGE};
@@ -58,6 +60,52 @@ pub fn settings_id(id: &str) -> String {
     format!("ext:{id}")
 }
 
+/// How many instances of each plugin are alive (a page open, or a call still ending after its page closed).
+fn live() -> &'static Mutex<HashMap<String, usize>> {
+    static STATE: OnceLock<Mutex<HashMap<String, usize>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Held next to a running `PluginInstance`; while any exists, the plugin's files are not removed or replaced (its
+/// `plugin.wasm` and `data/` may be open: Windows refuses to move or delete open files).
+pub struct LiveGuard(String);
+
+impl LiveGuard {
+    pub fn new(id: &str) -> Self {
+        *live().lock().entry(id.to_string()).or_default() += 1;
+        Self(id.to_string())
+    }
+}
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        let mut all = live().lock();
+        if let Some(n) = all.get_mut(&self.0) {
+            *n -= 1;
+            if *n == 0 {
+                all.remove(&self.0);
+            }
+        }
+    }
+}
+
+pub fn is_live(id: &str) -> bool {
+    live().lock().contains_key(id)
+}
+
+/// Blocks until no instance of `id` is alive. A closed page's call ends within the 5 s call limit; 10 s is the most
+/// this waits. Blocking: run it off the window's thread.
+fn wait_until_stopped(id: &str) -> Result<()> {
+    let start = Instant::now();
+    while is_live(id) {
+        if start.elapsed() > Duration::from_secs(10) {
+            bail!("The plugin is still running: close its page and try again.");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok(())
+}
+
 fn reserved_ids() -> Vec<&'static str> {
     PLUGINS.iter().map(|p| p.id).collect()
 }
@@ -90,6 +138,21 @@ impl ExternalPlugins {
         self.list.lock().clone()
     }
 
+    /// The plugin at `index` of [`ExternalPlugins::list`] (what `Page::External` holds).
+    pub fn get(&self, index: usize) -> Option<ExternalInfo> {
+        self.list.lock().get(index).cloned()
+    }
+
+    /// Where the plugin `id` is in [`ExternalPlugins::list`] now.
+    pub fn index_of(&self, id: &str) -> Option<usize> {
+        self.list.lock().iter().position(|i| i.manifest.id == id)
+    }
+
+    /// The installed folder of a plugin.
+    pub fn dir(&self, id: &str) -> PathBuf {
+        self.root.join(id)
+    }
+
     /// Reads and checks a package file. Blocking: run it off the window's thread.
     pub fn prepare(&self, path: &Path) -> Result<Pending> {
         let bytes = read_capped(path)?;
@@ -105,6 +168,8 @@ impl ExternalPlugins {
         if now != pending.previous {
             bail!("The installed version changed while you were deciding. Choose the file again.");
         }
+        // An update replaces the folder: the running version lets go of its files first.
+        wait_until_stopped(&pending.package.manifest.id)?;
         let result = package::install(&pending.package, &self.root);
         self.reload();
         result?;
@@ -120,6 +185,7 @@ impl ExternalPlugins {
 
     /// Deletes the plugin with its private data.
     pub fn remove(&self, id: &str) -> Result<()> {
+        wait_until_stopped(id)?;
         let result = package::remove(id, &self.root);
         self.reload();
         result

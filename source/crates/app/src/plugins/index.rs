@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use aio_core::InstallerSettings;
-use aio_plugin_index::{check_fresh, verify_and_parse, Freshness, Index, MAX_INDEX_BYTES};
+use aio_plugin_index::{check_fresh, verify_and_parse, Freshness, Index, KeyId, MAX_INDEX_BYTES};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -62,6 +62,8 @@ pub struct IndexState {
     pub error: Option<String>,
     /// When the index was last fetched and accepted in this run.
     pub checked: Option<DateTime<Utc>>,
+    /// The key that signed [IndexState::index].
+    pub key_id: Option<KeyId>,
 }
 
 /// Longest error text kept in [`IndexState::error`].
@@ -80,6 +82,21 @@ pub fn installable(state: &IndexState, developer_mode: bool) -> Option<&Index> {
         IndexSource::Test => developer_mode,
     };
     state.index.as_ref().filter(|_| allowed && state.freshness == Some(Freshness::Current))
+}
+
+/// An index that may be installed from (see [installable]), with where it comes from and the key that signed it:
+/// what a verified install records and what the consent window names.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignedIndex {
+    pub index: Index,
+    pub source: IndexSource,
+    pub key_id: KeyId,
+}
+
+/// [installable] as a [SignedIndex]; None also when the key is unknown (never the case for a verified state).
+pub fn signed(state: &IndexState, developer_mode: bool) -> Option<SignedIndex> {
+    let index = installable(state, developer_mode)?.clone();
+    Some(SignedIndex { index, source: state.source, key_id: state.key_id.clone()? })
 }
 
 /// What may be shown: a test state is dropped (an empty official state instead) while developer mode is off.
@@ -208,9 +225,9 @@ pub fn load_cache_from(source: &IndexFeed, now: DateTime<Utc>) -> IndexState {
         return invalid("it cannot be read");
     };
     match verify_and_parse(&bytes, &sig, &source.key_refs(), &source.package_prefix) {
-        Ok((index, _)) => match check_fresh(&index, stored_sequence(dir), now) {
+        Ok((index, key)) => match check_fresh(&index, stored_sequence(dir), now) {
             Freshness::Rollback => IndexState { error: Some(ROLLBACK.to_string()), ..empty },
-            fresh => IndexState { index: Some(index), freshness: Some(fresh), ..empty },
+            fresh => IndexState { index: Some(index), freshness: Some(fresh), key_id: Some(key), ..empty },
         },
         Err(e) => invalid(&format!("{e:#}")),
     }
@@ -237,7 +254,7 @@ async fn fetch_verified(client: &reqwest::Client, source: &IndexFeed, now: DateT
         .map_err(|_| "The plugin index could not be downloaded: the request timed out".to_string())?
         .map_err(|e| format!("The plugin index could not be downloaded: {e}"))?;
     let sig = String::from_utf8(sig_bytes).map_err(|_| "The index signature file is not in the expected format".to_string())?;
-    let (index, _) = verify_and_parse(&index_bytes, &sig, &source.key_refs(), &source.package_prefix).map_err(|e| format!("{e:#}"))?;
+    let (index, key) = verify_and_parse(&index_bytes, &sig, &source.key_refs(), &source.package_prefix).map_err(|e| format!("{e:#}"))?;
     // The highest sequence seen: state.json, or the verified cache if state.json was lost.
     let last = stored_sequence(&source.cache).into_iter().chain(cached.map(|i| i.sequence)).max();
     let freshness = check_fresh(&index, last, now);
@@ -246,7 +263,7 @@ async fn fetch_verified(client: &reqwest::Client, source: &IndexFeed, now: DateT
     }
     let sequence = last.map_or(index.sequence, |l| l.max(index.sequence));
     let error = write_cache(&source.cache, &index_bytes, &sig, sequence).err().map(|e| safe(&format!("The plugin index could not be saved: {e}")));
-    Ok(IndexState { source: source.kind, index: Some(index), freshness: Some(freshness), error, checked: Some(now) })
+    Ok(IndexState { source: source.kind, index: Some(index), freshness: Some(freshness), error, checked: Some(now), key_id: Some(key) })
 }
 
 /// GET `url` into memory; a non-2xx status is `Err("HTTP <code>")` and a body past `cap` bytes is refused while
@@ -292,7 +309,8 @@ fn write_cache(dir: &Path, index: &[u8], sig: &str, sequence: u64) -> std::io::R
     write_atomic(&dir.join("index.json.sig"), sig.as_bytes())
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+/// Writes `path` through `<name>.tmp` (synced, then renamed over it): a crash leaves the old file or the new one.
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".tmp");
     let temp = path.with_file_name(name);
@@ -386,8 +404,13 @@ impl IndexStore {
 
     /// The index to install and update from: see [`installable`].
     pub fn for_install(&self) -> Option<Index> {
+        self.signed_for_install().map(|signed| signed.index)
+    }
+
+    /// [IndexStore::for_install] with where it comes from and the key that signed it.
+    pub fn signed_for_install(&self) -> Option<SignedIndex> {
         let inner = self.inner.lock();
-        installable(&inner.state, inner.settings.developer_mode).cloned()
+        signed(&inner.state, inner.settings.developer_mode)
     }
 
     /// Fetches the index of the settings held here and keeps the result, unless the settings changed meanwhile.
@@ -432,6 +455,11 @@ pub fn index_for_install() -> Option<Index> {
     store().for_install()
 }
 
+/// [index_for_install] with where it comes from and the key that signed it (for verified installs).
+pub fn signed_index_for_install() -> Option<SignedIndex> {
+    store().signed_for_install()
+}
+
 /// The developer settings were changed (developer mode switched, or the test url or keys edited): call with the new
 /// settings, saved or not. The index state follows them at once.
 pub fn developer_settings_changed(settings: &InstallerSettings) {
@@ -454,7 +482,7 @@ pub async fn refresh(client: &reqwest::Client) -> IndexState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use base64::Engine as _;
     use ed25519_dalek::SigningKey;
@@ -465,21 +493,21 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    const SECRET: [u8; 32] = [9; 32];
+    pub(crate) const SECRET: [u8; 32] = [9; 32];
     const OTHER: [u8; 32] = [3; 32];
 
     /// status, extra headers, body
-    type Reply = (u16, Vec<(String, String)>, Vec<u8>);
+    pub(crate) type Reply = (u16, Vec<(String, String)>, Vec<u8>);
 
     /// A raw HTTP/1.1 responder on 127.0.0.1 that serves fixed replies by path and counts the requests.
-    struct Server {
-        addr: std::net::SocketAddr,
-        routes: Arc<Mutex<HashMap<String, Reply>>>,
+    pub(crate) struct Server {
+        pub(crate) addr: std::net::SocketAddr,
+        pub(crate) routes: Arc<Mutex<HashMap<String, Reply>>>,
         hits: Arc<AtomicUsize>,
     }
 
     impl Server {
-        async fn start() -> Server {
+        pub(crate) async fn start() -> Server {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let addr = listener.local_addr().unwrap();
             let routes: Arc<Mutex<HashMap<String, Reply>>> = Arc::default();
@@ -519,7 +547,7 @@ mod tests {
             format!("http://{}/index.json", self.addr)
         }
 
-        fn set(&self, path: &str, status: u16, body: Vec<u8>) {
+        pub(crate) fn set(&self, path: &str, status: u16, body: Vec<u8>) {
             self.routes.lock().insert(path.to_string(), (status, vec![], body));
         }
 
@@ -528,12 +556,12 @@ mod tests {
             self.set("/index.json.sig", 200, sig.as_bytes().to_vec());
         }
 
-        fn hits(&self) -> usize {
+        pub(crate) fn hits(&self) -> usize {
             self.hits.load(Ordering::SeqCst)
         }
     }
 
-    fn public(secret: &[u8; 32]) -> String {
+    pub(crate) fn public(secret: &[u8; 32]) -> String {
         let public = SigningKey::from_bytes(secret).verifying_key().to_bytes();
         format!("{}:{}", aio_plugin_index::key_id(&public), base64::engine::general_purpose::STANDARD.encode(public))
     }

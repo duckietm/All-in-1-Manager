@@ -15,8 +15,12 @@ use anyhow::{bail, Context, Result};
 use aio_plugin_host::package::{self, Package, MAX_PACKAGE, MAX_WASM};
 use aio_plugin_host::manifest::valid_id;
 use aio_plugin_host::{display_safe, Manifest, Permission};
+use aio_plugin_index::{Entry, Index};
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
+use super::index::{IndexSource, SignedIndex, OFFICIAL_PACKAGE_PREFIX};
 use super::{packs, PLUGINS};
 use crate::i18n::{t, tf};
 
@@ -24,7 +28,8 @@ use crate::i18n::{t, tf};
 #[derive(Debug, Clone)]
 pub struct ExternalInfo {
     pub manifest: Manifest,
-    /// Signed by the program's authors. Nothing is in milestone 1: every plugin shows "Not verified".
+    /// Installed from the official index and unchanged since: its `verified.json` matches the installed files (see
+    /// [`ExternalPlugins::reload`]). A file install, a test-index install or a developer folder is never verified.
     pub verified: bool,
     /// Loaded from a developer folder (developer mode), not installed.
     pub dev: bool,
@@ -36,9 +41,28 @@ pub struct Pending {
     pub package: Package,
     /// The installed version this one replaces, if any.
     pub previous: Option<Manifest>,
+    /// Set only by [`ExternalPlugins::prepare_verified`] (the field is private so nothing else can make a verified
+    /// Pending); `None` for a file.
+    verified: Option<Verification>,
+}
+
+/// What a verified install was checked against: the signed index's entry and the key that signed the index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verification {
+    pub source: IndexSource,
+    pub key_id: String,
+    /// The index's `sequence`.
+    pub sequence: u64,
+    /// SHA-256 of the downloaded package (lowercase hex), equal to the entry's.
+    pub sha256: String,
 }
 
 impl Pending {
+    /// How the package was verified against the signed index; `None` for a package from a file.
+    pub fn verification(&self) -> Option<&Verification> {
+        self.verified.as_ref()
+    }
+
     /// Whether the permission is new compared with the installed version (never true for a first install).
     pub fn is_new_permission(&self, p: &Permission) -> bool {
         self.previous.as_ref().is_some_and(|old| !old.permissions.contains(p))
@@ -233,6 +257,223 @@ fn read_capped(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+/// The GitHub hosts a release download of the official index redirects to (Ruling 3). Integrity comes from the signed
+/// size and SHA-256, so this list is about availability: any other redirect is refused.
+pub const PACKAGE_CDN_HOSTS: &[&str] = &["objects.githubusercontent.com", "release-assets.githubusercontent.com"];
+/// The whole download, redirects included.
+pub const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
+/// Most redirects one download follows.
+const MAX_REDIRECTS: usize = 5;
+/// `configuration/plugins/ext/<id>/verified.json`: what a verified install recorded.
+const VERIFIED_FILE: &str = "verified.json";
+/// `verified.json` is a few short fields.
+const MAX_VERIFIED_BYTES: u64 = 4 * 1024;
+
+/// Whether a package download that started at `first` may follow a redirect to `next`. The official index: only to
+/// GitHub's asset CDN ([`PACKAGE_CDN_HOSTS`]), https on the default port, no login in the url. A test index: only the
+/// same host and port as `first`, never from https down to http.
+pub fn redirect_allowed(kind: IndexSource, first: &reqwest::Url, next: &reqwest::Url) -> bool {
+    let plain = next.username().is_empty() && next.password().is_none();
+    match kind {
+        IndexSource::Official => {
+            let host = next.host_str().unwrap_or_default().to_ascii_lowercase();
+            plain && next.scheme() == "https" && next.port().is_none() && PACKAGE_CDN_HOSTS.contains(&host.as_str())
+        }
+        IndexSource::Test => {
+            let same_host = matches!((first.host_str(), next.host_str()), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b));
+            let scheme_ok = matches!((first.scheme(), next.scheme()), ("https", "https") | ("http", "http") | ("http", "https"));
+            plain && same_host && scheme_ok && first.port_or_known_default() == next.port_or_known_default()
+        }
+    }
+}
+
+/// The client for package downloads from the index of `kind`: the redirect policy of [`redirect_allowed`] (at most
+/// five redirects), the Manager's user agent.
+#[allow(dead_code)] // The Plugins page's Available tab and "Update available" (Task 5) call it.
+pub fn package_client(kind: IndexSource) -> reqwest::Client {
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        let allowed = attempt.previous().first().is_some_and(|first| redirect_allowed(kind, first, attempt.url()));
+        if !allowed {
+            attempt.error("a redirect to another host was refused")
+        } else if attempt.previous().len() > MAX_REDIRECTS {
+            attempt.error("too many redirects")
+        } else {
+            attempt.follow()
+        }
+    });
+    reqwest::Client::builder()
+        .user_agent(format!("All-in-1-Manager/{}", crate::update::CURRENT_VERSION))
+        .redirect(policy)
+        .connect_timeout(Duration::from_secs(15))
+        .build()
+        .expect("HTTP client")
+}
+
+/// Downloads the package of `entry` (from an index of `kind`), within [`DOWNLOAD_TIMEOUT`]. The body is streamed and
+/// refused as soon as it passes `entry.size` (at most 32 MiB); its size and SHA-256 must equal the entry's. Nothing
+/// the server says (headers, length) is trusted: only the signed entry.
+#[allow(dead_code)] // The Plugins page (Task 5) calls it.
+pub async fn download(client: &reqwest::Client, entry: &Entry, kind: IndexSource) -> Result<Vec<u8>> {
+    // `Index::parse` already bound the url to the feed's prefix; this keeps an official download on GitHub's releases
+    // whatever the caller passes.
+    if kind == IndexSource::Official && !entry.url.starts_with(OFFICIAL_PACKAGE_PREFIX) {
+        bail!("The package url is not an official one");
+    }
+    match tokio::time::timeout(DOWNLOAD_TIMEOUT, fetch_package(client, entry)).await {
+        Ok(result) => result,
+        Err(_) => bail!("The download took longer than {} seconds", DOWNLOAD_TIMEOUT.as_secs()),
+    }
+}
+
+async fn fetch_package(client: &reqwest::Client, entry: &Entry) -> Result<Vec<u8>> {
+    let cap = entry.size.min(MAX_PACKAGE as u64);
+    let too_large = || anyhow::anyhow!("The package is larger than the index says ({} bytes)", entry.size);
+    let mut response = client.get(&entry.url).send().await.map_err(|e| anyhow::anyhow!("The package could not be downloaded: {}", error_chain(&e)))?;
+    let status = response.status();
+    if !status.is_success() {
+        bail!("The package could not be downloaded: HTTP {}", status.as_u16());
+    }
+    // Only an early refusal: the body is counted below whatever the header says.
+    if response.content_length().is_some_and(|n| n > cap) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| anyhow::anyhow!("The package could not be downloaded: {}", error_chain(&e)))? {
+        if (body.len() + chunk.len()) as u64 > cap {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    check_integrity(entry, &body)?;
+    Ok(body)
+}
+
+fn error_chain(e: &reqwest::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = std::error::Error::source(e);
+    while let Some(cause) = source {
+        text = format!("{text}: {cause}");
+        source = cause.source();
+    }
+    text
+}
+
+/// Lowercase hex SHA-256.
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex(&Sha256::digest(bytes))
+}
+
+fn hex(digest: &[u8]) -> String {
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// SHA-256 of a file, read in pieces (a plugin.wasm can be 24 MiB).
+fn file_sha256(path: &Path) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut std::fs::File::open(path)?, &mut hasher)?;
+    Ok(hex(&hasher.finalize()))
+}
+
+/// The package bytes are the ones the entry signed: the same size and SHA-256.
+fn check_integrity(entry: &Entry, bytes: &[u8]) -> Result<()> {
+    if bytes.len() as u64 != entry.size {
+        bail!("The package size ({} bytes) is not the one the index lists ({} bytes)", bytes.len(), entry.size);
+    }
+    if sha256_hex(bytes) != entry.sha256 {
+        bail!("The package's SHA-256 is not the one the index lists: it was changed or damaged");
+    }
+    Ok(())
+}
+
+/// The manifest of a downloaded package must say exactly what the signed entry says: id, version, author, api, and
+/// the same permissions (as parsed values, in any order, none twice).
+fn check_matches_entry(manifest: &Manifest, entry: &Entry) -> Result<()> {
+    for (what, package, index) in [
+        ("id", &manifest.id, &entry.id),
+        ("version", &manifest.version, &entry.version),
+        ("author", &manifest.author, &entry.author),
+        ("api", &manifest.api, &entry.api),
+    ] {
+        if package != index {
+            bail!("The package's {what} ({}) is not the one the index lists ({})", display_safe(package, 80), display_safe(index, 80));
+        }
+    }
+    let listed = entry.permissions().context("The index lists an invalid permission")?;
+    let twice = |list: &[Permission]| list.iter().enumerate().any(|(i, p)| list[..i].contains(p));
+    let same = listed.len() == manifest.permissions.len()
+        && !twice(&listed)
+        && !twice(&manifest.permissions)
+        && manifest.permissions.iter().all(|p| listed.contains(p));
+    if !same {
+        bail!("The package's permissions are not the ones the index lists");
+    }
+    Ok(())
+}
+
+/// `verified.json` in an installed plugin's folder, written by [`ExternalPlugins::commit`] after a verified install.
+/// `sha256`, `version`, `sequence` and `key_id` say what the signed index listed; the package itself is not kept, so
+/// `wasm_sha256` and `manifest_sha256` are the hashes of the installed `plugin.wasm` and `manifest.json`, compared
+/// with the files on every [`ExternalPlugins::reload`]. A file install replaces the folder, which drops this file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifiedRecord {
+    sha256: String,
+    version: String,
+    sequence: u64,
+    key_id: String,
+    /// `official` or `test`.
+    source: String,
+    wasm_sha256: String,
+    manifest_sha256: String,
+}
+
+fn source_name(source: IndexSource) -> &'static str {
+    match source {
+        IndexSource::Official => "official",
+        IndexSource::Test => "test",
+    }
+}
+
+/// True when the plugin installed in `dir` with `manifest` was installed from the official index and its files are
+/// unchanged since: `verified.json` parses, is from the official index, has the manifest's version, and the hashes
+/// of `plugin.wasm` and `manifest.json` on disk are the recorded ones.
+fn is_verified(dir: &Path, manifest: &Manifest) -> bool {
+    let path = dir.join(VERIFIED_FILE);
+    if std::fs::metadata(&path).map_or(true, |m| m.len() > MAX_VERIFIED_BYTES) {
+        return false;
+    }
+    let Some(record) = std::fs::read(&path).ok().and_then(|bytes| serde_json::from_slice::<VerifiedRecord>(&bytes).ok()) else {
+        return false;
+    };
+    record.source == source_name(IndexSource::Official)
+        && record.version == manifest.version
+        && file_sha256(&dir.join("plugin.wasm")).is_ok_and(|h| h == record.wasm_sha256)
+        && file_sha256(&dir.join("manifest.json")).is_ok_and(|h| h == record.manifest_sha256)
+}
+
+/// Writes `verified.json` for a package just installed in `dir` (atomically: a crash leaves none, so the plugin is
+/// only shown as not verified).
+fn write_verified(dir: &Path, package: &Package, verification: &Verification) -> Result<()> {
+    let record = VerifiedRecord {
+        sha256: verification.sha256.clone(),
+        version: package.manifest.version.clone(),
+        sequence: verification.sequence,
+        key_id: verification.key_id.clone(),
+        source: source_name(verification.source).to_string(),
+        wasm_sha256: sha256_hex(&package.wasm),
+        manifest_sha256: file_sha256(&dir.join("manifest.json"))?,
+    };
+    super::index::write_atomic(&dir.join(VERIFIED_FILE), &serde_json::to_vec_pretty(&record)?)?;
+    Ok(())
+}
+
+/// `MAJOR.MINOR.PATCH` as numbers, so 1.10.0 is after 1.9.0.
+fn version_key(version: &str) -> Option<[u64; 3]> {
+    let mut parts = version.split('.').map(|p| p.parse::<u64>().ok());
+    let key = [parts.next()??, parts.next()??, parts.next()??];
+    parts.next().is_none().then_some(key)
+}
+
 impl ExternalPlugins {
     pub fn new(root: PathBuf) -> Self {
         let this = Self { root, list: Mutex::new(Vec::new()), dev: Mutex::new(Dev::default()) };
@@ -242,7 +483,10 @@ impl ExternalPlugins {
 
     /// Reads the folder again.
     pub fn reload(&self) {
-        let list = package::installed(&self.root).into_iter().map(|manifest| ExternalInfo { manifest, verified: false, dev: false }).collect();
+        let list = package::installed(&self.root)
+            .into_iter()
+            .map(|manifest| ExternalInfo { verified: is_verified(&self.dir(&manifest.id), &manifest), manifest, dev: false })
+            .collect();
         *self.list.lock() = list;
     }
 
@@ -418,7 +662,43 @@ impl ExternalPlugins {
         let bytes = read_capped(path)?;
         let package = package::inspect(&bytes, &reserved_ids())?;
         let previous = self.list.lock().iter().find(|i| i.manifest.id == package.manifest.id).map(|i| i.manifest.clone());
-        Ok(Pending { package, previous })
+        Ok(Pending { package, previous, verified: None })
+    }
+
+    /// Checks a package downloaded for `entry` of the signed index, for the consent: its size and SHA-256 equal the
+    /// entry's, the entry is the one this index lists and is not revoked by it, [`package::inspect`] passes and the
+    /// manifest equals the entry ([`check_matches_entry`]). Anything else refuses the install. Blocking.
+    #[allow(dead_code)] // The Plugins page (Task 5) calls it.
+    pub fn prepare_verified(&self, signed: &SignedIndex, entry: &Entry, bytes: Vec<u8>) -> Result<Pending> {
+        if signed.index.entry(&entry.id) != Some(entry) {
+            bail!("This plugin is not listed by the index as shown");
+        }
+        if let Some(revoked) = signed.index.revocation_for(&entry.id, &entry.version) {
+            bail!("This version was revoked by the index: {}", display_safe(&revoked.reason, 300));
+        }
+        check_integrity(entry, &bytes)?;
+        let package = package::inspect(&bytes, &reserved_ids())?;
+        check_matches_entry(&package.manifest, entry)?;
+        let verified = Verification { source: signed.source, key_id: signed.key_id.to_string(), sequence: signed.index.sequence, sha256: entry.sha256.clone() };
+        let previous = self.list.lock().iter().find(|i| i.manifest.id == package.manifest.id).map(|i| i.manifest.clone());
+        Ok(Pending { package, previous, verified: Some(verified) })
+    }
+
+    /// The update the index offers for the installed plugin `id`, if any (see [`ExternalPlugins::update_in`]), from
+    /// the index that may be installed from now. Never installs anything: the user clicks, and consents again.
+    #[allow(dead_code)] // The Plugins page's "Update available" (Task 5) calls it.
+    pub fn update_for(&self, id: &str) -> Option<Entry> {
+        super::index::index_for_install().and_then(|index| self.update_in(&index, id))
+    }
+
+    /// The entry of `index` that updates the installed (not developer) plugin `id`: the same id, the same author, a
+    /// strictly greater version (compared as numbers) and not revoked.
+    pub fn update_in(&self, index: &Index, id: &str) -> Option<Entry> {
+        let installed = self.list.lock().iter().find(|i| i.manifest.id == id).map(|i| i.manifest.clone())?;
+        let entry = index.entry(id)?;
+        let newer = version_key(&entry.version)? > version_key(&installed.version)?;
+        let usable = newer && entry.author == installed.author && index.revocation_for(id, &entry.version).is_none();
+        usable.then(|| entry.clone())
     }
 
     /// Writes a package the user agreed to. Blocking.
@@ -435,6 +715,19 @@ impl ExternalPlugins {
             true => package::install_without_data(&pending.package, &self.root).map(|_| ()),
             false => package::install(&pending.package, &self.root).map(|_| ()),
         };
+        if result.is_ok() {
+            let dir = self.dir(&pending.package.manifest.id);
+            match &pending.verified {
+                // Not fatal: the plugin is installed, it is only shown as not verified.
+                Some(verification) => {
+                    let _ = write_verified(&dir, &pending.package, verification);
+                }
+                // The install replaced the folder, so there is none; removed anyway: a file is never verified.
+                None => {
+                    let _ = std::fs::remove_file(dir.join(VERIFIED_FILE));
+                }
+            }
+        }
         self.reload();
         result?;
         Ok(pending.package.manifest.clone())
@@ -807,6 +1100,383 @@ mod tests {
         // A broken manifest keeps what ran before and says why.
         std::fs::write(folder.join("manifest.json"), b"{").unwrap();
         assert!(ext.reload_dev("mine").is_err());
+    }
+
+    // ---- Verified installs from the signed index ----
+
+    use crate::plugins::index::tests::{public, Server, SECRET};
+
+    fn aiop_api(author: &str, id: &str, version: &str, api: &str, permissions: &[&str]) -> Vec<u8> {
+        let manifest = serde_json::json!({
+            "id": id, "name": "Demo", "version": version, "author": author, "description": "A demo",
+            "api": api, "permissions": permissions, "page_title": "Demo",
+        });
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("manifest.json", options).unwrap();
+        zip.write_all(manifest.to_string().as_bytes()).unwrap();
+        zip.start_file("plugin.wasm", options).unwrap();
+        zip.write_all(format!("\0asm\x01\0\0\0{id}{version}").as_bytes()).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// An index entry for `bytes` saying `id`, `version`, `author`, api 1.0 and `permissions`.
+    fn entry_json(prefix: &str, bytes: &[u8], id: &str, version: &str, author: &str, permissions: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "name": "Demo", "version": version, "author": author, "description": "A demo",
+            "api": "1.0", "permissions": permissions, "size": bytes.len(), "sha256": hex(bytes),
+            "url": format!("{prefix}{id}-{version}/{id}.aiop"),
+            "source": { "repo": "https://github.com/someone/demo", "commit": "0123456789abcdef0123456789abcdef01234567" }
+        })
+    }
+
+    /// An index of sequence 7 signed with the test key, verified as an index of `source` would be.
+    fn signed_index(prefix: &str, source: IndexSource, plugins: Vec<serde_json::Value>, revoked: serde_json::Value) -> SignedIndex {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "schema": 1, "sequence": 7, "generated": "2026-11-13T10:00:00Z", "expires": "2026-12-13T10:00:00Z",
+            "plugins": plugins, "revoked": revoked,
+        }))
+        .unwrap();
+        let sig = aio_plugin_index::sign(&bytes, &SECRET);
+        let key = public(&SECRET);
+        let (id, b64) = key.split_once(':').unwrap();
+        let (index, key_id) = aio_plugin_index::verify_and_parse(&bytes, &sig, &[(id, b64)], prefix).unwrap();
+        SignedIndex { index, source, key_id }
+    }
+
+    /// One package and the official index that lists it exactly.
+    fn official(id: &str, version: &str, permissions: &[&str]) -> (Vec<u8>, SignedIndex) {
+        let bytes = aiop_api("Someone", id, version, "1.0", permissions);
+        let entry = entry_json(OFFICIAL_PACKAGE_PREFIX, &bytes, id, version, "Someone", permissions);
+        (bytes, signed_index(OFFICIAL_PACKAGE_PREFIX, IndexSource::Official, vec![entry], serde_json::json!([])))
+    }
+
+    fn package_path(id: &str, version: &str) -> String {
+        format!("/packages/{id}-{version}/{id}.aiop")
+    }
+
+    #[tokio::test]
+    async fn tampered_package_is_refused() {
+        let server = Server::start().await;
+        let prefix = format!("http://{}/packages/", server.addr);
+        let bytes = aiop("demo", "1.0.0", &["ssh"]);
+        let signed = signed_index(&prefix, IndexSource::Test, vec![entry_json(&prefix, &bytes, "demo", "1.0.0", "Someone", &["ssh"])], serde_json::json!([]));
+        let entry = signed.index.entry("demo").unwrap().clone();
+        let client = package_client(IndexSource::Test);
+
+        server.set(&package_path("demo", "1.0.0"), 200, bytes.clone());
+        assert_eq!(download(&client, &entry, IndexSource::Test).await.unwrap(), bytes);
+
+        // One byte changed, same size: the SHA-256 differs.
+        let mut tampered = bytes.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        server.set(&package_path("demo", "1.0.0"), 200, tampered.clone());
+        let error = download(&client, &entry, IndexSource::Test).await.unwrap_err().to_string();
+        assert!(error.contains("SHA-256"), "{error}");
+
+        // The same check when the bytes come from elsewhere.
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        assert!(ext.prepare_verified(&signed, &entry, tampered).is_err());
+        // An entry that is not the one this index signed (another sha256) is refused.
+        let forged = Entry { sha256: hex(b"other"), ..entry.clone() };
+        assert!(ext.prepare_verified(&signed, &forged, bytes.clone()).is_err());
+        assert!(ext.prepare_verified(&signed, &entry, bytes.clone()).is_ok());
+        assert!(ext.list().is_empty(), "prepare writes nothing");
+
+        // A redirect on the test host is followed; one to another port is not; an error status is refused.
+        server.set("/elsewhere/demo.aiop", 200, bytes.clone());
+        server.routes.lock().insert(package_path("demo", "1.0.0"), (302, vec![("Location".into(), "/elsewhere/demo.aiop".into())], vec![]));
+        assert_eq!(download(&client, &entry, IndexSource::Test).await.unwrap(), bytes);
+        server.routes.lock().insert(package_path("demo", "1.0.0"), (302, vec![("Location".into(), "http://127.0.0.1:1/demo.aiop".into())], vec![]));
+        assert!(download(&client, &entry, IndexSource::Test).await.is_err());
+        server.set(&package_path("demo", "1.0.0"), 404, vec![]);
+        assert!(download(&client, &entry, IndexSource::Test).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn oversized_download_is_refused() {
+        let server = Server::start().await;
+        let prefix = format!("http://{}/packages/", server.addr);
+        let bytes = aiop("demo", "1.0.0", &[]);
+        let signed = signed_index(&prefix, IndexSource::Test, vec![entry_json(&prefix, &bytes, "demo", "1.0.0", "Someone", &[])], serde_json::json!([]));
+        let entry = signed.index.entry("demo").unwrap().clone();
+        let client = package_client(IndexSource::Test);
+
+        // Longer than the entry says (the first bytes are the right ones).
+        let mut longer = bytes.clone();
+        longer.extend_from_slice(&[0; 4096]);
+        server.set(&package_path("demo", "1.0.0"), 200, longer.clone());
+        let error = download(&client, &entry, IndexSource::Test).await.unwrap_err().to_string();
+        assert!(error.contains("larger"), "{error}");
+        // Shorter than the entry says.
+        server.set(&package_path("demo", "1.0.0"), 200, bytes[..bytes.len() - 1].to_vec());
+        assert!(download(&client, &entry, IndexSource::Test).await.is_err());
+        // Far past 32 MiB: refused while streaming.
+        server.set(&package_path("demo", "1.0.0"), 200, vec![0; MAX_PACKAGE + 1]);
+        assert!(download(&client, &entry, IndexSource::Test).await.is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let error = ext.prepare_verified(&signed, &entry, longer).unwrap_err().to_string();
+        assert!(error.contains("size"), "{error}");
+
+        // An official entry is only fetched from the official release prefix.
+        assert!(download(&client, &entry, IndexSource::Official).await.is_err());
+    }
+
+    #[test]
+    fn manifest_must_equal_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let p = OFFICIAL_PACKAGE_PREFIX;
+        let refused = |bytes: Vec<u8>, entry: serde_json::Value| {
+            let signed = signed_index(p, IndexSource::Official, vec![entry], serde_json::json!([]));
+            let entry = signed.index.plugins[0].clone();
+            ext.prepare_verified(&signed, &entry, bytes).unwrap_err().to_string()
+        };
+
+        // An extra permission in the package that the index does not list.
+        let bytes = aiop_api("Someone", "demo", "1.0.0", "1.0", &["ssh", "ssh:root"]);
+        let error = refused(bytes.clone(), entry_json(p, &bytes, "demo", "1.0.0", "Someone", &["ssh"]));
+        assert!(error.contains("permissions"), "{error}");
+        // One fewer.
+        let error = refused(bytes.clone(), entry_json(p, &bytes, "demo", "1.0.0", "Someone", &["ssh", "ssh:root", "files"]));
+        assert!(error.contains("permissions"), "{error}");
+        // Another author.
+        let error = refused(bytes.clone(), entry_json(p, &bytes, "demo", "1.0.0", "Somebody else", &["ssh", "ssh:root"]));
+        assert!(error.contains("author"), "{error}");
+        // Another version.
+        let error = refused(bytes.clone(), entry_json(p, &bytes, "demo", "1.0.1", "Someone", &["ssh", "ssh:root"]));
+        assert!(error.contains("version"), "{error}");
+        // Another id.
+        let error = refused(bytes.clone(), entry_json(p, &bytes, "other", "1.0.0", "Someone", &["ssh", "ssh:root"]));
+        assert!(error.contains("id"), "{error}");
+        // Another api.
+        let api = aiop_api("Someone", "demo", "1.0.0", "1.0.0", &["ssh", "ssh:root"]);
+        let error = refused(api.clone(), entry_json(p, &api, "demo", "1.0.0", "Someone", &["ssh", "ssh:root"]));
+        assert!(error.contains("api"), "{error}");
+
+        // Equal: accepted, marked verified, nothing written yet.
+        let (bytes, signed) = official("demo", "1.0.0", &["ssh"]);
+        let pending = ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap();
+        let verification = pending.verification().unwrap();
+        assert_eq!((verification.source, verification.sequence), (IndexSource::Official, 7));
+        assert_eq!(verification.key_id, signed.key_id.to_string());
+        assert_eq!(verification.sha256, hex(&bytes));
+        assert!(ext.list().is_empty());
+        // A built-in id is refused like a file's.
+        let (bytes, signed) = official("cms", "1.0.0", &[]);
+        assert!(ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).unwrap_err().to_string().contains("built-in"));
+    }
+
+    #[test]
+    fn permission_order_does_not_matter() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let p = OFFICIAL_PACKAGE_PREFIX;
+        let bytes = aiop_api("Someone", "demo", "1.0.0", "1.0", &["ssh", "sql:read:rooms", "http:example.com"]);
+        let signed = signed_index(p, IndexSource::Official, vec![entry_json(p, &bytes, "demo", "1.0.0", "Someone", &["http:example.com", "ssh", "sql:read:rooms"])], serde_json::json!([]));
+        assert!(ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).is_ok());
+
+        // The counts must match too: a repeat never makes up for a missing one (an entry built by hand, since the
+        // index itself refuses repeats).
+        let manifest = Manifest::parse(br#"{"id":"demo","name":"D","version":"1.0.0","author":"A","description":"","api":"1.0","permissions":["ssh","ssh:root"],"page_title":"D"}"#).unwrap();
+        let mut entry = signed.index.plugins[0].clone();
+        (entry.id, entry.version, entry.author, entry.api) = ("demo".into(), "1.0.0".into(), "A".into(), "1.0".into());
+        entry.permissions = vec!["ssh:root".into(), "ssh".into()];
+        assert!(check_matches_entry(&manifest, &entry).is_ok());
+        for wrong in [vec!["ssh", "ssh"], vec!["ssh", "ssh:root", "ssh"], vec!["ssh"], vec!["ssh", "files"]] {
+            entry.permissions = wrong.iter().map(|s| s.to_string()).collect();
+            assert!(check_matches_entry(&manifest, &entry).is_err(), "{wrong:?}");
+        }
+    }
+
+    #[test]
+    fn revoked_entry_cannot_be_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let p = OFFICIAL_PACKAGE_PREFIX;
+        let bytes = aiop("demo", "1.0.0", &[]);
+        for versions in [serde_json::json!(["1.0.0"]), serde_json::json!(["*"])] {
+            let revoked = serde_json::json!([{ "id": "demo", "versions": versions, "reason": "It deletes rooms" }]);
+            let signed = signed_index(p, IndexSource::Official, vec![entry_json(p, &bytes, "demo", "1.0.0", "Someone", &[])], revoked);
+            let error = ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap_err().to_string();
+            assert!(error.contains("revoked") && error.contains("It deletes rooms"), "{error}");
+        }
+        // Another version revoked: this one installs.
+        let revoked = serde_json::json!([{ "id": "demo", "versions": ["0.9.0"], "reason": "Old" }]);
+        let signed = signed_index(p, IndexSource::Official, vec![entry_json(p, &bytes, "demo", "1.0.0", "Someone", &[])], revoked);
+        assert!(ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).is_ok());
+    }
+
+    fn verified_record(root: &Path, id: &str) -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(root.join(id).join(VERIFIED_FILE)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn verified_flag_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ext");
+        let ext = ExternalPlugins::new(root.clone());
+        let (bytes, signed) = official("demo", "1.0.0", &["ssh"]);
+        let pending = ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap();
+        ext.commit(&pending).unwrap();
+        assert!(ext.list()[0].verified);
+        let record = verified_record(&root, "demo");
+        assert_eq!(record["sha256"], hex(&bytes));
+        assert_eq!(record["version"], "1.0.0");
+        assert_eq!(record["sequence"], 7);
+        assert_eq!(record["key_id"], signed.key_id.to_string());
+        assert!(!root.join("demo").join(format!("{VERIFIED_FILE}.tmp")).exists());
+
+        // A restart reads it again.
+        let restarted = ExternalPlugins::new(root.clone());
+        assert!(restarted.list()[0].verified);
+
+        // plugin.wasm changed on disk: no longer verified.
+        let wasm = root.join("demo/plugin.wasm");
+        let original = std::fs::read(&wasm).unwrap();
+        std::fs::write(&wasm, b"\0asm\x01\0\0\0changed").unwrap();
+        ext.reload();
+        assert!(!ext.list()[0].verified);
+        std::fs::write(&wasm, &original).unwrap();
+        ext.reload();
+        assert!(ext.list()[0].verified);
+        // manifest.json changed (a permission added by hand): no longer verified.
+        let manifest = root.join("demo/manifest.json");
+        let saved = std::fs::read_to_string(&manifest).unwrap();
+        std::fs::write(&manifest, saved.replace("\"ssh\"", "\"ssh:root\"")).unwrap();
+        ext.reload();
+        assert_eq!(ext.list()[0].manifest.permissions, vec![Permission::SshRoot]);
+        assert!(!ext.list()[0].verified);
+        std::fs::write(&manifest, &saved).unwrap();
+        // A record that does not match, or does not parse, or is missing.
+        let path = root.join("demo").join(VERIFIED_FILE);
+        let good = std::fs::read_to_string(&path).unwrap();
+        std::fs::write(&path, good.replace(&hex(&original), &hex(b"x"))).unwrap();
+        ext.reload();
+        assert!(!ext.list()[0].verified);
+        std::fs::write(&path, b"{").unwrap();
+        ext.reload();
+        assert!(!ext.list()[0].verified);
+        std::fs::write(&path, &good).unwrap();
+        ext.reload();
+        assert!(ext.list()[0].verified);
+
+        // An install from a test index is recorded as such and never shown as verified.
+        let bytes = aiop("other", "1.0.0", &[]);
+        let test = signed_index(OFFICIAL_PACKAGE_PREFIX, IndexSource::Test, vec![entry_json(OFFICIAL_PACKAGE_PREFIX, &bytes, "other", "1.0.0", "Someone", &[])], serde_json::json!([]));
+        let pending = ext.prepare_verified(&test, &test.index.plugins[0], bytes).unwrap();
+        assert_eq!(pending.verification().unwrap().source, IndexSource::Test);
+        ext.commit(&pending).unwrap();
+        assert_eq!(verified_record(&root, "other")["source"], "test");
+        let other = ext.list().into_iter().find(|i| i.manifest.id == "other").unwrap();
+        assert!(!other.verified);
+    }
+
+    #[test]
+    fn file_install_clears_verified() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ext");
+        let ext = ExternalPlugins::new(root.clone());
+        let (bytes, signed) = official("demo", "1.0.0", &[]);
+        ext.commit(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap()).unwrap();
+        assert!(ext.list()[0].verified);
+
+        // The very same package, from a file: not verified any more, and the record is gone.
+        let file = dir.path().join("demo.aiop");
+        std::fs::write(&file, &bytes).unwrap();
+        let pending = ext.prepare(&file).unwrap();
+        assert!(pending.verification().is_none());
+        ext.commit(&pending).unwrap();
+        assert!(!ext.list()[0].verified);
+        assert!(!root.join("demo").join(VERIFIED_FILE).exists());
+
+        // A record left by hand next to a file install does not make it verified either (its hashes must match).
+        ext.commit(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).unwrap()).unwrap();
+        let record = std::fs::read(root.join("demo").join(VERIFIED_FILE)).unwrap();
+        std::fs::write(&file, aiop("demo", "1.0.1", &[])).unwrap();
+        ext.install_file(&file).unwrap();
+        assert!(!root.join("demo").join(VERIFIED_FILE).exists());
+        std::fs::write(root.join("demo").join(VERIFIED_FILE), record).unwrap();
+        ext.reload();
+        assert!(!ext.list()[0].verified);
+    }
+
+    #[test]
+    fn update_detected_only_for_newer_same_author() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let file = dir.path().join("demo.aiop");
+        std::fs::write(&file, aiop("demo", "1.9.0", &["ssh"])).unwrap();
+        ext.install_file(&file).unwrap();
+        let p = OFFICIAL_PACKAGE_PREFIX;
+        let index = |version: &str, author: &str, revoked: serde_json::Value| {
+            let bytes = aiop_by(author, "demo", version, &["ssh"]);
+            signed_index(p, IndexSource::Official, vec![entry_json(p, &bytes, "demo", version, author, &["ssh"])], revoked).index
+        };
+        let none = serde_json::json!([]);
+
+        // 1.10.0 is newer than 1.9.0 (numbers, not text).
+        let found = ext.update_in(&index("1.10.0", "Someone", none.clone()), "demo").unwrap();
+        assert_eq!(found.version, "1.10.0");
+        assert_eq!(ext.list()[0].manifest.version, "1.9.0", "never installed by itself");
+        assert!(ext.update_in(&index("2.0.0", "Someone", none.clone()), "demo").is_some());
+        // The same, an older, another author's, a revoked one: no update.
+        assert!(ext.update_in(&index("1.9.0", "Someone", none.clone()), "demo").is_none());
+        assert!(ext.update_in(&index("1.8.12", "Someone", none.clone()), "demo").is_none());
+        assert!(ext.update_in(&index("2.0.0", "Somebody else", none.clone()), "demo").is_none());
+        let revoked = serde_json::json!([{ "id": "demo", "versions": ["2.0.0"], "reason": "Broken" }]);
+        assert!(ext.update_in(&index("2.0.0", "Someone", revoked), "demo").is_none());
+        // Not installed, or not listed.
+        assert!(ext.update_in(&index("2.0.0", "Someone", none.clone()), "other").is_none());
+
+        // A verified install updates the same way.
+        let (bytes, signed) = official("demo", "2.0.0", &["ssh"]);
+        ext.commit(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).unwrap()).unwrap();
+        assert!(ext.list()[0].verified);
+        assert!(ext.update_in(&index("2.0.1", "Someone", none.clone()), "demo").is_some());
+        assert!(ext.update_in(&index("2.0.0", "Someone", none), "demo").is_none());
+    }
+
+    #[test]
+    fn redirect_to_github_cdn_allowed_other_refused() {
+        let url = |s: &str| reqwest::Url::parse(s).unwrap();
+        let first = url("https://github.com/all-in-1-plugins/index/releases/download/demo-1.0.0/demo.aiop");
+        let official = |next: &str| redirect_allowed(IndexSource::Official, &first, &url(next));
+        assert!(official("https://objects.githubusercontent.com/github-production-release-asset/1?x=y"));
+        assert!(official("https://release-assets.githubusercontent.com/github-production-release-asset/1"));
+        assert!(official("https://OBJECTS.githubusercontent.com/a"), "host case does not matter");
+        for refused in [
+            "http://objects.githubusercontent.com/a",
+            "https://objects.githubusercontent.com:8443/a",
+            "https://user:pw@objects.githubusercontent.com/a",
+            "https://objects.githubusercontent.com.evil.example/a",
+            "https://evil.example/objects.githubusercontent.com",
+            "https://raw.githubusercontent.com/a",
+            "https://github.com/someone-else/x/releases/download/a/b.aiop",
+            "https://example.com/demo.aiop",
+        ] {
+            assert!(!official(refused), "{refused}");
+        }
+
+        // A test index: its own host and port only, never down to http.
+        let first = url("http://127.0.0.1:8080/packages/demo-1.0.0/demo.aiop");
+        let test = |next: &str| redirect_allowed(IndexSource::Test, &first, &url(next));
+        assert!(test("http://127.0.0.1:8080/elsewhere/demo.aiop"));
+        assert!(!test("http://127.0.0.1:8081/demo.aiop"));
+        assert!(!test("http://localhost:8080/demo.aiop"));
+        assert!(!test("https://objects.githubusercontent.com/a"), "the GitHub CDN is for the official index only");
+        let first = url("https://test.example/packages/demo-1.0.0/demo.aiop");
+        assert!(redirect_allowed(IndexSource::Test, &first, &url("https://test.example/x")));
+        assert!(!redirect_allowed(IndexSource::Test, &first, &url("http://test.example/x")));
+        assert!(!redirect_allowed(IndexSource::Test, &first, &url("https://other.example/x")));
     }
 
     #[test]

@@ -16,6 +16,7 @@ use crate::gui::{Page, Shared};
 use crate::i18n::{t, tf};
 use crate::gui::dialogs::Choice;
 use crate::plugins::external::{self, DevPending, DevRow, DevState, ExternalInfo, Pending};
+use crate::plugins::index::IndexSource;
 use crate::plugins::{self, packs::Pack, Plugin, PLUGINS};
 
 /// A pack's download, shared by the Plugins page and the "pack missing" card on a plugin's page.
@@ -440,7 +441,9 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
                 ui.horizontal(|ui| {
                     ui.label(widgets::title_text(&display_safe(&manifest.name, 60), 16.0));
                     ui.label(RichText::new(format!("{} · {}", display_safe(&manifest.version, 40), display_safe(&manifest.author, 60))).size(12.5).color(palette.muted));
-                    if !info.verified {
+                    if info.verified {
+                        ui.label(RichText::new(t("Verified")).size(12.5).strong().color(palette.success_text));
+                    } else {
                         not_verified(ui, palette, t("Not verified"));
                     }
                     if info.dev {
@@ -515,7 +518,16 @@ fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
         }
         ui.add_space(6.0);
         match &*waiting {
-            Consent::Install(_) => not_verified(ui, palette, t("Not verified — installed from a file")),
+            Consent::Install(pending) => match pending.verification() {
+                Some(v) if v.source == IndexSource::Official => {
+                    let line = tf("Verified by the official index (signed {key})", &[("key", &display_safe(&v.key_id, 40))]);
+                    ui.label(RichText::new(line).size(12.5).strong().color(palette.success_text));
+                }
+                Some(_) => {
+                    ui.label(RichText::new(t("Verified by a test index (developer mode)")).size(12.5).strong().color(palette.warning_text));
+                }
+                None => not_verified(ui, palette, t("Not verified — installed from a file")),
+            },
             Consent::Folder(pending) => {
                 not_verified(ui, palette, t("Developer — not verified"));
                 widgets::muted(ui, palette, &tf("Runs straight from the folder {folder}", &[("folder", &safe(&pending.folder.display().to_string()))]), 12.0);

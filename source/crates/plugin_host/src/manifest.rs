@@ -7,6 +7,58 @@ use serde::Deserialize;
 /// The highest minor version of API major 1 this host implements.
 pub const HOST_API_MINOR: u32 = 0;
 
+/// Invisible, direction-changing and separator characters that can make text lie about what it says. One list,
+/// shared by the manifest check, [`display_safe`] and the runtime's log sanitiser.
+pub fn spoofing(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
+/// A character a manifest text must not hold: control characters (newline and tab excepted) and [`spoofing`] ones.
+fn refused(c: char) -> bool {
+    (c.is_control() && !matches!(c, '\n' | '\t')) || spoofing(c)
+}
+
+/// Plugin-supplied text made safe to show: control and spoofing characters become U+FFFD, whitespace runs one space,
+/// and the text is cut to `max_chars` characters with an ellipsis.
+pub fn display_safe(s: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    let mut space = false;
+    for c in s.chars() {
+        if refused(c) {
+            if space {
+                out.push(' ');
+                space = false;
+            }
+            out.push('\u{FFFD}');
+        } else if c.is_whitespace() {
+            space = !out.is_empty();
+        } else {
+            if space {
+                out.push(' ');
+                space = false;
+            }
+            out.push(c);
+        }
+    }
+    if out.chars().count() > max_chars {
+        let keep = max_chars.saturating_sub(1);
+        out = out.chars().take(keep).collect::<String>() + "\u{2026}";
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct Tile {
     pub title: String,
@@ -84,9 +136,13 @@ impl Manifest {
         if raw.name.trim().is_empty() || raw.page_title.trim().is_empty() {
             bail!("name and page_title must not be empty");
         }
-        for s in [&raw.name, &raw.author, &raw.description, &raw.page_title] {
+        let tile_texts = raw.tile.iter().flat_map(|t| [&t.title, &t.description, &t.color]);
+        for s in [&raw.name, &raw.author, &raw.description, &raw.page_title].into_iter().chain(tile_texts) {
             if s.chars().count() > 500 {
                 bail!("A manifest text is too long");
+            }
+            if s.chars().any(refused) {
+                bail!("A manifest text holds control or invisible characters");
             }
         }
         let permissions = raw.permissions.iter().map(|p| Permission::parse(p)).collect::<Result<Vec<_>>>()?;

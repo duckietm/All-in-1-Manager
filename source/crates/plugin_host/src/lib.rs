@@ -26,7 +26,7 @@ pub mod sql;
 
 pub use async_trait::async_trait;
 
-pub use manifest::{Manifest, Tile};
+pub use manifest::{display_safe, Manifest, Tile};
 #[cfg(feature = "test-hooks")]
 pub use package::{install_failing_after_move_aside, install_failing_with_data_restore_failure, install_with_fault, Fault, Step};
 pub use package::{inspect, install, installed, remove, Package};

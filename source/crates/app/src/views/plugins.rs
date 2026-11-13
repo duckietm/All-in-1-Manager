@@ -1,9 +1,11 @@
 //! The Plugins page: every plugin with its on/off switch, and the data packs to download or remove. A plugin that is
 //! off leaves the sidebar, the Addons page and the dashboard; its pack (if downloaded) stays until removed.
 
-use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
+use aio_plugin_host::display_safe;
 use eframe::egui::{self, RichText};
 use parking_lot::Mutex;
 
@@ -155,60 +157,94 @@ impl PluginsView {
 }
 
 /// The package that waits for the user's consent, if any.
-fn consent() -> &'static Mutex<Option<Pending>> {
-    static STATE: OnceLock<Mutex<Option<Pending>>> = OnceLock::new();
+fn consent() -> &'static Mutex<Option<Arc<Pending>>> {
+    static STATE: OnceLock<Mutex<Option<Arc<Pending>>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(None))
+}
+
+/// Plugin-supplied text (names, ids, versions inside error messages) made safe to show.
+fn safe(text: &str) -> String {
+    display_safe(text, 300)
+}
+
+/// True from the click on "Install from file" until the file is checked: no second picker meanwhile.
+fn picking() -> &'static AtomicBool {
+    static STATE: AtomicBool = AtomicBool::new(false);
+    &STATE
+}
+
+/// Plugins whose Remove is being asked or done.
+fn removing() -> &'static Mutex<HashSet<String>> {
+    static STATE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// Pick a file, read and check it off the window's thread, then ask.
 fn start_install(shared: &Shared) {
+    if consent().lock().is_some() || picking().swap(true, Ordering::AcqRel) {
+        return;
+    }
     let status = shared.clone();
     shared.spawn(async move {
-        let Some(file) = rfd::AsyncFileDialog::new().set_title(t("Install a plugin from a file")).add_filter(t("Plugin packages"), &["aiop"]).pick_file().await else {
+        let picked = rfd::AsyncFileDialog::new().set_title(t("Install a plugin from a file")).add_filter(t("Plugin packages"), &["aiop"]).pick_file().await;
+        let Some(file) = picked else {
+            picking().store(false, Ordering::Release);
             return;
         };
         let path = file.path().to_path_buf();
-        match tokio::task::spawn_blocking(move || external::plugins().prepare(&path)).await {
-            Ok(Ok(pending)) => *consent().lock() = Some(pending),
-            Ok(Err(error)) => status.set_status(&tf("This file cannot be installed: {error}", &[("error", &format!("{error:#}"))])),
+        let checked = tokio::task::spawn_blocking(move || external::plugins().prepare(&path)).await;
+        match checked {
+            Ok(Ok(pending)) => *consent().lock() = Some(Arc::new(pending)),
+            Ok(Err(error)) => status.set_status(&tf("This file cannot be installed: {error}", &[("error", &safe(&format!("{error:#}")))])),
             Err(error) => status.set_status(&tf("This file cannot be installed: {error}", &[("error", &error.to_string())])),
         }
+        picking().store(false, Ordering::Release);
     });
 }
 
-fn finish_install(shared: &Shared, pending: Pending) {
+fn finish_install(shared: &Shared, pending: Arc<Pending>) {
     let status = shared.clone();
     shared.spawn(async move {
         match tokio::task::spawn_blocking(move || external::plugins().commit(&pending)).await {
-            Ok(Ok(manifest)) => status.set_status(&tf("{plugin} {version} is installed.", &[("plugin", &manifest.name), ("version", &manifest.version)])),
-            Ok(Err(error)) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &format!("{error:#}"))])),
+            Ok(Ok(manifest)) => status.set_status(&tf("{plugin} {version} is installed.", &[("plugin", &display_safe(&manifest.name, 80)), ("version", &display_safe(&manifest.version, 40))])),
+            Ok(Err(error)) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &safe(&format!("{error:#}")))])),
             Err(error) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &error.to_string())])),
         }
     });
 }
 
 fn start_remove(shared: &Shared, info: ExternalInfo) {
+    if !removing().lock().insert(info.manifest.id.clone()) {
+        return;
+    }
     let status = shared.clone();
     shared.spawn(async move {
         let manifest = info.manifest;
-        let options = vec![
-            Choice::new(t("Remove"), t("Delete the plugin and its data."), true).primary(),
-            Choice::new(t("Cancel"), t("Change nothing."), false),
-        ];
-        let message = tf("{plugin} is removed together with its private data folder: whatever it saved there is deleted too. This cannot be undone.", &[("plugin", &manifest.name)]);
-        if !status.dialogs.choose(t("Remove the plugin"), &manifest.name, &message, false, options).await {
-            return;
-        }
-        let id = manifest.id.clone();
-        match tokio::task::spawn_blocking(move || external::plugins().remove(&id)).await {
-            Ok(Ok(())) => {
-                plugins::set_enabled(&external::settings_id(&manifest.id), true);
-                status.set_status(&tf("{plugin} is removed.", &[("plugin", &manifest.name)]));
-            }
-            Ok(Err(error)) => status.set_status(&format!("{error:#}")),
-            Err(error) => status.set_status(&error.to_string()),
-        }
+        let name = display_safe(&manifest.name, 80);
+        remove_confirmed(&status, &manifest.id, &name).await;
+        removing().lock().remove(&manifest.id);
     });
+}
+
+async fn remove_confirmed(status: &Shared, id: &str, name: &str) {
+    let options = vec![Choice::new(t("Remove"), t("Delete the plugin and its data."), true).primary(), Choice::new(t("Cancel"), t("Change nothing."), false)];
+    let message = tf("{plugin} is removed together with its private data folder: whatever it saved there is deleted too. This cannot be undone.", &[("plugin", name)]);
+    if !status.dialogs.choose(t("Remove the plugin"), name, &message, false, options).await {
+        return;
+    }
+    // The question was open for a while: the plugin may be gone already.
+    if !external::plugins().list().iter().any(|i| i.manifest.id == id) {
+        return;
+    }
+    let owned = id.to_string();
+    match tokio::task::spawn_blocking(move || external::plugins().remove(&owned)).await {
+        Ok(Ok(())) => {
+            plugins::set_enabled(&external::settings_id(id), true);
+            status.set_status(&tf("{plugin} is removed.", &[("plugin", name)]));
+        }
+        Ok(Err(error)) => status.set_status(&safe(&format!("{error:#}"))),
+        Err(error) => status.set_status(&error.to_string()),
+    }
 }
 
 fn installed_section(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
@@ -245,13 +281,13 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
             if widgets::switch(ui, palette, &mut on).on_hover_text(if on { t("On: click to switch it off") } else { t("Off: click to switch it on") }).changed() {
                 plugins::set_enabled(&key, on);
                 let state = if on { t("on") } else { t("off") };
-                shared.set_status(&tf("{plugin} is {state}.", &[("plugin", &manifest.name), ("state", state)]));
+                shared.set_status(&tf("{plugin} is {state}.", &[("plugin", &display_safe(&manifest.name, 80)), ("state", state)]));
             }
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(widgets::title_text(&manifest.name, 16.0));
-                    ui.label(RichText::new(format!("{} · {}", manifest.version, manifest.author)).size(12.5).color(palette.muted));
+                    ui.label(widgets::title_text(&display_safe(&manifest.name, 60), 16.0));
+                    ui.label(RichText::new(format!("{} · {}", display_safe(&manifest.version, 40), display_safe(&manifest.author, 60))).size(12.5).color(palette.muted));
                     if !info.verified {
                         not_verified(ui, palette, t("Not verified"));
                     }
@@ -259,7 +295,7 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
                         ui.label(RichText::new(t("Developer folder")).size(12.5).color(palette.warning_text));
                     }
                 });
-                widgets::muted(ui, palette, &manifest.description, 12.5);
+                widgets::muted(ui, palette, &display_safe(&manifest.description, 300), 12.5);
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.add(widgets::secondary_button(t("Remove"))).on_hover_text(t("Delete the plugin and its data")).clicked() {
@@ -282,20 +318,21 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
 /// The consent: shown over the page until the user installs or cancels. Nothing is written before Install.
 fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
     let Some(pending) = consent().lock().clone() else { return };
+    let pending: Arc<Pending> = pending;
     let manifest = &pending.package.manifest;
     let (mut install, mut cancel) = (false, false);
     egui::Window::new(t("Install this plugin?")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         ui.set_max_width(460.0);
-        ui.label(widgets::title_text(&manifest.name, 17.0));
+        ui.label(widgets::title_text(&display_safe(&manifest.name, 60), 17.0));
         match &pending.previous {
             Some(old) => {
-                ui.label(tf("This updates the installed plugin from version {old} to {new}.", &[("old", &old.version), ("new", &manifest.version)]));
+                ui.label(tf("This updates the installed plugin from version {old} to {new}.", &[("old", &display_safe(&old.version, 40)), ("new", &display_safe(&manifest.version, 40))]));
             }
             None => {
-                ui.label(tf("Version {version}", &[("version", &manifest.version)]));
+                ui.label(tf("Version {version}", &[("version", &display_safe(&manifest.version, 40))]));
             }
         }
-        ui.label(tf("By {author}", &[("author", &manifest.author)]));
+        ui.label(tf("By {author}", &[("author", &display_safe(&manifest.author, 60))]));
         ui.add_space(6.0);
         not_verified(ui, palette, t("Not verified — installed from a file"));
         ui.add_space(8.0);

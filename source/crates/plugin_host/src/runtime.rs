@@ -252,11 +252,7 @@ impl CallClock {
 /// True for a character [`sanitise`] replaces: control characters (C0, DEL, C1; tab excepted), bidi
 /// overrides / isolates and the invisible characters listed there.
 pub(crate) fn replaced(c: char) -> bool {
-    let bidi = matches!(
-        c,
-        '\u{200B}'..='\u{200F}' | '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}'
-    );
-    (c.is_control() && c != '\t') || bidi
+    (c.is_control() && c != '\t') || crate::manifest::spoofing(c)
 }
 
 /// Replaces control characters (C0, DEL, C1; tab excepted), bidi overrides / isolates and invisible

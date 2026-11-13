@@ -100,6 +100,11 @@ impl ExternalPlugins {
 
     /// Writes a package the user agreed to. Blocking.
     pub fn commit(&self, pending: &Pending) -> Result<Manifest> {
+        // The consent was given for a comparison with this version: if the installed one changed meanwhile, ask again.
+        let now = self.list.lock().iter().find(|i| i.manifest.id == pending.package.manifest.id).map(|i| i.manifest.clone());
+        if now != pending.previous {
+            bail!("The installed version changed while you were deciding. Choose the file again.");
+        }
         let result = package::install(&pending.package, &self.root);
         self.reload();
         result?;

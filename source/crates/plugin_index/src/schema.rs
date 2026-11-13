@@ -12,8 +12,8 @@ pub const SCHEMA: u32 = 1;
 pub const MAX_PLUGINS: usize = 2000;
 /// Largest `index.json` accepted, checked before parsing.
 pub const MAX_INDEX_BYTES: usize = 4 * 1024 * 1024;
-/// Largest package an entry may announce (the download cap of a verified install).
-pub const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
+/// Largest package an entry may announce: the host's package cap, so nothing installable is refused.
+pub const MAX_PACKAGE_BYTES: u64 = aio_plugin_host::package::MAX_PACKAGE as u64;
 /// Most permissions one entry may list (as in a manifest).
 pub const MAX_PERMISSIONS: usize = aio_plugin_host::manifest::MAX_PERMISSIONS;
 /// Longest text field, in characters (as in a manifest).
@@ -21,7 +21,9 @@ const MAX_TEXT_CHARS: usize = 500;
 /// Longest `url`, in bytes.
 const MAX_URL_BYTES: usize = 2048;
 
-/// RFC 3339 timestamps, parsed strictly (a space instead of `T` or a missing offset is refused).
+/// RFC 3339 timestamps via `DateTime::parse_from_rfc3339`: a time-zone offset is required (a missing one is
+/// refused); like RFC 3339 section 5.6, chrono also accepts a space or lowercase `t` as the date/time separator and a
+/// lowercase `z`. Offsets are converted to UTC.
 mod rfc3339 {
     use chrono::{DateTime, SecondsFormat, Utc};
     use serde::{de::Error, Deserialize, Deserializer, Serializer};
@@ -129,6 +131,20 @@ fn check_text(what: &str, s: &str) -> Result<()> {
     Ok(())
 }
 
+/// Printable ASCII without `%`, `\`, `?`, `#` or a `..` sequence: nothing an HTTP client would decode, normalise or
+/// cut off, so the url it fetches is the string that was checked.
+fn plain_url(url: &str) -> bool {
+    url.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'%' | b'\\' | b'?' | b'#')) && !url.contains("..")
+}
+
+/// The package url prefix: a plain url ending in `/`, so `http://host:8080` cannot match `http://host:8080.evil`.
+fn check_prefix(url_prefix: &str) -> Result<()> {
+    if !url_prefix.ends_with('/') || !plain_url(url_prefix) || url_prefix.len() > MAX_URL_BYTES {
+        bail!("Invalid package url prefix (it must be a plain url ending in /): {url_prefix}");
+    }
+    Ok(())
+}
+
 fn check_entry(e: &Entry, url_prefix: &str) -> Result<()> {
     if !valid_id(&e.id) {
         bail!("Invalid plugin id in the index: {}", e.id);
@@ -167,11 +183,13 @@ fn check_entry(e: &Entry, url_prefix: &str) -> Result<()> {
     if !lower_hex(&e.sha256, 64) {
         bail!("Invalid sha256 of {id}");
     }
-    if url_prefix.is_empty() || !e.url.starts_with(url_prefix) || e.url.len() <= url_prefix.len() {
-        bail!("The package url of {id} is not under {url_prefix}");
-    }
-    if e.url.len() > MAX_URL_BYTES || !e.url.bytes().all(|b| b.is_ascii_graphic()) {
+    if e.url.len() > MAX_URL_BYTES || !plain_url(&e.url) {
         bail!("Invalid package url of {id}");
+    }
+    // Exactly `<prefix><id>-<version>/<id>.aiop`, compared as a string: the url cannot leave the prefix's directory.
+    let expected = format!("{url_prefix}{id}-{}/{id}.aiop", e.version);
+    if e.url != expected {
+        bail!("The package url of {id} is not {expected}");
     }
     Ok(())
 }
@@ -194,13 +212,15 @@ fn check_revoked(r: &Revoked) -> Result<()> {
 }
 
 impl Index {
-    /// Parses and checks `index.json`. Every entry `url` must start with `url_prefix` (the official
+    /// Parses and checks `index.json`. Every entry `url` must be exactly `<url_prefix><id>-<version>/<id>.aiop`, where
+    /// `url_prefix` ends in `/` (the official
     /// `https://github.com/all-in-1-plugins/index/releases/download/`, or a test prefix). Any problem refuses the
     /// whole index.
     pub fn parse(bytes: &[u8], url_prefix: &str) -> Result<Index> {
         if bytes.len() > MAX_INDEX_BYTES {
             bail!("The plugin index is larger than 4 MiB");
         }
+        check_prefix(url_prefix)?;
         let index: Index = serde_json::from_slice(bytes).context("The plugin index is not valid")?;
         if index.schema != SCHEMA {
             bail!("Unsupported plugin index schema: {}", index.schema);

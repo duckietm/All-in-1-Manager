@@ -1,4 +1,6 @@
-use aio_plugin_index::{check_fresh, key_id, sign, verify, Freshness, Index, MAX_INDEX_BYTES, MAX_PLUGINS};
+use aio_plugin_index::{
+    check_fresh, key_id, sign, verify, verify_and_parse, Freshness, Index, MAX_INDEX_BYTES, MAX_PACKAGE_BYTES, MAX_PLUGINS,
+};
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
 use ed25519_dalek::SigningKey;
@@ -211,9 +213,12 @@ fn unknown_field_refused() {
     let mut backwards = sample();
     backwards["expires"] = json!("2026-11-12T10:00:00Z");
     assert!(Index::parse(&bytes(&backwards), PREFIX).is_err());
-    let mut not_rfc3339 = sample();
-    not_rfc3339["generated"] = json!("2026-11-13 10:00:00");
-    assert!(Index::parse(&bytes(&not_rfc3339), PREFIX).is_err());
+    // RFC 3339 needs a time-zone offset; chrono (like RFC 3339 section 5.6) also accepts a space as separator.
+    for not_rfc3339 in ["2026-11-13T10:00:00", "2026-11-13", "13/11/2026 10:00:00Z", "2026-11-13T10:00:00+25:00"] {
+        let mut v = sample();
+        v["generated"] = json!(not_rfc3339);
+        assert!(Index::parse(&bytes(&v), PREFIX).is_err(), "{not_rfc3339}");
+    }
 
     for revoked in [
         json!([{ "id": "Bad_Id", "versions": ["*"], "reason": "r" }]),
@@ -298,4 +303,107 @@ fn limits_enforced() {
     assert_eq!(padded.len(), 4 * 1024 * 1024 + 1);
     let err = Index::parse(&padded, PREFIX).unwrap_err().to_string();
     assert!(err.contains("4 MiB"), "{err}");
+}
+
+fn with_url(url: &str) -> Value {
+    let mut v = sample();
+    v["plugins"][0]["url"] = json!(url);
+    v
+}
+
+#[test]
+fn url_traversal_refused() {
+    const OFFICIAL: &str = "https://github.com/all-in-1-plugins/index/releases/download/";
+    let official = |url: String| {
+        let mut v = with_url(&url);
+        v["plugins"][1]["url"] = json!(format!("{OFFICIAL}other-plugin-1.2.3/other-plugin.aiop"));
+        Index::parse(&bytes(&v), OFFICIAL)
+    };
+    assert!(official(format!("{OFFICIAL}hello-1.2.3/hello.aiop")).is_ok());
+    for bad in [
+        format!("{OFFICIAL}../../../../attacker/repo/releases/download/hello-1.2.3/hello.aiop"),
+        format!("{OFFICIAL}%2e%2e/%2e%2e/attacker/hello-1.2.3/hello.aiop"),
+        format!("{OFFICIAL}hello-1.2.3/../hello-1.2.3/hello.aiop"),
+        format!("{OFFICIAL}hello-1.2.3\\hello.aiop"),
+        format!("{OFFICIAL}hello-1.2.3/hello.aiop?x=1"),
+        format!("{OFFICIAL}hello-1.2.3/hello.aiop#x"),
+        format!("{OFFICIAL}hello-1.2.3/hello.aiop "),
+        format!("{OFFICIAL}hello-1.2.3//hello.aiop"),
+        format!("{OFFICIAL}hello-1.2.3/hello%2eaiop"),
+    ] {
+        assert!(official(bad.clone()).is_err(), "{bad}");
+    }
+    // The prefix itself may not hide such characters either.
+    for bad_prefix in ["https://example.test/a/../b/", "https://example.test/%2e%2e/", "https://example.test/a?b/", "https://example.test/a b/"] {
+        let mut v = sample();
+        for (i, id) in ["hello", "other-plugin"].iter().enumerate() {
+            v["plugins"][i]["url"] = json!(format!("{bad_prefix}{id}-1.2.3/{id}.aiop"));
+        }
+        assert!(Index::parse(&bytes(&v), bad_prefix).is_err(), "{bad_prefix}");
+    }
+}
+
+#[test]
+fn url_must_match_id_and_version() {
+    assert!(Index::parse(&bytes(&with_url(&format!("{PREFIX}hello-1.2.3/hello.aiop"))), PREFIX).is_ok());
+    for bad in [
+        format!("{PREFIX}other-plugin-1.2.3/other-plugin.aiop"),
+        format!("{PREFIX}hello-1.2.4/hello.aiop"),
+        format!("{PREFIX}hello-1.2.3/other.aiop"),
+        format!("{PREFIX}hello-1.2.3/hello.zip"),
+        format!("{PREFIX}hello-1.2.3/hello.aiop/"),
+        format!("{PREFIX}x/hello-1.2.3/hello.aiop"),
+        format!("{PREFIX}HELLO-1.2.3/hello.aiop"),
+        PREFIX.to_string(),
+        "https://elsewhere.test/download/hello-1.2.3/hello.aiop".to_string(),
+    ] {
+        assert!(Index::parse(&bytes(&with_url(&bad)), PREFIX).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn prefix_without_slash_refused() {
+    let base = "http://127.0.0.1:8080";
+    let mut v = sample();
+    for (i, id) in ["hello", "other-plugin"].iter().enumerate() {
+        v["plugins"][i]["url"] = json!(format!("{base}/{id}-1.2.3/{id}.aiop"));
+    }
+    assert!(Index::parse(&bytes(&v), &format!("{base}/")).is_ok());
+    assert!(Index::parse(&bytes(&v), base).is_err());
+    // The attack the trailing slash prevents: a host that merely starts with the prefix.
+    let mut evil = sample();
+    evil["plugins"][0]["url"] = json!(format!("{base}.evil.test/hello-1.2.3/hello.aiop"));
+    assert!(Index::parse(&bytes(&evil), base).is_err());
+    // Refused even when the index lists no plugins.
+    let empty = index_with(vec![], json!([]));
+    assert!(Index::parse(&bytes(&empty), &format!("{base}/")).is_ok());
+    assert!(Index::parse(&bytes(&empty), base).is_err());
+    assert!(Index::parse(&bytes(&empty), "").is_err());
+}
+
+#[test]
+fn verify_and_parse_uses_the_same_bytes() {
+    let data = bytes(&sample());
+    let sig = sign(&data, &SECRET_A);
+    let (id, public) = public_b64(&SECRET_A);
+    let trusted = [(id.as_str(), public.as_str())];
+    let (index, key) = verify_and_parse(&data, &sig, &trusted, PREFIX).unwrap();
+    assert_eq!(key.to_string(), id);
+    assert_eq!(index, Index::parse(&data, PREFIX).unwrap());
+    // A bad signature refuses before parsing; a signed but invalid index refuses after verifying.
+    let mut tampered = data.clone();
+    tampered[5] ^= 1;
+    assert!(verify_and_parse(&tampered, &sig, &trusted, PREFIX).is_err());
+    let invalid = bytes(&with_url("https://elsewhere.test/hello-1.2.3/hello.aiop"));
+    assert!(verify_and_parse(&invalid, &sign(&invalid, &SECRET_A), &trusted, PREFIX).is_err());
+}
+
+#[test]
+fn size_cap_is_the_package_cap() {
+    assert_eq!(MAX_PACKAGE_BYTES, aio_plugin_host::package::MAX_PACKAGE as u64);
+    let mut at_cap = sample();
+    at_cap["plugins"][0]["size"] = json!(MAX_PACKAGE_BYTES);
+    assert!(Index::parse(&bytes(&at_cap), PREFIX).is_ok());
+    at_cap["plugins"][0]["size"] = json!(MAX_PACKAGE_BYTES + 1);
+    assert!(Index::parse(&bytes(&at_cap), PREFIX).is_err());
 }

@@ -1738,6 +1738,28 @@ after reloading the hotel page. Octane's `UITexts.jsonc` is not edited here, bec
 JSON would drop; FigureData is not edited either, because its set, part and palette ids depend on each other and a
 plain field edit easily breaks avatars.
 
+### Client configuration
+
+**HOTEL → Client configuration** edits the Octane client's settings files on the server (`<Octane>/public/configuration`):
+on the left the files with plain names, grouped (**Main**: Connection and assets = `renderer-config.json`, Interface =
+`ui-config.json`, Client mode; **Content**: login news, hot looks, infostand backgrounds, pets, advertising, radio
+stations, soundboard; **Texts**: the housekeeping and rare values texts; **Other**). A file Octane has an example of but
+that is not made yet is marked *not made yet*; one the built client has no copy of, *not served*.
+
+- **Settings** shows the chosen file as a form: the sections of `ui-config` (Login screen, Hotel view, Toolbar, ...),
+  switches for on/off, number fields, text fields (addresses in a fixed-width font), groups that open, and lists with
+  **+ Add** and ✕. The important addresses of `renderer-config` (`socket.url`, `asset.url`, `furnidata.url`, ...) have a
+  short help under them. **Search settings** finds a setting by name or value. A changed setting turns blue, with ↺ to
+  put it back.
+- **Text** shows the file as text, checked while you type (the line and column of a mistake); a file with comments
+  (`.jsonc`) is only edited as text, so its comments stay.
+- When this Octane version's example has settings the file lacks, a bar lists them and **Add them** adds them with
+  their example values, in the example's order (your own values and settings stay).
+
+**Save** (or **Make the file** for a new one) first checks the file was not changed on the server since it was loaded,
+keeps the old one as `.bak-<time>`, and writes it to `public/configuration` (what the next build uses) and to
+`dist/configuration` (what the hotel serves), so players get it when they reload the hotel, without a rebuild.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;

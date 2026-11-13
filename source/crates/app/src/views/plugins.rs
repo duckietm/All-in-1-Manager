@@ -484,7 +484,7 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
 fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
     let Some(waiting) = consent().lock().clone() else { return };
     let (manifest, is_new): (&aio_plugin_host::Manifest, Box<dyn Fn(&aio_plugin_host::Permission) -> bool + '_>) = match &*waiting {
-        Consent::Install(pending) => (&pending.package.manifest, Box::new(|p| pending.is_new_permission(p))),
+        Consent::Install(pending) => (&pending.package().manifest,Box::new(|p| pending.is_new_permission(p))),
         Consent::Folder(pending) => (&pending.manifest, Box::new(|p| pending.is_new_permission(p))),
     };
     let from_folder = matches!(&*waiting, Consent::Folder(_));

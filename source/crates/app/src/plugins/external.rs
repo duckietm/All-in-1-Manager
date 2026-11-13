@@ -38,7 +38,8 @@ pub struct ExternalInfo {
 /// A package that was read and checked and waits for the user's consent. Nothing is written yet.
 #[derive(Debug, Clone)]
 pub struct Pending {
-    pub package: Package,
+    /// Read-only ([`Pending::package`]): what was checked is what gets installed.
+    package: Package,
     /// The installed version this one replaces, if any.
     pub previous: Option<Manifest>,
     /// Set only by [`ExternalPlugins::prepare_verified`] (the field is private so nothing else can make a verified
@@ -58,6 +59,11 @@ pub struct Verification {
 }
 
 impl Pending {
+    /// The checked package.
+    pub fn package(&self) -> &Package {
+        &self.package
+    }
+
     /// How the package was verified against the signed index; `None` for a package from a file.
     pub fn verification(&self) -> Option<&Verification> {
         self.verified.as_ref()
@@ -701,8 +707,31 @@ impl ExternalPlugins {
         usable.then(|| entry.clone())
     }
 
-    /// Writes a package the user agreed to. Blocking.
+    /// Writes a package the user agreed to. Blocking. A verified package is checked again against the index that may
+    /// be installed from now (see [`ExternalPlugins::commit_against`]): the index may have changed while the user was
+    /// deciding.
     pub fn commit(&self, pending: &Pending) -> Result<Manifest> {
+        let current = if pending.verified.is_some() { super::index::signed_index_for_install() } else { None };
+        self.commit_against(pending, current.as_ref())
+    }
+
+    /// [`ExternalPlugins::commit`] with `current` as the index that may be installed from now. A verified Pending is
+    /// refused, with nothing written, when there is no such index (none, no longer current, or a test one with
+    /// developer mode off), when it comes from another source or another key than the one checked, or when it revokes
+    /// this version.
+    fn commit_against(&self, pending: &Pending, current: Option<&SignedIndex>) -> Result<Manifest> {
+        if let Some(verification) = &pending.verified {
+            let Some(current) = current else {
+                bail!("The plugin index cannot be used to install right now (it is out of date or not available). Try again after it is checked.");
+            };
+            if current.source != verification.source || current.key_id.as_str() != verification.key_id {
+                bail!("The plugin index changed while you were deciding. Open the plugin again.");
+            }
+            let manifest = &pending.package.manifest;
+            if let Some(revoked) = current.index.revocation_for(&manifest.id, &manifest.version) {
+                bail!("This version was revoked by the index: {}", display_safe(&revoked.reason, 300));
+            }
+        }
         // The consent was given for a comparison with this version: if the installed one changed meanwhile, ask again.
         let now = self.list.lock().iter().find(|i| i.manifest.id == pending.package.manifest.id).map(|i| i.manifest.clone());
         if now != pending.previous {
@@ -1326,7 +1355,7 @@ mod tests {
         let ext = ExternalPlugins::new(root.clone());
         let (bytes, signed) = official("demo", "1.0.0", &["ssh"]);
         let pending = ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap();
-        ext.commit(&pending).unwrap();
+        ext.commit_against(&pending, Some(&signed)).unwrap();
         assert!(ext.list()[0].verified);
         let record = verified_record(&root, "demo");
         assert_eq!(record["sha256"], hex(&bytes));
@@ -1374,7 +1403,7 @@ mod tests {
         let test = signed_index(OFFICIAL_PACKAGE_PREFIX, IndexSource::Test, vec![entry_json(OFFICIAL_PACKAGE_PREFIX, &bytes, "other", "1.0.0", "Someone", &[])], serde_json::json!([]));
         let pending = ext.prepare_verified(&test, &test.index.plugins[0], bytes).unwrap();
         assert_eq!(pending.verification().unwrap().source, IndexSource::Test);
-        ext.commit(&pending).unwrap();
+        ext.commit_against(&pending, Some(&test)).unwrap();
         assert_eq!(verified_record(&root, "other")["source"], "test");
         let other = ext.list().into_iter().find(|i| i.manifest.id == "other").unwrap();
         assert!(!other.verified);
@@ -1386,7 +1415,7 @@ mod tests {
         let root = dir.path().join("ext");
         let ext = ExternalPlugins::new(root.clone());
         let (bytes, signed) = official("demo", "1.0.0", &[]);
-        ext.commit(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap()).unwrap();
+        ext.commit_against(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap(), Some(&signed)).unwrap();
         assert!(ext.list()[0].verified);
 
         // The very same package, from a file: not verified any more, and the record is gone.
@@ -1399,7 +1428,7 @@ mod tests {
         assert!(!root.join("demo").join(VERIFIED_FILE).exists());
 
         // A record left by hand next to a file install does not make it verified either (its hashes must match).
-        ext.commit(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).unwrap()).unwrap();
+        ext.commit_against(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).unwrap(), Some(&signed)).unwrap();
         let record = std::fs::read(root.join("demo").join(VERIFIED_FILE)).unwrap();
         std::fs::write(&file, aiop("demo", "1.0.1", &[])).unwrap();
         ext.install_file(&file).unwrap();
@@ -1439,10 +1468,49 @@ mod tests {
 
         // A verified install updates the same way.
         let (bytes, signed) = official("demo", "2.0.0", &["ssh"]);
-        ext.commit(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).unwrap()).unwrap();
+        ext.commit_against(&ext.prepare_verified(&signed, &signed.index.plugins[0], bytes).unwrap(), Some(&signed)).unwrap();
         assert!(ext.list()[0].verified);
         assert!(ext.update_in(&index("2.0.1", "Someone", none.clone()), "demo").is_some());
         assert!(ext.update_in(&index("2.0.0", "Someone", none), "demo").is_none());
+    }
+
+    #[test]
+    fn revoked_while_consent_open_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ext");
+        let ext = ExternalPlugins::new(root.clone());
+        let p = OFFICIAL_PACKAGE_PREFIX;
+        let bytes = aiop("demo", "1.0.0", &[]);
+        let listed = || vec![entry_json(p, &bytes, "demo", "1.0.0", "Someone", &[])];
+        let signed = signed_index(p, IndexSource::Official, listed(), serde_json::json!([]));
+        let pending = ext.prepare_verified(&signed, &signed.index.plugins[0], bytes.clone()).unwrap();
+        let nothing_installed = |ext: &ExternalPlugins| assert!(ext.list().is_empty() && !root.join("demo").exists());
+
+        // Meanwhile the refresh brought a revocation of this version (or of every version).
+        for versions in [serde_json::json!(["1.0.0"]), serde_json::json!(["*"])] {
+            let revoked = serde_json::json!([{ "id": "demo", "versions": versions, "reason": "It deletes rooms" }]);
+            let now = signed_index(p, IndexSource::Official, listed(), revoked);
+            let error = ext.commit_against(&pending, Some(&now)).unwrap_err().to_string();
+            assert!(error.contains("revoked") && error.contains("It deletes rooms"), "{error}");
+            nothing_installed(&ext);
+        }
+        // No index that may be installed from (expired, gone, test index with developer mode off).
+        assert!(ext.commit_against(&pending, None).is_err());
+        nothing_installed(&ext);
+        // Another source or another key than the one checked.
+        let test = SignedIndex { source: IndexSource::Test, ..signed.clone() };
+        assert!(ext.commit_against(&pending, Some(&test)).is_err());
+        let other_key = SignedIndex { key_id: aio_plugin_index::key_id(&[1; 32]), ..signed.clone() };
+        assert!(ext.commit_against(&pending, Some(&other_key)).is_err());
+        nothing_installed(&ext);
+
+        // Another version revoked: it installs, verified. A file install never needs the index.
+        let other = signed_index(p, IndexSource::Official, listed(), serde_json::json!([{ "id": "demo", "versions": ["0.9.0"], "reason": "Old" }]));
+        ext.commit_against(&pending, Some(&other)).unwrap();
+        assert!(ext.list()[0].verified);
+        let file = dir.path().join("demo.aiop");
+        std::fs::write(&file, aiop("demo", "1.0.1", &[])).unwrap();
+        ext.commit(&ext.prepare(&file).unwrap()).unwrap();
     }
 
     #[test]

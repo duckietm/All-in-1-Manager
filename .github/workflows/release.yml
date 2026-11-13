@@ -81,6 +81,8 @@ jobs:
         with:
           ref: ${{ needs.version.outputs.sha }}
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       - run: cargo build --release -p aio-app
@@ -110,6 +112,8 @@ jobs:
           ref: ${{ needs.version.outputs.sha }}
       - run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
       - run: cargo build --release -p aio-app
@@ -121,6 +125,9 @@ jobs:
           cp target/release/all-in-1-manager out/all-in-1-installer-linux-x64
           # What the update check compares the download against before it replaces the running program.
           sha256sum out/all-in-1-manager-linux-x64 | cut -d' ' -f1 > out/all-in-1-manager-linux-x64.sha256
+          # The data packs of the Plugins page (client images, default catalogue), with their .sha256: the program
+          # downloads them on demand instead of carrying them.
+          python3 source/tools/make_packs.py out/
       - uses: actions/upload-artifact@v4
         with:
           name: linux
@@ -151,3 +158,7 @@ jobs:
             dist/all-in-1-installer-linux-x64
             dist/all-in-1-manager-windows-x64.exe.sha256
             dist/all-in-1-manager-linux-x64.sha256
+            dist/plugin-client-assets.zip
+            dist/plugin-client-assets.zip.sha256
+            dist/plugin-default-catalog.zip
+            dist/plugin-default-catalog.zip.sha256

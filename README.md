@@ -97,6 +97,7 @@ program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
   [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+- [Plugins](#plugins) · [External plugins](#external-plugins)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -719,7 +720,8 @@ When a step is not done yet, the install button is the highlighted one and **Ski
 Skipping a step moves on to the next one, and a failed step can be skipped too.
 
 A new step implements `InstallStep` (`source/crates/app/src/gui/step.rs`) and is added to `views::server_steps()`. An addon is a
-`Wizard` with its own step list and finish page (and `key_step: false`, see `views/gitea.rs`), plus a sidebar entry in `gui/mod.rs`.
+`Wizard` with its own step list and finish page (and `key_step: false`, see `views/gitea.rs`), plus a sidebar entry in `gui/mod.rs`
+and an entry in `PLUGINS` (`source/crates/app/src/plugins/mod.rs`), so it can be switched off on the Plugins page.
 
 ## Addons
 
@@ -1686,6 +1688,165 @@ after reloading the hotel page. Octane's `UITexts.jsonc` is not edited here, bec
 JSON would drop; FigureData is not edited either, because its set, part and palette ids depend on each other and a
 plain field edit easily breaks avatars.
 
+## Plugins
+
+**Plugins** (in the sidebar under GENERAL) lists the optional parts of the program: CMS, Gitea, Fail2Ban, CrowdSec,
+Default catalogue, SQL Editor, Habbo and retro assets, Deploy Assets, Asset import and fixes and
+Asset Explorer. Each one has an on/off switch: switched off, its pages leave the sidebar, the Addons page and the
+dashboard. Nothing changes on the server, and switching it on again brings everything back. The choice is kept in
+`configuration/settings.json` (`DisabledPlugins`).
+
+Some plugins need a **data pack** that is no longer built into the program, so the program stays about 11 MB
+smaller:
+
+| Pack | Plugin | Release file |
+|---|---|---|
+| Client images | Deploy Assets | `plugin-client-assets.zip` |
+| Default catalogue | Default catalogue | `plugin-default-catalog.zip` |
+
+**Download** fetches the pack from the program's GitHub release (the same version, else the newest) and checks it
+against its published `.sha256`; a download that does not match, or stops halfway, is never used and never replaces
+a working pack. It is kept in `configuration/plugins/<pack>/`; **Remove** deletes it again. A plugin page whose pack is
+missing shows the Download button instead of the page. The program also finds the packs in `plugins/` next to
+itself (what `build release` puts there), in `Assets/` next to itself (the client images of older versions) and, in a
+debug build, in the source tree.
+
+`python source/tools/make_packs.py dist/` makes the release files with their `.sha256` (the release workflow runs it);
+`--install DIR` unpacks them into `DIR/plugins/`.
+
+## External plugins
+
+Besides the built-in plugins above, the Manager can run **external plugins**: small programs written by other people,
+packed in a `.aiop` file. They are not part of the program. You install, update and remove them while the Manager
+runs, and they run in a sandbox: a plugin can only do what its manifest asks for and you allowed.
+
+### For admins
+
+On the **Plugins** page, **Install from file …** opens a file picker for a `.aiop` package. Before anything is
+installed a window shows the plugin's name, author, version and every permission it asks for, in plain words, with an
+**Install** button. Nothing is installed until you press it. An update of an installed plugin shows the same window,
+with the new permissions marked "new in this version". An update is installed only after you press **Install**: until
+then the old version stays as it was and keeps running. A package with the same id but **another author** is not an
+update: the window says so in red ("Different author"), and the new plugin does not get the old one's private data,
+which is set aside in `configuration/plugins/ext/.<id>.data-from-previous-author` (you can put it back by hand).
+Removing a plugin deletes its folder and its private data, everything an interrupted install left behind, the data set
+aside for it, and the private data of a developer version with the same id; a window says so first. A manifest lists
+at most 64 permissions, each one once.
+
+The plugin is stored in `configuration/plugins/ext/<id>/`. A plugin installed from a file always shows a red
+**Not verified** badge: nobody has checked its code. There is no official index yet, so every plugin is "not verified"
+for now. Install only plugins whose source you trust or have read.
+
+**Permissions** are listed in the plugin's manifest. The window shows them as sentences; these are the strings:
+
+| Permission | What it allows |
+|---|---|
+| `files` | A private folder of its own (always allowed, see the limits below). Nothing else on disk. |
+| `ssh` | Run a script on the hotel's server as the login user. |
+| `ssh:root` | Run a script as root. Shown with a large red warning. |
+| `sql:read:<tables>` | Select from these tables of the hotel database. |
+| `sql:write:<tables>` | Insert, update and delete in these tables. |
+| `sql:read-private:<table>.<column>` | Use a private column of that table (see below). |
+| `http:<host>` | Fetch pages with HTTP(S) from exactly this host, on the default port (one permission per host). |
+| `tcp:localhost:<port>` | Connect to a program on this computer, such as G-Earth. |
+
+Plugins never send raw SQL: they ask for a select, insert, update or delete on a named table with typed values, and
+the Manager builds the statement. The hotel database is the only one they can reach. Private columns are
+`users.password`, `users.mail`, `users.ip_register`, `users.ip_current`, `users.auth_ticket` and `users.machine_id`;
+every column, in any table, whose name contains `password`, `token`, `secret` or `ip_`; and every column named exactly
+`ip` or `machine_id`. A plugin needs its own `sql:read-private` permission for each one, also to use it in a condition or to write it.
+
+**The approval card.** A plugin never changes the server or the database on its own. When it wants to run a script or
+write to the database, its page shows an **approval card** at the top, above the plugin's content, with the full
+script (or every statement with every value), the name of the server and, for a script, the user it runs as. Nothing
+runs until you press **Approve**. **Reject** tells the plugin no; **Reject and stop this plugin** also closes it. A
+script that runs as root, or as a login user that is root, is marked "Runs as root". An approval belongs to the server that was logged in when the plugin asked: if the login changed in
+the meantime, Approve fails with "The server changed since the request" and nothing runs.
+
+**What runs where.** The plugin's code runs on your PC, inside the Manager, in a sandbox. It does not draw anything:
+it hands the Manager a description of its page (headings, text, buttons, inputs, tables, a log) and the Manager draws
+it with its own widgets, in a frame labelled with the plugin's name, so it cannot pass for a Manager screen. Scripts
+run on the hotel's server, over the Manager's SSH login, after you approved them. Database calls go through the
+Manager's SSH tunnel to the hotel database, with the saved MariaDB account.
+
+### Limits and safety
+
+- A plugin gets at most 64 MiB of memory and 5 seconds per call. Time spent waiting for you (a dialog, an approval)
+  does not count, and the outside world has its own limits: SQL 30 s, HTTP 60 s, a local connection 5 s to connect and
+  30 s to receive, a script 10 minutes. A plugin that goes over the memory or call limit is stopped and its page says
+  why; **Reload** starts it again.
+- The log is clipped: at most 1,000 lines and 256 KiB per call, 4 KiB per line. Control and direction-changing
+  characters are replaced, so a plugin cannot forge lines or hide text.
+- The private folder is `configuration/plugins/ext/<id>/data/`. It holds at most 64 MiB, 10,000 files and folders, and
+  32 MiB per file. Paths are relative and checked; a plugin cannot leave the folder, not even through a link. It
+  cannot see the Manager's settings, your SSH keys or another plugin's data.
+- A file the plugin asks you to pick is handed over for one purpose only: a file you **open** is read-only for the
+  plugin, a file you **save** is write-only. Before the file dialog opens, a Manager window says what the plugin wants.
+- Every dialog of a plugin (a question, a text to type, choosing a file) has **Stop this plugin**, which closes it
+  like "Reject and stop". One call may open at most 20 dialogs; past that the plugin gets "cancelled" without anything
+  being shown, and its log says so.
+- A write batch holds at most 1,000 statements and 8 MiB of values, so the approval card can show all of it.
+- A file a plugin hands to the Catalogue manager's import (at most 32 MiB) is saved in
+  `configuration/plugins/ext-exports/<id>/`, outside the plugin's folder, so removing or updating the plugin does not
+  delete it. That folder holds at most 100 files and 256 MiB per plugin; past that the status line says it is full.
+- Every text a plugin supplies (names, labels, cells, log lines, dialog texts) has control, direction and invisible
+  characters replaced before it is shown.
+- A plugin can only use the tables, hosts, ports and kinds of script it declared, and it only runs while its page is
+  open: no background work. Closing the page, switching the plugin off or removing it stops it and rejects what it was
+  waiting for. Removing or updating a plugin that is still running waits up to 10 seconds for it to stop, then fails with "The
+  plugin is still running: close its page and try again"; a plugin that is busy with approved work blocks leaving its
+  page until that work has finished.
+- A package is at most 32 MiB, with a wasm file of at most 24 MiB.
+
+### Developer mode
+
+**Settings → Developer mode** (off by default) is for people who write plugins. When it is on, the Plugins page gets a
+**Developer plugins** section with **Load a plugin folder**: pick a folder with `manifest.json` and `plugin.wasm` and
+the plugin runs straight from there, with a **Reload** button, without packing a `.aiop`. The same consent window,
+permissions and approval cards apply, and the plugin carries red **Developer** and **Not verified** badges. The list of folders
+is kept in `configuration/settings.json` (`DeveloperMode`, `DeveloperPlugins`), but your consent is not: after a
+restart you review the permissions once more, and a folder whose permissions grew on reload stays off until you do. Switching the mode off hides the folders and stops their plugins.
+
+If the wasm file is not next to the manifest, add a `dev_wasm` field to `manifest.json`, for example
+`"dev_wasm": "target/wasm32-wasip2/release/my_plugin.wasm"`. It must be a relative path that stays inside the folder.
+The private data of a developer plugin is in `configuration/plugins/ext-dev/<id>/data/`. A folder whose id is already
+installed shows "id already installed" and does not run.
+
+### Building a plugin
+
+A plugin is a WebAssembly component for the `plugin` world of the WIT package `aio:plugin@1.0.0`, in
+`source/wit/aio-plugin/plugin.wit`. That file is the whole API: the page description, the events and the `host`
+imports (log, status line, questions, file picking, the private folder, scripts, database, HTTP, local TCP). The
+Manager accepts API 1.x. In Rust, a plugin is a crate built for `wasm32-wasip2` (`rustup target add wasm32-wasip2`)
+with `crate-type = ["cdylib"]` and `wit-bindgen`.
+
+`source/plugins/hello` is the example: a greeting form with a counter it keeps in its private folder. Its
+`manifest.json` has the id, name, version, author, description, `api` (`"1.0"`), the permissions, a page title and an
+optional tile. Build and pack it with:
+
+```
+python source/tools/pack_plugin.py source/plugins/hello
+```
+
+This builds the crate into `source/plugins/hello/target/` (its `.cargo/config.toml` sets that) and writes
+`dist/hello.aiop`: a zip with `manifest.json`, `plugin.wasm` and, when present, `icon.png` and `i18n/<lang>.json`.
+Install the `.aiop` from the Plugins page, or load the folder `source/plugins/hello` in developer mode: its
+`dev_wasm` points at the built file. The `i18n/` files are accepted in a package but not used yet: in API 1.0 a
+plugin's texts are shown as it writes them, and translating them comes in a later milestone.
+
+A plugin crate outside this repository needs the WIT file: copy the folder `source/wit/aio-plugin` (it holds
+`plugin.wit`) into your crate, for example as `wit/aio-plugin`, and point `wit-bindgen` at it:
+
+```rust
+wit_bindgen::generate!({ world: "plugin", path: "wit/aio-plugin" });
+```
+
+`source/plugins/hello/src/lib.rs` shows the rest: implement the generated `Guest` trait (`render` and `on-event`) and
+`export!` it.
+
+The official plugin index (reviewed sources, signed releases, revocation, an Available tab) comes in a later
+milestone. Until then plugins come from files and none of them is verified.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;
@@ -1906,7 +2067,7 @@ The quickest way: run the build script in the root of the repository. On Windows
 menu, or run it in a terminal; on Linux use `./build.sh`:
 
 ```
-build release      ./build.sh release     # the program to hand out -> public/release/ (with Assets/ next to it)
+build release      ./build.sh release     # the program to hand out -> public/release/ (with plugins/ next to it)
 build dev          ./build.sh dev         # debug build             -> public/dev/
 build run          ./build.sh run         # debug build, and start it
 build test         ./build.sh test        # all tests
@@ -1916,7 +2077,7 @@ On Windows it needs Visual Studio's "Desktop development with C++" (Rust uses it
 
 ```bash
 python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-manager(.exe)
-python source/tools/build.py release           # release build  -> public/release/ (with Assets/ next to it)
+python source/tools/build.py release           # release build  -> public/release/ (with plugins/ next to it)
 python source/tools/build.py dev --run         # and start it
 cargo test --workspace                         # all tests, including the parity tests
 ```

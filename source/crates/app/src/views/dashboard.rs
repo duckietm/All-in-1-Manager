@@ -120,16 +120,19 @@ impl Dashboard {
         self.components_card(ui, palette, shared, tools);
         ui.add_space(18.0);
 
-        section(ui, palette, t("ADDONS"));
-        if let Some(page) = entry_grid(ui, palette, &addons::entries()) {
-            click = Some(Click::Page(page));
+        // Only what the Plugins page has switched on; a section with nothing left is left out.
+        let mut addon_entries = addons::visible(addons::entries());
+        addon_entries.extend(addons::external_entries());
+        for (heading, entries) in [(t("ADDONS"), addon_entries), (t("ASSETS"), addons::visible(addons::asset_entries()))] {
+            if entries.is_empty() {
+                continue;
+            }
+            section(ui, palette, heading);
+            if let Some(page) = entry_grid(ui, palette, &entries) {
+                click = Some(Click::Page(page));
+            }
+            ui.add_space(6.0);
         }
-        ui.add_space(6.0);
-        section(ui, palette, t("ASSETS"));
-        if let Some(page) = entry_grid(ui, palette, &addons::asset_entries()) {
-            click = Some(Click::Page(page));
-        }
-        ui.add_space(6.0);
         section(ui, palette, t("TOOLS"));
         let tool_tiles = vec![
             addons::Entry {

@@ -1,0 +1,28 @@
+[package]
+name = "aio-plugin-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "All-in-1 Manager: the host side of the external WASM plugin API (aio:plugin)"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[features]
+# Failure-injection hooks for the tests only.
+test-hooks = []
+
+[dev-dependencies]
+aio-plugin-host = { path = ".", features = ["test-hooks"] }
+tempfile.workspace = true
+# tokio::time::pause for the host I/O timeout tests.
+tokio = { workspace = true, features = ["test-util"] }
+wit-parser.workspace = true

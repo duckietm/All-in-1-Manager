@@ -1,7 +1,7 @@
 """Builds the installer and puts the program in public/, ready to run:
 
     python source/tools/build.py dev        # debug build      -> public/dev/
-    python source/tools/build.py release    # release build    -> public/release/ (with Assets/ next to the program)
+    python source/tools/build.py release    # release build    -> public/release/ (with plugins/ next to the program)
     python source/tools/build.py dev --run  # and start it
 
 The program keeps its configuration (SSH keys, passwords, history) in configuration/ next to itself, so public/dev and
@@ -39,10 +39,11 @@ def main():
         print(f"{target} is in use: close the installer and run this again.")
         return 1
     if kind == "release":
-        # The client images are in the program too; the folder next to it is what Deploy Assets reads first.
-        assets = os.path.join(into, "Assets")
-        shutil.rmtree(assets, ignore_errors=True)
-        shutil.copytree(os.path.join(SOURCE, "Assets"), assets)
+        # The data packs of the Plugins page, next to the program, so it needs no download.
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import make_packs
+
+        make_packs.install(into)
     shortcut(into, kind)
     print(f"Ready: {target}")
 

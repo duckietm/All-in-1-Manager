@@ -1145,6 +1145,12 @@ tools' `Assets_tools/Original_SWF_Files/<type>`, never into gamedata, so never t
 | Pets | `pets/*.hab` |
 | Effect icons | `c_images/fx_icons` |
 
+**Reception images** are every hotel view and promo image Habbo's external_variables names below `c_images`: written as
+`${image.library.url}reception/...`, and also as a full address (`https://images.habbo.com/c_images/...` or
+`//images.habbo.com/c_images/...`, as the current hotel view backgrounds are), with a slash too many or with a query
+after the name. Octane's own standard pictures (`stretch_blue`, `sun`, `drape`, the country sides) are not at Habbo:
+they come with the Manager and go to the server with **Deploy Assets**.
+
 Habbo has no download link for the effect icons (`fx_icon_<type>` for the avatar editor): they are inside the Habbo
 Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choose that `app.asar` (choosing it ticks
 **Effect icons**); **Download all** takes them along when it is set. **Clothes: make every clothing set wearable** turns off `sellable` in

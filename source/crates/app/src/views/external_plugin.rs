@@ -74,7 +74,16 @@ async fn run(
     let id = info.manifest.id.clone();
     // Held as long as the instance: removing or updating the plugin waits until it is gone.
     let _live = LiveGuard::new(&id);
-    let mut instance = match PluginInstance::load(engine(), &dir, info.manifest, services, approvals).await {
+    let loaded = if info.dev {
+        // A developer plugin runs the author's file; `dir` is its private folder, not the author's.
+        match external::plugins().dev_wasm(&id) {
+            Some(wasm) => PluginInstance::load_from(engine(), &wasm, &dir, info.manifest, services, approvals).await,
+            None => Err(anyhow::anyhow!("The developer folder is not in the list any more")),
+        }
+    } else {
+        PluginInstance::load(engine(), &dir, info.manifest, services, approvals).await
+    };
+    let mut instance = match loaded {
         Ok(instance) => instance,
         Err(error) => {
             let message = format!("{error:#}");
@@ -193,7 +202,8 @@ impl ExternalPluginView {
     /// Opens the page: starts the plugin.
     pub fn open(info: ExternalInfo, index: u16, shared: &Shared) -> Self {
         let plugins = external::plugins();
-        let (dir, exports) = (plugins.dir(&info.manifest.id), plugins.exports_dir(&info.manifest.id));
+        let dir = if info.dev { plugins.dev_dir(&info.manifest.id) } else { plugins.dir(&info.manifest.id) };
+        let exports = plugins.exports_dir(&info.manifest.id);
         Self::open_in(info, index, dir, exports, shared)
     }
 
@@ -223,6 +233,27 @@ impl ExternalPluginView {
     fn restart(&mut self, shared: &Shared) {
         if self.executing() {
             return;
+        }
+        if self.info.dev {
+            // Reload re-reads manifest.json and the wasm path from the author's folder.
+            let plugins = external::plugins();
+            match plugins.reload_dev(&self.info.manifest.id) {
+                Ok(external::DevReload::Reloaded) => {
+                    if let Some(info) = plugins.index_of(&self.info.manifest.id).and_then(|i| plugins.get(i)) {
+                        self.name = display_safe(&info.manifest.name, 80);
+                        self.info = info;
+                    }
+                }
+                Ok(external::DevReload::NeedsConsent) => {
+                    // The plugin leaves the list; the window closes this page and the Plugins page asks.
+                    shared.set_status(&tf("{plugin} asks for more permissions: review them on the Plugins page.", &[("plugin", &self.name)]));
+                    return;
+                }
+                Err(error) => {
+                    shared.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &display_safe(&format!("{error:#}"), 300))]));
+                    return;
+                }
+            }
         }
         self.running = Running::start(&self.info, self.dir.clone(), self.exports.clone(), shared);
         self.page = None;

@@ -7,13 +7,13 @@
 
 use std::collections::HashMap;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use aio_plugin_host::package::{self, Package, MAX_PACKAGE};
-use aio_plugin_host::{Manifest, Permission};
+use aio_plugin_host::package::{self, Package, MAX_PACKAGE, MAX_WASM};
+use aio_plugin_host::{display_safe, Manifest, Permission};
 use parking_lot::Mutex;
 
 use super::{packs, PLUGINS};
@@ -44,15 +44,118 @@ impl Pending {
     }
 }
 
+/// A developer folder that was read and checked and waits for the user's consent (or whose permissions grew).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DevPending {
+    pub folder: PathBuf,
+    pub manifest: Manifest,
+    /// The `.wasm` file inside the folder.
+    pub wasm: PathBuf,
+    /// What the user allowed before; None the first time.
+    pub previous: Option<Vec<Permission>>,
+}
+
+impl DevPending {
+    /// Whether the permission is new compared with what was allowed before (never true the first time).
+    pub fn is_new_permission(&self, p: &Permission) -> bool {
+        self.previous.as_ref().is_some_and(|old| !old.contains(p))
+    }
+}
+
+/// True when running a plugin that now asks for `now` needs the user's consent: nothing was allowed yet, or it asks
+/// for something that was not allowed. Asking for less than before needs none.
+pub fn needs_consent(granted: Option<&[Permission]>, now: &[Permission]) -> bool {
+    match granted {
+        None => true,
+        Some(granted) => now.iter().any(|p| !granted.contains(p)),
+    }
+}
+
+/// How a developer folder stands.
+#[derive(Debug, Clone)]
+pub enum DevState {
+    /// Allowed and valid: it is in [`ExternalPlugins::list`].
+    Ready(ExternalInfo),
+    /// Valid, but the user has not agreed to its permissions (yet, or since they grew).
+    NeedsConsent(Manifest),
+    /// Cannot be used; the text says why.
+    Problem(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct DevRow {
+    pub folder: PathBuf,
+    pub state: DevState,
+}
+
+/// What the page's Reload found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevReload {
+    Reloaded,
+    /// The plugin asks for more than the user allowed: it is stopped until they agree again.
+    NeedsConsent,
+}
+
+struct DevEntry {
+    folder: PathBuf,
+    /// What the user allowed in this session; None until they agree.
+    granted: Option<Vec<Permission>>,
+    /// The last good read of the folder, or why it failed.
+    loaded: Result<(Manifest, PathBuf), String>,
+}
+
+#[derive(Default)]
+struct Dev {
+    enabled: bool,
+    entries: Vec<DevEntry>,
+}
+
+/// Reads a developer folder: `manifest.json` (checked like a package's) and the `.wasm` it runs, which is
+/// `plugin.wasm` or the manifest's optional `dev_wasm` path, relative to the folder and inside it.
+fn read_dev_folder(folder: &Path) -> Result<(Manifest, PathBuf)> {
+    let json = std::fs::read(folder.join("manifest.json")).context("The folder has no readable manifest.json")?;
+    let manifest = Manifest::parse(&json)?;
+    if reserved_ids().contains(&manifest.id.as_str()) {
+        bail!("The plugin id {} belongs to a built-in plugin", manifest.id);
+    }
+    let value: serde_json::Value = serde_json::from_slice(&json).context("manifest.json is not valid")?;
+    let relative = match value.get("dev_wasm") {
+        None | Some(serde_json::Value::Null) => "plugin.wasm",
+        Some(serde_json::Value::String(path)) => path.as_str(),
+        Some(_) => bail!("dev_wasm must be a path"),
+    };
+    let path = Path::new(relative);
+    if relative.is_empty() || !path.components().all(|c| matches!(c, Component::Normal(_) | Component::CurDir)) {
+        bail!("dev_wasm must be a path inside the folder (no absolute path, no ..): {}", display_safe(relative, 100));
+    }
+    let base = std::fs::canonicalize(folder).context("The folder cannot be read")?;
+    let wasm = std::fs::canonicalize(base.join(path)).with_context(|| format!("The plugin file {} was not found", display_safe(relative, 100)))?;
+    // A link inside the folder that leads out of it is outside too.
+    if !wasm.starts_with(&base) || !wasm.is_file() {
+        bail!("dev_wasm must be a file inside the folder: {}", display_safe(relative, 100));
+    }
+    if std::fs::metadata(&wasm)?.len() > MAX_WASM {
+        bail!("The plugin file is larger than 24 MiB");
+    }
+    Ok((manifest, wasm))
+}
+
 pub struct ExternalPlugins {
     root: PathBuf,
     list: Mutex<Vec<ExternalInfo>>,
+    dev: Mutex<Dev>,
 }
 
 /// The process-wide list, loaded the first time it is needed from configuration/plugins/ext/.
 pub fn plugins() -> &'static ExternalPlugins {
     static STATE: OnceLock<ExternalPlugins> = OnceLock::new();
-    STATE.get_or_init(|| ExternalPlugins::new(packs::root().join("ext")))
+    STATE.get_or_init(|| {
+        let plugins = ExternalPlugins::new(packs::root().join("ext"));
+        let settings = aio_core::InstallerSettings::load();
+        let folders: Vec<PathBuf> = settings.developer_plugins.iter().map(PathBuf::from).collect();
+        plugins.set_developer(settings.developer_mode, &folders);
+        plugins
+    })
 }
 
 /// The key of an external plugin in the on/off store.
@@ -123,7 +226,7 @@ fn read_capped(path: &Path) -> Result<Vec<u8>> {
 
 impl ExternalPlugins {
     pub fn new(root: PathBuf) -> Self {
-        let this = Self { root, list: Mutex::new(Vec::new()) };
+        let this = Self { root, list: Mutex::new(Vec::new()), dev: Mutex::new(Dev::default()) };
         this.reload();
         this
     }
@@ -134,18 +237,144 @@ impl ExternalPlugins {
         *self.list.lock() = list;
     }
 
+    /// The installed plugins, then the developer ones that are allowed (developer mode on).
     pub fn list(&self) -> Vec<ExternalInfo> {
-        self.list.lock().clone()
+        let mut all = self.list.lock().clone();
+        all.extend(self.dev_rows().into_iter().filter_map(|row| match row.state {
+            DevState::Ready(info) => Some(info),
+            _ => None,
+        }));
+        all
     }
 
     /// The plugin at `index` of [`ExternalPlugins::list`] (what `Page::External` holds).
     pub fn get(&self, index: usize) -> Option<ExternalInfo> {
-        self.list.lock().get(index).cloned()
+        self.list().into_iter().nth(index)
     }
 
     /// Where the plugin `id` is in [`ExternalPlugins::list`] now.
     pub fn index_of(&self, id: &str) -> Option<usize> {
-        self.list.lock().iter().position(|i| i.manifest.id == id)
+        self.list().iter().position(|i| i.manifest.id == id)
+    }
+
+    /// Developer mode: the folders to show while `enabled`. What the user allowed earlier in this session is kept.
+    pub fn set_developer(&self, enabled: bool, folders: &[PathBuf]) {
+        let mut dev = self.dev.lock();
+        let mut old = std::mem::take(&mut dev.entries);
+        dev.enabled = enabled;
+        for folder in folders {
+            let granted = old.iter_mut().find(|e| e.folder == *folder).and_then(|e| e.granted.take());
+            let loaded = read_dev_folder(folder).map_err(|e| format!("{e:#}"));
+            dev.entries.push(DevEntry { folder: folder.clone(), granted, loaded });
+        }
+    }
+
+    pub fn developer_enabled(&self) -> bool {
+        self.dev.lock().enabled
+    }
+
+    /// The folders, as the settings keep them.
+    pub fn dev_folders(&self) -> Vec<PathBuf> {
+        self.dev.lock().entries.iter().map(|e| e.folder.clone()).collect()
+    }
+
+    /// Every developer folder with its state; empty when developer mode is off.
+    pub fn dev_rows(&self) -> Vec<DevRow> {
+        let dev = self.dev.lock();
+        if !dev.enabled {
+            return Vec::new();
+        }
+        let installed: Vec<String> = self.list.lock().iter().map(|i| i.manifest.id.clone()).collect();
+        let mut seen: Vec<String> = Vec::new();
+        dev.entries
+            .iter()
+            .map(|entry| {
+                let state = match &entry.loaded {
+                    Err(error) => DevState::Problem(error.clone()),
+                    Ok((manifest, _)) if installed.contains(&manifest.id) => DevState::Problem(t("id already installed").to_string()),
+                    Ok((manifest, _)) if seen.contains(&manifest.id) => DevState::Problem(t("id already used by another developer folder").to_string()),
+                    Ok((manifest, _)) => {
+                        seen.push(manifest.id.clone());
+                        if needs_consent(entry.granted.as_deref(), &manifest.permissions) {
+                            DevState::NeedsConsent(manifest.clone())
+                        } else {
+                            DevState::Ready(ExternalInfo { manifest: manifest.clone(), verified: false, dev: true })
+                        }
+                    }
+                };
+                DevRow { folder: entry.folder.clone(), state }
+            })
+            .collect()
+    }
+
+    /// Reads a developer folder and checks it, for the consent. Nothing is remembered yet. Blocking (disk).
+    pub fn prepare_dev(&self, folder: &Path) -> Result<DevPending> {
+        if !self.developer_enabled() {
+            bail!("Developer mode is off");
+        }
+        let (manifest, wasm) = read_dev_folder(folder)?;
+        if self.list.lock().iter().any(|i| i.manifest.id == manifest.id) {
+            bail!("A plugin with the id {} is already installed", manifest.id);
+        }
+        let dev = self.dev.lock();
+        if dev.entries.iter().any(|e| e.folder != folder && e.loaded.as_ref().is_ok_and(|(m, _)| m.id == manifest.id)) {
+            bail!("Another developer folder already holds a plugin with the id {}", manifest.id);
+        }
+        let previous = dev.entries.iter().find(|e| e.folder == folder).and_then(|e| e.granted.clone());
+        Ok(DevPending { folder: folder.to_path_buf(), manifest, wasm, previous })
+    }
+
+    /// Remembers the user's consent for what [`ExternalPlugins::prepare_dev`] showed. The folder is read again, and
+    /// when it changed meanwhile nothing is allowed.
+    pub fn accept_dev(&self, pending: &DevPending) -> Result<()> {
+        let (manifest, wasm) = read_dev_folder(&pending.folder)?;
+        if manifest != pending.manifest || wasm != pending.wasm {
+            bail!("The folder changed while you were deciding. Load it again.");
+        }
+        let mut dev = self.dev.lock();
+        if !dev.enabled {
+            bail!("Developer mode is off");
+        }
+        let entry = DevEntry { folder: pending.folder.clone(), granted: Some(manifest.permissions.clone()), loaded: Ok((manifest, wasm)) };
+        match dev.entries.iter_mut().find(|e| e.folder == pending.folder) {
+            Some(existing) => *existing = entry,
+            None => dev.entries.push(entry),
+        }
+        Ok(())
+    }
+
+    /// The page's Reload: reads manifest.json and the wasm path again. Asks for consent again only when the
+    /// permissions grew. When the folder cannot be read the previous version stays and the error is returned.
+    pub fn reload_dev(&self, id: &str) -> Result<DevReload> {
+        let mut dev = self.dev.lock();
+        let entry = dev.entries.iter_mut().find(|e| e.loaded.as_ref().is_ok_and(|(m, _)| m.id == id)).context("This is not a developer plugin")?;
+        let (manifest, wasm) = read_dev_folder(&entry.folder)?;
+        if manifest.id != id {
+            bail!("The plugin id in manifest.json changed: add the folder again.");
+        }
+        let ask = needs_consent(entry.granted.as_deref(), &manifest.permissions);
+        if !ask {
+            entry.granted = Some(manifest.permissions.clone());
+        }
+        entry.loaded = Ok((manifest, wasm));
+        Ok(if ask { DevReload::NeedsConsent } else { DevReload::Reloaded })
+    }
+
+    /// Takes a folder off the list. The plugin's private data stays.
+    pub fn forget_dev(&self, folder: &Path) {
+        self.dev.lock().entries.retain(|e| e.folder != folder);
+    }
+
+    /// The `.wasm` a developer plugin runs.
+    pub fn dev_wasm(&self, id: &str) -> Option<PathBuf> {
+        let dev = self.dev.lock();
+        dev.entries.iter().find_map(|e| e.loaded.as_ref().ok().filter(|(m, _)| m.id == id).map(|(_, wasm)| wasm.clone()))
+    }
+
+    /// A developer plugin's private folder (its `data/` is inside): `configuration/plugins/ext-dev/<id>/`, never in
+    /// the author's source folder.
+    pub fn dev_dir(&self, id: &str) -> PathBuf {
+        self.root.with_file_name("ext-dev").join(id)
     }
 
     /// Where a plugin's `open-import-preview` files go: `configuration/plugins/ext-exports/<id>/`, outside the plugin's
@@ -196,6 +425,23 @@ impl ExternalPlugins {
         self.reload();
         result
     }
+}
+
+/// Developer mode on or off (Settings): remembered, and applied at once.
+pub fn set_developer_mode(on: bool) {
+    let plugins = plugins();
+    plugins.set_developer(on, &plugins.dev_folders());
+    let mut settings = aio_core::InstallerSettings::load();
+    settings.developer_mode = on;
+    // A read-only configuration folder only means the choice is not remembered.
+    let _ = settings.save();
+}
+
+/// Remembers the developer folders (after one was added or taken off).
+pub fn save_dev_folders() {
+    let mut settings = aio_core::InstallerSettings::load();
+    settings.developer_plugins = plugins().dev_folders().iter().map(|f| f.display().to_string()).collect();
+    let _ = settings.save();
 }
 
 /// Permissions shown in a warning tone: private columns, and running as root.
@@ -319,5 +565,140 @@ mod tests {
         ext.remove("demo").unwrap();
         assert!(ext.list().is_empty());
         assert!(!dir.path().join("ext/demo").exists());
+    }
+
+    /// A developer folder: manifest.json plus a wasm file (any bytes: nothing is run here).
+    fn dev_folder(dir: &Path, name: &str, id: &str, permissions: &[&str], dev_wasm: Option<&str>) -> PathBuf {
+        let folder = dir.join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        let mut manifest = serde_json::json!({
+            "id": id, "name": "Dev demo", "version": "0.1.0", "author": "Me", "description": "In development",
+            "api": "1.0", "permissions": permissions, "page_title": "Demo",
+        });
+        if let Some(path) = dev_wasm {
+            manifest["dev_wasm"] = path.into();
+        }
+        std::fs::write(folder.join("manifest.json"), manifest.to_string()).unwrap();
+        let wasm = folder.join(dev_wasm.unwrap_or("plugin.wasm"));
+        if let Some(parent) = wasm.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(wasm, b" asm   ").unwrap();
+        folder
+    }
+
+    fn allowed(ext: &ExternalPlugins, folder: &Path) {
+        let pending = ext.prepare_dev(folder).unwrap();
+        ext.accept_dev(&pending).unwrap();
+    }
+
+    #[test]
+    fn dev_folder_loads_without_install() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let folder = dev_folder(dir.path(), "mine", "mine", &["ssh"], Some("target/wasm32-wasip2/release/mine.wasm"));
+        ext.set_developer(true, std::slice::from_ref(&folder));
+        // Until the user agrees, the folder is known but does not run.
+        assert!(ext.list().is_empty());
+        assert!(matches!(ext.dev_rows()[0].state, DevState::NeedsConsent(_)));
+        let pending = ext.prepare_dev(&folder).unwrap();
+        assert!(pending.previous.is_none());
+        ext.accept_dev(&pending).unwrap();
+
+        let list = ext.list();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].dev && !list[0].verified);
+        assert_eq!(list[0].manifest.id, "mine");
+        assert!(ext.dev_wasm("mine").unwrap().ends_with("mine.wasm"));
+        // Nothing is copied into ext/, and the private data is not in the author's folder.
+        assert!(!dir.path().join("ext").exists() || std::fs::read_dir(dir.path().join("ext")).unwrap().next().is_none());
+        assert_eq!(ext.dev_dir("mine"), dir.path().join("ext-dev/mine"));
+        assert!(!folder.join("data").exists());
+    }
+
+    #[test]
+    fn dev_mode_off_ignores_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let folder = dev_folder(dir.path(), "mine", "mine", &[], None);
+        ext.set_developer(true, std::slice::from_ref(&folder));
+        allowed(&ext, &folder);
+        assert_eq!(ext.list().len(), 1);
+        ext.set_developer(false, std::slice::from_ref(&folder));
+        assert!(ext.list().is_empty() && ext.dev_rows().is_empty());
+        assert!(ext.prepare_dev(&folder).is_err());
+        // Switched on again, the folder is back and was agreed to already.
+        ext.set_developer(true, &[folder]);
+        assert_eq!(ext.list().len(), 1);
+    }
+
+    #[test]
+    fn dev_wasm_outside_folder_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        ext.set_developer(true, &[]);
+        std::fs::write(dir.path().join("evil.wasm"), b" asm   ").unwrap();
+        let up = dev_folder(dir.path(), "up", "up-plugin", &[], Some("../evil.wasm"));
+        let error = ext.prepare_dev(&up).unwrap_err().to_string();
+        assert!(error.contains("inside the folder"), "{error}");
+        let absolute = dev_folder(dir.path(), "abs", "abs-plugin", &[], Some(&dir.path().join("evil.wasm").display().to_string()));
+        assert!(ext.prepare_dev(&absolute).is_err());
+        let missing = dev_folder(dir.path(), "none", "none-plugin", &[], None);
+        std::fs::remove_file(missing.join("plugin.wasm")).unwrap();
+        assert!(ext.prepare_dev(&missing).is_err());
+        // The same validation as a package: a built-in id and a bad manifest are refused.
+        let builtin = dev_folder(dir.path(), "cms", "cms", &[], None);
+        assert!(ext.prepare_dev(&builtin).unwrap_err().to_string().contains("built-in"));
+    }
+
+    #[test]
+    fn installed_id_wins_over_a_dev_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let file = dir.path().join("demo.aiop");
+        std::fs::write(&file, aiop("demo", "1.0.0", &[])).unwrap();
+        ext.install_file(&file).unwrap();
+        let folder = dev_folder(dir.path(), "demo-dev", "demo", &[], None);
+        ext.set_developer(true, std::slice::from_ref(&folder));
+        assert!(ext.prepare_dev(&folder).is_err());
+        assert_eq!(ext.list().len(), 1);
+        assert!(!ext.list()[0].dev);
+        assert!(matches!(&ext.dev_rows()[0].state, DevState::Problem(text) if text.contains("already installed")));
+    }
+
+    #[test]
+    fn reload_with_new_permissions_asks_again() {
+        let ssh = Permission::Ssh;
+        let root = Permission::SshRoot;
+        assert!(needs_consent(None, &[]));
+        assert!(!needs_consent(Some(&[ssh.clone(), root.clone()]), &[ssh.clone(), root.clone()]));
+        assert!(!needs_consent(Some(&[ssh.clone(), root.clone()]), std::slice::from_ref(&ssh)), "fewer permissions: no question");
+        assert!(needs_consent(Some(std::slice::from_ref(&ssh)), &[ssh.clone(), root.clone()]), "a new permission: ask");
+
+        // End to end: the page's Reload.
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let folder = dev_folder(dir.path(), "mine", "mine", &["ssh"], None);
+        ext.set_developer(true, std::slice::from_ref(&folder));
+        allowed(&ext, &folder);
+        assert_eq!(ext.reload_dev("mine").unwrap(), DevReload::Reloaded);
+
+        dev_folder(dir.path(), "mine", "mine", &["ssh", "ssh:root"], None);
+        assert_eq!(ext.reload_dev("mine").unwrap(), DevReload::NeedsConsent);
+        assert!(ext.list().is_empty(), "it does not run until the user agrees");
+        let pending = ext.prepare_dev(&folder).unwrap();
+        assert!(pending.is_new_permission(&Permission::SshRoot) && !pending.is_new_permission(&Permission::Ssh));
+        ext.accept_dev(&pending).unwrap();
+        assert_eq!(ext.list().len(), 1);
+
+        // Fewer permissions: no question, and the smaller set is what was agreed to.
+        dev_folder(dir.path(), "mine", "mine", &["ssh"], None);
+        assert_eq!(ext.reload_dev("mine").unwrap(), DevReload::Reloaded);
+        dev_folder(dir.path(), "mine", "mine", &["ssh", "ssh:root"], None);
+        assert_eq!(ext.reload_dev("mine").unwrap(), DevReload::NeedsConsent);
+
+        // A broken manifest keeps what ran before and says why.
+        std::fs::write(folder.join("manifest.json"), b"{").unwrap();
+        assert!(ext.reload_dev("mine").is_err());
     }
 }

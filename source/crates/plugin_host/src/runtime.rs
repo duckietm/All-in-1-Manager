@@ -868,7 +868,21 @@ impl PluginInstance {
         services: Arc<dyn HostServices>,
         approvals: Arc<Approvals>,
     ) -> Result<Self> {
-        let wasm = std::fs::read(dir.join("plugin.wasm")).with_context(|| format!("reading {}", dir.display()))?;
+        Self::load_from(engine, &dir.join("plugin.wasm"), dir, manifest, services, approvals).await
+    }
+
+    /// Like [`PluginInstance::load`], for a plugin whose `.wasm` file is not in its own folder (developer mode: the
+    /// author's build output). `dir` is the plugin's private folder; its `data/` is created there, never next to
+    /// `wasm_file`.
+    pub async fn load_from(
+        engine: &Engine,
+        wasm_file: &Path,
+        dir: &Path,
+        manifest: Manifest,
+        services: Arc<dyn HostServices>,
+        approvals: Arc<Approvals>,
+    ) -> Result<Self> {
+        let wasm = std::fs::read(wasm_file).with_context(|| format!("reading {}", wasm_file.display()))?;
         let data = dir.join("data");
         std::fs::create_dir_all(&data).with_context(|| format!("creating {}", data.display()))?;
         let dir_real = std::fs::canonicalize(dir)?;

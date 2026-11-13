@@ -85,7 +85,7 @@ pub fn badges(ui: &mut egui::Ui, palette: &Palette, info: &ExternalInfo) {
         ui.label(RichText::new(t("Not verified")).size(12.5).strong().color(palette.error_text));
     }
     if info.dev {
-        ui.label(RichText::new(t("Developer folder")).size(12.5).strong().color(palette.warning_text));
+        ui.label(RichText::new(t("Developer")).size(12.5).strong().color(palette.error_text));
     }
 }
 

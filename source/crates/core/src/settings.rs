@@ -63,6 +63,13 @@ pub struct InstallerSettings {
     /// The plugins switched off on the Plugins page (their ids); their pages leave the menus. New in the Rust port.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub disabled_plugins: Vec<String>,
+    /// Developer mode (Settings): external plugins may be loaded straight from a folder. Off by default. New in the
+    /// Rust port.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub developer_mode: bool,
+    /// The plugin folders added in developer mode (full paths). Only used while `developer_mode` is on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub developer_plugins: Vec<String>,
 }
 
 /// A branch to choose from, with the line the lists show behind its name.
@@ -285,6 +292,22 @@ pub fn relative_key(full_path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn old_settings_without_field_load() {
+        let old = r#"{"Servers":["a.example"],"DisabledPlugins":["cms"],"Branches":{}}"#;
+        let settings: InstallerSettings = serde_json::from_str(old).unwrap();
+        assert!(!settings.developer_mode);
+        assert!(settings.developer_plugins.is_empty());
+        assert_eq!(settings.disabled_plugins, ["cms"]);
+        // Off and empty are not written; set, they round-trip in PascalCase.
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(!saved.contains("Developer"), "{saved}");
+        let on = InstallerSettings { developer_mode: true, developer_plugins: vec!["C:/dev/hello".into()], ..settings };
+        let saved = serde_json::to_string(&on).unwrap();
+        assert!(saved.contains("\"DeveloperMode\":true") && saved.contains("\"DeveloperPlugins\""), "{saved}");
+        assert_eq!(serde_json::from_str::<InstallerSettings>(&saved).unwrap(), on);
+    }
 
     #[test]
     fn the_first_retro_becomes_a_profile() {

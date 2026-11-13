@@ -2,6 +2,7 @@
 //! off leaves the sidebar, the Addons page and the dashboard; its pack (if downloaded) stays until removed.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -14,7 +15,7 @@ use crate::gui::widgets::{self, ResultKind};
 use crate::gui::{Page, Shared};
 use crate::i18n::{t, tf};
 use crate::gui::dialogs::Choice;
-use crate::plugins::external::{self, ExternalInfo, Pending};
+use crate::plugins::external::{self, DevPending, DevRow, DevState, ExternalInfo, Pending};
 use crate::plugins::{self, packs::Pack, Plugin, PLUGINS};
 
 /// A pack's download, shared by the Plugins page and the "pack missing" card on a plugin's page.
@@ -156,9 +157,15 @@ impl PluginsView {
     }
 }
 
-/// The package that waits for the user's consent, if any.
-fn consent() -> &'static Mutex<Option<Arc<Pending>>> {
-    static STATE: OnceLock<Mutex<Option<Arc<Pending>>>> = OnceLock::new();
+/// What waits for the user's consent: a package from a file, or a developer folder.
+enum Consent {
+    Install(Box<Pending>),
+    Folder(Box<DevPending>),
+}
+
+/// The thing that waits for the user's consent, if any.
+fn consent() -> &'static Mutex<Option<Arc<Consent>>> {
+    static STATE: OnceLock<Mutex<Option<Arc<Consent>>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(None))
 }
 
@@ -194,7 +201,7 @@ fn start_install(shared: &Shared) {
         let path = file.path().to_path_buf();
         let checked = tokio::task::spawn_blocking(move || external::plugins().prepare(&path)).await;
         match checked {
-            Ok(Ok(pending)) => *consent().lock() = Some(Arc::new(pending)),
+            Ok(Ok(pending)) => *consent().lock() = Some(Arc::new(Consent::Install(Box::new(pending)))),
             Ok(Err(error)) => status.set_status(&tf("This file cannot be installed: {error}", &[("error", &safe(&format!("{error:#}")))])),
             Err(error) => status.set_status(&tf("This file cannot be installed: {error}", &[("error", &error.to_string())])),
         }
@@ -202,9 +209,11 @@ fn start_install(shared: &Shared) {
     });
 }
 
-fn finish_install(shared: &Shared, pending: Arc<Pending>) {
+fn finish_install(shared: &Shared, consent: Arc<Consent>) {
     let status = shared.clone();
     shared.spawn(async move {
+        let Consent::Install(pending) = &*consent else { return };
+        let pending: Pending = (**pending).clone();
         match tokio::task::spawn_blocking(move || external::plugins().commit(&pending)).await {
             Ok(Ok(manifest)) => status.set_status(&tf("{plugin} {version} is installed.", &[("plugin", &display_safe(&manifest.name, 80)), ("version", &display_safe(&manifest.version, 40))])),
             Ok(Err(error)) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &safe(&format!("{error:#}")))])),
@@ -258,7 +267,7 @@ fn installed_section(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
     });
     widgets::muted(ui, palette, t("Plugins made by other people. They run in a sandbox and can only do what you allow here."), 12.5);
     ui.add_space(8.0);
-    let list = external::plugins().list();
+    let list: Vec<ExternalInfo> = external::plugins().list().into_iter().filter(|i| !i.dev).collect();
     if list.is_empty() {
         widgets::muted(ui, palette, t("No plugin is installed."), 12.5);
     }
@@ -266,6 +275,140 @@ fn installed_section(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         external_card(ui, palette, shared, &info);
         ui.add_space(10.0);
     }
+    if external::plugins().developer_enabled() {
+        developer_section(ui, palette, shared);
+    }
+}
+
+/// Developer mode: the plugin folders, each with its state.
+fn developer_section(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+    ui.add_space(10.0);
+    ui.horizontal(|ui| {
+        ui.label(widgets::title_text(t("Developer plugins"), 16.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(widgets::primary_button(t("Load a plugin folder …"))).on_hover_text(t("A folder with manifest.json and plugin.wasm")).clicked() {
+                start_add_folder(shared);
+            }
+        });
+    });
+    widgets::muted(
+        ui,
+        palette,
+        t("Plugins run straight from your folder, without packing a .aiop. They are not verified: the same warnings and permissions apply as for a package from a file."),
+        12.5,
+    );
+    ui.add_space(8.0);
+    let rows = external::plugins().dev_rows();
+    if rows.is_empty() {
+        widgets::muted(ui, palette, t("No plugin folder is loaded."), 12.5);
+    }
+    for row in rows {
+        match &row.state {
+            DevState::Ready(info) => external_card(ui, palette, shared, info),
+            DevState::NeedsConsent(manifest) => dev_review_card(ui, palette, shared, &row, manifest),
+            DevState::Problem(text) => dev_problem_card(ui, palette, shared, &row, text),
+        }
+        ui.add_space(10.0);
+    }
+}
+
+/// Pick a folder, read and check it off the window's thread, then ask.
+fn start_add_folder(shared: &Shared) {
+    if consent().lock().is_some() || picking().swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let status = shared.clone();
+    shared.spawn(async move {
+        let picked = rfd::AsyncFileDialog::new().set_title(t("Load a plugin folder")).pick_folder().await;
+        if let Some(folder) = picked {
+            review_folder(&status, folder.path().to_path_buf()).await;
+        }
+        picking().store(false, Ordering::Release);
+    });
+}
+
+/// Reads the folder and puts the consent window up.
+async fn review_folder(status: &Shared, folder: PathBuf) {
+    match tokio::task::spawn_blocking(move || external::plugins().prepare_dev(&folder)).await {
+        Ok(Ok(pending)) => *consent().lock() = Some(Arc::new(Consent::Folder(Box::new(pending)))),
+        Ok(Err(error)) => status.set_status(&tf("This folder cannot be loaded: {error}", &[("error", &safe(&format!("{error:#}")))])),
+        Err(error) => status.set_status(&tf("This folder cannot be loaded: {error}", &[("error", &error.to_string())])),
+    }
+}
+
+fn finish_folder(shared: &Shared, pending: DevPending) {
+    let status = shared.clone();
+    shared.spawn(async move {
+        let name = display_safe(&pending.manifest.name, 80);
+        match tokio::task::spawn_blocking(move || external::plugins().accept_dev(&pending)).await {
+            Ok(Ok(())) => {
+                external::save_dev_folders();
+                status.set_status(&tf("{plugin} is loaded from its folder.", &[("plugin", &name)]));
+            }
+            Ok(Err(error)) => status.set_status(&tf("This folder cannot be loaded: {error}", &[("error", &safe(&format!("{error:#}")))])),
+            Err(error) => status.set_status(&tf("This folder cannot be loaded: {error}", &[("error", &error.to_string())])),
+        }
+    });
+}
+
+fn forget_folder(shared: &Shared, folder: &Path) {
+    external::plugins().forget_dev(folder);
+    external::save_dev_folders();
+    shared.set_status(t("The folder is taken off the list. Its files are not touched."));
+}
+
+/// Reload on a developer plugin's card: re-reads the folder; a plugin that asks for more is off until the user agrees.
+fn reload_folder(shared: &Shared, id: &str) {
+    match external::plugins().reload_dev(id) {
+        Ok(external::DevReload::Reloaded) => shared.set_status(t("Reloaded from the folder.")),
+        Ok(external::DevReload::NeedsConsent) => shared.set_status(t("The plugin asks for more permissions: review them below.")),
+        Err(error) => shared.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &safe(&format!("{error:#}")))])),
+    }
+}
+
+/// A folder whose plugin asks for permissions the user has not agreed to (yet, or since they grew).
+fn dev_review_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, row: &DevRow, manifest: &aio_plugin_host::Manifest) {
+    widgets::card(ui, palette, egui::Margin::symmetric(20, 14), |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(widgets::title_text(&display_safe(&manifest.name, 60), 16.0));
+                    not_verified(ui, palette, t("Developer"));
+                });
+                widgets::muted(ui, palette, &safe(&row.folder.display().to_string()), 12.0);
+                ui.label(RichText::new(t("It is off until you agree to its permissions.")).size(12.5).color(palette.warning_text));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(widgets::secondary_button(t("Remove from list"))).clicked() {
+                    forget_folder(shared, &row.folder);
+                }
+                if ui.add(widgets::primary_button(t("Review permissions"))).clicked() && consent().lock().is_none() {
+                    let (status, folder) = (shared.clone(), row.folder.clone());
+                    shared.spawn(async move { review_folder(&status, folder).await });
+                }
+            });
+        });
+    });
+}
+
+fn dev_problem_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, row: &DevRow, problem: &str) {
+    widgets::card(ui, palette, egui::Margin::symmetric(20, 14), |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                widgets::muted(ui, palette, &safe(&row.folder.display().to_string()), 12.5);
+                ui.label(RichText::new(safe(problem)).size(12.5).color(palette.error_text));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(widgets::secondary_button(t("Remove from list"))).clicked() {
+                    forget_folder(shared, &row.folder);
+                }
+                if ui.add(widgets::secondary_button(t("Check again"))).clicked() {
+                    let plugins = external::plugins();
+                    plugins.set_developer(true, &plugins.dev_folders());
+                }
+            });
+        });
+    });
 }
 
 fn not_verified(ui: &mut egui::Ui, palette: &Palette, text: &str) {
@@ -292,13 +435,23 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
                         not_verified(ui, palette, t("Not verified"));
                     }
                     if info.dev {
-                        ui.label(RichText::new(t("Developer folder")).size(12.5).color(palette.warning_text));
+                        not_verified(ui, palette, t("Developer"));
                     }
                 });
                 widgets::muted(ui, palette, &display_safe(&manifest.description, 300), 12.5);
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(widgets::secondary_button(t("Remove"))).on_hover_text(t("Delete the plugin and its data")).clicked() {
+                if info.dev {
+                    if ui.add(widgets::secondary_button(t("Remove from list"))).on_hover_text(t("Take the folder off the list; its files and the plugin's data stay")).clicked() {
+                        let ready = |r: &DevRow| matches!(&r.state, DevState::Ready(i) if i.manifest.id == manifest.id);
+                        if let Some(row) = external::plugins().dev_rows().into_iter().find(ready) {
+                            forget_folder(shared, &row.folder);
+                        }
+                    }
+                    if ui.add(widgets::secondary_button(t("Reload"))).on_hover_text(t("Read manifest.json and the wasm file again")).clicked() {
+                        reload_folder(shared, &manifest.id);
+                    }
+                } else if ui.add(widgets::secondary_button(t("Remove"))).on_hover_text(t("Delete the plugin and its data")).clicked() {
                     start_remove(shared, info.clone());
                 }
             });
@@ -315,32 +468,43 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
     });
 }
 
-/// The consent: shown over the page until the user installs or cancels. Nothing is written before Install.
+/// The consent: shown over the page until the user agrees or cancels. Nothing is written or run before.
 fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
-    let Some(pending) = consent().lock().clone() else { return };
-    let pending: Arc<Pending> = pending;
-    let manifest = &pending.package.manifest;
-    let (mut install, mut cancel) = (false, false);
-    egui::Window::new(t("Install this plugin?")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+    let Some(waiting) = consent().lock().clone() else { return };
+    let (manifest, is_new): (&aio_plugin_host::Manifest, Box<dyn Fn(&aio_plugin_host::Permission) -> bool + '_>) = match &*waiting {
+        Consent::Install(pending) => (&pending.package.manifest, Box::new(|p| pending.is_new_permission(p))),
+        Consent::Folder(pending) => (&pending.manifest, Box::new(|p| pending.is_new_permission(p))),
+    };
+    let from_folder = matches!(&*waiting, Consent::Folder(_));
+    let (mut agree, mut cancel) = (false, false);
+    let title = if from_folder { t("Load this plugin folder?") } else { t("Install this plugin?") };
+    egui::Window::new(title).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
         ui.set_max_width(460.0);
         ui.label(widgets::title_text(&display_safe(&manifest.name, 60), 17.0));
-        match &pending.previous {
-            Some(old) => {
+        match &*waiting {
+            Consent::Install(pending) if pending.previous.is_some() => {
+                let old = pending.previous.as_ref().expect("checked");
                 ui.label(tf("This updates the installed plugin from version {old} to {new}.", &[("old", &display_safe(&old.version, 40)), ("new", &display_safe(&manifest.version, 40))]));
             }
-            None => {
+            _ => {
                 ui.label(tf("Version {version}", &[("version", &display_safe(&manifest.version, 40))]));
             }
         }
         ui.label(tf("By {author}", &[("author", &display_safe(&manifest.author, 60))]));
         ui.add_space(6.0);
-        not_verified(ui, palette, t("Not verified — installed from a file"));
+        match &*waiting {
+            Consent::Install(_) => not_verified(ui, palette, t("Not verified — installed from a file")),
+            Consent::Folder(pending) => {
+                not_verified(ui, palette, t("Developer — not verified"));
+                widgets::muted(ui, palette, &tf("Runs straight from the folder {folder}", &[("folder", &safe(&pending.folder.display().to_string()))]), 12.0);
+            }
+        }
         ui.add_space(8.0);
         ui.label(RichText::new(t("This plugin will be able to:")).strong());
         for permission in &manifest.permissions {
             let color = if external::is_sensitive(permission) { palette.warning_text } else { ui.visuals().text_color() };
             let mut text = format!("• {}", external::permission_text(permission));
-            if pending.is_new_permission(permission) {
+            if is_new(permission) {
                 text = format!("{text}  [{}]", t("new in this version"));
             }
             ui.label(RichText::new(text).color(color));
@@ -350,14 +514,18 @@ fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            install = ui.add(widgets::primary_button(t("Install"))).clicked();
+            agree = ui.add(widgets::primary_button(if from_folder { t("Load") } else { t("Install") })).clicked();
             cancel = ui.add(widgets::secondary_button(t("Cancel"))).clicked();
         });
     });
-    if install || cancel {
+    drop(is_new);
+    if agree || cancel {
         let taken = consent().lock().take();
-        if let (true, Some(pending)) = (install, taken) {
-            finish_install(shared, pending);
+        if let (true, Some(taken)) = (agree, taken) {
+            match &*taken {
+                Consent::Install(_) => finish_install(shared, taken.clone()),
+                Consent::Folder(pending) => finish_folder(shared, (**pending).clone()),
+            }
         }
     }
 }

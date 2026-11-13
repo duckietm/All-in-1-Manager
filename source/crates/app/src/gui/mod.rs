@@ -272,6 +272,8 @@ pub struct App {
     last_watch: f64,
     known_session: Option<usize>,
     update_checked: bool,
+    /// The plugin index was checked once in the background (at the first frame).
+    index_checked: bool,
     screenshot: screenshot::Screenshot,
 }
 
@@ -318,7 +320,7 @@ impl App {
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
             about: views::about::AboutView::new(&shared),
-            plugins: views::plugins::PluginsView,
+            plugins: views::plugins::PluginsView::default(),
             dashboard: views::dashboard::Dashboard::new(&shared),
             external: None,
             shared,
@@ -326,11 +328,15 @@ impl App {
             last_watch: 0.0,
             known_session: None,
             update_checked: false,
+            index_checked: false,
             screenshot: screenshot::Screenshot::from_env(),
         };
         if app.screenshot.active() {
             app.update_checked = true;
+            app.index_checked = true;
         }
+        let repaint = ctx.clone();
+        crate::plugins::index::set_repaint(move || repaint.request_repaint());
         app
     }
 
@@ -1129,6 +1135,11 @@ impl eframe::App for App {
             // The update check first: when the installer replaces itself there is nothing to log in to.
             self.update_checked = true;
             views::update_dialog::check_at_startup(&self.shared, self.login.opener());
+        }
+        if !self.index_checked {
+            // In the background, never blocking the window: the cached index's revocations first, then a fetch.
+            self.index_checked = true;
+            views::plugin_index::start_check(&self.shared, true);
         }
         if let Some(server) = self.login.take_connected() {
             self.set_session(server);

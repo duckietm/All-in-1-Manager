@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use aio_plugin_host::package::{self, Package, MAX_PACKAGE, MAX_WASM};
 use aio_plugin_host::manifest::valid_id;
 use aio_plugin_host::{display_safe, Manifest, Permission};
-use aio_plugin_index::{Entry, Index};
+use aio_plugin_index::{Entry, Index, Revoked};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -183,6 +183,37 @@ pub struct ExternalPlugins {
     root: PathBuf,
     list: Mutex<Vec<ExternalInfo>>,
     dev: Mutex<Dev>,
+    revoked: Mutex<Revocations>,
+}
+
+/// The revocations of the index last applied ([`ExternalPlugins::set_revocations`]): they lock the switch of every
+/// installed plugin they cover.
+#[derive(Debug, Clone, Default)]
+struct Revocations {
+    source: IndexSource,
+    list: Vec<Revoked>,
+}
+
+/// Why an installed plugin is revoked, and by which index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Revocation {
+    pub source: IndexSource,
+    /// The index's reason, already passed through `display_safe`.
+    pub reason: String,
+}
+
+/// Whether `revoked` covers `version` of plugin `id` (by that version or by `"*"`).
+fn covers(revoked: &Revoked, id: &str, version: &str) -> bool {
+    revoked.id == id && revoked.versions.iter().any(|v| v == "*" || v == version)
+}
+
+/// The entry of `index` that updates `installed`: the same id, the same author, a strictly greater version (compared
+/// as numbers) and not revoked.
+pub fn offered_update<'a>(index: &'a Index, installed: &Manifest) -> Option<&'a Entry> {
+    let entry = index.entry(&installed.id)?;
+    let newer = version_key(&entry.version)? > version_key(&installed.version)?;
+    let usable = newer && entry.author == installed.author && index.revocation_for(&entry.id, &entry.version).is_none();
+    usable.then_some(entry)
 }
 
 /// The process-wide list, loaded the first time it is needed from configuration/plugins/ext/.
@@ -295,7 +326,6 @@ pub fn redirect_allowed(kind: IndexSource, first: &reqwest::Url, next: &reqwest:
 
 /// The client for package downloads from the index of `kind`: the redirect policy of [`redirect_allowed`] (at most
 /// five redirects), the Manager's user agent.
-#[allow(dead_code)] // The Plugins page's Available tab and "Update available" (Task 5) call it.
 pub fn package_client(kind: IndexSource) -> reqwest::Client {
     let policy = reqwest::redirect::Policy::custom(move |attempt| {
         let allowed = attempt.previous().first().is_some_and(|first| redirect_allowed(kind, first, attempt.url()));
@@ -318,7 +348,6 @@ pub fn package_client(kind: IndexSource) -> reqwest::Client {
 /// Downloads the package of `entry` (from an index of `kind`), within [`DOWNLOAD_TIMEOUT`]. The body is streamed and
 /// refused as soon as it passes `entry.size` (at most 32 MiB); its size and SHA-256 must equal the entry's. Nothing
 /// the server says (headers, length) is trusted: only the signed entry.
-#[allow(dead_code)] // The Plugins page (Task 5) calls it.
 pub async fn download(client: &reqwest::Client, entry: &Entry, kind: IndexSource) -> Result<Vec<u8>> {
     // `Index::parse` already bound the url to the feed's prefix; this keeps an official download on GitHub's releases
     // whatever the caller passes.
@@ -482,7 +511,7 @@ fn version_key(version: &str) -> Option<[u64; 3]> {
 
 impl ExternalPlugins {
     pub fn new(root: PathBuf) -> Self {
-        let this = Self { root, list: Mutex::new(Vec::new()), dev: Mutex::new(Dev::default()) };
+        let this = Self { root, list: Mutex::new(Vec::new()), dev: Mutex::new(Dev::default()), revoked: Mutex::new(Revocations::default()) };
         this.reload();
         this
     }
@@ -674,7 +703,6 @@ impl ExternalPlugins {
     /// Checks a package downloaded for `entry` of the signed index, for the consent: its size and SHA-256 equal the
     /// entry's, the entry is the one this index lists and is not revoked by it, [`package::inspect`] passes and the
     /// manifest equals the entry ([`check_matches_entry`]). Anything else refuses the install. Blocking.
-    #[allow(dead_code)] // The Plugins page (Task 5) calls it.
     pub fn prepare_verified(&self, signed: &SignedIndex, entry: &Entry, bytes: Vec<u8>) -> Result<Pending> {
         if signed.index.entry(&entry.id) != Some(entry) {
             bail!("This plugin is not listed by the index as shown");
@@ -692,7 +720,6 @@ impl ExternalPlugins {
 
     /// The update the index offers for the installed plugin `id`, if any (see [`ExternalPlugins::update_in`]), from
     /// the index that may be installed from now. Never installs anything: the user clicks, and consents again.
-    #[allow(dead_code)] // The Plugins page's "Update available" (Task 5) calls it.
     pub fn update_for(&self, id: &str) -> Option<Entry> {
         super::index::index_for_install().and_then(|index| self.update_in(&index, id))
     }
@@ -701,10 +728,51 @@ impl ExternalPlugins {
     /// strictly greater version (compared as numbers) and not revoked.
     pub fn update_in(&self, index: &Index, id: &str) -> Option<Entry> {
         let installed = self.list.lock().iter().find(|i| i.manifest.id == id).map(|i| i.manifest.clone())?;
-        let entry = index.entry(id)?;
-        let newer = version_key(&entry.version)? > version_key(&installed.version)?;
-        let usable = newer && entry.author == installed.author && index.revocation_for(id, &entry.version).is_none();
-        usable.then(|| entry.clone())
+        offered_update(index, &installed).cloned()
+    }
+
+    /// Records the revocations of `index`, an index of `source`, in place of the ones recorded before, and returns the
+    /// ids of the installed plugins they cover (the caller switches those off). A test index revokes only while
+    /// `developer_mode` is on. An expired index revokes too. A plugin no longer covered is unlocked but not switched
+    /// on again: that stays the user's choice.
+    pub fn set_revocations(&self, index: &Index, source: IndexSource, developer_mode: bool) -> Vec<String> {
+        let list = if source == IndexSource::Test && !developer_mode { Vec::new() } else { index.revoked.clone() };
+        *self.revoked.lock() = Revocations { source, list };
+        self.revoked_installed()
+    }
+
+    /// Forgets every revocation (the index the settings choose has none to say: not set up, or a test index left
+    /// with developer mode).
+    pub fn clear_revocations(&self) {
+        *self.revoked.lock() = Revocations::default();
+    }
+
+    /// The installed plugins (developer folders are not installed) the recorded revocations cover.
+    pub fn revoked_installed(&self) -> Vec<String> {
+        let installed: Vec<Manifest> = self.list.lock().iter().map(|i| i.manifest.clone()).collect();
+        let revoked = self.revoked.lock();
+        installed.into_iter().filter(|m| revoked.list.iter().any(|r| covers(r, &m.id, &m.version))).map(|m| m.id).collect()
+    }
+
+    /// Why the installed plugin `id` is revoked, if the recorded revocations cover its installed version.
+    pub fn revocation(&self, id: &str) -> Option<Revocation> {
+        let version = self.list.lock().iter().find(|i| i.manifest.id == id).map(|i| i.manifest.version.clone())?;
+        let revoked = self.revoked.lock();
+        let found = revoked.list.iter().find(|r| covers(r, id, &version))?;
+        Some(Revocation { source: revoked.source, reason: display_safe(&found.reason, 300) })
+    }
+
+    /// Whether the user may switch the plugin `id` on: not while it is revoked.
+    pub fn may_switch_on(&self, id: &str) -> bool {
+        self.revocation(id).is_none()
+    }
+
+    /// [`ExternalPlugins::set_revocations`], then `switch_off` with the on/off key ([`settings_id`]) of every plugin
+    /// it covers.
+    pub fn apply_revocations_with(&self, index: &Index, source: IndexSource, developer_mode: bool, mut switch_off: impl FnMut(&str)) {
+        for id in self.set_revocations(index, source, developer_mode) {
+            switch_off(&settings_id(&id));
+        }
     }
 
     /// Writes a package the user agreed to. Blocking. A verified package is checked again against the index that may
@@ -796,6 +864,34 @@ pub fn set_developer_mode(on: bool) {
     let _ = settings.save();
     // A test index must not outlive developer mode.
     super::index::developer_settings_changed(&settings);
+}
+
+/// Switches the plugin with the on/off key `key` off, saving only when it was on.
+fn switch_off(key: &str) {
+    if super::is_enabled(key) {
+        super::set_enabled(key, false);
+    }
+}
+
+/// Enforces the revocations of `index` (an index of `source`, current or expired) on the installed plugins: each one
+/// it revokes is switched off, which closes its page and stops its instance on the next frame (the milestone-1 stop
+/// path: `App::sync_external`), and its switch stays locked while the index applied last revokes it. Called after
+/// every refresh and after the cache loads at startup.
+pub fn apply_revocations(index: &Index, source: IndexSource) {
+    let plugins = plugins();
+    plugins.apply_revocations_with(index, source, plugins.developer_enabled(), switch_off);
+}
+
+/// Switches off again every installed plugin the recorded revocations cover (after an install from a file).
+pub fn enforce_revocations() {
+    for id in plugins().revoked_installed() {
+        switch_off(&settings_id(&id));
+    }
+}
+
+/// Whether the on/off key `key` may not be switched on: an external plugin that is revoked.
+pub fn switch_locked(key: &str) -> bool {
+    key.strip_prefix("ext:").is_some_and(|id| !plugins().may_switch_on(id))
 }
 
 /// Remembers the developer folders (after one was added or taken off).
@@ -1574,5 +1670,93 @@ mod tests {
         let pending = ext.prepare_dev(&folder).unwrap();
         ext.accept_dev(&pending).unwrap();
         assert_eq!(ext.list()[0].manifest.id, "first");
+    }
+
+    /// An index (no entries) that revokes `revoked`, published on `generated` and expiring on `expires`.
+    fn revoking(revoked: &[(&str, &[&str], &str)], expires: &str) -> Index {
+        Index {
+            schema: 1,
+            sequence: 9,
+            generated: "2026-10-01T10:00:00Z".parse().unwrap(),
+            expires: expires.parse().unwrap(),
+            plugins: Vec::new(),
+            revoked: revoked
+                .iter()
+                .map(|(id, versions, reason)| Revoked { id: id.to_string(), versions: versions.iter().map(|v| v.to_string()).collect(), reason: reason.to_string() })
+                .collect(),
+        }
+    }
+
+    /// Two installed plugins, demo 1.0.0 and other 2.0.0.
+    fn two_installed(dir: &Path) -> ExternalPlugins {
+        let ext = ExternalPlugins::new(dir.join("ext"));
+        let file = dir.join("p.aiop");
+        std::fs::write(&file, aiop("demo", "1.0.0", &["ssh"])).unwrap();
+        ext.install_file(&file).unwrap();
+        std::fs::write(&file, aiop("other", "2.0.0", &[])).unwrap();
+        ext.install_file(&file).unwrap();
+        ext
+    }
+
+    #[test]
+    fn revoked_plugin_is_switched_off_and_locked() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = two_installed(dir.path());
+        let index = revoking(&[("demo", &["1.0.0"], "Steals\u{202e} tokens"), ("other", &["1.0.0"], "Only the old one")], "2026-12-30T10:00:00Z");
+        let mut switched_off = Vec::new();
+        ext.apply_revocations_with(&index, IndexSource::Official, false, |key| switched_off.push(key.to_string()));
+        // Only the installed version is covered: other 2.0.0 is not revoked.
+        assert_eq!(switched_off, vec!["ext:demo".to_string()]);
+        let revocation = ext.revocation("demo").unwrap();
+        assert_eq!(revocation.source, IndexSource::Official);
+        assert_eq!(revocation.reason, display_safe("Steals\u{202e} tokens", 300), "the reason is shown safe");
+        assert!(!ext.may_switch_on("demo"), "locked while revoked");
+        assert!(ext.may_switch_on("other"));
+        // "*" covers every version.
+        ext.set_revocations(&revoking(&[("other", &["*"], "All of it")], "2026-12-30T10:00:00Z"), IndexSource::Official, false);
+        assert_eq!(ext.revoked_installed(), vec!["other".to_string()]);
+        // A test index revokes only while developer mode is on.
+        assert!(ext.set_revocations(&index, IndexSource::Test, false).is_empty());
+        assert!(ext.may_switch_on("demo"));
+        assert_eq!(ext.set_revocations(&index, IndexSource::Test, true), vec!["demo".to_string()]);
+        assert_eq!(ext.revocation("demo").unwrap().source, IndexSource::Test);
+        // A plugin that is not installed has nothing to lock.
+        assert!(ext.revocation("absent").is_none() && ext.may_switch_on("absent"));
+    }
+
+    #[test]
+    fn revocation_from_expired_index_still_applies() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = two_installed(dir.path());
+        let index = revoking(&[("demo", &["*"], "Broken")], "2026-10-02T10:00:00Z");
+        let now: chrono::DateTime<chrono::Utc> = "2026-11-13T10:00:00Z".parse().unwrap();
+        assert_eq!(aio_plugin_index::check_fresh(&index, None, now), aio_plugin_index::Freshness::Expired);
+        let mut switched_off = Vec::new();
+        ext.apply_revocations_with(&index, IndexSource::Official, false, |key| switched_off.push(key.to_string()));
+        assert_eq!(switched_off, vec!["ext:demo".to_string()]);
+        assert!(!ext.may_switch_on("demo"));
+    }
+
+    #[test]
+    fn unrevoked_plugin_stays_off_but_unlocked() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = two_installed(dir.path());
+        // The on/off store: the keys switched off.
+        let mut off: std::collections::BTreeSet<String> = Default::default();
+        ext.apply_revocations_with(&revoking(&[("demo", &["1.0.0"], "Broken")], "2026-12-30T10:00:00Z"), IndexSource::Official, false, |key| {
+            off.insert(key.to_string());
+        });
+        assert!(off.contains("ext:demo") && !ext.may_switch_on("demo"));
+        // A newer index no longer revokes it: unlocked, but nothing switches it on again.
+        let mut switched = Vec::new();
+        ext.apply_revocations_with(&revoking(&[], "2026-12-30T10:00:00Z"), IndexSource::Official, false, |key| switched.push(key.to_string()));
+        assert!(switched.is_empty());
+        assert!(off.contains("ext:demo"), "it stays off until the user switches it on");
+        assert!(ext.may_switch_on("demo"));
+        assert!(ext.revocation("demo").is_none());
+        // Forgetting the revocations (no index any more) unlocks as well.
+        ext.set_revocations(&revoking(&[("demo", &["*"], "Broken")], "2026-12-30T10:00:00Z"), IndexSource::Official, false);
+        ext.clear_revocations();
+        assert!(ext.may_switch_on("demo"));
     }
 }

@@ -1,5 +1,7 @@
 //! The Plugins page: every plugin with its on/off switch, and the data packs to download or remove. A plugin that is
 //! off leaves the sidebar, the Addons page and the dashboard; its pack (if downloaded) stays until removed.
+//! Two tabs: "Installed" (the built-in and the installed external plugins) and "Available" (the signed plugin index,
+//! [`super::plugin_index`]). An installed plugin the index revokes shows a red banner and its switch is locked off.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -16,7 +18,8 @@ use crate::gui::{Page, Shared};
 use crate::i18n::{t, tf};
 use crate::gui::dialogs::Choice;
 use crate::plugins::external::{self, DevPending, DevRow, DevState, ExternalInfo, Pending};
-use crate::plugins::index::IndexSource;
+use crate::plugins::index::{self, IndexSource};
+use super::plugin_index::{self, PluginIndexView};
 use crate::plugins::{self, packs::Pack, Plugin, PLUGINS};
 
 /// A pack's download, shared by the Plugins page and the "pack missing" card on a plugin's page.
@@ -131,31 +134,58 @@ pub fn pack_ready(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, page: P
     false
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Tab {
+    #[default]
+    Installed,
+    Available,
+}
+
 #[derive(Default)]
-pub struct PluginsView;
+pub struct PluginsView {
+    tab: Tab,
+    available: PluginIndexView,
+}
 
 impl PluginsView {
     /// Returns a page to open (a plugin's Open button).
     pub fn show(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) -> Option<Page> {
-        let mut open = None;
-        widgets::muted(
-            ui,
-            palette,
-            t("Switch off what you do not use: its pages leave the menus and the dashboard. Nothing is removed from the server, and you can switch it on again at any time."),
-            13.5,
-        );
-        ui.add_space(12.0);
-        for plugin in PLUGINS {
-            if let Some(page) = plugin_card(ui, palette, shared, plugin) {
-                open = Some(page);
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.tab, Tab::Installed, RichText::new(t("Installed")).size(14.0));
+            ui.selectable_value(&mut self.tab, Tab::Available, RichText::new(t("Available")).size(14.0));
+        });
+        ui.add_space(10.0);
+        let open = match self.tab {
+            Tab::Installed => installed_tab(ui, palette, shared),
+            Tab::Available => {
+                self.available.show(ui, palette, shared);
+                None
             }
-            ui.add_space(10.0);
-        }
-        ui.add_space(6.0);
-        installed_section(ui, palette, shared);
+        };
         consent_window(ui.ctx(), palette, shared);
         open
     }
+}
+
+/// The built-in plugins, then the installed external ones.
+fn installed_tab(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) -> Option<Page> {
+    let mut open = None;
+    widgets::muted(
+        ui,
+        palette,
+        t("Switch off what you do not use: its pages leave the menus and the dashboard. Nothing is removed from the server, and you can switch it on again at any time."),
+        13.5,
+    );
+    ui.add_space(12.0);
+    for plugin in PLUGINS {
+        if let Some(page) = plugin_card(ui, palette, shared, plugin) {
+            open = Some(page);
+        }
+        ui.add_space(10.0);
+    }
+    ui.add_space(6.0);
+    installed_section(ui, palette, shared);
+    open
 }
 
 /// What waits for the user's consent: a package from a file, or a developer folder.
@@ -168,6 +198,22 @@ enum Consent {
 fn consent() -> &'static Mutex<Option<Arc<Consent>>> {
     static STATE: OnceLock<Mutex<Option<Arc<Consent>>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(None))
+}
+
+/// True while a package waits for the user's consent.
+pub(super) fn consent_open() -> bool {
+    consent().lock().is_some()
+}
+
+/// Puts the consent window up for a package checked against the index; false (and nothing shown) when another
+/// consent is already open.
+pub(super) fn ask_install(pending: Pending) -> bool {
+    let mut waiting = consent().lock();
+    if waiting.is_some() {
+        return false;
+    }
+    *waiting = Some(Arc::new(Consent::Install(Box::new(pending))));
+    true
 }
 
 /// Plugin-supplied text (names, ids, versions inside error messages) made safe to show.
@@ -215,7 +261,14 @@ fn finish_install(shared: &Shared, consent: Arc<Consent>) {
     shared.spawn(async move {
         let Consent::Install(pending) = &*consent else { return };
         let pending: Pending = (**pending).clone();
-        match tokio::task::spawn_blocking(move || external::plugins().commit(&pending)).await {
+        let committed = tokio::task::spawn_blocking(move || {
+            let result = external::plugins().commit(&pending);
+            // A version the index revokes stays off, whatever it was installed from.
+            external::enforce_revocations();
+            result
+        })
+        .await;
+        match committed {
             Ok(Ok(manifest)) => status.set_status(&tf("{plugin} {version} is installed.", &[("plugin", &display_safe(&manifest.name, 80)), ("version", &display_safe(&manifest.version, 40))])),
             Ok(Err(error)) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &safe(&format!("{error:#}")))])),
             Err(error) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &error.to_string())])),
@@ -272,8 +325,11 @@ fn installed_section(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
     if list.is_empty() {
         widgets::muted(ui, palette, t("No plugin is installed."), 12.5);
     }
+    // Once per frame, not per card: the index the updates come from.
+    let offers = if list.is_empty() { None } else { index::index_for_install() };
     for info in list {
-        external_card(ui, palette, shared, &info);
+        let update = offers.as_ref().and_then(|index| external::offered_update(index, &info.manifest)).map(|e| display_safe(&e.version, 40));
+        external_card_with(ui, palette, shared, &info, update.as_deref());
         ui.add_space(10.0);
     }
     if external::plugins().developer_enabled() {
@@ -426,15 +482,43 @@ fn not_verified(ui: &mut egui::Ui, palette: &Palette, text: &str) {
 }
 
 fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &ExternalInfo) {
+    external_card_with(ui, palette, shared, info, None);
+}
+
+/// An external plugin's card; `update` is the version the index offers for it, if any.
+fn external_card_with(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &ExternalInfo, update: Option<&str>) {
     let manifest = &info.manifest;
+    let revoked = if info.dev { None } else { external::plugins().revocation(&manifest.id) };
     widgets::card(ui, palette, egui::Margin::symmetric(20, 14), |ui| {
+        if let Some(revocation) = &revoked {
+            let heading = match revocation.source {
+                IndexSource::Official => t("Revoked by the official index: it is switched off"),
+                IndexSource::Test => t("Revoked by the test index: it is switched off"),
+            };
+            widgets::result_banner(ui, palette, ResultKind::Error, heading, &revocation.reason);
+            ui.add_space(8.0);
+        }
         ui.horizontal(|ui| {
             let key = external::settings_id(&manifest.id);
             let mut on = plugins::is_enabled(&key);
-            if widgets::switch(ui, palette, &mut on).on_hover_text(if on { t("On: click to switch it off") } else { t("Off: click to switch it on") }).changed() {
-                plugins::set_enabled(&key, on);
-                let state = if on { t("on") } else { t("off") };
-                shared.set_status(&tf("{plugin} is {state}.", &[("plugin", &display_safe(&manifest.name, 80)), ("state", state)]));
+            let locked = t("Revoked: it cannot be switched on while the index revokes it");
+            let hint = if revoked.is_some() {
+                locked
+            } else if on {
+                t("On: click to switch it off")
+            } else {
+                t("Off: click to switch it on")
+            };
+            // A revoked plugin that is somehow still on can be switched off, never on.
+            let unlocked = revoked.is_none() || on;
+            let flipped = ui.add_enabled_ui(unlocked, |ui| widgets::switch(ui, palette, &mut on)).inner;
+            if flipped.on_hover_text(hint).on_disabled_hover_text(hint).changed() {
+                if plugins::set_enabled(&key, on) {
+                    let state = if on { t("on") } else { t("off") };
+                    shared.set_status(&tf("{plugin} is {state}.", &[("plugin", &display_safe(&manifest.name, 80)), ("state", state)]));
+                } else {
+                    shared.set_status(locked);
+                }
             }
             ui.add_space(8.0);
             ui.vertical(|ui| {
@@ -463,11 +547,23 @@ fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
                     if ui.add(widgets::secondary_button(t("Reload"))).on_hover_text(t("Read manifest.json and the wasm file again")).clicked() {
                         reload_folder(shared, &manifest.id);
                     }
-                } else if ui.add(widgets::secondary_button(t("Remove"))).on_hover_text(t("Delete the plugin and its data")).clicked() {
-                    start_remove(shared, info.clone());
+                } else {
+                    if ui.add(widgets::secondary_button(t("Remove"))).on_hover_text(t("Delete the plugin and its data")).clicked() {
+                        start_remove(shared, info.clone());
+                    }
+                    if let Some(version) = update {
+                        let label = tf("Update available ({version})", &[("version", version)]);
+                        let button = ui.add_enabled(!plugin_index::busy(), widgets::primary_button(&label));
+                        if button.on_hover_text(t("From the plugin index; you review its permissions first")).clicked() {
+                            plugin_index::start_install(shared, &manifest.id);
+                        }
+                    }
                 }
             });
         });
+        if !info.dev {
+            plugin_index::job_line(ui, palette, plugin_index::job(&manifest.id).as_ref());
+        }
         egui::CollapsingHeader::new(RichText::new(tf("Permissions ({count})", &[("count", &manifest.permissions.len().to_string())])).size(12.5)).id_salt(("ext-permissions", &manifest.id)).show(ui, |ui| {
             if manifest.permissions.is_empty() {
                 widgets::muted(ui, palette, t("It asks for no permission."), 12.5);

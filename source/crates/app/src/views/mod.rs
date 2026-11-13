@@ -44,6 +44,7 @@ pub mod octane;
 pub mod php;
 pub mod plugin_approval;
 pub mod plugin_tree;
+pub mod plugin_index;
 pub mod plugins;
 pub mod remove_cms;
 pub mod remove_crowdsec;

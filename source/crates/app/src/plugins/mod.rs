@@ -120,8 +120,12 @@ pub fn is_enabled(id: &str) -> bool {
     !disabled().lock().contains(id)
 }
 
-/// Switches a plugin on or off and saves the choice.
-pub fn set_enabled(id: &str, enabled: bool) {
+/// Switches a plugin on or off and saves the choice. Switching on an external plugin the index revokes is refused
+/// (false, nothing changes).
+pub fn set_enabled(id: &str, enabled: bool) -> bool {
+    if enabled && external::switch_locked(id) {
+        return false;
+    }
     let list: Vec<String> = {
         let mut set = disabled().lock();
         if enabled {
@@ -135,6 +139,7 @@ pub fn set_enabled(id: &str, enabled: bool) {
     settings.disabled_plugins = list;
     // A read-only configuration folder only means the choice is not remembered.
     let _ = settings.save();
+    true
 }
 
 /// Whether the page is in the menus: always for the core pages, else when its plugin is on. An external plugin's

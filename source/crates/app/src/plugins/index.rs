@@ -7,9 +7,6 @@
 //! keys (see [`feed_for`]); that index is cached apart, in configuration/plugins/index/test/, so it never mixes with
 //! the official cache nor raises the official sequence.
 
-// The Plugins page (a later task of this milestone) calls `refresh`, `index_state` and `set_repaint`; remove then.
-#![allow(dead_code)]
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -464,19 +461,32 @@ pub fn signed_index_for_install() -> Option<SignedIndex> {
 /// settings, saved or not. The index state follows them at once.
 pub fn developer_settings_changed(settings: &InstallerSettings) {
     store().settings_changed(settings, Utc::now());
+    // The revocations follow the index the new settings choose; with none (not set up, or a test index left with
+    // developer mode) nothing is revoked any more. A plugin switched off stays off.
+    match store().state() {
+        IndexState { index: Some(index), source, .. } => super::external::apply_revocations(&index, source),
+        _ => super::external::plugins().clear_revocations(),
+    }
     repaint();
 }
 
-/// The cached index of the source the current settings choose, verified again with that source's keys.
-pub fn load_cache() -> IndexState {
-    let settings = store().inner.lock().settings.clone();
-    served(&load_for(&settings, OFFICIAL_INDEX_KEYS, &super::packs::root(), Utc::now()), settings.developer_mode)
+/// Applies the revocations of the index known now (the verified cache, before any fetch): at startup.
+pub fn apply_cached_revocations() {
+    let state = store().state();
+    if let Some(index) = &state.index {
+        super::external::apply_revocations(index, state.source);
+    }
 }
 
-/// Fetches and checks the index the settings choose (use [`index_client`]), updates [`index_state`] and asks for a
-/// repaint. Never touches the network when the index is not set up.
+/// Fetches and checks the index the settings choose (use [`index_client`]), updates [`index_state`], applies its
+/// revocations ([`super::external::apply_revocations`]) and asks for a repaint. Never touches the network when the
+/// index is not set up.
 pub async fn refresh(client: &reqwest::Client) -> IndexState {
     let state = store().refresh(client, Utc::now()).await;
+    // A failed check keeps the verified index it had, which still revokes what it revoked.
+    if let Some(index) = &state.index {
+        super::external::apply_revocations(index, state.source);
+    }
     repaint();
     state
 }

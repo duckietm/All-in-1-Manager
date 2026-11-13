@@ -97,7 +97,7 @@ program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
   [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
-- [Plugins](#plugins)
+- [Plugins](#plugins) · [External plugins](#external-plugins)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -1713,6 +1713,114 @@ debug build, in the source tree.
 
 `python source/tools/make_packs.py dist/` makes the release files with their `.sha256` (the release workflow runs it);
 `--install DIR` unpacks them into `DIR/plugins/`.
+
+## External plugins
+
+Besides the built-in plugins above, the Manager can run **external plugins**: small programs written by other people,
+packed in a `.aiop` file. They are not part of the program. You install, update and remove them while the Manager
+runs, and they run in a sandbox: a plugin can only do what its manifest asks for and you allowed.
+
+### For admins
+
+On the **Plugins** page, **Install a plugin from a file** opens a file picker for a `.aiop` package. Before anything is
+installed a window shows the plugin's name, author, version and every permission it asks for, in plain words, with an
+**Install** button. Nothing is installed until you press it. An update of an installed plugin shows the same window,
+with the new permissions marked "new in this version"; an update that asks for more than you allowed stays off until
+you review the permissions. Removing a plugin deletes its folder and its private data, and a window says so first.
+
+The plugin is stored in `configuration/plugins/ext/<id>/`. A plugin installed from a file always shows a red
+**Not verified** badge: nobody has checked its code. There is no official index yet, so every plugin is "not verified"
+for now. Install only plugins whose source you trust or have read.
+
+**Permissions** are listed in the plugin's manifest. The window shows them as sentences; these are the strings:
+
+| Permission | What it allows |
+|---|---|
+| `files` | A private folder of its own (always allowed, see the limits below). Nothing else on disk. |
+| `ssh` | Run a script on the hotel's server as the login user. |
+| `ssh:root` | Run a script as root. Shown with a large red warning. |
+| `sql:read:<tables>` | Select from these tables of the hotel database. |
+| `sql:write:<tables>` | Insert, update and delete in these tables. |
+| `sql:read-private:<table>.<column>` | Use a private column of that table (see below). |
+| `http:<hosts>` | Fetch pages with HTTP(S) from exactly these hosts. |
+| `tcp:localhost:<port>` | Connect to a program on this computer, such as G-Earth. |
+
+Plugins never send raw SQL: they ask for a select, insert, update or delete on a named table with typed values, and
+the Manager builds the statement. The hotel database is the only one they can reach. Private columns are the columns
+named `ip` or `machine_id`, and every column whose name contains `password`, `token`, `secret` or `ip_`. A plugin needs
+its own `sql:read-private` permission for each one, also to use it in a condition or to write it.
+
+**The approval card.** A plugin never changes the server or the database on its own. When it wants to run a script or
+write to the database, its page shows an **approval card** at the top, above the plugin's content, with the full
+script (or every statement with every value) and the name of the server. Nothing runs until you press **Approve**.
+**Reject** tells the plugin no; **Reject and stop this plugin** also closes it. A script that runs as root is marked
+"Runs as root". An approval belongs to the server that was logged in when the plugin asked: if the login changed in
+the meantime, Approve fails with "The server changed since the request" and nothing runs.
+
+**What runs where.** The plugin's code runs on your PC, inside the Manager, in a sandbox. It does not draw anything:
+it hands the Manager a description of its page (headings, text, buttons, inputs, tables, a log) and the Manager draws
+it with its own widgets, in a frame labelled with the plugin's name, so it cannot pass for a Manager screen. Scripts
+run on the hotel's server, over the Manager's SSH login, after you approved them. Database calls go through the
+Manager's SSH tunnel to the hotel database, with the saved MariaDB account.
+
+### Limits and safety
+
+- A plugin gets at most 64 MiB of memory and 5 seconds per call. Time spent waiting for you (a dialog, an approval)
+  does not count, and the outside world has its own limits: SQL 30 s, HTTP 60 s, a local connection 5 s to connect and
+  30 s to receive, a script 10 minutes. A plugin that goes over the memory or call limit is stopped and its page says
+  why; **Reload** starts it again.
+- The log is clipped: at most 1,000 lines and 256 KiB per call, 4 KiB per line. Control and direction-changing
+  characters are replaced, so a plugin cannot forge lines or hide text.
+- The private folder is `configuration/plugins/ext/<id>/data/`. It holds at most 64 MiB, 10,000 files and folders, and
+  32 MiB per file. Paths are relative and checked; a plugin cannot leave the folder, not even through a link. It
+  cannot see the Manager's settings, your SSH keys or another plugin's data.
+- A file the plugin asks you to pick is handed over for one purpose only: a file you **open** is read-only for the
+  plugin, a file you **save** is write-only.
+- A file a plugin hands to the Catalogue manager's import is saved in `configuration/plugins/ext-exports/<id>/`,
+  outside the plugin's folder, so removing or updating the plugin does not delete it.
+- Every text a plugin supplies (names, labels, cells, log lines, dialog texts) has control, direction and invisible
+  characters replaced before it is shown.
+- A plugin can only use the tables, hosts, ports and kinds of script it declared, and it only runs while its page is
+  open: no background work. Closing the page, switching the plugin off or removing it stops it and rejects what it was
+  waiting for. A plugin that is busy with approved work cannot be removed until that work has finished.
+- A package is at most 32 MiB, with a wasm file of at most 24 MiB.
+
+### Developer mode
+
+**Settings → Developer mode** (off by default) is for people who write plugins. When it is on, the Plugins page gets a
+**Developer plugins** section with **Load a plugin folder**: pick a folder with `manifest.json` and `plugin.wasm` and
+the plugin runs straight from there, with a **Reload** button, without packing a `.aiop`. The same consent window,
+permissions and approval cards apply, and the plugin carries a red "Developer, not verified" badge. The list of
+folders is kept in `configuration/settings.json` (`DeveloperMode`, `DeveloperPlugins`), but your consent is not: after
+a restart you review the permissions once more. Switching the mode off hides the folders and stops their plugins.
+
+If the wasm file is not next to the manifest, add a `dev_wasm` field to `manifest.json`, for example
+`"dev_wasm": "target/wasm32-wasip2/release/my_plugin.wasm"`. It must be a relative path that stays inside the folder.
+The private data of a developer plugin is in `configuration/plugins/ext-dev/<id>/data/`. A folder whose id is already
+installed shows "id already installed" and does not run.
+
+### Building a plugin
+
+A plugin is a WebAssembly component for the `plugin` world of the WIT package `aio:plugin@1.0.0`, in
+`source/wit/aio-plugin/plugin.wit`. That file is the whole API: the page description, the events and the `host`
+imports (log, status line, questions, file picking, the private folder, scripts, database, HTTP, local TCP). The
+Manager accepts API 1.x. In Rust, a plugin is a crate built for `wasm32-wasip2` (`rustup target add wasm32-wasip2`)
+with `crate-type = ["cdylib"]` and `wit-bindgen`.
+
+`source/plugins/hello` is the example: a greeting form with a counter it keeps in its private folder. Its
+`manifest.json` has the id, name, version, author, description, `api` (`"1.0"`), the permissions, a page title and an
+optional tile. Build and pack it with:
+
+```
+python source/tools/pack_plugin.py source/plugins/hello
+```
+
+This builds the crate and writes `dist/hello.aiop`: a zip with `manifest.json`, `plugin.wasm` and, when present,
+`icon.png` and `i18n/<lang>.json` (the plugin's own texts per language). Install it from the Plugins page, or load the
+folder in developer mode.
+
+The official plugin index (reviewed sources, signed releases, revocation, an Available tab) comes in a later
+milestone. Until then plugins come from files and none of them is verified.
 
 ## Settings
 

@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 aio-assets.workspace = true
 aio-core.workspace = true
+aio-plugin-host.workspace = true
 aio-remote.workspace = true
 aio-terminal.workspace = true
 anyhow.workspace = true

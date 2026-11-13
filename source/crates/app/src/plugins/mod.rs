@@ -5,6 +5,7 @@
 //!
 //! A new addon: its pages in `gui::Page`, its wizard or view, and an entry in [`PLUGINS`].
 
+pub mod external;
 pub mod packs;
 
 use std::collections::BTreeSet;

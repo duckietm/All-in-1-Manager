@@ -11,6 +11,8 @@ use crate::gui::theme::Palette;
 use crate::gui::widgets::{self, ResultKind};
 use crate::gui::{Page, Shared};
 use crate::i18n::{t, tf};
+use crate::gui::dialogs::Choice;
+use crate::plugins::external::{self, ExternalInfo, Pending};
 use crate::plugins::{self, packs::Pack, Plugin, PLUGINS};
 
 /// A pack's download, shared by the Plugins page and the "pack missing" card on a plugin's page.
@@ -145,7 +147,181 @@ impl PluginsView {
             }
             ui.add_space(10.0);
         }
+        ui.add_space(6.0);
+        installed_section(ui, palette, shared);
+        consent_window(ui.ctx(), palette, shared);
         open
+    }
+}
+
+/// The package that waits for the user's consent, if any.
+fn consent() -> &'static Mutex<Option<Pending>> {
+    static STATE: OnceLock<Mutex<Option<Pending>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(None))
+}
+
+/// Pick a file, read and check it off the window's thread, then ask.
+fn start_install(shared: &Shared) {
+    let status = shared.clone();
+    shared.spawn(async move {
+        let Some(file) = rfd::AsyncFileDialog::new().set_title(t("Install a plugin from a file")).add_filter(t("Plugin packages"), &["aiop"]).pick_file().await else {
+            return;
+        };
+        let path = file.path().to_path_buf();
+        match tokio::task::spawn_blocking(move || external::plugins().prepare(&path)).await {
+            Ok(Ok(pending)) => *consent().lock() = Some(pending),
+            Ok(Err(error)) => status.set_status(&tf("This file cannot be installed: {error}", &[("error", &format!("{error:#}"))])),
+            Err(error) => status.set_status(&tf("This file cannot be installed: {error}", &[("error", &error.to_string())])),
+        }
+    });
+}
+
+fn finish_install(shared: &Shared, pending: Pending) {
+    let status = shared.clone();
+    shared.spawn(async move {
+        match tokio::task::spawn_blocking(move || external::plugins().commit(&pending)).await {
+            Ok(Ok(manifest)) => status.set_status(&tf("{plugin} {version} is installed.", &[("plugin", &manifest.name), ("version", &manifest.version)])),
+            Ok(Err(error)) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &format!("{error:#}"))])),
+            Err(error) => status.set_status(&tf("The plugin could not be installed: {error}", &[("error", &error.to_string())])),
+        }
+    });
+}
+
+fn start_remove(shared: &Shared, info: ExternalInfo) {
+    let status = shared.clone();
+    shared.spawn(async move {
+        let manifest = info.manifest;
+        let options = vec![
+            Choice::new(t("Remove"), t("Delete the plugin and its data."), true).primary(),
+            Choice::new(t("Cancel"), t("Change nothing."), false),
+        ];
+        let message = tf("{plugin} is removed together with its private data folder: whatever it saved there is deleted too. This cannot be undone.", &[("plugin", &manifest.name)]);
+        if !status.dialogs.choose(t("Remove the plugin"), &manifest.name, &message, false, options).await {
+            return;
+        }
+        let id = manifest.id.clone();
+        match tokio::task::spawn_blocking(move || external::plugins().remove(&id)).await {
+            Ok(Ok(())) => {
+                plugins::set_enabled(&external::settings_id(&manifest.id), true);
+                status.set_status(&tf("{plugin} is removed.", &[("plugin", &manifest.name)]));
+            }
+            Ok(Err(error)) => status.set_status(&format!("{error:#}")),
+            Err(error) => status.set_status(&error.to_string()),
+        }
+    });
+}
+
+fn installed_section(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+    ui.horizontal(|ui| {
+        ui.label(widgets::title_text(t("Installed plugins"), 16.0));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.add(widgets::primary_button(t("Install from file …"))).on_hover_text(t("Choose a .aiop package")).clicked() {
+                start_install(shared);
+            }
+        });
+    });
+    widgets::muted(ui, palette, t("Plugins made by other people. They run in a sandbox and can only do what you allow here."), 12.5);
+    ui.add_space(8.0);
+    let list = external::plugins().list();
+    if list.is_empty() {
+        widgets::muted(ui, palette, t("No plugin is installed."), 12.5);
+    }
+    for info in list {
+        external_card(ui, palette, shared, &info);
+        ui.add_space(10.0);
+    }
+}
+
+fn not_verified(ui: &mut egui::Ui, palette: &Palette, text: &str) {
+    ui.label(RichText::new(text).size(12.5).strong().color(palette.error_text));
+}
+
+fn external_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &ExternalInfo) {
+    let manifest = &info.manifest;
+    widgets::card(ui, palette, egui::Margin::symmetric(20, 14), |ui| {
+        ui.horizontal(|ui| {
+            let key = external::settings_id(&manifest.id);
+            let mut on = plugins::is_enabled(&key);
+            if widgets::switch(ui, palette, &mut on).on_hover_text(if on { t("On: click to switch it off") } else { t("Off: click to switch it on") }).changed() {
+                plugins::set_enabled(&key, on);
+                let state = if on { t("on") } else { t("off") };
+                shared.set_status(&tf("{plugin} is {state}.", &[("plugin", &manifest.name), ("state", state)]));
+            }
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(widgets::title_text(&manifest.name, 16.0));
+                    ui.label(RichText::new(format!("{} · {}", manifest.version, manifest.author)).size(12.5).color(palette.muted));
+                    if !info.verified {
+                        not_verified(ui, palette, t("Not verified"));
+                    }
+                    if info.dev {
+                        ui.label(RichText::new(t("Developer folder")).size(12.5).color(palette.warning_text));
+                    }
+                });
+                widgets::muted(ui, palette, &manifest.description, 12.5);
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add(widgets::secondary_button(t("Remove"))).on_hover_text(t("Delete the plugin and its data")).clicked() {
+                    start_remove(shared, info.clone());
+                }
+            });
+        });
+        egui::CollapsingHeader::new(RichText::new(tf("Permissions ({count})", &[("count", &manifest.permissions.len().to_string())])).size(12.5)).id_salt(("ext-permissions", &manifest.id)).show(ui, |ui| {
+            if manifest.permissions.is_empty() {
+                widgets::muted(ui, palette, t("It asks for no permission."), 12.5);
+            }
+            for permission in &manifest.permissions {
+                let color = if external::is_sensitive(permission) { palette.warning_text } else { palette.muted };
+                ui.label(RichText::new(format!("• {}", external::permission_text(permission))).size(12.5).color(color));
+            }
+        });
+    });
+}
+
+/// The consent: shown over the page until the user installs or cancels. Nothing is written before Install.
+fn consent_window(ctx: &egui::Context, palette: &Palette, shared: &Shared) {
+    let Some(pending) = consent().lock().clone() else { return };
+    let manifest = &pending.package.manifest;
+    let (mut install, mut cancel) = (false, false);
+    egui::Window::new(t("Install this plugin?")).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        ui.set_max_width(460.0);
+        ui.label(widgets::title_text(&manifest.name, 17.0));
+        match &pending.previous {
+            Some(old) => {
+                ui.label(tf("This updates the installed plugin from version {old} to {new}.", &[("old", &old.version), ("new", &manifest.version)]));
+            }
+            None => {
+                ui.label(tf("Version {version}", &[("version", &manifest.version)]));
+            }
+        }
+        ui.label(tf("By {author}", &[("author", &manifest.author)]));
+        ui.add_space(6.0);
+        not_verified(ui, palette, t("Not verified — installed from a file"));
+        ui.add_space(8.0);
+        ui.label(RichText::new(t("This plugin will be able to:")).strong());
+        for permission in &manifest.permissions {
+            let color = if external::is_sensitive(permission) { palette.warning_text } else { ui.visuals().text_color() };
+            let mut text = format!("• {}", external::permission_text(permission));
+            if pending.is_new_permission(permission) {
+                text = format!("{text}  [{}]", t("new in this version"));
+            }
+            ui.label(RichText::new(text).color(color));
+        }
+        if manifest.permissions.is_empty() {
+            widgets::muted(ui, palette, t("It asks for no permission."), 12.5);
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            install = ui.add(widgets::primary_button(t("Install"))).clicked();
+            cancel = ui.add(widgets::secondary_button(t("Cancel"))).clicked();
+        });
+    });
+    if install || cancel {
+        let taken = consent().lock().take();
+        if let (true, Some(pending)) = (install, taken) {
+            finish_install(shared, pending);
+        }
     }
 }
 

@@ -472,6 +472,8 @@ pub fn set_developer_mode(on: bool) {
     settings.developer_mode = on;
     // A read-only configuration folder only means the choice is not remembered.
     let _ = settings.save();
+    // A test index must not outlive developer mode.
+    super::index::developer_settings_changed(&settings);
 }
 
 /// Remembers the developer folders (after one was added or taken off).

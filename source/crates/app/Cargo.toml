@@ -14,6 +14,7 @@ path = "src/main.rs"
 aio-assets.workspace = true
 aio-core.workspace = true
 aio-plugin-host.workspace = true
+aio-plugin-index.workspace = true
 aio-remote.workspace = true
 aio-terminal.workspace = true
 anyhow.workspace = true
@@ -38,4 +39,6 @@ zip.workspace = true
 embed-resource = "3"
 
 [dev-dependencies]
+base64.workspace = true
+ed25519-dalek.workspace = true
 tempfile.workspace = true

@@ -70,6 +70,14 @@ pub struct InstallerSettings {
     /// The plugin folders added in developer mode (full paths). Only used while `developer_mode` is on.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub developer_plugins: Vec<String>,
+    /// "Index URL (testing)": a plugin index to use instead of the official one (https, or http on 127.0.0.1 or
+    /// localhost). Only honoured while `developer_mode` is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_index_url: Option<String>,
+    /// The keys trusted for `plugin_index_url`, each `"<key id>:<base64 public key>"`. Only honoured while
+    /// `developer_mode` is on.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plugin_index_test_keys: Vec<String>,
 }
 
 /// A branch to choose from, with the line the lists show behind its name.
@@ -307,6 +315,16 @@ mod tests {
         let saved = serde_json::to_string(&on).unwrap();
         assert!(saved.contains("\"DeveloperMode\":true") && saved.contains("\"DeveloperPlugins\""), "{saved}");
         assert_eq!(serde_json::from_str::<InstallerSettings>(&saved).unwrap(), on);
+        assert!(on.plugin_index_url.is_none() && on.plugin_index_test_keys.is_empty());
+        assert!(!saved.contains("PluginIndex"), "{saved}");
+        let test = InstallerSettings {
+            plugin_index_url: Some("http://127.0.0.1:8080/index.json".into()),
+            plugin_index_test_keys: vec!["0123456789abcdef:AAAA".into()],
+            ..on
+        };
+        let saved = serde_json::to_string(&test).unwrap();
+        assert!(saved.contains("\"PluginIndexUrl\"") && saved.contains("\"PluginIndexTestKeys\""), "{saved}");
+        assert_eq!(serde_json::from_str::<InstallerSettings>(&saved).unwrap(), test);
     }
 
     #[test]

@@ -8,7 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 
 use aio_plugin_host::net::MAX_HTTP_BODY;
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
@@ -43,25 +43,44 @@ impl PluginOutput {
 
 /// The open MariaDB session, with the login it belongs to.
 struct Database {
-    server: usize,
+    login: Login,
     name: String,
     session: SqlSession,
 }
 
-/// The login an approval belongs to: the one current when the request was queued.
+
+/// A login, held by identity: a `Weak` (it keeps the allocation, so its address cannot be reused by a later login while
+/// this is held) plus the host and port it was made to. Never a bare address.
 #[derive(Debug, Clone)]
-struct Bound {
-    server: usize,
+struct Login {
+    server: Weak<dyn Server>,
     host: String,
+    port: u16,
 }
 
-/// Counts approved work while it executes; dropping it (also by cancellation) counts it down.
+impl Login {
+    fn of(server: &Arc<dyn Server>) -> Self {
+        Self { server: Arc::downgrade(server), host: server.login().host.clone(), port: server.login().port }
+    }
+
+    /// True when `server` is this very login: still alive, the same object, the same host and port.
+    fn is(&self, server: &Arc<dyn Server>) -> bool {
+        self.server.upgrade().is_some_and(|mine| std::ptr::addr_eq(Arc::as_ptr(&mine), Arc::as_ptr(server)))
+            && self.host == server.login().host
+            && self.port == server.login().port
+    }
+}
+
+/// Counts approved work from the user's Approve until the run ends; dropping it (also by cancellation) counts it
+/// down. It takes over the count the Approve click made (see [`AppServices::approve`]).
 struct Executing(Arc<AtomicUsize>);
 
 impl Executing {
-    fn start(counter: &Arc<AtomicUsize>) -> Self {
-        counter.fetch_add(1, Ordering::AcqRel);
-        Self(counter.clone())
+    fn start(executing: &Arc<AtomicUsize>, approved: &AtomicUsize) -> Self {
+        // Up first, then the approval's count down: the total never passes through 0 in between.
+        executing.fetch_add(1, Ordering::AcqRel);
+        let _ = approved.try_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
+        Self(executing.clone())
     }
 }
 
@@ -78,18 +97,16 @@ pub struct AppServices {
     /// Where `open-import-preview` saves files: `configuration/plugins/ext-exports/<id>/` (Ruling 18).
     exports: PathBuf,
     output: Arc<Mutex<PluginOutput>>,
-    /// Approved scripts and write batches running now: while above 0 the window counts as busy (no navigation,
-    /// disconnect, server switch or close), so approved work is never cut off half-way.
+    /// Approved scripts and write batches running now, and approvals given whose run has not started yet: while
+    /// above 0 the window counts as busy (no navigation, disconnect, server switch or close), so approved work is
+    /// never cut off, not even in the moment between the click and the start.
     executing: Arc<AtomicUsize>,
+    approved: AtomicUsize,
     /// The login of the request waiting for approval (set by `before_approval`, used up by the run).
-    bound: Mutex<Option<Bound>>,
+    bound: Mutex<Option<Login>>,
     http: reqwest::Client,
     /// Opened on the first database call. Taken out while a call uses it, so a cancelled call drops it.
     database: tokio::sync::Mutex<Option<Database>>,
-}
-
-fn server_id(server: &Arc<dyn Server>) -> usize {
-    Arc::as_ptr(server) as *const () as usize
 }
 
 impl AppServices {
@@ -100,15 +117,26 @@ impl AppServices {
             exports,
             output,
             executing: Arc::default(),
+            approved: AtomicUsize::new(0),
             bound: Mutex::new(None),
             http: http_client(),
             database: tokio::sync::Mutex::new(None),
         }
     }
 
-    /// Approved scripts and write batches executing now.
+    /// Approved work counted as running: executing now, or approved and about to start.
     pub fn executing(&self) -> usize {
-        self.executing.load(Ordering::Acquire)
+        self.executing.load(Ordering::Acquire) + self.approved.load(Ordering::Acquire)
+    }
+
+    /// The user clicked Approve: busy from now on, before the runtime even starts the run.
+    pub fn approve(&self) {
+        self.approved.fetch_add(1, Ordering::AcqRel);
+    }
+
+    /// The instance ended without starting what was approved (its task finished): nothing is about to start.
+    pub fn forget_approved(&self) {
+        self.approved.store(0, Ordering::Release);
     }
 
     /// The server the waiting request was made on (the approval card names it).
@@ -118,16 +146,16 @@ impl AppServices {
 
     /// True when the login is no longer the one the waiting request was made on.
     pub fn server_changed(&self) -> bool {
-        let current = self.shared.session().map(|s| server_id(&s));
-        self.bound.lock().as_ref().is_some_and(|b| Some(b.server) != current)
+        let current = self.shared.session();
+        self.bound.lock().as_ref().is_some_and(|b| !current.as_ref().is_some_and(|s| b.is(s)))
     }
 
-    /// The login an approved request may run on: the one it was made on, still connected. Uses the binding up.
+    /// The login an approved request may run on: the very one it was made on, still connected. Uses the binding up.
     fn bound_server(&self) -> Result<Arc<dyn Server>, String> {
         let bound = self.bound.lock().take();
         let server = self.shared.session().ok_or_else(|| "Not connected".to_string())?;
         match bound {
-            Some(b) if b.server == server_id(&server) => Ok(server),
+            Some(b) if b.is(&server) => Ok(server),
             _ => Err("The server changed since the request".into()),
         }
     }
@@ -142,13 +170,12 @@ impl AppServices {
         self.shared.ctx.request_repaint();
     }
 
-    /// The session (opened or reused) and the hotel database's name.
-    async fn open_database(&self) -> Result<Database, String> {
-        let server = self.shared.session().ok_or_else(|| "Not connected".to_string())?;
+    /// A session on `server` (the hotel database's name with it).
+    async fn open_database(&self, server: &Arc<dyn Server>) -> Result<Database, String> {
         if server.is_dry_run() {
             return Err("Dry run: there is no database".into());
         }
-        let name = aio_remote::catalog_admin::hotel_database(&*server).await.map_err(|e| format!("{e:#}"))?;
+        let name = aio_remote::catalog_admin::hotel_database(&**server).await.map_err(|e| format!("{e:#}"))?;
         let host = server.login().host.clone();
         let Some(saved) = aio_core::config_dir::load_database_credentials(&host) else {
             return Err(format!(
@@ -157,23 +184,23 @@ impl AppServices {
         };
         let user = Some(saved.root_user.clone()).filter(|u| !u.is_empty()).unwrap_or_else(|| "root".into());
         let port = if saved.port > 0 { saved.port } else { 3306 };
-        let session = SqlSession::open(&*server, &user, &saved.root_password, port).await.map_err(|e| format!("{e:#}"))?;
-        Ok(Database { server: server_id(&server), name, session })
+        let session = SqlSession::open(&**server, &user, &saved.root_password, port).await.map_err(|e| format!("{e:#}"))?;
+        Ok(Database { login: Login::of(server), name, session })
     }
 
-    /// Runs `work` on the database session, opening one when there is none or the login changed. The session goes
-    /// back only after a call that succeeded; a failed or cancelled one leaves a fresh session to the next call.
-    async fn with_database<T, F, Fut>(&self, work: F) -> Result<T, String>
+    /// Runs `work` on a database session of `server`, reusing the cached one only when it belongs to that very login.
+    /// The session goes back only after a call that succeeded; a failed or cancelled one leaves a fresh session to the
+    /// next call.
+    async fn with_database<T, F, Fut>(&self, server: &Arc<dyn Server>, work: F) -> Result<T, String>
     where
         F: FnOnce(Database) -> Fut,
         Fut: std::future::Future<Output = (Database, Result<T, String>)>,
     {
         let mut slot = self.database.lock().await;
-        let current = self.shared.session().map(|s| server_id(&s));
-        let cached = slot.take().filter(|d| Some(d.server) == current);
+        let cached = slot.take().filter(|d| d.login.is(server));
         let database = match cached {
             Some(d) => d,
-            None => self.open_database().await?,
+            None => self.open_database(server).await?,
         };
         let (database, result) = work(database).await;
         if result.is_ok() {
@@ -351,12 +378,13 @@ impl HostServices for AppServices {
     }
 
     fn before_approval(&self) {
-        *self.bound.lock() = self.shared.session().map(|s| Bound { server: server_id(&s), host: s.login().host.clone() });
+        *self.bound.lock() = self.shared.session().map(|s| Login::of(&s));
     }
 
     async fn run_script(&self, req: ScriptRequest) -> Result<ScriptResult, String> {
+        // Counted first: the approval's count is taken over even when the run is refused below.
+        let _executing = Executing::start(&self.executing, &self.approved);
         let server = self.bound_server()?;
-        let _executing = Executing::start(&self.executing);
         let result = if req.as_root { server.run_as_root(&req.script).await } else { server.run(&req.script, None).await };
         let r = result.map_err(|e| format!("{e:#}"))?;
         Ok(ScriptResult { exit_code: r.exit_code, output: r.output, error: r.error })
@@ -364,7 +392,8 @@ impl HostServices for AppServices {
 
     async fn sql_select(&self, sql: String, params: Vec<SqlValue>) -> Result<Rows, String> {
         let params: Vec<DbValue> = params.into_iter().map(to_db).collect();
-        self.with_database(|db| async move {
+        let server = self.shared.session().ok_or_else(|| "Not connected".to_string())?;
+        self.with_database(&server, |db| async move {
             let result = db.session.select_in(&db.name, &sql, params).await.map_err(|e| format!("{e:#}"));
             let rows = result.map(|(columns, rows)| Rows {
                 columns,
@@ -376,11 +405,12 @@ impl HostServices for AppServices {
     }
 
     async fn sql_write(&self, batch: WriteBatch) -> Result<u64, String> {
-        self.bound_server()?;
-        let _executing = Executing::start(&self.executing);
+        let _executing = Executing::start(&self.executing, &self.approved);
+        // The very login the request was approved on, not whatever is current a moment later.
+        let server = self.bound_server()?;
         let statements: Vec<(String, Vec<DbValue>)> =
             batch.statements.into_iter().map(|(sql, params)| (sql, params.into_iter().map(to_db).collect())).collect();
-        self.with_database(|db| async move {
+        self.with_database(&server, |db| async move {
             let result = db.session.execute_in(&db.name, &statements).await.map(|(changed, _)| changed).map_err(|e| format!("{e:#}"));
             (db, result)
         })
@@ -576,6 +606,59 @@ mod tests {
         release.send(()).unwrap();
         assert_eq!(task.await.unwrap().unwrap().output, "done");
         assert_eq!(app.executing(), 0, "done: not busy any more");
+    }
+
+    #[tokio::test]
+    async fn approval_refused_after_reconnect_even_if_address_reused() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = services(&shared, dir.path());
+        let first: Arc<dyn Server> = Arc::new(Recorder::new());
+        shared.set_session_for_tests(Some(first.clone()));
+        app.before_approval();
+        // Disconnect: the first login is gone (nothing holds it but the binding's Weak).
+        shared.set_session_for_tests(None);
+        drop(first);
+        assert!(app.bound.lock().as_ref().unwrap().server.upgrade().is_none(), "the old login cannot come back");
+        // A new login to the same host and port, made while the old one's memory may be free.
+        let second = Arc::new(Recorder::new());
+        let server: Arc<dyn Server> = second.clone();
+        shared.set_session_for_tests(Some(server));
+        assert!(app.server_changed());
+        let req = ScriptRequest { plugin: "demo".into(), script: "echo hi".into(), as_root: true };
+        assert_eq!(app.run_script(req).await.unwrap_err(), "The server changed since the request");
+        assert_eq!(second.text(), "", "nothing ran on the new login");
+
+        // The same identity check on a hand-made binding whose address equals the current session's but whose
+        // login is another one (host): refused too.
+        let current = shared.session().unwrap();
+        let mut forged = Login::of(&current);
+        forged.host = "other.example".into();
+        assert!(!forged.is(&current));
+        assert!(Login::of(&current).is(&current));
+    }
+
+    #[tokio::test]
+    async fn busy_from_the_approve_click_until_the_run_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = services(&shared, dir.path());
+        let server: Arc<dyn Server> = Arc::new(Recorder::new());
+        shared.set_session_for_tests(Some(server));
+        app.before_approval();
+        app.approve();
+        assert_eq!(app.executing(), 1, "busy as soon as Approve is clicked, before the run starts");
+        let req = ScriptRequest { plugin: "demo".into(), script: "true".into(), as_root: false };
+        app.run_script(req.clone()).await.unwrap();
+        assert_eq!(app.executing(), 0, "the run took the count over and ended");
+        // A refused run (no binding) still gives the count back.
+        app.approve();
+        assert!(app.run_script(req).await.is_err());
+        assert_eq!(app.executing(), 0);
+        // An instance that ended before starting what was approved.
+        app.approve();
+        app.forget_approved();
+        assert_eq!(app.executing(), 0);
     }
 
     #[tokio::test]

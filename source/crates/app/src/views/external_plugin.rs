@@ -212,6 +212,10 @@ impl ExternalPluginView {
 
     /// True while an approved script or write batch of this plugin executes: the window waits for it.
     pub fn executing(&self) -> bool {
+        if self.running.task.is_finished() {
+            // The instance ended: an approval it never got to start is not running.
+            self.running.services.forget_approved();
+        }
         self.running.services.executing() > 0
     }
 
@@ -263,9 +267,19 @@ impl ExternalPluginView {
         });
         ui.add_space(10.0);
         let target = plugin_approval::Target { host: self.running.services.bound_host(), changed: self.running.services.server_changed() };
-        if plugin_approval::show(ui, palette, &self.running.approvals, &self.info, &self.name, &target) == Outcome::Stop {
-            self.running.halt();
-            self.running.state.lock().stopped = Some(t("you stopped it").to_string());
+        match plugin_approval::show(ui, palette, &self.running.approvals, &self.info, &self.name, &target) {
+            Outcome::Approve(id) => {
+                // Busy from the click on, so nothing (Reload, leaving the page) can cut the run off as it starts.
+                if self.running.approvals.pending().iter().any(|(p, _)| *p == id) {
+                    self.running.services.approve();
+                    self.running.approvals.decide(id, aio_plugin_host::approvals::Decision::Approved);
+                }
+            }
+            Outcome::Stop => {
+                self.running.halt();
+                self.running.state.lock().stopped = Some(t("you stopped it").to_string());
+            }
+            Outcome::Nothing => {}
         }
     }
 

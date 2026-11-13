@@ -16,6 +16,9 @@ use crate::plugins::external::ExternalInfo;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Nothing,
+    /// Approve was clicked on request `id`: the page counts the work as running, then decides (so nothing can cut
+    /// it off between the click and the start).
+    Approve(u64),
     /// "Reject and stop this plugin": the page drops the instance.
     Stop,
 }
@@ -152,8 +155,10 @@ pub fn show(ui: &mut egui::Ui, palette: &Palette, approvals: &Approvals, info: &
             });
         });
         ui.add_space(10.0);
-        if let Some(d) = decision {
-            approvals.decide(id, d);
+        match decision {
+            Some(Decision::Approved) => outcome = Outcome::Approve(id),
+            Some(d) => approvals.decide(id, d),
+            None => {}
         }
     }
     outcome

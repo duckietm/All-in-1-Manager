@@ -1722,11 +1722,11 @@ runs, and they run in a sandbox: a plugin can only do what its manifest asks for
 
 ### For admins
 
-On the **Plugins** page, **Install a plugin from a file** opens a file picker for a `.aiop` package. Before anything is
+On the **Plugins** page, **Install from file …** opens a file picker for a `.aiop` package. Before anything is
 installed a window shows the plugin's name, author, version and every permission it asks for, in plain words, with an
 **Install** button. Nothing is installed until you press it. An update of an installed plugin shows the same window,
-with the new permissions marked "new in this version"; an update that asks for more than you allowed stays off until
-you review the permissions. Removing a plugin deletes its folder and its private data, and a window says so first.
+with the new permissions marked "new in this version". An update is installed only after you press **Install**: until
+then the old version stays as it was and keeps running. Removing a plugin deletes its folder and its private data, and a window says so first.
 
 The plugin is stored in `configuration/plugins/ext/<id>/`. A plugin installed from a file always shows a red
 **Not verified** badge: nobody has checked its code. There is no official index yet, so every plugin is "not verified"
@@ -1742,13 +1742,14 @@ for now. Install only plugins whose source you trust or have read.
 | `sql:read:<tables>` | Select from these tables of the hotel database. |
 | `sql:write:<tables>` | Insert, update and delete in these tables. |
 | `sql:read-private:<table>.<column>` | Use a private column of that table (see below). |
-| `http:<hosts>` | Fetch pages with HTTP(S) from exactly these hosts. |
+| `http:<host>` | Fetch pages with HTTP(S) from exactly this host, on the default port (one permission per host). |
 | `tcp:localhost:<port>` | Connect to a program on this computer, such as G-Earth. |
 
 Plugins never send raw SQL: they ask for a select, insert, update or delete on a named table with typed values, and
-the Manager builds the statement. The hotel database is the only one they can reach. Private columns are the columns
-named `ip` or `machine_id`, and every column whose name contains `password`, `token`, `secret` or `ip_`. A plugin needs
-its own `sql:read-private` permission for each one, also to use it in a condition or to write it.
+the Manager builds the statement. The hotel database is the only one they can reach. Private columns are
+`users.password`, `users.mail`, `users.ip_register`, `users.ip_current`, `users.auth_ticket` and `users.machine_id`;
+every column, in any table, whose name contains `password`, `token`, `secret` or `ip_`; and every column named exactly
+`ip` or `machine_id`. A plugin needs its own `sql:read-private` permission for each one, also to use it in a condition or to write it.
 
 **The approval card.** A plugin never changes the server or the database on its own. When it wants to run a script or
 write to the database, its page shows an **approval card** at the top, above the plugin's content, with the full
@@ -1782,7 +1783,9 @@ Manager's SSH tunnel to the hotel database, with the saved MariaDB account.
   characters replaced before it is shown.
 - A plugin can only use the tables, hosts, ports and kinds of script it declared, and it only runs while its page is
   open: no background work. Closing the page, switching the plugin off or removing it stops it and rejects what it was
-  waiting for. A plugin that is busy with approved work cannot be removed until that work has finished.
+  waiting for. Removing or updating a plugin that is still running waits up to 10 seconds for it to stop, then fails with "The
+  plugin is still running: close its page and try again"; a plugin that is busy with approved work blocks leaving its
+  page until that work has finished.
 - A package is at most 32 MiB, with a wasm file of at most 24 MiB.
 
 ### Developer mode
@@ -1790,9 +1793,9 @@ Manager's SSH tunnel to the hotel database, with the saved MariaDB account.
 **Settings → Developer mode** (off by default) is for people who write plugins. When it is on, the Plugins page gets a
 **Developer plugins** section with **Load a plugin folder**: pick a folder with `manifest.json` and `plugin.wasm` and
 the plugin runs straight from there, with a **Reload** button, without packing a `.aiop`. The same consent window,
-permissions and approval cards apply, and the plugin carries a red "Developer, not verified" badge. The list of
-folders is kept in `configuration/settings.json` (`DeveloperMode`, `DeveloperPlugins`), but your consent is not: after
-a restart you review the permissions once more. Switching the mode off hides the folders and stops their plugins.
+permissions and approval cards apply, and the plugin carries red **Developer** and **Not verified** badges. The list of folders
+is kept in `configuration/settings.json` (`DeveloperMode`, `DeveloperPlugins`), but your consent is not: after a
+restart you review the permissions once more, and a folder whose permissions grew on reload stays off until you do. Switching the mode off hides the folders and stops their plugins.
 
 If the wasm file is not next to the manifest, add a `dev_wasm` field to `manifest.json`, for example
 `"dev_wasm": "target/wasm32-wasip2/release/my_plugin.wasm"`. It must be a relative path that stays inside the folder.

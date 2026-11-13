@@ -350,6 +350,8 @@ impl App {
             || self.gamedata.busy()
             || self.settings.busy()
             || views::plugins::busy()
+            // An approved plugin script or write batch that runs (guest calls and approval waits do not count).
+            || self.external.as_ref().is_some_and(|v| v.executing())
     }
 
     /// Opens the login (at startup, from a Log in button, or after a lost connection).
@@ -1055,7 +1057,9 @@ impl App {
             }
             Page::External(_) => {
                 if let Some(view) = self.external.as_mut() {
-                    scroll(ui, |ui| view.show(ui, palette, &shared));
+                    // The approval cards stay in view above the scrolling plugin content.
+                    view.show_pinned(ui, palette, &shared);
+                    scroll(ui, |ui| view.show_content(ui, palette, &shared));
                 }
             }
             Page::Addons => {

@@ -72,6 +72,10 @@ pub trait HostServices: Send + Sync {
     fn log(&self, level: Level, text: &str);
     /// The status line text.
     fn status(&self, text: &str);
+    /// Called by the runtime right before a script or a write batch is queued for the user's approval, so the app
+    /// can bind the approval to what is current now (the server the user is logged in to). The `run_script` /
+    /// `sql_write` that may follow belongs to this request.
+    fn before_approval(&self) {}
     async fn run_script(&self, req: ScriptRequest) -> Result<ScriptResult, String>;
     async fn sql_select(&self, sql: String, params: Vec<SqlValue>) -> Result<Rows, String>;
     async fn sql_write(&self, batch: WriteBatch) -> Result<u64, String>;

@@ -148,6 +148,12 @@ impl ExternalPlugins {
         self.list.lock().iter().position(|i| i.manifest.id == id)
     }
 
+    /// Where a plugin's `open-import-preview` files go: `configuration/plugins/ext-exports/<id>/`, outside the plugin's
+    /// folder so an update or a removal keeps them (Ruling 18).
+    pub fn exports_dir(&self, id: &str) -> PathBuf {
+        self.root.with_file_name("ext-exports").join(id)
+    }
+
     /// The installed folder of a plugin.
     pub fn dir(&self, id: &str) -> PathBuf {
         self.root.join(id)

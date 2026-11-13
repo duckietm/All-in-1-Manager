@@ -43,6 +43,7 @@ pub mod nginx;
 pub mod octane;
 pub mod php;
 pub mod plugin_approval;
+pub mod plugin_tree;
 pub mod plugins;
 pub mod remove_cms;
 pub mod remove_crowdsec;

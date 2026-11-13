@@ -7,6 +7,7 @@
 //! MariaDB session it held (the next call opens a new one), so no half-read connection is ever reused.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use aio_plugin_host::net::MAX_HTTP_BODY;
@@ -47,13 +48,41 @@ struct Database {
     session: SqlSession,
 }
 
+/// The login an approval belongs to: the one current when the request was queued.
+#[derive(Debug, Clone)]
+struct Bound {
+    server: usize,
+    host: String,
+}
+
+/// Counts approved work while it executes; dropping it (also by cancellation) counts it down.
+struct Executing(Arc<AtomicUsize>);
+
+impl Executing {
+    fn start(counter: &Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter.clone())
+    }
+}
+
+impl Drop for Executing {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 pub struct AppServices {
     shared: Shared,
     /// The plugin's display name (safe to show).
     name: String,
-    /// The plugin's installed folder (`configuration/plugins/ext/<id>/`).
-    dir: PathBuf,
+    /// Where `open-import-preview` saves files: `configuration/plugins/ext-exports/<id>/` (Ruling 18).
+    exports: PathBuf,
     output: Arc<Mutex<PluginOutput>>,
+    /// Approved scripts and write batches running now: while above 0 the window counts as busy (no navigation,
+    /// disconnect, server switch or close), so approved work is never cut off half-way.
+    executing: Arc<AtomicUsize>,
+    /// The login of the request waiting for approval (set by `before_approval`, used up by the run).
+    bound: Mutex<Option<Bound>>,
     http: reqwest::Client,
     /// Opened on the first database call. Taken out while a call uses it, so a cancelled call drops it.
     database: tokio::sync::Mutex<Option<Database>>,
@@ -64,14 +93,42 @@ fn server_id(server: &Arc<dyn Server>) -> usize {
 }
 
 impl AppServices {
-    pub fn new(shared: Shared, name: &str, dir: PathBuf, output: Arc<Mutex<PluginOutput>>) -> Self {
+    pub fn new(shared: Shared, name: &str, exports: PathBuf, output: Arc<Mutex<PluginOutput>>) -> Self {
         Self {
             shared,
             name: display_safe(name, 80),
-            dir,
+            exports,
             output,
+            executing: Arc::default(),
+            bound: Mutex::new(None),
             http: http_client(),
             database: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Approved scripts and write batches executing now.
+    pub fn executing(&self) -> usize {
+        self.executing.load(Ordering::Acquire)
+    }
+
+    /// The server the waiting request was made on (the approval card names it).
+    pub fn bound_host(&self) -> Option<String> {
+        self.bound.lock().as_ref().map(|b| b.host.clone())
+    }
+
+    /// True when the login is no longer the one the waiting request was made on.
+    pub fn server_changed(&self) -> bool {
+        let current = self.shared.session().map(|s| server_id(&s));
+        self.bound.lock().as_ref().is_some_and(|b| Some(b.server) != current)
+    }
+
+    /// The login an approved request may run on: the one it was made on, still connected. Uses the binding up.
+    fn bound_server(&self) -> Result<Arc<dyn Server>, String> {
+        let bound = self.bound.lock().take();
+        let server = self.shared.session().ok_or_else(|| "Not connected".to_string())?;
+        match bound {
+            Some(b) if b.server == server_id(&server) => Ok(server),
+            _ => Err("The server changed since the request".into()),
         }
     }
 
@@ -248,13 +305,27 @@ fn file_dialog(asks: &str, title: &str, exts: &[String]) -> rfd::AsyncFileDialog
     dialog
 }
 
-/// Saves `bytes` under `<dir>/exports/` (Ruling 17); returns the file.
-pub fn save_export(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    let folder = dir.join("exports");
-    std::fs::create_dir_all(&folder)?;
-    let file = folder.join(export_name(name));
-    std::fs::write(&file, bytes)?;
-    Ok(file)
+/// Saves `bytes` in `folder` (the plugin's exports folder, Ruling 18) under a safe form of `name`, as
+/// `<stem>-2.<ext>`, `-3`, … when that file exists already (nothing is overwritten); returns the file.
+pub fn save_export(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(folder)?;
+    let name = export_name(name);
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => (&name[..dot], &name[dot..]),
+        _ => (name.as_str(), ""),
+    };
+    for n in 1..10_000 {
+        let file = if n == 1 { folder.join(&name) } else { folder.join(format!("{stem}-{n}{ext}")) };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&file) {
+            Ok(mut out) => {
+                std::io::Write::write_all(&mut out, bytes)?;
+                return Ok(file);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::other("too many files with that name"))
 }
 
 #[async_trait]
@@ -279,8 +350,13 @@ impl HostServices for AppServices {
         self.shared.set_status(&format!("{}: {}", self.name, display_safe(text, 300)));
     }
 
+    fn before_approval(&self) {
+        *self.bound.lock() = self.shared.session().map(|s| Bound { server: server_id(&s), host: s.login().host.clone() });
+    }
+
     async fn run_script(&self, req: ScriptRequest) -> Result<ScriptResult, String> {
-        let server = self.shared.session().ok_or_else(|| "Not connected".to_string())?;
+        let server = self.bound_server()?;
+        let _executing = Executing::start(&self.executing);
         let result = if req.as_root { server.run_as_root(&req.script).await } else { server.run(&req.script, None).await };
         let r = result.map_err(|e| format!("{e:#}"))?;
         Ok(ScriptResult { exit_code: r.exit_code, output: r.output, error: r.error })
@@ -300,6 +376,8 @@ impl HostServices for AppServices {
     }
 
     async fn sql_write(&self, batch: WriteBatch) -> Result<u64, String> {
+        self.bound_server()?;
+        let _executing = Executing::start(&self.executing);
         let statements: Vec<(String, Vec<DbValue>)> =
             batch.statements.into_iter().map(|(sql, params)| (sql, params.into_iter().map(to_db).collect())).collect();
         self.with_database(|db| async move {
@@ -329,15 +407,19 @@ impl HostServices for AppServices {
     }
 
     fn open_import_preview(&self, name: String, bytes: Vec<u8>) {
-        match save_export(&self.dir, &name, &bytes) {
-            Ok(file) => {
-                let shown = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                self.shared.set_status(&tf("Saved {name}: open it with Catalogue → Import a file", &[("name", &shown)]));
-                self.output.lock().export = Some(file);
+        // Off the runtime's workers: the file can be 32 MiB. A failure shows on the status line.
+        let (folder, shared, output, plugin) = (self.exports.clone(), self.shared.clone(), self.output.clone(), self.name.clone());
+        self.shared.runtime.spawn_blocking(move || {
+            match save_export(&folder, &name, &bytes) {
+                Ok(file) => {
+                    let shown = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    shared.set_status(&tf("Saved {name}: open it with Catalogue → Import a file", &[("name", &shown)]));
+                    output.lock().export = Some(file);
+                }
+                Err(e) => shared.set_status(&tf("{plugin}: the file could not be saved: {error}", &[("plugin", &plugin), ("error", &e.to_string())])),
             }
-            Err(e) => self.shared.set_status(&tf("{plugin}: the file could not be saved: {error}", &[("plugin", &self.name), ("error", &e.to_string())])),
-        }
-        self.shared.ctx.request_repaint();
+            shared.ctx.request_repaint();
+        });
     }
 }
 
@@ -432,10 +514,68 @@ mod tests {
         let recorder = Arc::new(Recorder::new().with_responder(|_, _, _| aio_remote::CommandResult::ok("out")));
         let server: Arc<dyn Server> = recorder.clone();
         shared.set_session_for_tests(Some(server));
+        app.before_approval();
+        assert_eq!(app.bound_host().as_deref(), Some(recorder.login().host.as_str()), "the card names the server");
         let r = app.run_script(req(false)).await.unwrap();
         assert_eq!((r.exit_code, r.output.as_str()), (0, "out"));
+        // Each run needs its own approval: the binding is used up.
+        assert_eq!(app.run_script(req(true)).await.unwrap_err(), "The server changed since the request");
+        app.before_approval();
         app.run_script(req(true)).await.unwrap();
         assert_eq!(recorder.text(), "=== run\necho hi\n=== root\necho hi\n");
+    }
+
+    #[tokio::test]
+    async fn an_approval_is_bound_to_the_server_it_was_made_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = services(&shared, dir.path());
+        let first = Arc::new(Recorder::new());
+        let second = Arc::new(Recorder::new());
+        let server: Arc<dyn Server> = first.clone();
+        shared.set_session_for_tests(Some(server));
+        app.before_approval();
+        assert!(!app.server_changed());
+        // The user logs in to another server before approving.
+        let server: Arc<dyn Server> = second.clone();
+        shared.set_session_for_tests(Some(server));
+        assert!(app.server_changed(), "the card warns");
+        let req = ScriptRequest { plugin: "demo".into(), script: "echo hi".into(), as_root: true };
+        assert_eq!(app.run_script(req).await.unwrap_err(), "The server changed since the request");
+        app.before_approval();
+        let server: Arc<dyn Server> = first.clone();
+        shared.set_session_for_tests(Some(server));
+        assert_eq!(app.sql_write(WriteBatch::default()).await.unwrap_err(), "The server changed since the request");
+        assert_eq!((first.text(), second.text()), (String::new(), String::new()), "nothing ran anywhere");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn running_approved_script_keeps_app_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = Arc::new(services(&shared, dir.path()));
+        // The script runs until the test lets it end.
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = std::sync::Mutex::new(wait);
+        let recorder = Arc::new(Recorder::new().with_responder(move |_, _, _| {
+            let _ = wait.lock().unwrap().recv();
+            aio_remote::CommandResult::ok("done")
+        }));
+        let server: Arc<dyn Server> = recorder;
+        shared.set_session_for_tests(Some(server));
+        app.before_approval();
+        assert_eq!(app.executing(), 0, "waiting for approval is not busy");
+        let running = app.clone();
+        let task = tokio::spawn(async move { running.run_script(ScriptRequest { plugin: "demo".into(), script: "sleep".into(), as_root: true }).await });
+        let start = std::time::Instant::now();
+        while app.executing() == 0 {
+            assert!(start.elapsed() < std::time::Duration::from_secs(10), "the run never counted");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(app.executing(), 1);
+        release.send(()).unwrap();
+        assert_eq!(task.await.unwrap().unwrap().output, "done");
+        assert_eq!(app.executing(), 0, "done: not busy any more");
     }
 
     #[tokio::test]
@@ -456,8 +596,13 @@ mod tests {
         assert_eq!(export_name(".."), "import-");
         assert_eq!(export_name("x\u{202E}y"), "x_y");
         let dir = tempfile::tempdir().unwrap();
-        let file = save_export(dir.path(), "../up.sql", b"data").unwrap();
-        assert_eq!(file.parent().unwrap(), dir.path().join("exports"));
-        assert_eq!(std::fs::read(file).unwrap(), b"data");
+        let folder = dir.path().join("ext-exports").join("demo");
+        let file = save_export(&folder, "../up.sql", b"data").unwrap();
+        assert_eq!(file.parent().unwrap(), folder);
+        assert_eq!(std::fs::read(&file).unwrap(), b"data");
+        // A second file of that name does not overwrite the first.
+        let again = save_export(&folder, "../up.sql", b"new").unwrap();
+        assert_eq!(again.file_name().unwrap(), "_up-2.sql");
+        assert_eq!(std::fs::read(&file).unwrap(), b"data");
     }
 }

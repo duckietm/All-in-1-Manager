@@ -624,6 +624,7 @@ impl Host for HostState {
         let pending = Pending::Script { plugin: self.plugin.clone(), script: script.clone(), as_root };
         // The user's time and the script's run do not count against the call (Ruling 14).
         let _paused = Paused::begin(&self.clock);
+        self.services.before_approval();
         if self.approve(pending).await == Decision::Rejected {
             return Err("the user rejected the script".into());
         }
@@ -647,6 +648,7 @@ impl Host for HostState {
         let batch = build_writes(&ops, &self.granted).map_err(|e| self.refused(e))?;
         let pending = Pending::Writes { plugin: self.plugin.clone(), batch: batch.clone() };
         let _paused = Paused::begin(&self.clock);
+        self.services.before_approval();
         if self.approve(pending).await == Decision::Rejected {
             return Err("the user rejected the database changes".into());
         }

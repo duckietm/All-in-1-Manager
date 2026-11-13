@@ -8,7 +8,7 @@ use aio_plugin_host::services::{SqlValue, WriteBatch};
 use eframe::egui::{self, RichText};
 
 use crate::gui::theme::Palette;
-use crate::gui::widgets;
+use crate::gui::widgets::{self, ResultKind};
 use crate::i18n::{t, tf};
 use crate::plugins::external::ExternalInfo;
 
@@ -87,7 +87,14 @@ pub fn badges(ui: &mut egui::Ui, palette: &Palette, info: &ExternalInfo) {
 }
 
 /// The cards of every request of `info`'s plugin that waits for the user, oldest first.
-pub fn show(ui: &mut egui::Ui, palette: &Palette, approvals: &Approvals, info: &ExternalInfo, name: &str) -> Outcome {
+/// The server the waiting request was made on, and whether the login has changed since (Approve then runs nothing).
+#[derive(Debug, Clone, Default)]
+pub struct Target {
+    pub host: Option<String>,
+    pub changed: bool,
+}
+
+pub fn show(ui: &mut egui::Ui, palette: &Palette, approvals: &Approvals, info: &ExternalInfo, name: &str, target: &Target) -> Outcome {
     let mut outcome = Outcome::Nothing;
     for (id, pending) in approvals.pending().into_iter().filter(|(_, p)| p.plugin() == info.manifest.id) {
         let mut decision = None;
@@ -113,6 +120,14 @@ pub fn show(ui: &mut egui::Ui, palette: &Palette, approvals: &Approvals, info: &
                 ),
             };
             ui.label(RichText::new(what).size(13.5));
+            let server = match &target.host {
+                Some(host) => tf("On the server {host}", &[("host", host)]),
+                None => t("Not connected to a server").to_string(),
+            };
+            ui.label(RichText::new(server).size(13.5).strong());
+            if target.changed {
+                widgets::result_banner(ui, palette, ResultKind::Error, t("The server changed since the request"), t("Approving now runs nothing: reject it, and let the plugin ask again on this server."));
+            }
             ui.add_space(4.0);
             egui::Frame::new().fill(palette.hover).corner_radius(6).inner_margin(8).show(ui, |ui| {
                 egui::ScrollArea::vertical().id_salt(("approval", id)).max_height(320.0).auto_shrink([false, true]).show(ui, |ui| {

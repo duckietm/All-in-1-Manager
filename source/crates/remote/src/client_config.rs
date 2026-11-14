@@ -33,7 +33,9 @@ impl ConfigFile {
 
 /// A plain file name of the configuration folder: letters, digits, `.`, `_`, `-`, ending in .json or .jsonc.
 pub fn valid_name(name: &str) -> bool {
+    // An example is never a file of its own (pets.json.example.json is pets.json's example).
     !name.starts_with('.')
+        && !name.contains(".example")
         && (name.ends_with(".json") || name.ends_with(".jsonc"))
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
@@ -68,7 +70,7 @@ pub fn example_of(name: &str) -> String {
 /// `ui-config.example`, and the other way round.
 pub fn examples_of(name: &str) -> Vec<String> {
     let stem = name.trim_end_matches(".jsonc").trim_end_matches(".json");
-    let mut list = vec![example_of(name), format!("{stem}.example"), format!("{stem}.jsonc.example")];
+    let mut list = vec![example_of(name), format!("{stem}.example"), format!("{stem}.jsonc.example"), format!("{name}.example.json")];
     list.dedup();
     let mut seen = std::collections::HashSet::new();
     list.retain(|e| seen.insert(e.clone()));
@@ -165,8 +167,32 @@ impl Loaded {
     }
 }
 
+/// The most a settings file may be.
+const MAX_BYTES: u64 = 8 << 20;
+
+/// A file of the server, or None when it is not there. SFTP answers "No such file" with an error, and it reads as the
+/// login user: a file only root may read (or any file, when SFTP is refused) is read as root instead.
 async fn read(server: &dyn Server, path: &str) -> Result<Option<Vec<u8>>> {
-    server.read_file(path, 8 << 20).await
+    let quoted = shell_quote(path);
+    let there = server.run_as_root(&format!("test -f {quoted}")).await?;
+    if !there.succeeded() {
+        return Ok(None);
+    }
+    match server.read_file(path, MAX_BYTES).await {
+        Ok(Some(bytes)) => Ok(Some(bytes)),
+        Ok(None) => Err(ServerError(format!("{path} is larger than {} MB.", MAX_BYTES >> 20)).into()),
+        Err(_) => {
+            let result = server.run_as_root(&format!("[ \"$(stat -c %s {quoted})\" -le {MAX_BYTES} ] && base64 -w0 {quoted}")).await?;
+            if !result.succeeded() {
+                return Err(ServerError(format!("{path} could not be read: {}", result.error.trim())).into());
+            }
+            use base64::Engine;
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(result.output.trim())
+                .map_err(|e| ServerError(format!("{path} could not be read: {e}")))?;
+            Ok(Some(bytes))
+        }
+    }
 }
 
 /// Loads a file (or, when it is not made yet, its example) and the example beside it.
@@ -625,6 +651,113 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    /// A server that is this computer: /var/www/Octane is a temporary folder, commands run with bash, and reading a
+    /// missing file fails as SFTP does ("No such file"). A file whose name has "locked" cannot be read over SFTP, as a
+    /// file only root may read.
+    struct LocalServer {
+        root: std::path::PathBuf,
+        login: crate::server::ServerLogin,
+    }
+
+    impl LocalServer {
+        fn local(&self, path: &str) -> String {
+            path.replace("/var/www/Octane", &self.root.display().to_string())
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Server for LocalServer {
+        fn login(&self) -> &crate::server::ServerLogin {
+            &self.login
+        }
+        fn login_user(&self) -> String {
+            "duckietm".into()
+        }
+        fn host_key_fingerprint(&self) -> String {
+            String::new()
+        }
+        fn os(&self) -> Option<crate::server::OsInfo> {
+            None
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+        async fn run(&self, command: &str, _input: Option<&str>) -> Result<crate::server::CommandResult> {
+            self.run_as_root(command).await
+        }
+        async fn run_as_root(&self, command: &str) -> Result<crate::server::CommandResult> {
+            let out = std::process::Command::new("bash").arg("-c").arg(self.local(command)).output()?;
+            Ok(crate::server::CommandResult {
+                exit_code: out.status.code().unwrap_or(1),
+                output: String::from_utf8_lossy(&out.stdout).into_owned(),
+                error: String::from_utf8_lossy(&out.stderr).into_owned(),
+            })
+        }
+        async fn run_as_root_streaming(&self, _: &str, _: crate::server::OnLine<'_>, _: Option<&str>) -> Result<i32> {
+            unimplemented!()
+        }
+        async fn follow_as_root(&self, _: &str, _: crate::server::OnLine<'_>, _: tokio_util::sync::CancellationToken) -> Result<()> {
+            unimplemented!()
+        }
+        async fn run_as_root_with_input(&self, _: &str, _: Box<dyn tokio::io::AsyncRead + Send + Unpin>) -> Result<crate::server::CommandResult> {
+            unimplemented!()
+        }
+        async fn download(&self, _: &str, _: &std::path::Path, _: crate::server::Progress<'_>) -> Result<()> {
+            unimplemented!()
+        }
+        async fn download_files(&self, _: &[(String, std::path::PathBuf)], _: crate::server::Progress<'_>, _: tokio_util::sync::CancellationToken) -> Result<()> {
+            unimplemented!()
+        }
+        async fn read_file(&self, remote_path: &str, _max: u64) -> Result<Option<Vec<u8>>> {
+            if remote_path.contains("locked") {
+                return Err(ServerError("Permission denied".into()).into());
+            }
+            Ok(Some(std::fs::read(self.local(remote_path)).map_err(|_| ServerError("No such file".into()))?))
+        }
+        async fn upload(&self, _: &std::path::Path, _: &str, _: crate::server::Progress<'_>) -> Result<()> {
+            unimplemented!()
+        }
+        async fn open_shell(&self, _: u32, _: u32) -> Result<crate::server::ShellChannel> {
+            unimplemented!()
+        }
+        async fn forward_local_port(&self, _: &str, _: u16) -> Result<crate::server::PortForward> {
+            unimplemented!()
+        }
+        async fn test_key_login(&self, _: &str, _: &str) -> Option<String> {
+            None
+        }
+        async fn disconnect(&self) {}
+    }
+
+    /// The hotel's folder as the screenshot of the report shows it: pets.json without an example of its own.
+    #[tokio::test]
+    async fn a_file_without_an_example_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("public/configuration");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::create_dir_all(dir.path().join("dist/configuration")).unwrap();
+        std::fs::write(folder.join("pets.json"), "{\n    \"dog\": 1\n}\n").unwrap();
+        std::fs::write(folder.join("pets.json.example.json"), "{}").unwrap();
+        std::fs::write(folder.join("ui-config.example"), "{\n    \"a\": 1,\n    \"b\": 2\n}\n").unwrap();
+        std::fs::write(folder.join("locked-texts.json"), "{\"x\": \"y\"}").unwrap();
+        let server = LocalServer { root: dir.path().to_path_buf(), login: crate::server::ServerLogin::password("test", 22, "duckietm", "") };
+        let pets = load(&server, "pets.json").await.unwrap();
+        // Its example is Octane's pets.json.example.json.
+        assert_eq!((pets.text.as_str(), pets.example.as_deref(), pets.is_new()), ("{\n    \"dog\": 1\n}\n", Some("{}"), false));
+        std::fs::write(folder.join("news.json"), "{}").unwrap();
+        assert!(load(&server, "news.json").await.unwrap().example.is_none(), "no example at all is fine too");
+        // Not made yet: its example.
+        let ui = load(&server, "ui-config.json").await.unwrap();
+        assert!(ui.is_new() && ui.text.contains("\"b\": 2"));
+        // Only root may read it: read as root.
+        assert_eq!(load(&server, "locked-texts.json").await.unwrap().text, "{\"x\": \"y\"}");
+        // Neither the file nor an example.
+        assert!(load(&server, "nothing.json").await.unwrap_err().to_string().contains("no example"));
+        let files = list(&server).await.unwrap();
+        let names: Vec<&str> = files.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, vec!["locked-texts.json", "news.json", "pets.json", "ui-config.json"]);
+    }
+
     #[test]
     fn names_and_examples() {
         for good in ["ui-config.json", "radio-stations.jsonc", "housekeeping-texts-en.json"] {
@@ -640,8 +773,8 @@ mod tests {
         assert_eq!(example_target("UITexts_en.jsonc.example"), None);
         assert_eq!(example_of("ui-config.json"), "ui-config.example");
         assert_eq!(example_of("radio-stations.jsonc"), "radio-stations.jsonc.example");
-        assert_eq!(examples_of("ui-config.jsonc"), vec!["ui-config.jsonc.example", "ui-config.example"]);
-        assert_eq!(examples_of("ui-config.json"), vec!["ui-config.example", "ui-config.jsonc.example"]);
+        assert_eq!(examples_of("ui-config.jsonc"), vec!["ui-config.jsonc.example", "ui-config.example", "ui-config.jsonc.example.json"]);
+        assert_eq!(examples_of("ui-config.json"), vec!["ui-config.example", "ui-config.jsonc.example", "ui-config.json.example.json"]);
         // A hotel that keeps ui-config.jsonc: one entry, with Octane's example.
         let files = parse_listing("P ui-config.jsonc 9\nE ui-config.example\nD ui-config.jsonc\n");
         assert_eq!(files, vec![ConfigFile { name: "ui-config.jsonc".into(), size: Some(9), example: true, served: true }]);

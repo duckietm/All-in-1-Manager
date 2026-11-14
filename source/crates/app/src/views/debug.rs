@@ -85,6 +85,13 @@ impl DebugView {
             self.show_state(t("Not connected: log in to follow the logs.").to_string(), true);
             return;
         };
+        // The screenshot of the page shows a sample of Traefik's log: the dry run has no server to follow.
+        if server.is_dry_run() && std::env::var_os("AIO_SCREENSHOT").is_some() {
+            push_capped(&mut self.all, SAMPLE.lines().map(String::from));
+            self.refilter();
+            self.show_state(tf("Live: {follows} on {host}, the newest lines at the bottom.", &[("follows", &self.sources[self.source].follows), ("host", &server.login().host)]), false);
+            return;
+        }
         let source = self.sources[self.source].clone();
         let token = CancellationToken::new();
         self.following = Some(token.clone());
@@ -283,6 +290,26 @@ impl View for DebugView {
         self.restart_on_show = true;
     }
 }
+
+/// Traefik's log as a hotel shows it, for the screenshot: long lines that wrap, and a message over several lines.
+const SAMPLE: &str = "2026-11-13T10:56:42Z WRN Traefik can reject some encoded characters in the request path. When your backend is not fully compliant with [RFC 3986](https://datatracker.ietf.org/doc/html/rfc3986), it is recommended to set these options to `false` to avoid split-view situation. Refer to the documentation for more details: https://doc.traefik.io/traefik/v3.6/migrate/v3/#encoded-characters-configuration-default-values
+2026-11-13T10:56:42Z INF Traefik version 3.7.18 built on 2026-11-10T08:17:00Z version=3.7.18
+2026-11-13T10:56:42Z INF Version check is enabled.
+2026-11-13T10:56:42Z INF Traefik checks for new releases to notify you if your version is out of date.
+2026-11-13T10:56:42Z INF It also collects usage data during this process.
+2026-11-13T10:56:42Z INF Check the documentation to get more info: https://doc.traefik.io/traefik/contributing/data-collection/
+2026-11-13T10:56:42Z INF
+Stats collection is disabled.
+Help us improve Traefik by turning this feature on :)
+More details on: https://doc.traefik.io/traefik/contributing/data-collection/
+
+2026-11-13T10:56:42Z WRN aliasHeadersStrategy is not configured: the request headers whose name aliases another header name (e.g. X_Auth_User or X.Auth.User for X-Auth-User) are forwarded as is. The backends deriving variable names from the header names (CGI, WSGI, PHP, NGINX, ...) read them as the header they alias, which allows a client to spoof the headers Traefik manages. Please set it to delete or reject on the entry points fronting such backends. entryPointName=web
+2026-11-13T10:56:42Z INF Starting provider aggregator *aggregator.ProviderAggregator
+2026-11-13T10:56:42Z INF Starting provider *file.Provider
+2026-11-13T10:56:42Z INF Starting provider *traefik.Provider
+2026-11-13T10:56:42Z INF Starting provider *acme.ChallengeTLSALPN
+2026-11-13T10:56:42Z INF Testing certificate renew... acmeCA=https://acme-v02.api.letsencrypt.org/directory providerName=letsencrypt.acme
+2026-11-14T10:56:42Z WRN A new release of Traefik has been found: 3.7.19. Please consider updating.";
 
 #[cfg(test)]
 mod tests {

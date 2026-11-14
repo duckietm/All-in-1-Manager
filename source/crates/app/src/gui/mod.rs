@@ -68,6 +68,7 @@ pub enum Page {
     Housekeeping,
     HotelView,
     Gamedata,
+    ClientConfig,
     Debug,
     Tools,
     ServerStatus,
@@ -236,6 +237,7 @@ pub struct App {
     housekeeping: views::housekeeping_view::HousekeepingView,
     hotel_view: views::hotel_view_manager::HotelViewManager,
     gamedata: views::gamedata_editor::GamedataEditor,
+    client_config: views::client_config::ClientConfigView,
     debug: views::debug::DebugView,
     history: views::history::HistoryView,
     about: views::about::AboutView,
@@ -288,6 +290,7 @@ impl App {
             housekeeping: views::housekeeping_view::HousekeepingView::new(&shared),
             hotel_view: views::hotel_view_manager::HotelViewManager::new(&shared),
             gamedata: views::gamedata_editor::GamedataEditor::new(&shared),
+            client_config: views::client_config::ClientConfigView::new(&shared),
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
             about: views::about::AboutView::new(&shared),
@@ -319,6 +322,7 @@ impl App {
             || self.housekeeping.busy()
             || self.hotel_view.busy()
             || self.gamedata.busy()
+            || self.client_config.busy()
             || self.settings.busy()
     }
 
@@ -389,6 +393,7 @@ impl App {
         self.housekeeping.session_changed(&shared);
         self.hotel_view.session_changed(&shared);
         self.gamedata.session_changed(&shared);
+        self.client_config.session_changed(&shared);
         self.debug.session_changed(&shared);
         self.history.session_changed(&shared);
         self.settings.session_changed(&shared);
@@ -604,6 +609,14 @@ impl App {
                     tf("The gamedata files of {host}: furnidata and texts.", &[("host", &host)])
                 },
             ),
+            Page::ClientConfig => (
+                t("Client configuration").into(),
+                if session.is_none() {
+                    t("The Octane client's settings files (renderer-config, ui-config, news and more), as forms that are easy to read, saved with a backup and live at once.").into()
+                } else {
+                    tf("The Octane client's settings on {host}.", &[("host", &host)])
+                },
+            ),
             Page::Content => (
                 t("Content").into(),
                 if session.is_none() {
@@ -747,7 +760,7 @@ impl App {
                                 ("Asset Explorer", Icon::FolderSync, Page::AssetExplorer),
                             ],
                         ),
-                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Housekeeping"), Icon::Shield, Page::Housekeeping), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
+                        ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Housekeeping"), Icon::Shield, Page::Housekeeping), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata), (t("Client configuration"), Icon::Cog, Page::ClientConfig)]),
                         ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
                         ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
                     ];
@@ -829,7 +842,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::ClientConfig | Page::Debug | Page::History => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -907,6 +920,7 @@ impl App {
             Page::Housekeeping => Some(t("Housekeeping reaches the hotel database and the emulator through the login to the server.").to_string()),
             Page::HotelView => Some(t("The hotel view editor reaches the hotel database through the login to the server.").to_string()),
             Page::Gamedata => Some(t("The gamedata editor reads and writes the files on the server through the login to the server.").to_string()),
+            Page::ClientConfig => Some(t("The client configuration is read and written on the server through the login to the server.").to_string()),
             _ => None,
         };
         if let (Some(message), None) = (&needs_login, &session) {
@@ -932,6 +946,7 @@ impl App {
             Page::Housekeeping => self.housekeeping.show(ui, palette, &shared),
             Page::HotelView => self.hotel_view.show(ui, palette, &shared),
             Page::Gamedata => self.gamedata.show(ui, palette, &shared),
+            Page::ClientConfig => self.client_config.show(ui, palette, &shared),
             Page::Debug => self.debug.show(ui, palette, &shared),
             Page::History => self.history.show(ui, palette, &shared),
             Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor => {

@@ -92,6 +92,7 @@ impl Screenshot {
                 "bcexplorer" => Page::BuildersExplorer,
                 "players" => Page::Players,
                 "housekeeping" => Page::Housekeeping,
+                "clientconfig" => Page::ClientConfig,
                 "assets" => Page::GetAssets,
                 "retro" => Page::RetroAssets,
                 "assettools" => Page::AssetTools,

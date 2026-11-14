@@ -1145,6 +1145,12 @@ tools' `Assets_tools/Original_SWF_Files/<type>`, never into gamedata, so never t
 | Pets | `pets/*.hab` |
 | Effect icons | `c_images/fx_icons` |
 
+**Reception images** are every hotel view and promo image Habbo's external_variables names below `c_images`: written as
+`${image.library.url}reception/...`, and also as a full address (`https://images.habbo.com/c_images/...` or
+`//images.habbo.com/c_images/...`, as the current hotel view backgrounds are), with a slash too many or with a query
+after the name. Octane's own standard pictures (`stretch_blue`, `sun`, `drape`, the country sides) are not at Habbo:
+they come with the Manager and go to the server with **Deploy Assets**.
+
 Habbo has no download link for the effect icons (`fx_icon_<type>` for the avatar editor): they are inside the Habbo
 Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choose that `app.asar` (choosing it ticks
 **Effect icons**); **Download all** takes them along when it is set. **Clothes: make every clothing set wearable** turns off `sellable` in
@@ -1732,6 +1738,31 @@ after reloading the hotel page. Octane's `UITexts.jsonc` is not edited here, bec
 JSON would drop; FigureData is not edited either, because its set, part and palette ids depend on each other and a
 plain field edit easily breaks avatars.
 
+### Client configuration
+
+**HOTEL → Client configuration** edits the Octane client's settings files on the server (`<Octane>/public/configuration`):
+on the left the files with plain names, grouped (**Main**: Connection and assets = `renderer-config.json`, Interface =
+`ui-config.json`, Client mode; **Content**: login news, hot looks, infostand backgrounds, pets, advertising, radio
+stations, soundboard; **Texts**: the housekeeping and rare values texts; **Other**). A file Octane has an example of but
+that is not made yet is marked *not made yet*; one the built client has no copy of, *not served*.
+
+- **Settings** shows the chosen file as a form: the sections of `ui-config` (Login screen, Hotel view, Toolbar, ...),
+  switches for on/off, number fields, text fields (addresses in a fixed-width font), groups that open, and lists with
+  **+ Add** and ✕. The important addresses of `renderer-config` (`socket.url`, `asset.url`, `furnidata.url`, ...) have a
+  short help under them. **Search settings** finds a setting by name or value. A changed setting turns blue, with ↺ to
+  put it back.
+- **Text** shows the file as text, checked while you type (the line and column of a mistake).
+- A `.jsonc` file (JSON with comments, such as the radio and soundboard files, or a hotel's own `ui-config.jsonc`) opens
+  in the form too: its comments show as help above and beside their settings, and a save from the form keeps them where
+  they were (above their setting, after its value, at the top and end of the file) in the file's own indent. A hotel
+  that keeps `ui-config.jsonc` or `renderer-config.jsonc` gets one entry for it, with Octane's example.
+- When this Octane version's example has settings the file lacks, a bar lists them and **Add them** adds them with
+  their example values, in the example's order (your own values and settings stay).
+
+**Save** (or **Make the file** for a new one) first checks the file was not changed on the server since it was loaded,
+keeps the old one as `.bak-<time>`, and writes it to `public/configuration` (what the next build uses) and to
+`dist/configuration` (what the hotel serves), so players get it when they reload the hotel, without a rebuild.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;
@@ -1937,8 +1968,8 @@ recorded.
 ## Updating the installer itself
 
 **Renamed from All-in-1 Installer.** The repository was `duckietm/All-in-1-installer` and the program
-`all-in-1-installer`. Releases still carry `all-in-1-installer-windows-x64.exe` / `-linux-x64` next to the new names,
-so a version from before the rename updates itself to the All-in-1 Manager. Its settings stay: the `configuration`
+`all-in-1-installer`. Releases carry only the new names (`all-in-1-manager-windows-x64.exe` / `-linux-x64`), so a
+version from before the rename no longer finds an update: download the All-in-1 Manager by hand once. Its settings stay: the `configuration`
 folder next to the program, or `All-in-1 Installer\configuration` in the user's data folder while that one exists;
 files the installer wrote on a server are recognised by both names, and the old history files are still read.
 

@@ -13,6 +13,7 @@ pub mod content_manager;
 pub mod logs_view;
 pub mod players_view;
 pub mod housekeeping_view;
+pub mod client_config;
 pub mod gamedata_editor;
 pub mod hotel_view_manager;
 pub mod clone;

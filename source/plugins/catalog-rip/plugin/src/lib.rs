@@ -16,11 +16,11 @@
 mod adapters;
 
 use adapters::{
-    add_profile, all_profiles, parse_delay, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
+    add_profile, all_profiles, items_row, parse_delay, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
     SourceError, SysClock, FIRST_PORT, LAST_PORT, PROFILES_FILE, SQL_LIMIT,
 };
 use aio_plugin_sdk::folders::{self, Folder};
-use aio_plugin_sdk::sql::{Op, Row, Select, Value};
+use aio_plugin_sdk::sql::{Op, Select};
 use aio_plugin_sdk::ui::BannerKind;
 use aio_plugin_sdk::{export_plugin, files, host, tcp, ErrorKind, Event, Plugin, Ui};
 use catalog_rip_core::output::items_base;
@@ -88,8 +88,8 @@ struct Ripper {
     normal: bool,
     builders_club: bool,
     images: bool,
+    /// The delay input's text, checked when a rip starts.
     delay_text: String,
-    delay_ms: u64,
     run: Option<Run>,
     outcome: Option<Outcome>,
     log: Vec<String>,
@@ -101,34 +101,6 @@ struct SqlItems;
 
 fn source_error(e: aio_plugin_sdk::Error) -> SourceError {
     SourceError { denied: e.kind() == ErrorKind::Denied, message: e.message().to_string() }
-}
-
-fn int(row: &Row, column: &str) -> Result<i64, String> {
-    match row.value(column) {
-        Some(Value::Int(v)) => Ok(*v),
-        Some(Value::Text(t)) => t.trim().parse().map_err(|_| format!("{column} is not a number: {t}")),
-        Some(Value::Null) | None => Ok(0),
-        Some(_) => Err(format!("{column} is not a number")),
-    }
-}
-
-fn text(row: &Row, column: &str) -> String {
-    match row.value(column) {
-        Some(Value::Text(t)) => t.clone(),
-        Some(Value::Int(v)) => v.to_string(),
-        _ => String::new(),
-    }
-}
-
-fn items_row(row: &Row) -> Result<ItemsBaseRow, String> {
-    let id = int(row, "id")?;
-    Ok(ItemsBaseRow {
-        id: u32::try_from(id).map_err(|_| format!("id {id} is out of range"))?,
-        sprite_id: i32::try_from(int(row, "sprite_id")?).map_err(|_| format!("sprite_id of {id} is out of range"))?,
-        item_type: text(row, "type"),
-        item_name: text(row, "item_name"),
-        effect_id: i32::try_from(int(row, "effect_id_male")?).unwrap_or(0),
-    })
 }
 
 impl ItemsSource for SqlItems {
@@ -144,7 +116,7 @@ impl ItemsSource for SqlItems {
             .limit(SQL_LIMIT as u32)
             .run()
             .map_err(source_error)?;
-        Ok(rows.iter().map(items_row).collect())
+        Ok(rows.iter().map(|row| items_row(|column| row.value(column))).collect())
     }
 
     fn any_from(&mut self, from: i64) -> Result<bool, SourceError> {
@@ -196,7 +168,7 @@ impl Run {
                 let Some(port) = ports.pop() else { return Some(Ended::NoGearth) };
                 match tcp::connect(port) {
                     Ok(conn) => {
-                        log.push(format!("G-Earth answers on port {port}."));
+                        log.push(format!("Connected to port {port} (G-Earth?)."));
                         self.port = Some(port);
                         let mut options = self.options.clone();
                         options.gearth_port = port;
@@ -306,14 +278,14 @@ impl Ripper {
         self.load_profiles();
     }
 
-    fn options(&self) -> RipOptions {
+    fn options(&self, delay_ms: u64) -> RipOptions {
         let profile = match self.profile {
             0 => ProfileChoice::Detect(self.profiles.clone()),
             n => ProfileChoice::Fixed(self.profiles[n - 1].clone()),
         };
         RipOptions {
             profile,
-            delay_ms: self.delay_ms,
+            delay_ms,
             normal: self.normal,
             builders_club: self.builders_club,
             download_images: self.images,
@@ -326,6 +298,13 @@ impl Ripper {
             self.say(BannerKind::Warning, "Choose the normal catalogue, the Builders Club one, or both.");
             return;
         }
+        let delay_ms = match parse_delay(&self.delay_text) {
+            Ok(ms) => ms,
+            Err(e) => {
+                self.say(BannerKind::Warning, format!("{e} Correct it, then click Rip catalogue again."));
+                return;
+            }
+        };
         let Some(folder) = folders::pick("Where to save the catalogue") else {
             return;
         };
@@ -336,7 +315,7 @@ impl Ripper {
         self.run = Some(Run {
             stage: Stage::Items(ItemsLoader::new()),
             folder,
-            options: self.options(),
+            options: self.options(delay_ms),
             items: None,
             order: self.probe.connect_order(),
             port: None,
@@ -350,18 +329,17 @@ impl Ripper {
         let Some(outcome) = self.outcome.take() else { return };
         self.message = None;
         self.push_log(["Trying again with a new connection to G-Earth.".to_string()]);
-        let mut run = Run {
-            stage: Stage::Connect(Vec::new()),
+        let order = self.probe.connect_order();
+        self.run = Some(Run {
+            stage: Stage::Connect(order.iter().rev().copied().collect()),
             folder: outcome.folder,
             options: outcome.options,
             items: outcome.items,
-            order: self.probe.connect_order(),
+            order,
             port: None,
             waiting: None,
             cancelling: false,
-        };
-        run.stage = Stage::Connect(run.ports());
-        self.run = Some(run);
+        });
     }
 
     fn cancel(&mut self) {
@@ -427,8 +405,8 @@ impl Ripper {
             _ => "The catalogue rip stopped.",
         });
         self.outcome = Some(Outcome { ended, folder: run.folder, options: run.options, items: run.items });
-        // Look for G-Earth again right away.
-        self.probe.now();
+        // Look for G-Earth again: one more sweep (or a recheck of the port that answered).
+        self.probe.sweep_again();
     }
 
     fn import(&mut self) {
@@ -467,14 +445,14 @@ impl Ripper {
                 return;
             }
             match self.probe.found() {
-                Some(port) => ui.text(format!("G-Earth answers on port {port}.")),
+                Some(port) => ui.text(format!("Something answers on port {port} (G-Earth?).")),
                 None => {
                     ui.text("Start G-Earth and log in to the hotel.");
                     ui.text(format!("Download G-Earth: {GEARTH_RELEASES}"));
                     let tried = match self.probe.last_tried() {
-                        Some(port) if self.probe.none_answered() => {
-                            format!("No answer on ports {FIRST_PORT} to {LAST_PORT} (last tried: {port}).")
-                        }
+                        Some(_) if self.probe.none_answered() => format!(
+                            "Nothing answers on ports {FIRST_PORT} to {LAST_PORT}. Click Check again once G-Earth runs."
+                        ),
                         Some(port) => format!("Looking for G-Earth on ports {FIRST_PORT} to {LAST_PORT} (last tried: {port})."),
                         None => format!("Looking for G-Earth on ports {FIRST_PORT} to {LAST_PORT}."),
                     };
@@ -562,7 +540,6 @@ impl Plugin for Ripper {
             builders_club: true,
             images: true,
             delay_text: RipOptions::default().delay_ms.to_string(),
-            delay_ms: RipOptions::default().delay_ms,
             run: None,
             outcome: None,
             log: Vec::new(),
@@ -607,7 +584,7 @@ impl Plugin for Ripper {
                 "rip" if !running => self.start(),
                 "retry" if !running => self.retry(),
                 "cancel" => self.cancel(),
-                "check" => self.probe.now(),
+                "check" => self.probe.sweep_again(),
                 "reveal" => self.reveal(),
                 "import" => self.import(),
                 _ => {}
@@ -624,13 +601,12 @@ impl Plugin for Ripper {
                 "images" => self.images = value == "true",
                 "delay" => {
                     match parse_delay(&value) {
-                        Ok(ms) => {
-                            self.delay_ms = ms;
+                        Ok(_) => {
                             if matches!(&self.message, Some((BannerKind::Warning, _))) {
                                 self.message = None;
                             }
                         }
-                        Err(e) => self.say(BannerKind::Warning, format!("{e} The rip uses {} ms.", self.delay_ms)),
+                        Err(e) => self.say(BannerKind::Warning, e),
                     }
                     self.delay_text = value;
                 }

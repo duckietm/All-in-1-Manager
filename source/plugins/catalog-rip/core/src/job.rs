@@ -629,10 +629,11 @@ impl Job {
     /// `cancelled`), one cancelled during the export or the image downloads as [`Step::Done`]
     /// (its catalogue was whole; the images stop where they were).
     ///
-    /// The step that sees the cancel finishes the export whatever its budget: like the
-    /// built-in, it still reads the furnidata and the productdata when they are used, so that
-    /// step may take up to two (blocking) fetches. It downloads no images and no client
-    /// configuration.
+    /// A cancel during the requests ends them in the step that sees it, which lets G-Earth go
+    /// and returns (no fetch while the G-Earth connection is still open). The next step finishes
+    /// the export whatever its budget: like the built-in, it still reads the furnidata and the
+    /// productdata when they are used, so that step may take up to two (blocking) fetches. It
+    /// downloads no images and no client configuration.
     pub fn cancel(&mut self) {
         self.cancel = true;
     }
@@ -692,8 +693,11 @@ impl Job {
         self.pumped = false;
         self.fetched = false;
         if self.cancel {
-            if let Some(Ctl::End(step)) = self.on_cancel(io) {
-                return self.end(step);
+            match self.on_cancel(io) {
+                Some(Ctl::End(step)) => return self.end(step),
+                // The requests ended: G-Earth is let go before the export (see `after_requests`).
+                Some(Ctl::Yield) => return self.pending(),
+                _ => {}
             }
         }
         loop {
@@ -1902,7 +1906,10 @@ impl Job {
         });
         self.set_phase(Phase::Export);
         self.state = State::Export(ExportStage::Furnidata);
-        Ctl::Continue
+        // Return now: the plugin closes the G-Earth connection after a step in which
+        // `uses_gearth()` turned false, so the export's fetches (which may wait on the user, for an
+        // `http:ask` host) never run while G-Earth holds the user's game packets for us.
+        Ctl::Yield
     }
 
     // ------------------------------------------------------------ the output

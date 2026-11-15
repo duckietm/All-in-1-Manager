@@ -860,10 +860,12 @@ fn cancel_stops_within_one_tick() {
         },
     );
     let (cancel_step, requests_then) = cancelled_at.expect("cancelled during the pages");
+    // The step after the cancel ends the requests and lets G-Earth go; the one after it writes
+    // the output and ends the job.
     assert_eq!(
         run.steps,
-        cancel_step + 1,
-        "the step after the cancel ends the job"
+        cancel_step + 2,
+        "the second step after the cancel ends the job"
     );
     assert_eq!(
         sim.g().requests.len(),
@@ -1207,6 +1209,7 @@ fn gearth_closing_ends_the_session_and_keeps_partial_output() {
     let mut job = Job::new(sim_options());
     let mut sink = MemSink::default();
     let mut closed_at = None;
+    let mut steps = 0;
     let run = run_job(
         &mut job,
         Dropping {
@@ -1220,8 +1223,9 @@ fn gearth_closing_ends_the_session_and_keeps_partial_output() {
         (None, None),
         |_| 50,
         |job, step| {
+            steps += 1;
             if closed_at.is_none() && !job.uses_gearth() {
-                closed_at = Some(step.clone());
+                closed_at = Some((steps, step.clone()));
             }
         },
     );
@@ -1239,10 +1243,12 @@ fn gearth_closing_ends_the_session_and_keeps_partial_output() {
         failure.partial.is_some(),
         "the indexes and pages read are written"
     );
+    // The step that lost G-Earth returns at once (before the export's fetches); the next one
+    // writes the partial output and ends the job.
     assert_eq!(
-        closed_at.as_ref(),
-        Some(&run.end),
-        "the session ended with the job's step"
+        closed_at,
+        Some((run.steps - 1, Step::Running)),
+        "the session ended the step before the job's last"
     );
 }
 
@@ -1464,8 +1470,8 @@ fn cancel_with_furnidata_fetches_at_most_twice_in_its_step() {
     );
     assert_eq!(
         run.steps,
-        cancel_step.unwrap() + 1,
-        "ended by the next step"
+        cancel_step.unwrap() + 2,
+        "the next step lets G-Earth go, the one after it ends the job"
     );
     let failure = failed(&run);
     assert!(failure.cancelled);
@@ -1648,4 +1654,110 @@ fn images_folder_is_listed_when_images_were_tried() {
     // Nothing found, but tried: the built-in had made the folder, and listed it.
     assert!(files(true).iter().any(|f| f == "images"));
     assert!(!files(false).iter().any(|f| f == "images"));
+}
+
+/// Steps `job` and checks that no fetch runs in a step in which the job lets G-Earth go: the
+/// plugin closes the connection only after such a step, so a fetch in it (an `http:ask`
+/// dialog, a slow host) would hold up the user's game packets.
+fn assert_no_fetch_while_gearth_open(
+    sim: &Sim,
+    job: &mut Job,
+    transport: impl Transport,
+    inner: MemFetch,
+    mut each: impl FnMut(&mut Job, usize),
+) -> (Run, usize) {
+    let calls = Rc::new(std::cell::Cell::new(0usize));
+    let mut fetch = {
+        let counted = calls.clone();
+        let mut inner = inner;
+        MemFetch {
+            answer: Box::new(move |url| {
+                counted.set(counted.get() + 1);
+                (inner.answer)(url)
+            }),
+            asked: Vec::new(),
+        }
+    };
+    let mut used = false;
+    let mut before = 0;
+    let mut released = 0;
+    let mut step = 0;
+    let run = run_job(
+        job,
+        transport,
+        drop,
+        &mut fetch,
+        &mut MemSink::default(),
+        &sim.clock,
+        (None, None),
+        |_| 50,
+        |job, _| {
+            step += 1;
+            let fetched = calls.get() - before;
+            before = calls.get();
+            if used && !job.uses_gearth() {
+                released += 1;
+                assert_eq!(fetched, 0, "step {step} let G-Earth go and fetched {fetched} time(s)");
+            }
+            used = job.uses_gearth();
+            each(job, step);
+        },
+    );
+    assert!(calls.get() > 0, "the export fetched something");
+    (run, released)
+}
+
+#[test]
+fn no_fetch_in_the_step_that_lets_gearth_go() {
+    let furnidata_opts = || {
+        let mut opts = sim_options();
+        opts.use_furnidata = true; // official hotel: furnidata and productdata from its host
+        opts.download_images = true;
+        opts.catalog_url = Some(format!("{CDN}/c_images/catalogue"));
+        opts.icon_url = Some(format!("{CDN}/icons/icon_"));
+        opts
+    };
+
+    // A whole rip.
+    let sim = Sim::new(official_hotel());
+    let mut job = Job::new(furnidata_opts());
+    let (run, released) =
+        assert_no_fetch_while_gearth_open(&sim, &mut job, sim.link.clone(), fake_cdn(), |_, _| {});
+    done(&run);
+    assert_eq!(released, 1);
+
+    // Cancelled during the pages.
+    let sim = Sim::new(official_hotel());
+    let mut job = Job::new(furnidata_opts());
+    let mut cancelled = false;
+    let (run, released) =
+        assert_no_fetch_while_gearth_open(&sim, &mut job, sim.link.clone(), fake_cdn(), |job, _| {
+            let p = job.progress();
+            if !cancelled && p.phase == Phase::Pages && p.done >= 2 {
+                job.cancel();
+                cancelled = true;
+            }
+        });
+    assert!(failed(&run).cancelled);
+    assert_eq!(released, 1);
+
+    // G-Earth closes the connection during the pages.
+    struct Dropping(Link);
+    impl Transport for Dropping {
+        fn send(&mut self, data: &[u8]) -> Result<(), String> {
+            self.0.send(data)
+        }
+        fn recv(&mut self, max: usize, timeout_ms: u32) -> Result<Option<Vec<u8>>, String> {
+            if self.0 .0.borrow().requests.len() >= 4 {
+                return Ok(Some(Vec::new()));
+            }
+            self.0.recv(max, timeout_ms)
+        }
+    }
+    let sim = Sim::new(official_hotel());
+    let mut job = Job::new(furnidata_opts());
+    let (run, released) =
+        assert_no_fetch_while_gearth_open(&sim, &mut job, Dropping(sim.link.clone()), fake_cdn(), |_, _| {});
+    assert!(failed(&run).gearth_error.is_some());
+    assert_eq!(released, 1);
 }

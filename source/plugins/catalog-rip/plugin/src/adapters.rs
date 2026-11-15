@@ -5,6 +5,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aio_plugin_sdk::folders::Folder;
+use aio_plugin_sdk::sql::Value;
 use aio_plugin_sdk::{http, tcp};
 use catalog_rip_core::job::{MAX_DELAY_MS, MIN_DELAY_MS};
 use catalog_rip_core::profiles::{load_profiles, read_profile_file};
@@ -100,23 +101,29 @@ pub const PROBE_EVERY_MS: u64 = 2_000;
 
 /// When the idle page looks for G-Earth, and what it found.
 ///
-/// One port per probe: on Windows a refused connection to a local port takes about 2 s, so a sweep of the ten ports
-/// in one render would freeze the page for 20 s. The port that answered last is tried first; when it stops
-/// answering, the sweep starts again at 9092.
+/// One port per probe, at most every [`PROBE_EVERY_MS`]: on Windows a refused connection to a local port takes
+/// about 2 s, so a sweep of the ten ports in one render would freeze the page for 20 s. The page probes on its own
+/// only until one whole sweep of 9092-9101 got no answer; then it waits for [`Probe::sweep_again`] ("Check again",
+/// or a rip that ended; "Rip catalogue" tries every port itself). A port that answered is rechecked (one cheap
+/// connect); when it stops answering, one new sweep starts at 9092.
 #[derive(Debug, Default, Clone)]
 pub struct Probe {
     last_ms: Option<u64>,
     /// The next port of the sweep, as an offset from [`FIRST_PORT`].
     next: u16,
     found: Option<u16>,
-    /// Ports that did not answer since the last that did.
+    /// Ports of the current sweep that did not answer.
     misses: u16,
     last_tried: Option<u16>,
 }
 
 impl Probe {
-    /// The port to try at `now_ms`, or `None` when the last probe was less than [`PROBE_EVERY_MS`] ago.
+    /// The port to try at `now_ms`, or `None`: the last probe was less than [`PROBE_EVERY_MS`] ago, or a whole
+    /// sweep got no answer.
     pub fn due(&self, now_ms: u64) -> Option<u16> {
+        if self.none_answered() {
+            return None;
+        }
         if let Some(last) = self.last_ms {
             if now_ms.saturating_sub(last) < PROBE_EVERY_MS {
                 return None;
@@ -135,17 +142,23 @@ impl Probe {
             return;
         }
         if self.found == Some(port) {
+            // Gone: one new sweep of every port.
             self.found = None;
             self.next = 0;
+            self.misses = 0;
         } else {
             self.next = (self.next + 1) % PORT_COUNT;
+            self.misses = self.misses.saturating_add(1);
         }
-        self.misses = self.misses.saturating_add(1);
     }
 
-    /// Probe at the next chance (the user asked to check again).
-    pub fn now(&mut self) {
+    /// One more sweep, starting now at 9092 ("Check again", or a rip ended). A found port is just rechecked now.
+    pub fn sweep_again(&mut self) {
         self.last_ms = None;
+        if self.found.is_none() {
+            self.next = 0;
+            self.misses = 0;
+        }
     }
 
     pub fn found(&self) -> Option<u16> {
@@ -210,6 +223,8 @@ pub struct ItemsLoader {
     from: i64,
     width: i64,
     effect: bool,
+    /// Reads with `effect_id_male` that failed (two in a row: read without it).
+    effect_failures: u8,
     /// The read with `effect_id_male` failed with this; said once a read without it works.
     effect_error: Option<String>,
     check_rest: bool,
@@ -233,6 +248,7 @@ impl ItemsLoader {
             from: 0,
             width: WINDOW,
             effect: true,
+            effect_failures: 0,
             effect_error: None,
             check_rest: false,
             rows: Vec::new(),
@@ -263,15 +279,22 @@ impl ItemsLoader {
         let rows = match source.window(self.from, to, self.effect) {
             Ok(rows) => rows,
             // Like the built-in: an items_base without effect_id_male is read without it (effect ids 0).
+            // The read with it is tried twice first, so one passing failure does not drop the column.
             Err(e) if self.effect && !e.denied => {
-                self.effect = false;
-                self.effect_error = Some(e.message);
+                self.effect_failures += 1;
+                if self.effect_failures >= 2 {
+                    self.effect = false;
+                    self.effect_error = Some(e.message);
+                }
                 return Load::More;
             }
             Err(e) => return Load::Unavailable(e.message),
         };
+        if self.effect {
+            self.effect_failures = 0;
+        }
         if let Some(why) = self.effect_error.take() {
-            self.notes.push(format!("items_base was read without effect_id_male ({why}): effect ids are 0."));
+            self.notes.push(format!("items_base: the read with effect_id_male failed ({why}); using 0."));
         }
         if rows.len() >= SQL_LIMIT && self.width > WINDOW {
             self.width = (self.width / 2).max(WINDOW);
@@ -312,6 +335,37 @@ impl ItemsLoader {
         }
         Load::Done
     }
+}
+
+/// One items_base row from its columns (`value` gives a column's value, `None` when not read). A row without a
+/// usable `id` is an error (left out and counted), never item 0; a missing or NULL `sprite_id` or
+/// `effect_id_male` is 0, a missing `type` or `item_name` empty.
+pub fn items_row<'a>(value: impl Fn(&str) -> Option<&'a Value>) -> Result<ItemsBaseRow, String> {
+    fn int(value: Option<&Value>, column: &str) -> Result<Option<i64>, String> {
+        match value {
+            Some(Value::Int(v)) => Ok(Some(*v)),
+            Some(Value::Text(t)) => t.trim().parse().map(Some).map_err(|_| format!("{column} is not a number: {t}")),
+            Some(Value::Null) | None => Ok(None),
+            Some(_) => Err(format!("{column} is not a number")),
+        }
+    }
+    fn text(value: Option<&Value>) -> String {
+        match value {
+            Some(Value::Text(t)) => t.clone(),
+            Some(Value::Int(v)) => v.to_string(),
+            _ => String::new(),
+        }
+    }
+    let id = int(value("id"), "id")?.ok_or("a row has no id")?;
+    let id32 = u32::try_from(id).map_err(|_| format!("id {id} is out of range"))?;
+    let sprite_id = int(value("sprite_id"), "sprite_id")?.unwrap_or(0);
+    Ok(ItemsBaseRow {
+        id: id32,
+        sprite_id: i32::try_from(sprite_id).map_err(|_| format!("sprite_id of {id} is out of range"))?,
+        item_type: text(value("type")),
+        item_name: text(value("item_name")),
+        effect_id: int(value("effect_id_male"), "effect_id_male")?.and_then(|e| i32::try_from(e).ok()).unwrap_or(0),
+    })
 }
 
 // ---------------------------------------------------------------- saved hotel profiles
@@ -385,34 +439,56 @@ mod tests {
         assert_eq!(p.due(2_000), Some(9093));
         p.record(2_000, 9093, true);
         assert_eq!(p.found(), Some(9093));
-        // The port that answered is checked again, not the next of the sweep.
+        // The port that answered is checked again (cheap), not the next of the sweep.
         assert_eq!(p.due(4_000), Some(9093));
-        p.record(4_000, 9093, false);
+        p.record(4_000, 9093, true);
+        assert_eq!(p.due(6_000), Some(9093));
+        p.record(6_000, 9093, false);
         assert_eq!(p.found(), None);
-        assert_eq!(p.due(6_000), Some(9092), "the sweep starts over");
-        p.now();
-        assert_eq!(p.due(6_001), Some(9092), "Check again does not wait");
+        assert_eq!(p.due(8_000), Some(9092), "a new sweep starts at 9092");
+        p.sweep_again();
+        assert_eq!(p.due(8_001), Some(9092), "Check again does not wait");
+    }
+
+    /// Records misses on every port the probe asks for until it asks for none.
+    fn sweep_without_answer(p: &mut Probe, now: &mut u64) -> Vec<u16> {
+        let mut tried = Vec::new();
+        while let Some(port) = p.due(*now) {
+            assert!(tried.len() < 100, "the probe never stops");
+            p.record(*now, port, false);
+            tried.push(port);
+            *now += PROBE_EVERY_MS;
+        }
+        tried
     }
 
     #[test]
-    fn a_whole_sweep_without_answer_says_none_answered() {
+    fn probing_stops_after_one_sweep_without_answer() {
         let mut p = Probe::default();
         let mut now = 0;
-        for i in 0..PORT_COUNT {
-            assert!(!p.none_answered());
-            let port = p.due(now).unwrap();
-            assert_eq!(port, FIRST_PORT + i);
-            p.record(now, port, false);
-            now += PROBE_EVERY_MS;
-        }
+        let all: Vec<u16> = (9092..=9101).collect();
+        assert_eq!(sweep_without_answer(&mut p, &mut now), all);
         assert!(p.none_answered());
-        assert_eq!(p.due(now), Some(9092), "the sweep goes round");
-        assert_eq!(p.connect_order(), (9092..=9101).collect::<Vec<_>>());
+        assert_eq!(p.due(now + 60_000), None, "no more probing on its own");
+        assert_eq!(p.connect_order(), all);
+
+        // Check again (or a rip that ended): one more whole sweep.
+        p.sweep_again();
+        assert!(!p.none_answered());
+        assert_eq!(sweep_without_answer(&mut p, &mut now), all);
+
+        // A found port that stops answering starts one sweep of all ten ports.
+        p.sweep_again();
         p.record(now, 9092, false);
         p.record(now + PROBE_EVERY_MS, 9093, false);
         p.record(now + 2 * PROBE_EVERY_MS, 9094, true);
         assert!(!p.none_answered());
         assert_eq!(p.connect_order(), vec![9094, 9092, 9093, 9095, 9096, 9097, 9098, 9099, 9100, 9101]);
+        now += 3 * PROBE_EVERY_MS;
+        p.record(now, 9094, false);
+        now += PROBE_EVERY_MS;
+        assert_eq!(sweep_without_answer(&mut p, &mut now), all);
+        assert_eq!(p.due(now + 60_000), None);
     }
 
     fn row(id: i64) -> ItemsBaseRow {
@@ -430,12 +506,14 @@ mod tests {
         ids: Vec<i64>,
         no_effect: bool,
         down: Option<SourceError>,
+        /// The next read fails with this (once).
+        fail_once: Option<SourceError>,
         reads: usize,
     }
 
     impl Table {
         fn new(ids: impl IntoIterator<Item = i64>) -> Self {
-            Self { ids: ids.into_iter().collect(), no_effect: false, down: None, reads: 0 }
+            Self { ids: ids.into_iter().collect(), no_effect: false, down: None, fail_once: None, reads: 0 }
         }
     }
 
@@ -444,6 +522,9 @@ mod tests {
             self.reads += 1;
             if let Some(e) = &self.down {
                 return Err(e.clone());
+            }
+            if let Some(e) = self.fail_once.take() {
+                return Err(e);
             }
             if effect && self.no_effect {
                 return Err(SourceError { denied: false, message: "Unknown column 'effect_id_male'".into() });
@@ -502,7 +583,24 @@ mod tests {
         let (end, mut loader) = load(&mut table);
         assert_eq!((end, loader.rows.len()), (Load::Done, 5));
         let notes = loader.take_notes();
-        assert!(notes[0].contains("without effect_id_male"), "{notes:?}");
+        assert_eq!(
+            notes,
+            ["items_base: the read with effect_id_male failed (Unknown column 'effect_id_male'); using 0."]
+        );
+        // Twice with effect_id_male, then without: the first window, the next one, the rest check.
+        assert_eq!(table.reads, 5);
+    }
+
+    #[test]
+    fn one_failed_read_keeps_effect_id_male() {
+        let mut table = Table::new(1..=5);
+        table.fail_once = Some(SourceError { denied: false, message: "Lost connection".into() });
+        let mut loader = ItemsLoader::new();
+        assert_eq!(loader.step(&mut table), Load::More);
+        assert_eq!(loader.step(&mut table), Load::More);
+        assert!(loader.effect, "a read with effect_id_male worked on the retry");
+        assert_eq!(loader.rows.len(), 5);
+        assert!(loader.take_notes().is_empty());
     }
 
     #[test]
@@ -511,7 +609,7 @@ mod tests {
         table.down = Some(SourceError { denied: false, message: "Not connected".into() });
         let (end, _) = load(&mut table);
         assert_eq!(end, Load::Unavailable("Not connected".into()));
-        assert_eq!(table.reads, 2, "once with effect_id_male, once without");
+        assert_eq!(table.reads, 3, "twice with effect_id_male, once without");
 
         let mut table = Table::new(1..=5);
         let denied = "permission denied: table 'items_base' is not declared with sql:read";
@@ -519,6 +617,31 @@ mod tests {
         let (end, _) = load(&mut table);
         assert_eq!(end, Load::Unavailable(denied.into()));
         assert_eq!(table.reads, 1, "a refusal is not asked again");
+    }
+
+    #[test]
+    fn items_rows_need_an_id() {
+        let read = |cols: &[(&str, Value)]| {
+            let cols: Vec<(String, Value)> = cols.iter().map(|(c, v)| (c.to_string(), v.clone())).collect();
+            items_row(|c| cols.iter().find(|(n, _)| n == c).map(|(_, v)| v))
+        };
+        let row = read(&[
+            ("id", Value::Int(7)),
+            ("sprite_id", Value::Int(4001)),
+            ("type", Value::Text("s".into())),
+            ("item_name", Value::Text("chair".into())),
+            ("effect_id_male", Value::Null),
+        ])
+        .unwrap();
+        assert_eq!(
+            row,
+            ItemsBaseRow { id: 7, sprite_id: 4001, item_type: "s".into(), item_name: "chair".into(), effect_id: 0 }
+        );
+        assert_eq!(read(&[("id", Value::Text("8".into()))]).unwrap().id, 8, "unsigned ids may come as text");
+        assert_eq!(read(&[("id", Value::Null), ("sprite_id", Value::Int(1))]), Err("a row has no id".to_string()));
+        assert_eq!(read(&[("sprite_id", Value::Int(1))]), Err("a row has no id".to_string()));
+        assert!(read(&[("id", Value::Int(-1))]).is_err());
+        assert!(read(&[("id", Value::Text("x".into()))]).is_err());
     }
 
     fn learned(name: &str, get_index: u16) -> (String, String) {

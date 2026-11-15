@@ -105,6 +105,11 @@ pub struct SettingsView {
     paste: String,
     import_result: Banner,
 
+    /// Developer mode: the test plugin index's url and keys ("key-id:base64", one per line), as typed.
+    index_url: String,
+    index_keys: String,
+    index_result: Banner,
+
     inbox: Arc<Mutex<Inbox>>,
 }
 
@@ -144,6 +149,9 @@ impl SettingsView {
             import_for: String::new(),
             paste: String::new(),
             import_result: None,
+            index_url: settings.plugin_index_url.clone().unwrap_or_default(),
+            index_keys: settings.plugin_index_test_keys.join("\n"),
+            index_result: None,
             inbox: Arc::new(Mutex::new(Inbox::default())),
         };
         view.show_layout(&settings.layout.clone().unwrap_or_default());
@@ -849,6 +857,8 @@ impl SettingsView {
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.branches_card(ui, palette));
         ui.add_space(18.0);
+        widgets::card(ui, palette, margin, |ui| self.developer_card(ui, palette, shared));
+        ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.keys_card(ui, palette, shared));
     }
 }
@@ -882,6 +892,62 @@ pub(crate) fn language_button(ui: &mut egui::Ui, palette: &Palette, name: &str, 
     crate::gui::flags::paint(painter, flag, domain);
     painter.galley(egui::pos2(flag.right() + 8.0, rect.center().y - galley.size().y / 2.0), galley, palette.text);
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The test keys as typed: one per line, blank lines dropped.
+fn test_keys(text: &str) -> Vec<String> {
+    text.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect()
+}
+
+impl SettingsView {
+    /// Developer mode: plugins can be loaded straight from a folder (Plugins page), and a test plugin index can be used
+    /// instead of the official one. Off by default.
+    fn developer_card(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        card_heading(
+            ui,
+            palette,
+            t("Developer mode"),
+            t("For people who write plugins: load a plugin from its folder, with a Reload button, without packing it. Such a plugin is not verified and gets the same warnings and permission questions as one from a file."),
+        );
+        let plugins = crate::plugins::external::plugins();
+        let mut on = plugins.developer_enabled();
+        ui.horizontal(|ui| {
+            if widgets::switch(ui, palette, &mut on).changed() {
+                crate::plugins::external::set_developer_mode(on);
+                shared.set_status(if on { t("Developer mode is on.") } else { t("Developer mode is off: the plugin folders are hidden and stopped.") });
+            }
+            ui.label(if on { t("On") } else { t("Off") });
+        });
+        if !on {
+            return;
+        }
+        ui.add_space(6.0);
+        label(ui, palette, t("Index URL (testing)"));
+        widgets::muted(
+            ui,
+            palette,
+            t("A plugin index to test with instead of the official one: https, or http on 127.0.0.1 or localhost. Leave it empty for the official index. Plugins installed from it are never shown as verified."),
+            12.0,
+        );
+        ui.add(egui::TextEdit::singleline(&mut self.index_url).hint_text("http://127.0.0.1:8080/index.json").desired_width(420.0));
+        label(ui, palette, t("Test keys"));
+        widgets::muted(ui, palette, t("The keys the test index is signed with, one per line: key-id:base64"), 12.0);
+        ui.add(egui::TextEdit::multiline(&mut self.index_keys).desired_rows(2).desired_width(420.0).font(egui::TextStyle::Monospace));
+        if ui.add(widgets::secondary_button(t("Save the test index"))).clicked() {
+            let mut settings = InstallerSettings::load();
+            let url = self.index_url.trim();
+            settings.plugin_index_url = (!url.is_empty()).then(|| url.to_string());
+            settings.plugin_index_test_keys = test_keys(&self.index_keys);
+            self.index_result = match save(&settings) {
+                Ok(()) => banner(ResultKind::Success, t("Saved."), t("The plugin index is checked again.")),
+                Err(e) => banner(ResultKind::Error, t("Not saved"), &e),
+            };
+            // The index follows the new settings at once, saved or not.
+            crate::plugins::index::developer_settings_changed(&settings);
+            super::plugin_index::start_check(shared, false);
+        }
+        show_banner(ui, palette, &self.index_result);
+    }
 }
 
 fn card_heading(ui: &mut egui::Ui, palette: &Palette, title: &str, text: &str) {

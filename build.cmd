@@ -1,7 +1,7 @@
 @echo off
 rem All-in-1 Manager: build it on Windows.
 rem   build             a menu (also when you double-click this file)
-rem   build release     the program to hand out  -> public\release\all-in-1-manager.exe (with Assets\)
+rem   build release     the program to hand out  -> public\release\all-in-1-manager.exe (with plugins\)
 rem                     Release and dev also leave a shortcut to the program next to this file.
 rem   build dev         a debug build            -> public\dev\all-in-1-manager.exe
 rem   build run         a debug build, and start it
@@ -51,12 +51,15 @@ if errorlevel 1 goto :failed
 if not exist "public\release" mkdir "public\release"
 copy /y "target\release\%EXE%" "public\release\%EXE%" >nul
 if errorlevel 1 goto :inuse
-rem The client images are in the program too; the folder next to it is what Deploy Assets reads first.
-robocopy "source\Assets" "public\release\Assets" /MIR /NFL /NDL /NJH /NJS /NP >nul
+rem The data packs of the Plugins page, next to the program, so it needs no download.
+robocopy "source\Assets" "public\release\plugins\client-assets" /MIR /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 (
-  echo Copying source\Assets to public\release\Assets failed.
+  echo Copying source\Assets to public\release\plugins\client-assets failed.
   goto :failed
 )
+if not exist "public\release\plugins\default-catalog" mkdir "public\release\plugins\default-catalog"
+copy /y "source\crates\app\assets\catalog\Full_Catalog.zip" "public\release\plugins\default-catalog\Full_Catalog.zip" >nul
+if errorlevel 1 goto :failed
 call :shortcut "public\release" "All-in-1 Manager"
 echo.
 echo Ready: %CD%\public\release\%EXE%

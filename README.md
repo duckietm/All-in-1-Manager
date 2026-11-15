@@ -97,6 +97,7 @@ program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
   [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+- [Plugins](#plugins) · [External plugins](#external-plugins)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -719,7 +720,8 @@ When a step is not done yet, the install button is the highlighted one and **Ski
 Skipping a step moves on to the next one, and a failed step can be skipped too.
 
 A new step implements `InstallStep` (`source/crates/app/src/gui/step.rs`) and is added to `views::server_steps()`. An addon is a
-`Wizard` with its own step list and finish page (and `key_step: false`, see `views/gitea.rs`), plus a sidebar entry in `gui/mod.rs`.
+`Wizard` with its own step list and finish page (and `key_step: false`, see `views/gitea.rs`), plus a sidebar entry in `gui/mod.rs`
+and an entry in `PLUGINS` (`source/crates/app/src/plugins/mod.rs`), so it can be switched off on the Plugins page.
 
 ## Addons
 
@@ -1686,6 +1688,244 @@ after reloading the hotel page. Octane's `UITexts.jsonc` is not edited here, bec
 JSON would drop; FigureData is not edited either, because its set, part and palette ids depend on each other and a
 plain field edit easily breaks avatars.
 
+## Plugins
+
+**Plugins** (in the sidebar under GENERAL) lists the optional parts of the program: CMS, Gitea, Fail2Ban, CrowdSec,
+Default catalogue, SQL Editor, Habbo and retro assets, Deploy Assets, Asset import and fixes and
+Asset Explorer. Each one has an on/off switch: switched off, its pages leave the sidebar, the Addons page and the
+dashboard. Nothing changes on the server, and switching it on again brings everything back. The choice is kept in
+`configuration/settings.json` (`DisabledPlugins`).
+
+Some plugins need a **data pack** that is no longer built into the program, so the program stays about 11 MB
+smaller:
+
+| Pack | Plugin | Release file |
+|---|---|---|
+| Client images | Deploy Assets | `plugin-client-assets.zip` |
+| Default catalogue | Default catalogue | `plugin-default-catalog.zip` |
+
+**Download** fetches the pack from the program's GitHub release (the same version, else the newest) and checks it
+against its published `.sha256`; a download that does not match, or stops halfway, is never used and never replaces
+a working pack. It is kept in `configuration/plugins/<pack>/`; **Remove** deletes it again. A plugin page whose pack is
+missing shows the Download button instead of the page. The program also finds the packs in `plugins/` next to
+itself (what `build release` puts there), in `Assets/` next to itself (the client images of older versions) and, in a
+debug build, in the source tree.
+
+`python source/tools/make_packs.py dist/` makes the release files with their `.sha256` (the release workflow runs it);
+`--install DIR` unpacks them into `DIR/plugins/`.
+
+## External plugins
+
+Besides the built-in plugins above, the Manager can run **external plugins**: small programs written by other people,
+packed in a `.aiop` file. They are not part of the program. You install, update and remove them while the Manager
+runs, and they run in a sandbox: a plugin can only do what its manifest asks for and you allowed.
+
+### For admins
+
+On the **Plugins** page, **Install from file …** opens a file picker for a `.aiop` package. Before anything is
+installed a window shows the plugin's name, author, version and every permission it asks for, in plain words, with an
+**Install** button. Nothing is installed until you press it. An update of an installed plugin shows the same window,
+with the new permissions marked "new in this version". An update is installed only after you press **Install**: until
+then the old version stays as it was and keeps running. A package with the same id but **another author** is not an
+update: the window says so in red ("Different author"), and the new plugin does not get the old one's private data,
+which is set aside in `configuration/plugins/ext/.<id>.data-from-previous-author` (you can put it back by hand).
+Removing a plugin deletes its folder and its private data, everything an interrupted install left behind, the data set
+aside for it, and the private data of a developer version with the same id; a window says so first. A manifest lists
+at most 64 permissions, each one once.
+
+The plugin is stored in `configuration/plugins/ext/<id>/`. A plugin installed from a file always shows a red
+**Not verified** badge: nobody has checked its code. Install such a plugin only when you trust its source or have read
+it. Plugins installed from the official index can be **Verified** instead: see the next section.
+
+**Permissions** are listed in the plugin's manifest. The window shows them as sentences; these are the strings:
+
+| Permission | What it allows |
+|---|---|
+| `files` | A private folder of its own (always allowed, see the limits below). Nothing else on disk. |
+| `ssh` | Run a script on the hotel's server as the login user. |
+| `ssh:root` | Run a script as root. Shown with a large red warning. |
+| `sql:read:<tables>` | Select from these tables of the hotel database. |
+| `sql:write:<tables>` | Insert, update and delete in these tables. |
+| `sql:read-private:<table>.<column>` | Use a private column of that table (see below). |
+| `http:<host>` | Fetch pages with HTTP(S) from exactly this host, on the default port (one permission per host). |
+| `tcp:localhost:<port>` | Connect to a program on this computer, such as G-Earth. |
+
+Plugins never send raw SQL: they ask for a select, insert, update or delete on a named table with typed values, and
+the Manager builds the statement. The hotel database is the only one they can reach. Private columns are
+`users.password`, `users.mail`, `users.ip_register`, `users.ip_current`, `users.auth_ticket` and `users.machine_id`;
+every column, in any table, whose name contains `password`, `token`, `secret` or `ip_`; and every column named exactly
+`ip` or `machine_id`. A plugin needs its own `sql:read-private` permission for each one, also to use it in a condition or to write it.
+
+**The approval card.** A plugin never changes the server or the database on its own. When it wants to run a script or
+write to the database, its page shows an **approval card** at the top, above the plugin's content, with the full
+script (or every statement with every value), the name of the server and, for a script, the user it runs as. Nothing
+runs until you press **Approve**. **Reject** tells the plugin no; **Reject and stop this plugin** also closes it. A
+script that runs as root, or as a login user that is root, is marked "Runs as root". An approval belongs to the server that was logged in when the plugin asked: if the login changed in
+the meantime, Approve fails with "The server changed since the request" and nothing runs.
+
+**What runs where.** The plugin's code runs on your PC, inside the Manager, in a sandbox. It does not draw anything:
+it hands the Manager a description of its page (headings, text, buttons, inputs, tables, a log) and the Manager draws
+it with its own widgets, in a frame labelled with the plugin's name, so it cannot pass for a Manager screen. Scripts
+run on the hotel's server, over the Manager's SSH login, after you approved them. Database calls go through the
+Manager's SSH tunnel to the hotel database, with the saved MariaDB account.
+
+### The official index
+
+The official plugin index is a list of reviewed plugins, kept in the GitHub repository `all-in-1-plugins/index`. Each
+plugin there is built by that repository's CI from a pinned commit of its public source, and the list (`index.json`)
+is signed with the index's Ed25519 key. The Manager carries the public key (at most two at once, for a key change)
+and checks the signature of every index it reads: an index that is changed in any way, or signed by another key, is
+refused.
+
+**The Available tab.** The Plugins page has two tabs: **Installed** and **Available**. Available lists the plugins of
+the index with their name, author, version, description, permissions and source (repository and commit), with a
+search box. Each row has **Install**, **Update available (x.y.z)**, **Installed** or **Revoked**. The top of the tab
+says which index it shows ("Index 12, published 3 days ago · checked just now") and has **Check again**. The index is
+fetched once when the Manager starts, in the background, and when you press **Check again**; it never blocks the
+window. Each download of `index.json` is at most 4 MiB, its signature at most 4 KiB, and both together time out after
+30 seconds. An index lists at most 2,000 plugins. The last accepted index is kept in `configuration/plugins/index/`
+(`index.json`, `index.json.sig`, `state.json`) and checked again every time it is read, so the tab works offline.
+
+**Verified, not verified, test index.** **Install** downloads the package (at most 32 MiB), checks that its size and
+SHA-256 are the ones the signed index lists, then checks the package itself and that its manifest says the same id,
+version, author, API and permissions as the index. Anything else refuses the install. Then the usual consent window
+opens, with a green line "Verified by the official index (signed <key id>)" instead of the red "Not verified". After
+the install the plugin's card shows a green **Verified** badge, as long as its files are the ones that were checked
+(`verified.json` in its folder). A plugin installed from a file, a developer folder, or a plugin from a test index
+(below) is never Verified: the last one says "Verified by a test index (developer mode)" in the consent window and is
+shown as **Not verified** once installed.
+
+**Updates are always manual.** When the index has a newer version of an installed plugin (same id, same author, a
+higher version number, not revoked), its card and its Available row show **Update available (x.y.z)**. Nothing is
+downloaded or installed until you press it, and the consent window opens again, with new permissions marked "new in
+this version".
+
+**Revocation.** The index can revoke versions of a plugin (or all of them), with a reason. An installed plugin whose
+version is revoked is switched off at once (its page closes and it stops), its card shows "Revoked by the official
+index: it is switched off" with the reason, and it cannot be switched on again while it is revoked. A revoked version
+cannot be installed. If a later index no longer revokes it, the switch unlocks, but the plugin stays off until you
+switch it on. The revocations of the newest verified official index are also saved on their own, in
+`configuration/plugins/index/revoked.json`, and applied when the Manager starts, before any plugin page can open. So
+they hold offline, and also when the saved index can no longer be read or no longer verifies. Only a verified official
+index with a higher sequence number replaces that list.
+
+**An out-of-date index.** Every index has an expiry date (the index repository publishes a fresh one on the 1st and
+the 15th of each month, valid for 30 days). The Manager also remembers the highest index number (`sequence`) it has
+accepted and refuses an older index ("The index is older than one already seen"), so nobody can serve you an old
+list that still offers a revoked plugin. An index past its expiry date shows "The index is out of date": nothing can
+be installed or updated from it until a newer index is fetched, but what it revokes stays revoked.
+
+**"Not set up yet".** Until the owner of the index generates its signing key and puts the public key in the Manager
+(`OFFICIAL_INDEX_KEYS` in `source/crates/app/src/plugins/index.rs`), the Available tab says "The official plugin
+index is not set up yet" and nothing is fetched. Plugins can still be installed from a file on the Installed tab.
+
+**Testing with a local index (developer mode).** With **Developer mode** on, Settings has **Index URL (testing)**, **Test
+keys** (one per line, `key-id:base64`) and **Save the test index**. The URL must be `https`, or `http` on `127.0.0.1` or
+`localhost`; the packages must be in a `packages/` folder next to the index
+(`<folder of index.json>/packages/<id>-<version>/<id>.aiop`). The Available tab then shows "Test index (developer
+mode)" and reads that index instead of the official one. It is cached apart (`configuration/plugins/index/test/`),
+never raises the official index number, and is ignored as soon as developer mode is off. The official revocations keep
+applying while a test index is used; the test index's own revocations only add to them. The index repository's
+`tools/local-test.md` shows the whole round trip: a throw-away key, packing `hello`, building and signing an index with
+the `aio-index` tool (`source/crates/plugin_index`), and serving it on `127.0.0.1`.
+
+**Key rotation.** The Manager trusts at most two index keys at once. To change the key, a Manager release first
+carries both the old and the new public key; the index is then signed with the new key, and a later release drops the
+old one. The new key does not start the numbering again: `aio-index build --previous index.json --pubkey "<keys>"`
+verifies the previous index (with either key) and continues from its sequence number, so the highest number each
+Manager has stored stays valid and nothing is refused as a rollback.
+
+The highest number (`state.json`) and the revocation list (`revoked.json`) are saved together with the id of the key
+that signed their index. When a Manager release no longer trusts that key (a rotation away from a stolen key), the
+stored number no longer counts and the saved revocation list is replaced by the first verified index, whatever its
+number (until then it keeps revoking what it revoked). Plugins installed from an index of a key that is no longer
+trusted lose "Verified by the official index". A fetched index may also raise the stored number by at most 1,000,000
+at once; a bigger jump is refused. So an index signed with a stolen key can neither push the number so high that no
+honest index is accepted again, nor empty the revocation list for good: shipping a Manager without that key undoes
+it. If `index.json` is ever lost, `aio-index build --min-sequence <n>` starts the new index at `n` (above the highest
+number published), so Managers accept it.
+
+### Limits and safety
+
+- A plugin gets at most 64 MiB of memory and 5 seconds per call. Time spent waiting for you (a dialog, an approval)
+  does not count, and the outside world has its own limits: SQL 30 s, HTTP 60 s, a local connection 5 s to connect and
+  30 s to receive, a script 10 minutes. A plugin that goes over the memory or call limit is stopped and its page says
+  why; **Reload** starts it again.
+- The log is clipped: at most 1,000 lines and 256 KiB per call, 4 KiB per line. Control and direction-changing
+  characters are replaced, so a plugin cannot forge lines or hide text.
+- The private folder is `configuration/plugins/ext/<id>/data/`. It holds at most 64 MiB, 10,000 files and folders, and
+  32 MiB per file. Paths are relative and checked; a plugin cannot leave the folder, not even through a link. It
+  cannot see the Manager's settings, your SSH keys or another plugin's data.
+- A file the plugin asks you to pick is handed over for one purpose only: a file you **open** is read-only for the
+  plugin, a file you **save** is write-only. Before the file dialog opens, a Manager window says what the plugin wants.
+- Every dialog of a plugin (a question, a text to type, choosing a file) has **Stop this plugin**, which closes it
+  like "Reject and stop". One call may open at most 20 dialogs; past that the plugin gets "cancelled" without anything
+  being shown, and its log says so.
+- A write batch holds at most 1,000 statements and 8 MiB of values, so the approval card can show all of it.
+- A file a plugin hands to the Catalogue manager's import (at most 32 MiB) is saved in
+  `configuration/plugins/ext-exports/<id>/`, outside the plugin's folder, so removing or updating the plugin does not
+  delete it. That folder holds at most 100 files and 256 MiB per plugin; past that the status line says it is full.
+- Every text a plugin supplies (names, labels, cells, log lines, dialog texts) has control, direction and invisible
+  characters replaced before it is shown.
+- A plugin can only use the tables, hosts, ports and kinds of script it declared, and it only runs while its page is
+  open: no background work. Closing the page, switching the plugin off or removing it stops it and rejects what it was
+  waiting for. Removing or updating a plugin that is still running waits up to 10 seconds for it to stop, then fails with "The
+  plugin is still running: close its page and try again"; a plugin that is busy with approved work blocks leaving its
+  page until that work has finished.
+- A package is at most 32 MiB, with a wasm file of at most 24 MiB.
+
+### Developer mode
+
+**Settings → Developer mode** (off by default) is for people who write plugins. When it is on, the Plugins page gets a
+**Developer plugins** section with **Load a plugin folder**: pick a folder with `manifest.json` and `plugin.wasm` and
+the plugin runs straight from there, with a **Reload** button, without packing a `.aiop`. The same consent window,
+permissions and approval cards apply, and the plugin carries red **Developer** and **Not verified** badges. The list of folders
+is kept in `configuration/settings.json` (`DeveloperMode`, `DeveloperPlugins`), but your consent is not: after a
+restart you review the permissions once more, and a folder whose permissions grew on reload stays off until you do. Switching the mode off hides the folders and stops their plugins.
+
+If the wasm file is not next to the manifest, add a `dev_wasm` field to `manifest.json`, for example
+`"dev_wasm": "target/wasm32-wasip2/release/my_plugin.wasm"`. It must be a relative path that stays inside the folder.
+The private data of a developer plugin is in `configuration/plugins/ext-dev/<id>/data/`. A folder whose id is already
+installed shows "id already installed" and does not run.
+
+### Building a plugin
+
+A plugin is a WebAssembly component for the `plugin` world of the WIT package `aio:plugin@1.0.0`, in
+`source/wit/aio-plugin/plugin.wit`. That file is the whole API: the page description, the events and the `host`
+imports (log, status line, questions, file picking, the private folder, scripts, database, HTTP, local TCP). The
+Manager accepts API 1.x. In Rust, a plugin is a crate built for `wasm32-wasip2` (`rustup target add wasm32-wasip2`)
+with `crate-type = ["cdylib"]` and `wit-bindgen`.
+
+`source/plugins/hello` is the example: a greeting form with a counter it keeps in its private folder. Its
+`manifest.json` has the id, name, version, author, description, `api` (`"1.0"`), the permissions, a page title and an
+optional tile. Build and pack it with:
+
+```
+python source/tools/pack_plugin.py source/plugins/hello
+```
+
+This builds the crate into `source/plugins/hello/target/` (its `.cargo/config.toml` sets that) and writes
+`dist/hello.aiop`: a zip with `manifest.json`, `plugin.wasm` and, when present, `icon.png` and `i18n/<lang>.json`.
+Install the `.aiop` from the Plugins page, or load the folder `source/plugins/hello` in developer mode: its
+`dev_wasm` points at the built file. Packing is reproducible: the same files always give the same `.aiop` bytes (a
+fixed entry order, time 1980-01-01 00:00:00, mode 0644 and compression). `--locked` builds with exactly the
+versions in the workspace's `Cargo.lock` (and fails when there is none) and `--offline` never touches the network:
+both are for reproducible builds, as in the index repository's CI. The `i18n/` files are accepted in a package but not used yet: in API 1.0 a
+plugin's texts are shown as it writes them, and translating them comes in a later milestone.
+
+A plugin crate outside this repository needs the WIT file: copy the folder `source/wit/aio-plugin` (it holds
+`plugin.wit`) into your crate, for example as `wit/aio-plugin`, and point `wit-bindgen` at it:
+
+```rust
+wit_bindgen::generate!({ world: "plugin", path: "wit/aio-plugin" });
+```
+
+`source/plugins/hello/src/lib.rs` shows the rest: implement the generated `Guest` trait (`render` and `on-event`) and
+`export!` it.
+
+To have a plugin listed in the official index, see the index repository (`all-in-1-plugins/index`): its README
+says how to submit one.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;
@@ -1906,7 +2146,7 @@ The quickest way: run the build script in the root of the repository. On Windows
 menu, or run it in a terminal; on Linux use `./build.sh`:
 
 ```
-build release      ./build.sh release     # the program to hand out -> public/release/ (with Assets/ next to it)
+build release      ./build.sh release     # the program to hand out -> public/release/ (with plugins/ next to it)
 build dev          ./build.sh dev         # debug build             -> public/dev/
 build run          ./build.sh run         # debug build, and start it
 build test         ./build.sh test        # all tests
@@ -1916,7 +2156,7 @@ On Windows it needs Visual Studio's "Desktop development with C++" (Rust uses it
 
 ```bash
 python source/tools/build.py dev               # debug build    -> public/dev/all-in-1-manager(.exe)
-python source/tools/build.py release           # release build  -> public/release/ (with Assets/ next to it)
+python source/tools/build.py release           # release build  -> public/release/ (with plugins/ next to it)
 python source/tools/build.py dev --run         # and start it
 cargo test --workspace                         # all tests, including the parity tests
 ```

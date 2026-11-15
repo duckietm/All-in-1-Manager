@@ -91,7 +91,7 @@ use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
 };
 use crate::bindings::Plugin;
-use crate::folders::{FolderLimits, PickedFolder};
+use crate::folders::{FolderLimits, PickedFolder, UserFolders};
 use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
 use crate::net::{
     askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
@@ -429,6 +429,8 @@ pub struct HostState {
     keep_working: bool,
     /// What each picked folder may write (see [`crate::folders`]).
     folder_limits: FolderLimits,
+    /// The user's folders a picked root may not be (`None`: [`UserFolders::of_this_user`], read at each pick).
+    user_folders: Option<UserFolders>,
 }
 
 impl WasiView for HostState {
@@ -442,6 +444,12 @@ impl HostState {
     async fn waiting<F: std::future::Future>(&mut self, fut: F) -> F::Output {
         let _paused = Paused::begin(&self.clock);
         fut.await
+    }
+
+    /// Test hook: the home and startup folders picks are checked against, instead of this user's.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_user_folders(&mut self, user: UserFolders) {
+        self.user_folders = Some(user);
     }
 
     /// Test hook: the limits of the folders picked from now on.
@@ -883,7 +891,8 @@ impl Host for HostState {
         // The Manager's folders, and always this plugin's own (its code and its private data).
         let mut manager = services.manager_folders();
         manager.extend(self.data.parent().map(Path::to_path_buf));
-        match PickedFolder::open(&path, &manager, self.folder_limits) {
+        let user = self.user_folders.clone().unwrap_or_else(UserFolders::of_this_user);
+        match PickedFolder::open(&path, &manager, &user, self.folder_limits) {
             Ok(folder) => self.table.push(folder).ok(),
             Err(e) => {
                 self.log.log(Level::Warn, &format!("the picked folder was refused: {e}"));
@@ -1202,6 +1211,7 @@ impl PluginInstance {
             has_tick,
             keep_working: false,
             folder_limits: FolderLimits::default(),
+            user_folders: None,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);

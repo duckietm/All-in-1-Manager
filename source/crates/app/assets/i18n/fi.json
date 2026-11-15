@@ -3943,5 +3943,5 @@
   "{plugin} could not be installed.": "Liitännäistä {plugin} ei voitu asentaa.",
   "· checked {age}": "· tarkistettu {age}",
   "Choose a folder …": "Valitse kansio …",
-  "The plugin wants you to choose a folder. It can create new files in it, nothing else: files already there stay as they are.": "Laajennus pyytää sinua valitsemaan kansion. Se voi vain luoda siihen uusia tiedostoja, ei mitään muuta: kansiossa jo olevat tiedostot pysyvät ennallaan."
+  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "Laajennus pyytää sinua valitsemaan kansion. Se voi vain luoda siihen datatiedostoja (kuvia, tekstiä, SQL:ää, JSONia), ei mitään muuta: kansiossa jo olevat tiedostot pysyvät ennallaan."
 }

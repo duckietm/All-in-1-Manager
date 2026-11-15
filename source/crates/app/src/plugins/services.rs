@@ -684,7 +684,7 @@ impl HostServices for AppServices {
     }
 
     async fn pick_folder(&self, title: String) -> Option<PathBuf> {
-        let message = t("The plugin wants you to choose a folder. It can create new files in it, nothing else: files already there stay as they are.");
+        let message = t("The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.");
         if !self.before_picking(&title, message, t("Choose a folder …")).await {
             return None;
         }
@@ -706,8 +706,13 @@ impl HostServices for AppServices {
 
     fn manager_folders(&self) -> Vec<PathBuf> {
         // The whole configuration (plugins with their http-hosts.json and verified.json, logins, settings), not only
-        // configuration/plugins: a new file anywhere in it could be read by the Manager.
-        vec![aio_core::config_dir::directory()]
+        // configuration/plugins: a new file anywhere in it could be read by the Manager. And the install folder: a
+        // library planted beside the program (version.dll) would be loaded by it.
+        let mut folders = vec![aio_core::config_dir::directory()];
+        if let Some(install) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(Path::to_path_buf)) {
+            folders.push(std::fs::canonicalize(&install).unwrap_or(install));
+        }
+        folders
     }
 }
 
@@ -1099,6 +1104,16 @@ mod tests {
         let folders = app.manager_folders();
         assert!(folders.contains(&aio_core::config_dir::directory()), "{folders:?}");
         assert!(folders.iter().any(|f| super::super::packs::root().starts_with(f)), "plugins live in a Manager folder");
+    }
+
+    /// The install folder too: a plugin must not plant `version.dll` (or anything) beside the Manager's program.
+    #[tokio::test]
+    async fn the_install_folder_belongs_to_the_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let folders = services(&shared, dir.path()).manager_folders();
+        let install = std::fs::canonicalize(std::env::current_exe().unwrap().parent().unwrap()).unwrap();
+        assert!(folders.contains(&install), "{folders:?}");
     }
 
     #[test]

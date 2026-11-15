@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use aio_plugin_host::approvals::Approvals;
 use aio_plugin_host::bindings::aio::plugin::host::{Host, HostPickedFolder};
-use aio_plugin_host::folders::{FolderLimits, PickedFolder, LIMIT_REACHED, MANAGER_FOLDER};
+use aio_plugin_host::folders::{FolderLimits, PickedFolder, UserFolders, LIMIT_REACHED, MANAGER_FOLDER, OWN_FOLDER};
 use aio_plugin_host::runtime::{engine, PluginInstance};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::{inspect, install};
@@ -103,7 +103,7 @@ async fn write_creates_nested_files() {
     host.reveal(again(&folder)).await.unwrap();
     assert_eq!(fake.revealed.lock().unwrap().clone(), vec![std::fs::canonicalize(&out).unwrap()]);
     // Each reveal opens a window: not again right away.
-    assert!(host.reveal(again(&folder)).await.unwrap_err().starts_with("denied:"));
+    assert!(host.reveal(again(&folder)).await.unwrap_err().starts_with("permission denied:"));
     // A cancelled dialog gives none.
     *fake.folder.lock().unwrap() = None;
     assert!(host.pick_folder("Again".into()).await.is_none());
@@ -119,12 +119,13 @@ async fn refuses_overwrite_of_existing_file() {
     let host = inst.host_for_tests();
     let folder = host.pick_folder("Save".into()).await.unwrap();
     let error = host.write(again(&folder), "notes.txt".into(), b"evil".to_vec()).await.unwrap_err();
-    assert_eq!(error, "denied: notes.txt already exists");
+    assert_eq!(error, "permission denied: notes.txt already exists");
     let error = host.write(again(&folder), "photos/cat.jpg".into(), b"evil".to_vec()).await.unwrap_err();
-    assert_eq!(error, "denied: photos/cat.jpg already exists");
+    assert_eq!(error, "permission denied: photos/cat.jpg already exists");
     // A folder is not a file to replace either.
-    let error = host.write(again(&folder), "photos".into(), b"evil".to_vec()).await.unwrap_err();
-    assert_eq!(error, "denied: photos already exists");
+    std::fs::create_dir_all(out.join("album.png")).unwrap();
+    let error = host.write(again(&folder), "album.png".into(), b"evil".to_vec()).await.unwrap_err();
+    assert_eq!(error, "permission denied: album.png already exists");
     assert_eq!(std::fs::read(out.join("notes.txt")).unwrap(), b"the user's notes");
     assert_eq!(std::fs::read(out.join("photos/cat.jpg")).unwrap(), b"cat");
     // Existing folders are fine to create new files in.
@@ -133,7 +134,7 @@ async fn refuses_overwrite_of_existing_file() {
     // A file this handle wrote, then written by a new handle of the same folder: that one did not write it.
     let other = host.pick_folder("Save".into()).await.unwrap();
     let error = host.write(again(&other), "photos/dog.jpg".into(), b"evil".to_vec()).await.unwrap_err();
-    assert_eq!(error, "denied: photos/dog.jpg already exists");
+    assert_eq!(error, "permission denied: photos/dog.jpg already exists");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -155,7 +156,7 @@ async fn refuses_escape() {
     let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
     let host = inst.host_for_tests();
     let folder = host.pick_folder("Save".into()).await.unwrap();
-    let long = "a".repeat(256);
+    let long = "a.txt".repeat(256);
     let deep = "a/".repeat(8) + "f";
     for bad in [
         "",
@@ -214,7 +215,7 @@ async fn refuses_symlink_inside_folder() {
     let folder = host.pick_folder("Save".into()).await.unwrap();
     for path in ["link/new.txt", "link/sub/new.txt", "link"] {
         let error = host.write(again(&folder), path.into(), b"x".to_vec()).await.unwrap_err();
-        assert!(error.starts_with("denied:"), "{path}: {error}");
+        assert!(error.starts_with("permission denied:"), "{path}: {error}");
     }
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing was written through the link");
 }
@@ -227,21 +228,25 @@ async fn limits_enforced() {
     host.set_folder_limits(FolderLimits { files: 3, bytes: 100, file: 40 });
     let folder = host.pick_folder("Save".into()).await.unwrap();
     // One file: at most 40 bytes.
-    assert_eq!(host.write(again(&folder), "big".into(), vec![1; 41]).await.unwrap_err(), LIMIT_REACHED);
-    assert!(!out.join("big").exists());
-    host.write(again(&folder), "a".into(), vec![1; 40]).await.unwrap();
-    host.write(again(&folder), "b".into(), vec![1; 40]).await.unwrap();
+    assert_eq!(host.write(again(&folder), "big.bin".into(), vec![1; 41]).await.unwrap_err(), LIMIT_REACHED);
+    assert!(!out.join("big.bin").exists());
+    host.write(again(&folder), "a.txt".into(), vec![1; 40]).await.unwrap();
+    host.write(again(&folder), "b.txt".into(), vec![1; 40]).await.unwrap();
     // 80 of 100 bytes used: 21 more do not fit, 20 do.
-    assert_eq!(host.write(again(&folder), "c".into(), vec![1; 21]).await.unwrap_err(), LIMIT_REACHED);
-    host.write(again(&folder), "c".into(), vec![1; 20]).await.unwrap();
+    assert_eq!(host.write(again(&folder), "c.txt".into(), vec![1; 21]).await.unwrap_err(), LIMIT_REACHED);
+    host.write(again(&folder), "c.txt".into(), vec![1; 20]).await.unwrap();
     // Three files written: no fourth, not even an empty one.
-    assert_eq!(host.write(again(&folder), "d".into(), Vec::new()).await.unwrap_err(), LIMIT_REACHED);
-    assert!(!out.join("d").exists());
+    assert_eq!(host.write(again(&folder), "d.txt".into(), Vec::new()).await.unwrap_err(), LIMIT_REACHED);
+    assert!(!out.join("d.txt").exists());
     // Rewriting counts the new size only.
-    host.write(again(&folder), "a".into(), vec![2; 30]).await.unwrap();
-    host.write(again(&folder), "a".into(), vec![2; 40]).await.unwrap();
-    assert_eq!(host.write(again(&folder), "a".into(), vec![2; 41]).await.unwrap_err(), LIMIT_REACHED);
-    assert_eq!(std::fs::read(out.join("a")).unwrap(), vec![2; 40]);
+    host.write(again(&folder), "a.txt".into(), vec![2; 30]).await.unwrap();
+    host.write(again(&folder), "a.txt".into(), vec![2; 40]).await.unwrap();
+    assert_eq!(host.write(again(&folder), "a.txt".into(), vec![2; 41]).await.unwrap_err(), LIMIT_REACHED);
+    assert_eq!(std::fs::read(out.join("a.txt")).unwrap(), vec![2; 40]);
+    // Refusals carry the prefix every permission refusal has (the SDK maps it to ErrorKind::Denied).
+    assert_eq!(LIMIT_REACHED, "permission denied: folder limit reached");
+    assert_eq!(MANAGER_FOLDER, "permission denied: this folder belongs to the Manager");
+    assert_eq!(OWN_FOLDER, "permission denied: pick a folder of its own for this");
     // The defaults are the documented ones.
     assert_eq!(FolderLimits::default(), FolderLimits { files: 100_000, bytes: 2 << 30, file: 256 << 20 });
 }
@@ -255,7 +260,7 @@ async fn import_preview_only_for_own_files() {
     let host = inst.host_for_tests();
     let folder = host.pick_folder("Save".into()).await.unwrap();
     let error = HostPickedFolder::open_import_preview(host, again(&folder), "secret.sql".into()).await.unwrap_err();
-    assert!(error.starts_with("denied:"), "{error}");
+    assert!(error.starts_with("permission denied:"), "{error}");
     assert!(HostPickedFolder::open_import_preview(host, again(&folder), "missing.sql".into()).await.is_err());
     host.write(again(&folder), "out/catalog.sql".into(), b"INSERT 1".to_vec()).await.unwrap();
     HostPickedFolder::open_import_preview(host, again(&folder), "out/catalog.sql".into()).await.unwrap();
@@ -302,4 +307,94 @@ async fn refuses_manager_folder() {
     assert!(!config.join("plugins/ext/hello/http-hosts.json").exists());
     assert!(!config.join("new.txt").exists());
     host.write(again(&folder), "elsewhere.txt".into(), b"ok".to_vec()).await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_files_that_are_not_data() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    // Programs, libraries, scripts, shortcuts, files without an extension: never.
+    for bad in ["version.dll", "run.exe", "start.bat", "start.cmd", "x.ps1", "x.lnk", "x.vbs", "x.js", "x.sql.exe", "x.tar.gz", "README", "sub/noext"] {
+        let error = host.write(again(&folder), bad.into(), b"x".to_vec()).await.unwrap_err();
+        assert_eq!(error, format!("permission denied: {bad} is not a data file"), "{bad}");
+    }
+    // Hidden files and folders (.config, .bashrc ...) neither.
+    for bad in [".bashrc.txt", ".config/autostart/x.json", "sub/.hidden.png"] {
+        let error = host.write(again(&folder), bad.into(), b"x".to_vec()).await.unwrap_err();
+        assert!(error.starts_with("permission denied:"), "{bad}: {error}");
+    }
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "nothing was created");
+    // Every listed data type, in any letter case (the last extension counts).
+    let good = [
+        "a.json", "a.sql", "a.txt", "a.md", "a.csv", "a.tsv", "a.xml", "a.html", "a.png", "a.gif", "a.jpg", "a.jpeg",
+        "a.webp", "a.bmp", "a.svg", "a.zip", "a.nitro", "a.swf", "a.bin", "a.log", "B.PNG", "c.Json", "d.exe.txt",
+    ];
+    for ok in good {
+        host.write(again(&folder), ok.into(), b"x".to_vec()).await.unwrap_or_else(|e| panic!("{ok}: {e}"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refuses_broad_roots() {
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let (mut inst, out) = setup(root.path(), fake.clone()).await;
+    let home = root.path().join("home");
+    let startup = home.join("AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup");
+    std::fs::create_dir_all(startup.join("inside")).unwrap();
+    let host = inst.host_for_tests();
+    host.set_user_folders(UserFolders { home: Some(home.clone()), autostart: vec![startup.clone()] });
+    // A drive (file system) root, the home folder itself, a startup folder and anything inside one.
+    let drive = std::fs::canonicalize(root.path()).unwrap().ancestors().last().unwrap().to_path_buf();
+    for picked in [drive, home.clone(), startup.clone(), startup.join("inside")] {
+        *fake.folder.lock().unwrap() = Some(picked.clone());
+        assert!(host.pick_folder("Save".into()).await.is_none(), "{} must be refused", picked.display());
+    }
+    assert!(fake.logs.lock().unwrap().iter().any(|(_, l)| l.contains(OWN_FOLDER)), "the refusal is logged");
+    // A folder of its own inside the home folder is fine.
+    std::fs::create_dir_all(home.join("Documents/rips")).unwrap();
+    *fake.folder.lock().unwrap() = Some(home.join("Documents/rips"));
+    assert!(host.pick_folder("Save".into()).await.is_some());
+    *fake.folder.lock().unwrap() = Some(out);
+    assert!(host.pick_folder("Save".into()).await.is_some());
+}
+
+/// Without the test hook, the user's real home folder and startup folders are refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_real_home_and_startup_folders_are_refused() {
+    let user = UserFolders::of_this_user();
+    let home = std::env::home_dir().expect("a home folder");
+    assert_eq!(user.home.as_deref(), Some(home.as_path()));
+    #[cfg(windows)]
+    {
+        let appdata = PathBuf::from(std::env::var_os("APPDATA").unwrap());
+        assert!(user.autostart.contains(&appdata.join(r"Microsoft\Windows\Start Menu\Programs\Startup")), "{:?}", user.autostart);
+    }
+    #[cfg(target_os = "linux")]
+    assert!(user.autostart.iter().any(|a| a.ends_with("autostart")), "{:?}", user.autostart);
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let (mut inst, _out) = setup(root.path(), fake.clone()).await;
+    *fake.folder.lock().unwrap() = Some(home);
+    assert!(inst.host_for_tests().pick_folder("Save".into()).await.is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rewrite_replaces_the_file_whole() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    let host = inst.host_for_tests();
+    host.set_folder_limits(FolderLimits { files: 2, bytes: 100, file: 100 });
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    for n in 1..=5u8 {
+        host.write(again(&folder), "sub/state.json".into(), vec![n; 10 * n as usize]).await.unwrap();
+    }
+    assert_eq!(std::fs::read(out.join("sub/state.json")).unwrap(), vec![5; 50]);
+    // No temporary files are left behind, and the rewrites did not use up the file count.
+    let names: Vec<_> = std::fs::read_dir(out.join("sub")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("state.json")]);
+    host.write(again(&folder), "other.txt".into(), vec![0; 50]).await.unwrap();
+    assert_eq!(host.write(again(&folder), "other.txt".into(), vec![0; 51]).await.unwrap_err(), LIMIT_REACHED);
 }

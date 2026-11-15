@@ -3,19 +3,23 @@
 //! The plugin never sees the folder's path. It names files with the private-file path rules
 //! ([`crate::runtime::check_relative`]) and may:
 //!
-//! * create a file that does not exist yet (and the subfolders it needs), with create-new semantics, so a file that
-//!   appears in the meantime is never overwritten (`denied: <path> already exists`);
-//! * rewrite a file it created through the same handle (and only that);
+//! * create a data file ([`DATA_EXTENSIONS`]; no hidden names) that does not exist yet (and the subfolders it needs),
+//!   with create-new semantics, so a file that appears in the meantime is never overwritten
+//!   (`permission denied: <path> already exists`);
+//! * rewrite a file it created through the same handle (and only that), through a temporary file renamed over it, so
+//!   a failed write never leaves a cut-off file;
 //! * hand such a file (at most [`crate::runtime::MAX_FILE_READ`]) to the Manager's import preview.
 //!
 //! Every existing component below the picked root is looked at without following it ([`std::fs::symlink_metadata`]);
 //! a symlink, a junction or any other reparse point is refused, so a write cannot be led out of the folder. The root
 //! is canonical when picked and must still canonicalise to itself at every use (it was not replaced by a link). A
 //! root inside a folder of the Manager (its configuration, the plugin's own folder) is refused when picked, and a
-//! write that would land in one (a root above it) is refused too: `denied: this folder belongs to the Manager`.
+//! write that would land in one (a root above it) is refused too: [`MANAGER_FOLDER`]. Too broad a root (a drive's
+//! root, the user's home folder itself, a startup folder or anything inside one, see [`UserFolders`]) is refused when
+//! picked: [`OWN_FOLDER`]. Every refusal starts with `permission denied:`, like every other refusal of the API.
 //!
 //! Limits per handle ([`FolderLimits`]): [`MAX_FOLDER_FILES`] files, [`MAX_FOLDER_BYTES`] in total (the files' current
-//! sizes), each file at most [`MAX_FOLDER_FILE`]; past them `denied: folder limit reached`.
+//! sizes), each file at most [`MAX_FOLDER_FILE`]; past them [`LIMIT_REACHED`].
 
 use std::collections::HashMap;
 use std::fs::{self, Metadata, OpenOptions};
@@ -32,9 +36,67 @@ pub const MAX_FOLDER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Largest file written into a picked folder.
 pub const MAX_FOLDER_FILE: u64 = 256 * 1024 * 1024;
 /// The refusal past a limit of [`FolderLimits`].
-pub const LIMIT_REACHED: &str = "denied: folder limit reached";
+pub const LIMIT_REACHED: &str = "permission denied: folder limit reached";
 /// The refusal of a folder that is (or leads into) one of the Manager's own folders.
-pub const MANAGER_FOLDER: &str = "denied: this folder belongs to the Manager";
+pub const MANAGER_FOLDER: &str = "permission denied: this folder belongs to the Manager";
+/// The refusal of too broad a root: a drive's root, the home folder itself, a startup folder.
+pub const OWN_FOLDER: &str = "permission denied: pick a folder of its own for this";
+/// The file types a plugin may write into a picked folder (the last extension, any letter case): data, never
+/// programs, libraries, scripts or shortcuts that a broad pick could plant.
+pub const DATA_EXTENSIONS: &[&str] = &[
+    "json", "sql", "txt", "md", "csv", "tsv", "xml", "html", "png", "gif", "jpg", "jpeg", "webp", "bmp", "svg", "zip",
+    "nitro", "swf", "bin", "log",
+];
+
+/// The user's folders a picked root may not be: the home folder itself, and the startup folders (programs started at
+/// login) or anything inside them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserFolders {
+    pub home: Option<PathBuf>,
+    pub autostart: Vec<PathBuf>,
+}
+
+impl UserFolders {
+    /// The folders of the user running the Manager: `home_dir`, and the Windows Startup folders (the user's and all
+    /// users'), `$XDG_CONFIG_HOME/autostart` and `~/.config/autostart`, and `~/Library/LaunchAgents` on macOS.
+    pub fn of_this_user() -> Self {
+        let home = std::env::home_dir();
+        let mut autostart = Vec::new();
+        #[cfg(windows)]
+        {
+            const STARTUP: &str = r"Microsoft\Windows\Start Menu\Programs\Startup";
+            for var in ["APPDATA", "ProgramData"] {
+                if let Some(base) = std::env::var_os(var) {
+                    autostart.push(PathBuf::from(base).join(STARTUP));
+                }
+            }
+        }
+        #[cfg(unix)]
+        {
+            if let Some(config) = std::env::var_os("XDG_CONFIG_HOME").filter(|c| !c.is_empty()) {
+                autostart.push(PathBuf::from(config).join("autostart"));
+            }
+            autostart.extend(home.as_ref().map(|h| h.join(".config/autostart")));
+            #[cfg(target_os = "macos")]
+            autostart.extend(home.as_ref().map(|h| h.join("Library/LaunchAgents")));
+        }
+        Self { home, autostart }
+    }
+}
+
+/// A path made only of data files: no hidden segment (`.config`, `.bashrc`), and a last extension in
+/// [`DATA_EXTENSIONS`].
+fn check_data_file(path: &str, segments: &[String]) -> Result<(), String> {
+    if segments.iter().any(|s| s.starts_with('.')) {
+        return Err(format!("permission denied: {path} is hidden (a name starts with .)"));
+    }
+    let name = segments.last().map(String::as_str).unwrap_or("");
+    let data = name.rsplit_once('.').is_some_and(|(_, ext)| DATA_EXTENSIONS.iter().any(|d| d.eq_ignore_ascii_case(ext)));
+    if !data {
+        return Err(format!("permission denied: {path} is not a data file"));
+    }
+    Ok(())
+}
 /// Shortest time between two `reveal`s of one handle (each opens a file-manager window).
 pub const REVEAL_SPACING: Duration = Duration::from_secs(2);
 
@@ -76,8 +138,9 @@ pub(crate) struct WriteJob {
 }
 
 impl PickedFolder {
-    /// The folder the user picked at `picked`, unless it lies inside one of `manager` (the Manager's folders).
-    pub(crate) fn open(picked: &Path, manager: &[PathBuf], limits: FolderLimits) -> Result<Self, String> {
+    /// The folder the user picked at `picked`, unless it lies inside one of `manager` (the Manager's folders) or is
+    /// too broad a root: a drive's root, `user`'s home folder itself, one of its startup folders or inside one.
+    pub(crate) fn open(picked: &Path, manager: &[PathBuf], user: &UserFolders, limits: FolderLimits) -> Result<Self, String> {
         let root = fs::canonicalize(picked).map_err(|e| io_text(&e))?;
         if !fs::metadata(&root).map_err(|e| io_text(&e))?.is_dir() {
             return Err("not a folder".into());
@@ -85,6 +148,12 @@ impl PickedFolder {
         let manager: Vec<PathBuf> = manager.iter().filter_map(|m| fs::canonicalize(m).ok()).collect();
         if manager.iter().any(|m| root.starts_with(m)) {
             return Err(MANAGER_FOLDER.into());
+        }
+        let real = |p: &PathBuf| fs::canonicalize(p).ok();
+        let is_home = user.home.as_ref().and_then(real).is_some_and(|h| h == root);
+        let in_autostart = user.autostart.iter().filter_map(real).any(|a| root.starts_with(a));
+        if root.parent().is_none() || is_home || in_autostart {
+            return Err(OWN_FOLDER.into());
         }
         Ok(Self { root, manager, limits, written: HashMap::new(), total: 0, last_reveal: None })
     }
@@ -97,6 +166,7 @@ impl PickedFolder {
     /// Checks a write of `len` bytes to `path` against the path rules and the limits; nothing is touched yet.
     pub(crate) fn check_write(&self, path: &str, len: u64) -> Result<WriteJob, String> {
         let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
+        check_data_file(path, &segments)?;
         let old = self.written.get(path).copied();
         let new_file = old.is_none();
         if len > self.limits.file
@@ -118,7 +188,7 @@ impl PickedFolder {
     pub(crate) fn read_own(&self, path: &str) -> Result<(String, Vec<u8>), String> {
         let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
         if !self.written.contains_key(path) {
-            return Err(format!("denied: {path} was not written through this folder"));
+            return Err(format!("permission denied: {path} was not written through this folder"));
         }
         match walk(&self.root, &segments, path)? {
             Some(meta) if meta.is_file() => {}
@@ -133,7 +203,7 @@ impl PickedFolder {
     /// The folder to show in the file manager, at most once per [`REVEAL_SPACING`].
     pub(crate) fn reveal_path(&mut self) -> Result<PathBuf, String> {
         if self.last_reveal.is_some_and(|t| t.elapsed() < REVEAL_SPACING) {
-            return Err(format!("denied: the folder was shown less than {} s ago", REVEAL_SPACING.as_secs()));
+            return Err(format!("permission denied: the folder was shown less than {} s ago", REVEAL_SPACING.as_secs()));
         }
         check_root(&self.root)?;
         self.last_reveal = Some(Instant::now());
@@ -144,7 +214,7 @@ impl PickedFolder {
 impl WriteJob {
     /// Creates the file (or rewrites this handle's own file) with `data`. Blocking file I/O.
     pub(crate) fn run(self, data: &[u8]) -> Result<(), String> {
-        let exists = || format!("denied: {} already exists", self.rel);
+        let exists = || format!("permission denied: {} already exists", self.rel);
         let target = join(&self.root, &self.segments);
         let rewrite = match walk(&self.root, &self.segments, &self.rel)? {
             Some(meta) if self.own && meta.is_file() => true,
@@ -163,8 +233,7 @@ impl WriteJob {
             if !again.is_some_and(|m| m.is_file()) {
                 return Err(exists());
             }
-            let mut file = OpenOptions::new().write(true).truncate(true).open(&target).map_err(|e| io_text(&e))?;
-            return file.write_all(data).map_err(|e| io_text(&e));
+            return replace(&target, data);
         }
         if again.is_some() {
             return Err(exists());
@@ -194,6 +263,33 @@ impl WriteJob {
     }
 }
 
+/// Writes `data` to a new temporary file next to `target` (a hidden name a plugin cannot write itself), then renames
+/// it over `target`: a failed write leaves `target` as it was, never cut off. The rename replaces the directory
+/// entry and never follows a link put there in the meantime. The temporary file is removed on any failure.
+fn replace(target: &Path, data: &[u8]) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = target.parent().ok_or_else(|| "invalid path".to_string())?;
+    for _ in 0..100 {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(".aio-tmp-{}-{n}", std::process::id()));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_text(&e)),
+        };
+        let written = file.write_all(data).and_then(|()| file.sync_all());
+        drop(file);
+        let result = written.and_then(|()| fs::rename(&temp, target));
+        if let Err(e) = result {
+            let _ = fs::remove_file(&temp);
+            return Err(io_text(&e));
+        }
+        return Ok(());
+    }
+    Err("no free temporary name".into())
+}
+
 fn join(root: &Path, segments: &[String]) -> PathBuf {
     let mut path = root.to_path_buf();
     path.extend(segments);
@@ -204,7 +300,7 @@ fn join(root: &Path, segments: &[String]) -> PathBuf {
 fn check_root(root: &Path) -> Result<(), String> {
     match fs::canonicalize(root) {
         Ok(real) if real == root => Ok(()),
-        Ok(_) => Err("denied: the folder was replaced by a link".into()),
+        Ok(_) => Err("permission denied: the folder was replaced by a link".into()),
         Err(e) => Err(io_text(&e)),
     }
 }
@@ -235,13 +331,13 @@ fn walk(root: &Path, segments: &[String], rel: &str) -> Result<Option<Metadata>,
             Err(e) => return Err(io_text(&e)),
         };
         if is_link(&meta) {
-            return Err(format!("denied: {rel} leads through a link"));
+            return Err(format!("permission denied: {rel} leads through a link"));
         }
         if i + 1 == segments.len() {
             return Ok(Some(meta));
         }
         if !meta.is_dir() {
-            return Err(format!("denied: {rel} leads through a file"));
+            return Err(format!("permission denied: {rel} leads through a file"));
         }
     }
     Ok(None)

@@ -258,18 +258,22 @@ interface host {
     open-import-preview: func(file: borrow<picked-file>) -> result<_, string>;
 
     /// A folder the user picked in a dialog (API 1.1). The plugin never sees its path, only its name; it may create
-    /// new files in it (and subfolders as needed) and rewrite the files it created through this handle, nothing else.
-    /// Paths follow the private-file rules: relative with `/`, at most 255 characters and 8 levels, the characters
-    /// A-Z a-z 0-9 . _ - only, no `..`, no drive, no reserved names. A path that already exists and was not written
-    /// through this handle gets `denied: <path> already exists`; a path leading through a link (symlink or junction)
-    /// is refused. One handle may write at most 100,000 files and 2 GiB in total, each file at most 256 MiB
-    /// (`denied: folder limit reached`).
+    /// new data files in it (and subfolders as needed) and rewrite the files it created through this handle, nothing
+    /// else. Paths follow the private-file rules: relative with `/`, at most 255 characters and 8 levels, the
+    /// characters A-Z a-z 0-9 . _ - only, no `..`, no drive, no reserved names. A path that already exists and was not
+    /// written through this handle gets `permission denied: <path> already exists`; a path leading through a link
+    /// (symlink or junction) is refused. One handle may write at most 100,000 files and 2 GiB in total, each file at
+    /// most 256 MiB (`permission denied: folder limit reached`).
     @since(version = 1.1.0)
     resource picked-folder {
         /// The folder's name (its last path component).
         @since(version = 1.1.0)
         name: func() -> string;
-        /// Creates the file `path` (or rewrites one this handle created) with `data`.
+        /// Creates the file `path` (or rewrites one this handle created) with `data`. Only data files: the last
+        /// extension (any letter case) is one of json, sql, txt, md, csv, tsv, xml, html, png, gif, jpg, jpeg, webp,
+        /// bmp, svg, zip, nitro, swf, bin, log; anything else, or a name without an extension, gets
+        /// `permission denied: <path> is not a data file`. No name in the path may start with `.` (hidden files and
+        /// folders). A rewrite replaces the file whole (a failed one leaves the old content).
         @since(version = 1.1.0)
         write: func(path: string, data: list<u8>) -> result<_, string>;
         /// Opens the folder in the file manager.
@@ -282,7 +286,8 @@ interface host {
     }
 
     /// Shows a folder dialog (API 1.1); no permission is needed, the user picks the folder each time. `none` means the
-    /// user cancelled (or picked a folder of the Manager itself, which is refused).
+    /// user cancelled, or picked a folder that is refused: one of the Manager's (its install or configuration folder,
+    /// or inside one), a drive's root, the home folder itself, or a startup folder (or inside one).
     @since(version = 1.1.0)
     pick-folder: func(title: string) -> option<picked-folder>;
 

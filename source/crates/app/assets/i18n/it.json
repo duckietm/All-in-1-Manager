@@ -3943,5 +3943,5 @@
   "{plugin} could not be installed.": "Non è stato possibile installare {plugin}.",
   "· checked {age}": "· controllato {age}",
   "Choose a folder …": "Scegli una cartella …",
-  "The plugin wants you to choose a folder. It can create new files in it, nothing else: files already there stay as they are.": "Il plugin ti chiede di scegliere una cartella. Potrà solo crearvi nuovi file, nient'altro: i file già presenti restano come sono."
+  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "Il plugin ti chiede di scegliere una cartella. Potrà solo crearvi file di dati (immagini, testo, SQL, JSON), nient'altro: i file già presenti restano come sono."
 }

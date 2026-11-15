@@ -20,6 +20,11 @@ Manager, which checks every call against the permissions the plugin declared and
 | [Publishing](publishing.md) | Getting a plugin into the official index, updates, revocation. |
 | [Troubleshooting](troubleshooting.md) | Common errors and what they mean. |
 
+## Licence
+
+The SDK (`source/plugins/sdk`) is licensed under **MIT OR Apache-2.0**, at your option: it is compiled into your plugin,
+so you can license your plugin as you like. The rest of All-in-1 Manager stays GPL-3.0-only.
+
 ## What you need
 
 - Rust 1.97 or newer (1.88 for a plugin alone) with the `wasm32-wasip2` target.

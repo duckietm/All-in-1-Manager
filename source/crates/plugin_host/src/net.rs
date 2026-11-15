@@ -33,8 +33,8 @@ pub const MAX_TCP_RECV: usize = 1024 * 1024;
 pub const MAX_RECV_TIMEOUT_MS: u32 = 30_000;
 /// Most hosts `http:ask` remembers for one plugin.
 pub const MAX_ASKED_HOSTS: usize = 64;
-/// Most hosts refused in one session that are remembered (the oldest is forgotten first, and asked for again).
-const MAX_REFUSED_HOSTS: usize = 256;
+/// Most hosts refused in one session that are remembered; once full, other hosts are refused without asking.
+pub const MAX_REFUSED_HOSTS: usize = 256;
 /// Largest remembered-hosts file read (a bigger one counts as empty).
 const MAX_HOSTS_FILE: u64 = 64 * 1024;
 
@@ -106,20 +106,67 @@ pub fn undeclared(host: &str) -> String {
 /// Names that are never public: asked for under `http:ask`, they would reach this computer or the local network.
 const LOCAL_SUFFIXES: &[&str] = &[".localhost", ".local", ".lan", ".internal", ".home.arpa"];
 
+/// `host` lower case without a trailing dot: how `http:ask` stores and compares hosts.
+pub fn normalise_host(host: &str) -> String {
+    host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase()
+}
+
 /// A host `http:ask` may ask the user about: a valid `http:<host>` name that is public, so a plugin cannot reach this
-/// computer or the local network by asking. Refused: IP literals (any name whose last label is all digits, and IPv6,
-/// which the URL grammar already refuses), `localhost` and `*.localhost`, single-label names, and names ending in
-/// `.local`, `.lan`, `.internal` or `.home.arpa` (a trailing dot ignored, any case). Declared `http:<host>`
-/// permissions keep their own rules.
+/// computer or the local network by asking. The URL parser the fetch uses (WHATWG, the `url` crate) decides what is
+/// an address: it must read the host as a domain, not as IPv4 (which includes hex and short forms such as
+/// `0x7f.0x1` or `127.1`) or IPv6. Also refused: `localhost` and `*.localhost`, single-label names, and names ending
+/// in `.local`, `.lan`, `.internal` or `.home.arpa` (a trailing dot ignored, any case). Declared `http:<host>`
+/// permissions keep their own rules. The addresses a name resolves to are checked when connecting (by the app; see
+/// [`is_local_address`]).
 pub fn askable_host(host: &str) -> bool {
-    if !valid_host(host) || host.contains(':') {
+    if !valid_host(host) {
         return false;
     }
-    let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+    let Ok(parsed) = url::Url::parse(&format!("http://{host}/")) else { return false };
+    let Some(url::Host::Domain(domain)) = parsed.host() else { return false };
+    let name = normalise_host(domain);
     let Some((_, last)) = name.rsplit_once('.') else { return false };
-    let numeric = last.bytes().all(|b| b.is_ascii_digit());
     let local = name == "localhost" || LOCAL_SUFFIXES.iter().any(|s| name.ends_with(s));
-    !last.is_empty() && !numeric && !local && name.parse::<std::net::IpAddr>().is_err()
+    !last.is_empty() && !local
+}
+
+/// An address an asked host must not lead to: loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7), link-local
+/// (169.254/16, fe80::/10), unspecified, CGNAT (100.64/10), "this network" (0/8), broadcast and multicast, and the
+/// IPv4-mapped, IPv4-compatible and NAT64 (64:ff9b::/96) forms of any of these.
+pub fn is_local_address(ip: std::net::IpAddr) -> bool {
+    use std::net::{IpAddr, Ipv4Addr};
+    fn v4(ip: Ipv4Addr) -> bool {
+        let [a, b, ..] = ip.octets();
+        ip.is_loopback()
+            || ip.is_private()
+            || ip.is_link_local()
+            || ip.is_unspecified()
+            || ip.is_broadcast()
+            || ip.is_multicast()
+            || a == 0
+            || (a == 100 && (64..128).contains(&b))
+    }
+    match ip {
+        IpAddr::V4(ip) => v4(ip),
+        IpAddr::V6(ip) => {
+            let s = ip.segments();
+            if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+                return true;
+            }
+            if (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80 {
+                return true;
+            }
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return v4(mapped);
+            }
+            // IPv4-compatible (::a.b.c.d) and NAT64 (64:ff9b::a.b.c.d) carry an IPv4 address in the low 32 bits.
+            let embedded = Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8);
+            if s[..6] == [0; 6] || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return v4(embedded);
+            }
+            false
+        }
+    }
 }
 
 /// Checks `url` against the plugin's `http:<host>` permissions; returns the URL to fetch. (`http:ask` is the
@@ -195,7 +242,7 @@ impl AskedHosts {
         };
         let mut hosts: Vec<String> = Vec::new();
         for h in list.hosts {
-            let h = h.to_ascii_lowercase();
+            let h = normalise_host(&h);
             if askable_host(&h) && !hosts.contains(&h) && hosts.len() < MAX_ASKED_HOSTS {
                 hosts.push(h);
             }
@@ -234,7 +281,7 @@ impl AskedHosts {
 
     /// `Some(true)` for an allowed host, `Some(false)` for one refused this session, `None` if not answered yet.
     pub fn answer(&self, host: &str) -> Option<bool> {
-        let host = host.to_ascii_lowercase();
+        let host = normalise_host(host);
         let asked = self.lock();
         if self.read(&asked).contains(&host) {
             Some(true)
@@ -252,7 +299,7 @@ impl AskedHosts {
 
     /// Remembers `host` as allowed (and no longer refused).
     pub fn allow(&self, host: &str) -> Result<(), String> {
-        let host = host.to_ascii_lowercase();
+        let host = normalise_host(host);
         if !askable_host(&host) {
             return Err(format!("'{}' is not a public host name", sanitise(&host)));
         }
@@ -269,21 +316,36 @@ impl AskedHosts {
         self.write(&mut asked, hosts)
     }
 
-    /// Remembers `host` as refused, for this session.
+    /// Remembers `host` as refused, for this session (not past [`MAX_REFUSED_HOSTS`]: see
+    /// [`AskedHosts::refused_full`]).
     pub fn refuse(&self, host: &str) {
-        let host = host.to_ascii_lowercase();
+        let host = normalise_host(host);
         let mut asked = self.lock();
-        if !asked.refused.contains(&host) {
-            if asked.refused.len() >= MAX_REFUSED_HOSTS {
-                asked.refused.remove(0);
-            }
+        if !asked.refused.contains(&host) && asked.refused.len() < MAX_REFUSED_HOSTS {
             asked.refused.push(host);
         }
     }
 
+    /// [`MAX_REFUSED_HOSTS`] hosts were refused this session: any other host is refused without asking.
+    pub fn refused_full(&self) -> bool {
+        self.lock().refused.len() >= MAX_REFUSED_HOSTS
+    }
+
+    /// Remembers `hosts` as the allowed ones (an update keeps the user's answers; invalid or surplus ones are dropped).
+    pub fn restore(&self, hosts: &[String]) -> Result<(), String> {
+        let mut kept: Vec<String> = Vec::new();
+        for h in hosts.iter().map(|h| normalise_host(h)) {
+            if askable_host(&h) && !kept.contains(&h) && kept.len() < MAX_ASKED_HOSTS {
+                kept.push(h);
+            }
+        }
+        let mut asked = self.lock();
+        self.write(&mut asked, kept)
+    }
+
     /// Forgets the answer for `host`: the plugin asks again next time.
     pub fn forget(&self, host: &str) -> Result<(), String> {
-        let host = host.to_ascii_lowercase();
+        let host = normalise_host(host);
         let mut asked = self.lock();
         asked.refused.retain(|h| *h != host);
         let mut hosts = self.read(&asked);

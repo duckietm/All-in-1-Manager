@@ -6,11 +6,12 @@
 //! Every method is cancel-safe: the runtime drops a future when a call is stopped. A dropped database call loses the
 //! MariaDB session it held (the next call opens a new one), so no half-read connection is ever reused.
 
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
-use aio_plugin_host::net::{AskedHosts, MAX_HTTP_BODY};
+use aio_plugin_host::net::{is_local_address, AskedHosts, MAX_HTTP_BODY};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::{async_trait, display_safe};
 use aio_remote::sql_session::{SqlSession, SqlValue as DbValue};
@@ -126,6 +127,8 @@ pub struct AppServices {
     /// The login of the request waiting for approval (set by `before_approval`, used up by the run).
     bound: Mutex<Option<Login>>,
     http: reqwest::Client,
+    /// The client for hosts reached only through `http:ask`: it refuses local addresses ([`asked_http_client`]).
+    asked_http: reqwest::Client,
     /// Opened on the first database call. Taken out while a call uses it, so a cancelled call drops it.
     database: tokio::sync::Mutex<Option<Database>>,
     /// What "Stop this plugin" in a dialog does (the page sets it: it drops the instance).
@@ -147,6 +150,7 @@ impl AppServices {
             approved: AtomicUsize::new(0),
             bound: Mutex::new(None),
             http: http_client(),
+            asked_http: asked_http_client(),
             database: tokio::sync::Mutex::new(None),
             stopper: Mutex::new(None),
             stopped: AtomicBool::new(false),
@@ -368,6 +372,64 @@ pub fn http_client() -> reqwest::Client {
         .expect("HTTP client")
 }
 
+/// A name lookup: the addresses of a host name (the port is the request's).
+pub type Lookup = Arc<dyn Fn(String) -> futures::future::BoxFuture<'static, std::io::Result<Vec<SocketAddr>>> + Send + Sync>;
+
+/// The system's lookup.
+fn system_lookup() -> Lookup {
+    Arc::new(|name: String| Box::pin(async move { Ok(tokio::net::lookup_host((name.as_str(), 0)).await?.collect()) }))
+}
+
+/// A host reached through `http:ask` resolved only to addresses it must not lead to.
+#[derive(Debug)]
+struct LocalAddress(String);
+
+impl std::fmt::Display for LocalAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "permission denied: host {} resolves to a local address", self.0)
+    }
+}
+
+impl std::error::Error for LocalAddress {}
+
+/// The resolver of [`asked_http_client`]: drops every address [`is_local_address`] names, and fails when none is
+/// left. It is the address list the connection is made from, so the check holds for the address actually connected to
+/// (no second lookup a rebinding DNS server could answer differently).
+struct PublicOnly {
+    lookup: Lookup,
+}
+
+impl reqwest::dns::Resolve for PublicOnly {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let (lookup, host) = (self.lookup.clone(), name.as_str().to_string());
+        Box::pin(async move {
+            let addrs = lookup(host.clone()).await?;
+            let public: Vec<SocketAddr> = addrs.into_iter().filter(|a| !is_local_address(a.ip())).collect();
+            if public.is_empty() {
+                return Err(Box::new(LocalAddress(host)) as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// The client of `http-get` for a host reached only through `http:ask`: like [`http_client`], with no proxy (a proxy
+/// would resolve the name itself) and a resolver that refuses local addresses, for the request and every redirect.
+pub fn asked_http_client() -> reqwest::Client {
+    asked_http_client_with(system_lookup())
+}
+
+/// [`asked_http_client`] with `lookup` in place of the system's (tests).
+fn asked_http_client_with(lookup: Lookup) -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(user_agent())
+        .redirect(same_host_only())
+        .no_proxy()
+        .dns_resolver(Arc::new(PublicOnly { lookup }))
+        .build()
+        .expect("HTTP client")
+}
+
 /// GET `url`; a non-2xx status is `Err("HTTP <code>")`, and the body read stops past [`MAX_HTTP_BODY`].
 pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
     let too_large = || format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024));
@@ -391,6 +453,14 @@ pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Strin
 
 /// A request error in words, with the cause (a refused redirect says so).
 fn request_error(e: &reqwest::Error) -> String {
+    // A refused local address is a permission refusal: its own text, nothing around it.
+    let mut source = std::error::Error::source(e);
+    while let Some(cause) = source {
+        if let Some(local) = cause.downcast_ref::<LocalAddress>() {
+            return local.to_string();
+        }
+        source = cause.source();
+    }
     let mut text = e.to_string();
     let mut source = std::error::Error::source(e);
     while let Some(cause) = source {
@@ -549,6 +619,10 @@ impl HostServices for AppServices {
         fetch(&self.http, url).await
     }
 
+    async fn http_get_asked(&self, url: &str, _host: &str) -> Result<Vec<u8>, String> {
+        fetch(&self.asked_http, url).await
+    }
+
     async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String> {
         if self.is_stopped() {
             return None;
@@ -602,6 +676,7 @@ mod tests {
     use super::*;
     use aio_remote::recorder::Recorder;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::net::SocketAddr;
     use tokio::net::TcpListener;
 
     /// A server on 127.0.0.1 that answers every connection with `reply(port)`.
@@ -665,6 +740,42 @@ mod tests {
         })
         .await;
         assert_eq!(fetch(&http_client(), &format!("http://127.0.0.1:{port}/")).await.unwrap().len(), MAX_HTTP_BODY);
+    }
+
+    /// A lookup that answers `addrs` for every name, without DNS.
+    fn fixed_lookup(addrs: Vec<SocketAddr>) -> Lookup {
+        Arc::new(move |_name: String| {
+            let addrs = addrs.clone();
+            Box::pin(async move { Ok(addrs) })
+        })
+    }
+
+    #[tokio::test]
+    async fn asked_host_resolving_to_a_local_address_is_refused() {
+        // A real server on 127.0.0.1: a name like localtest.me that resolves there must not reach it.
+        let port = serve(|_| b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nhi".to_vec()).await;
+        let local = asked_http_client_with(fixed_lookup(vec![SocketAddr::from(([127, 0, 0, 1], port))]));
+        let e = fetch(&local, &format!("http://localtest.me:{port}/")).await.unwrap_err();
+        assert_eq!(e, "permission denied: host localtest.me resolves to a local address");
+        // The declared-host client is not filtered (http:localhost keeps working).
+        assert_eq!(fetch(&http_client(), &format!("http://127.0.0.1:{port}/")).await.unwrap(), b"hi");
+    }
+
+    #[tokio::test]
+    async fn asked_host_lookup_keeps_only_public_addresses() {
+        use reqwest::dns::Resolve;
+        let mixed = vec![
+            SocketAddr::from(([10, 0, 0, 1], 0)),
+            SocketAddr::from(([93, 184, 216, 34], 0)),
+            "[::ffff:127.0.0.1]:0".parse().unwrap(),
+            SocketAddr::from(([100, 64, 0, 1], 0)),
+        ];
+        let resolver = PublicOnly { lookup: fixed_lookup(mixed) };
+        let addrs: Vec<SocketAddr> = resolver.resolve("mixed.example".parse().unwrap()).await.unwrap().collect();
+        assert_eq!(addrs, vec![SocketAddr::from(([93, 184, 216, 34], 0))]);
+        let resolver = PublicOnly { lookup: fixed_lookup(vec!["[fe80::1]:0".parse().unwrap()]) };
+        let e = resolver.resolve("rebind.example".parse().unwrap()).await.err().unwrap();
+        assert_eq!(e.to_string(), "permission denied: host rebind.example resolves to a local address");
     }
 
     #[test]

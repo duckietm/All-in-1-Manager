@@ -11,7 +11,7 @@ use aio_plugin_host::bindings::aio::plugin::types::{
     CompareOp, Condition, DeleteOp, InsertOp, Select, SqlValue as WitValue, UpdateOp, WriteOp,
 };
 use aio_plugin_host::approvals::Approvals;
-use aio_plugin_host::net::{askable_host, check_http, check_tcp, AskedHosts, MAX_ASKED_HOSTS, MAX_RECV_TIMEOUT_MS, MAX_TCP_CONNECTIONS};
+use aio_plugin_host::net::{askable_host, check_http, check_tcp, is_local_address, AskedHosts, MAX_REFUSED_HOSTS, MAX_ASKED_HOSTS, MAX_RECV_TIMEOUT_MS, MAX_TCP_CONNECTIONS};
 use aio_plugin_host::runtime::{engine, PluginInstance};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::sql::{build_select, build_writes, DEFAULT_LIMIT, MAX_LIMIT, MAX_WRITE_BYTES, MAX_WRITE_OPS};
@@ -419,6 +419,8 @@ struct Fake {
     refuse: bool,
     /// The `http:ask` memory handed to the runtime (a fresh in-memory one when `None`).
     hosts: Option<Arc<AskedHosts>>,
+    /// The URLs fetched through `http_get_asked` (also listed in `gets`).
+    asked_gets: Mutex<Vec<String>>,
 }
 
 #[aio_plugin_host::async_trait]
@@ -447,6 +449,11 @@ impl HostServices for Fake {
     async fn http_get(&self, url: &str) -> Result<Vec<u8>, String> {
         self.gets.lock().unwrap().push(url.to_string());
         Ok(vec![b'x'; self.body])
+    }
+    async fn http_get_asked(&self, url: &str, host: &str) -> Result<Vec<u8>, String> {
+        assert!(url.contains(host));
+        self.asked_gets.lock().unwrap().push(url.to_string());
+        self.http_get(url).await
     }
     async fn prompt_text(&self, _t: String, _l: String, d: String) -> Option<String> {
         Some(d)
@@ -809,6 +816,8 @@ async fn http_ask_asks_once_and_remembers() {
         ["https://api.example.com/", "https://other.example.org/a", "https://other.example.org/b"].map(String::from)
     );
     assert_eq!(hosts.allowed(), vec!["other.example.org".to_string()]);
+    // Only the asked host goes through the fetch that refuses local addresses.
+    assert_eq!(*fake.asked_gets.lock().unwrap(), ["https://other.example.org/a", "https://other.example.org/b"].map(String::from));
     // Persisted: a new start of the Manager knows it.
     assert_eq!(AskedHosts::persisted(file.clone()).allowed(), vec!["other.example.org".to_string()]);
     // A host the permission grammar refuses is never asked for.
@@ -872,6 +881,8 @@ async fn http_ask_refuses_local_and_ip_hosts() {
     for local in [
         "127.0.0.1", "10.0.0.8", "192.168.1.1", "127.1", "0x7f000001", "app.localhost", "Localhost.",
         "router", "nas.local", "printer2.lan", "db.internal", "box.home.arpa", "BOX.Home.Arpa.",
+        // Hex and short IPv4 forms the fetching URL parser reads as addresses.
+        "127.0.0.0x1", "0x7f.0x1", "10.0.0.0x", "192.168.1.0x1.", "0X7F.0X1", "1.2.3.4.5",
     ] {
         let e = denied(host.http_get(format!("http://{local}/x")).await);
         let shown = local.to_ascii_lowercase();
@@ -898,4 +909,48 @@ async fn http_ask_refuses_local_and_ip_hosts() {
     host.http_get("http://printer.lan/".into()).await.unwrap();
     host.http_get("https://api.example.org/".into()).await.unwrap();
     assert_eq!(fake.asks.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn local_addresses_are_recognised() {
+    use std::net::IpAddr;
+    for local in [
+        "127.0.0.1", "127.255.0.9", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.0.10", "169.254.1.1", "0.0.0.0",
+        "100.64.0.1", "100.127.255.255", "::1", "::", "fc00::1", "fd12:3456::1", "fe80::1", "febf::1", "::ffff:127.0.0.1",
+        "::ffff:192.168.1.1", "::ffff:100.64.0.1", "64:ff9b::7f00:1", "224.0.0.1", "255.255.255.255",
+    ] {
+        assert!(is_local_address(local.parse::<IpAddr>().unwrap()), "{local}");
+    }
+    for public in ["8.8.8.8", "172.32.0.1", "100.128.0.1", "93.184.216.34", "2606:4700::1111", "::ffff:8.8.8.8"] {
+        assert!(!is_local_address(public.parse::<IpAddr>().unwrap()), "{public}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_ask_stops_asking_when_refused_list_is_full() {
+    let root = tempfile::tempdir().unwrap();
+    let hosts = Arc::new(AskedHosts::in_memory());
+    for i in 0..MAX_REFUSED_HOSTS {
+        hosts.refuse(&format!("r{i}.example.org"));
+    }
+    assert_eq!(MAX_REFUSED_HOSTS, 256);
+    let fake = Arc::new(Fake { body: 1, hosts: Some(hosts.clone()), ..Fake::default() });
+    let mut inst = hello_with(root.path(), &["http:ask"], fake.clone()).await;
+    let e = denied(inst.host_for_tests().http_get("https://new.example.org/".into()).await);
+    assert!(e.contains("new.example.org"), "{e}");
+    assert!(fake.asks.lock().unwrap().is_empty(), "not asked once the refused list is full");
+    // The oldest refusal is kept.
+    assert_eq!(hosts.answer("r0.example.org"), Some(false));
+}
+
+#[test]
+fn asked_hosts_ignore_a_trailing_dot() {
+    let hosts = AskedHosts::in_memory();
+    hosts.allow("Example.ORG.").unwrap();
+    assert_eq!(hosts.allowed(), vec!["example.org".to_string()]);
+    assert_eq!(hosts.answer("example.org."), Some(true));
+    hosts.refuse("evil.example.");
+    assert_eq!(hosts.answer("evil.example"), Some(false));
+    hosts.forget("example.org").unwrap();
+    assert!(hosts.allowed().is_empty());
 }

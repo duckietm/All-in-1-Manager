@@ -229,6 +229,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
+ "url",
  "wasmtime",
  "wasmtime-wasi",
  "wit-parser 0.263.0",

@@ -488,6 +488,9 @@ impl HostState {
             Some(false) => return Err(refused()),
             None => {}
         }
+        if self.hosts.refused_full() {
+            return Err(deny(format!("host {host} was refused (too many hosts were refused this session)")));
+        }
         if self.hosts.is_full() {
             return Err(deny(format!("at most {MAX_ASKED_HOSTS} hosts can be allowed; forget one on the Plugins page")));
         }
@@ -744,13 +747,22 @@ impl Host for HostState {
 
     async fn http_get(&mut self, url: String) -> Result<Vec<u8>, String> {
         let checked = parse_http(&url).map_err(|e| self.refused(e))?;
-        if !declared_host(&checked.host, &self.granted) {
+        let declared = declared_host(&checked.host, &self.granted);
+        if !declared {
             if let Err(e) = self.ask_for_host(&checked.host).await {
                 return Err(self.refused(e));
             }
         }
         let services = self.services.clone();
-        let body = self.waiting(limited("the request", HTTP_TIMEOUT, services.http_get(&checked.url))).await?;
+        let fetch = async {
+            if declared {
+                services.http_get(&checked.url).await
+            } else {
+                // An asked host: the fetch refuses local addresses when connecting.
+                services.http_get_asked(&checked.url, &checked.host).await
+            }
+        };
+        let body = self.waiting(limited("the request", HTTP_TIMEOUT, fetch)).await?;
         if body.len() > MAX_HTTP_BODY {
             return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
         }

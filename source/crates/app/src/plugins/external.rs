@@ -896,14 +896,24 @@ impl ExternalPlugins {
         }
         // An update replaces the folder: the running version lets go of its files first.
         wait_until_stopped(&pending.package.manifest.id)?;
+        let new = &pending.package.manifest;
+        let update = pending.previous.as_ref().is_some_and(|old| old.version != new.version) && !pending.author_changed();
+        let kept_hosts = (update && new.permissions.contains(&Permission::HttpAsk)).then(|| self.asked_hosts(&new.id, false).allowed());
         let result = match pending.author_changed() {
             // Another author: the old plugin's private data is set aside, not handed over.
             true => package::install_without_data(&pending.package, &self.root).map(|_| ()),
             false => package::install(&pending.package, &self.root).map(|_| ()),
         };
         if result.is_ok() {
-            // A new install starts without hosts allowed or refused under `http:ask`.
-            self.forget_all_hosts(&pending.package.manifest.id);
+            // `http:ask`: an update keeps the user's answers about this plugin (the install dropped the file with the
+            // folder, so the allowed hosts are written back); a reinstall of the same version, another author's
+            // package, or a version without `http:ask` starts with none.
+            match &kept_hosts {
+                Some(allowed) => {
+                    let _ = self.asked_hosts(&pending.package.manifest.id, false).restore(allowed);
+                }
+                None => self.forget_all_hosts(&pending.package.manifest.id),
+            }
             let dir = self.dir(&pending.package.manifest.id);
             match &pending.verified {
                 // Not fatal: the plugin is installed, it is only shown as not verified.
@@ -1195,7 +1205,13 @@ mod tests {
         ext.forget_host("demo", false, "B.example.org").unwrap();
         assert_eq!(ext.remembered_hosts("demo", false), ["api.example.org"]);
 
-        // A reinstall clears both lists.
+        // An update of the same plugin keeps the user's answers.
+        std::fs::write(&file, aiop("demo", "1.1.0", &["http:ask"])).unwrap();
+        ext.commit(&ext.prepare(&file).unwrap()).unwrap();
+        assert_eq!(ext.remembered_hosts("demo", false), ["api.example.org"]);
+        assert_eq!(hosts.answer("evil.example"), Some(false));
+
+        // A reinstall (the same version again) clears both lists.
         ext.install_file(&file).unwrap();
         assert!(ext.remembered_hosts("demo", false).is_empty());
         assert_eq!(hosts.answer("evil.example"), None, "a refused host is asked for again");

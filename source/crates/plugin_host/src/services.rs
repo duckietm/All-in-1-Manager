@@ -97,6 +97,14 @@ pub trait HostServices: Send + Sync {
     /// follow a redirect to another host, must stop reading past `crate::net::MAX_HTTP_BODY` bytes, and
     /// returns a non-2xx status as `Err("HTTP <code>")`.
     async fn http_get(&self, url: &str) -> Result<Vec<u8>, String>;
+    /// [`HostServices::http_get`] for a host reached only through `http:ask` (`host`: lower case, it passed
+    /// `crate::net::askable_host`). The implementation must also refuse, when connecting, every address
+    /// `crate::net::is_local_address` names (`permission denied: host <host> resolves to a local address`), for the
+    /// first request and every redirect. The default is `http_get` (for test doubles; the Manager overrides it).
+    async fn http_get_asked(&self, url: &str, host: &str) -> Result<Vec<u8>, String> {
+        let _ = host;
+        self.http_get(url).await
+    }
     /// A line of text from the user; `None` when cancelled.
     async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String>;
     /// An open-file dialog; `extensions` have no dots, empty = every file. `None` when cancelled.

@@ -579,11 +579,34 @@ fn external_card_with(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, inf
     });
 }
 
+/// The remembered-hosts lists the Plugins page shows, read once and again only when asked to (the section opens, or
+/// after Forget), not every frame.
+#[derive(Default)]
+struct HostsCache {
+    lists: HashMap<(String, bool), Vec<String>>,
+}
+
+impl HostsCache {
+    fn get(&mut self, key: &(String, bool), load: impl FnOnce() -> Vec<String>) -> Vec<String> {
+        self.lists.entry(key.clone()).or_insert_with(load).clone()
+    }
+
+    fn invalidate(&mut self, key: &(String, bool)) {
+        self.lists.remove(key);
+    }
+}
+
+fn hosts_cache() -> &'static Mutex<HostsCache> {
+    static CACHE: OnceLock<Mutex<HostsCache>> = OnceLock::new();
+    CACHE.get_or_init(Mutex::default)
+}
+
 /// The hosts the user allowed under `http:ask`, each with Forget (read only while the section is open).
 fn allowed_hosts(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &ExternalInfo) {
     let id = &info.manifest.id;
-    egui::CollapsingHeader::new(RichText::new(t("Hosts you allowed")).size(12.5)).id_salt(("ext-hosts", id)).show(ui, |ui| {
-        let hosts = external::plugins().remembered_hosts(id, info.dev);
+    let key = (id.clone(), info.dev);
+    let section = egui::CollapsingHeader::new(RichText::new(t("Hosts you allowed")).size(12.5)).id_salt(("ext-hosts", id)).show(ui, |ui| {
+        let hosts = hosts_cache().lock().get(&key, || external::plugins().remembered_hosts(id, info.dev));
         if hosts.is_empty() {
             widgets::muted(ui, palette, t("None yet: the plugin asks you before fetching from a host it does not name."), 12.5);
         }
@@ -594,10 +617,15 @@ fn allowed_hosts(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &E
                     if let Err(error) = external::plugins().forget_host(id, info.dev, &host) {
                         shared.set_status(&tf("Could not forget the host: {error}", &[("error", &error)]));
                     }
+                    hosts_cache().lock().invalidate(&key);
                 }
             });
         }
     });
+    // Opening (or closing) the section reads the list again on its next show.
+    if section.header_response.clicked() {
+        hosts_cache().lock().invalidate(&key);
+    }
 }
 
 /// The consent: shown over the page until the user agrees or cancels. Nothing is written or run before.
@@ -720,4 +748,30 @@ fn plugin_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, plugin: &'
         }
     });
     open
+}
+
+#[cfg(test)]
+mod hosts_cache_tests {
+    use super::HostsCache;
+
+    #[test]
+    fn plugins_page_reads_hosts_once_until_invalidated() {
+        let mut cache = HostsCache::default();
+        let key = ("demo".to_string(), false);
+        let mut reads = 0;
+        for _ in 0..3 {
+            let got = cache.get(&key, || {
+                reads += 1;
+                vec!["a.example.org".to_string()]
+            });
+            assert_eq!(got, ["a.example.org"]);
+        }
+        assert_eq!(reads, 1, "not read every frame");
+        cache.invalidate(&key);
+        cache.get(&key, || {
+            reads += 1;
+            vec![]
+        });
+        assert_eq!(reads, 2, "read again after Forget or when the section opens");
+    }
 }

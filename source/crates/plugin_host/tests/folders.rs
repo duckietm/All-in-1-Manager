@@ -398,3 +398,161 @@ async fn rewrite_replaces_the_file_whole() {
     host.write(again(&folder), "other.txt".into(), vec![0; 50]).await.unwrap();
     assert_eq!(host.write(again(&folder), "other.txt".into(), vec![0; 51]).await.unwrap_err(), LIMIT_REACHED);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_creates_then_extends_own_file() {
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let (mut inst, out) = setup(root.path(), fake.clone()).await;
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    // Not there yet: created, with the folders it needs.
+    host.append(again(&folder), "dump/catalog.sql".into(), b"INSERT 1;\n".to_vec()).await.unwrap();
+    assert_eq!(std::fs::read(out.join("dump/catalog.sql")).unwrap(), b"INSERT 1;\n");
+    // Then extended, piece by piece (an empty piece too).
+    host.append(again(&folder), "dump/catalog.sql".into(), b"INSERT 2;\n".to_vec()).await.unwrap();
+    host.append(again(&folder), "dump/catalog.sql".into(), Vec::new()).await.unwrap();
+    host.append(again(&folder), "dump/catalog.sql".into(), b"INSERT 3;\n".to_vec()).await.unwrap();
+    assert_eq!(std::fs::read(out.join("dump/catalog.sql")).unwrap(), b"INSERT 1;\nINSERT 2;\nINSERT 3;\n");
+    // An empty first append creates an empty file.
+    host.append(again(&folder), "empty.log".into(), Vec::new()).await.unwrap();
+    assert_eq!(std::fs::read(out.join("empty.log")).unwrap(), b"");
+    // The file is the handle's own: it may go to the import preview.
+    HostPickedFolder::open_import_preview(host, again(&folder), "dump/catalog.sql".into()).await.unwrap();
+    assert_eq!(fake.previews.lock().unwrap()[0].1, b"INSERT 1;\nINSERT 2;\nINSERT 3;\n");
+    // Removed in the meantime: created again, like a first write.
+    std::fs::remove_file(out.join("dump/catalog.sql")).unwrap();
+    host.append(again(&folder), "dump/catalog.sql".into(), b"INSERT 4;\n".to_vec()).await.unwrap();
+    assert_eq!(std::fs::read(out.join("dump/catalog.sql")).unwrap(), b"INSERT 4;\n");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_refuses_files_not_created_by_handle() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    std::fs::write(out.join("notes.txt"), b"the user's notes").unwrap();
+    std::fs::create_dir_all(out.join("album.png")).unwrap();
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    let error = host.append(again(&folder), "notes.txt".into(), b"evil".to_vec()).await.unwrap_err();
+    assert_eq!(error, "permission denied: notes.txt already exists");
+    assert_eq!(std::fs::read(out.join("notes.txt")).unwrap(), b"the user's notes");
+    // A folder is not a file to extend either.
+    let error = host.append(again(&folder), "album.png".into(), b"evil".to_vec()).await.unwrap_err();
+    assert_eq!(error, "permission denied: album.png already exists");
+    // Created through this handle, then appended through a new handle of the same folder: that one did not create it.
+    host.append(again(&folder), "mine.txt".into(), b"mine".to_vec()).await.unwrap();
+    let other = host.pick_folder("Save".into()).await.unwrap();
+    let error = host.append(again(&other), "mine.txt".into(), b"evil".to_vec()).await.unwrap_err();
+    assert_eq!(error, "permission denied: mine.txt already exists");
+    assert_eq!(std::fs::read(out.join("mine.txt")).unwrap(), b"mine");
+    // An own file replaced by a folder is not extended.
+    std::fs::remove_file(out.join("mine.txt")).unwrap();
+    std::fs::create_dir(out.join("mine.txt")).unwrap();
+    let error = host.append(again(&folder), "mine.txt".into(), b"x".to_vec()).await.unwrap_err();
+    assert_eq!(error, "permission denied: mine.txt already exists");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_follows_the_write_path_rules() {
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let (mut inst, out) = setup(root.path(), fake.clone()).await;
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    // A path out of the folder, a program, a hidden name.
+    assert!(host.append(again(&folder), "../escape.txt".into(), b"x".to_vec()).await.is_err());
+    let error = host.append(again(&folder), "run.exe".into(), b"x".to_vec()).await.unwrap_err();
+    assert_eq!(error, "permission denied: run.exe is not a data file");
+    let error = host.append(again(&folder), ".bashrc.txt".into(), b"x".to_vec()).await.unwrap_err();
+    assert!(error.starts_with("permission denied:"), "{error}");
+    assert!(!root.path().join("escape.txt").exists());
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0, "nothing was created");
+    // A Manager folder under a broader root.
+    let config = root.path().join("configuration");
+    std::fs::create_dir_all(&config).unwrap();
+    *fake.manager.lock().unwrap() = vec![config.clone()];
+    *fake.folder.lock().unwrap() = Some(root.path().to_path_buf());
+    let above = host.pick_folder("Save".into()).await.unwrap();
+    let error = host.append(again(&above), "configuration/new.json".into(), b"{}".to_vec()).await.unwrap_err();
+    assert_eq!(error, MANAGER_FOLDER);
+    assert!(!config.join("new.json").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_refuses_a_link_put_in_place_of_own_file() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    let outside = root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("victim.txt"), b"victim").unwrap();
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    host.append(again(&folder), "own.txt".into(), b"own".to_vec()).await.unwrap();
+    std::fs::remove_file(out.join("own.txt")).unwrap();
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(outside.join("victim.txt"), out.join("own.txt")).is_ok();
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(outside.join("victim.txt"), out.join("own.txt")).is_ok();
+    if !made {
+        eprintln!("this user may not create file symlinks; skipping");
+        return;
+    }
+    let error = host.append(again(&folder), "own.txt".into(), b"evil".to_vec()).await.unwrap_err();
+    assert!(error.starts_with("permission denied:"), "{error}");
+    assert_eq!(std::fs::read(outside.join("victim.txt")).unwrap(), b"victim");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_respects_file_and_folder_limits() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    let host = inst.host_for_tests();
+    host.set_folder_limits(FolderLimits { files: 3, bytes: 100, file: 60 });
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    // A first append larger than a file: no file.
+    assert_eq!(host.append(again(&folder), "big.bin".into(), vec![1; 61]).await.unwrap_err(), LIMIT_REACHED);
+    assert!(!out.join("big.bin").exists());
+    // The file's size after the append counts: 50 + 11 > 60, 50 + 10 fits.
+    host.append(again(&folder), "a.bin".into(), vec![1; 50]).await.unwrap();
+    assert_eq!(host.append(again(&folder), "a.bin".into(), vec![2; 11]).await.unwrap_err(), LIMIT_REACHED);
+    host.append(again(&folder), "a.bin".into(), vec![2; 10]).await.unwrap();
+    assert_eq!(std::fs::read(out.join("a.bin")).unwrap().len(), 60);
+    // The handle's total: 60 + 40 = 100 fits, one byte more does not.
+    host.append(again(&folder), "b.bin".into(), vec![3; 40]).await.unwrap();
+    assert_eq!(host.append(again(&folder), "b.bin".into(), vec![3; 1]).await.unwrap_err(), LIMIT_REACHED);
+    assert_eq!(host.write(again(&folder), "c.bin".into(), vec![3; 1]).await.unwrap_err(), LIMIT_REACHED);
+    assert_eq!(std::fs::read(out.join("b.bin")).unwrap(), vec![3; 40]);
+    // A new file is one of the files: the third fits (empty), a fourth does not, by append or by write.
+    host.append(again(&folder), "c.bin".into(), Vec::new()).await.unwrap();
+    assert_eq!(host.append(again(&folder), "d.bin".into(), Vec::new()).await.unwrap_err(), LIMIT_REACHED);
+    assert_eq!(host.write(again(&folder), "d.bin".into(), Vec::new()).await.unwrap_err(), LIMIT_REACHED);
+    assert!(!out.join("d.bin").exists());
+    // A rewrite makes room again: the totals follow the files' real sizes.
+    host.write(again(&folder), "a.bin".into(), vec![4; 10]).await.unwrap();
+    host.append(again(&folder), "c.bin".into(), vec![5; 50]).await.unwrap();
+    assert_eq!(host.append(again(&folder), "c.bin".into(), vec![5; 1]).await.unwrap_err(), LIMIT_REACHED);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn append_after_write_and_write_after_append() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    let host = inst.host_for_tests();
+    host.set_folder_limits(FolderLimits { files: 2, bytes: 100, file: 100 });
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    // Written, then extended.
+    host.write(again(&folder), "data/state.json".into(), b"{\"a\":".to_vec()).await.unwrap();
+    host.append(again(&folder), "data/state.json".into(), b"1}".to_vec()).await.unwrap();
+    assert_eq!(std::fs::read(out.join("data/state.json")).unwrap(), b"{\"a\":1}");
+    // Appended, then rewritten whole: still the handle's own, so it can be extended again.
+    host.append(again(&folder), "run.log".into(), b"one\n".to_vec()).await.unwrap();
+    host.write(again(&folder), "run.log".into(), b"fresh\n".to_vec()).await.unwrap();
+    assert_eq!(std::fs::read(out.join("run.log")).unwrap(), b"fresh\n");
+    host.append(again(&folder), "run.log".into(), b"two\n".to_vec()).await.unwrap();
+    assert_eq!(std::fs::read(out.join("run.log")).unwrap(), b"fresh\ntwo\n");
+    // None of this used more than the two files.
+    let names: Vec<_> = std::fs::read_dir(out.join("data")).unwrap().map(|e| e.unwrap().file_name()).collect();
+    assert_eq!(names, vec![std::ffi::OsString::from("state.json")]);
+    assert_eq!(host.append(again(&folder), "third.txt".into(), Vec::new()).await.unwrap_err(), LIMIT_REACHED);
+}

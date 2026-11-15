@@ -41,6 +41,7 @@ fn wit_package_parses() {
         "pick-folder",
         "[method]picked-folder.name",
         "[method]picked-folder.write",
+        "[method]picked-folder.append",
         "[method]picked-folder.reveal",
         "[method]picked-folder.open-import-preview",
     ] {
@@ -72,6 +73,7 @@ fn wit_1_0_is_kept_and_1_1_only_adds() {
             "[method]tcp-connection.recv-timeout",
             "[method]picked-folder.name",
             "[method]picked-folder.write",
+            "[method]picked-folder.append",
             "[method]picked-folder.reveal",
             "[method]picked-folder.open-import-preview",
             "pick-folder",

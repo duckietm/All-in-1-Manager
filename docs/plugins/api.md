@@ -241,6 +241,8 @@ only its name.
 | `Folder::name(&self) -> String` | The folder's name (its last path component), to tell the user where the files went. |
 | `Folder::write(&self, path: &str, data: &[u8]) -> Result<()>` | Creates the file `path` (and the folders it needs), or rewrites a file this `Folder` created. |
 | `Folder::write_str(&self, path: &str, text: &str) -> Result<()>` | The same with `text` as UTF-8. |
+| `Folder::append(&self, path: &str, data: &[u8]) -> Result<()>` | Appends `data` to a file this `Folder` created (with `write` or `append`), or creates it (and the folders it needs) when it does not exist yet: a large file in pieces, never whole in memory. |
+| `Folder::append_str(&self, path: &str, text: &str) -> Result<()>` | The same with `text` as UTF-8. |
 | `Folder::reveal(&self) -> Result<()>` | Opens the folder in the system's file manager. At most once every 2 s per `Folder`. |
 | `Folder::open_import_preview(&self, path: &str) -> Result<()>` | Hands a file this `Folder` wrote, of at most 32 MiB, to the Catalogue's import, like `host::open_import_preview`. |
 | `DATA_EXTENSIONS` | The file types a plugin may write: `json`, `sql`, `txt`, `md`, `csv`, `tsv`, `xml`, `html`, `png`, `gif`, `jpg`, `jpeg`, `webp`, `bmp`, `svg`, `zip`, `nitro`, `swf`, `bin`, `log`. |
@@ -260,6 +262,10 @@ Rules:
 - a write creates a new file. A file that is already there and was not written through this `Folder` is never
   touched, and neither is a path that leads through a link. A rewrite of the plugin's own file replaces it whole: a
   failed rewrite leaves the old content;
+- `append` follows the same rules: it extends only a file this `Folder` created, and creates a new one like `write`.
+  The file's size after the append counts against `MAX_FILE`, the appended bytes against `MAX_BYTES`, a new file
+  against `MAX_FILES`. A failed append may leave part of the data at the end of the file (a failed first append
+  leaves no file); a later `write` replaces the file whole and it stays the `Folder`'s own;
 - a new `pick` of the same folder starts over: it cannot rewrite the files of an earlier `Folder`;
 - some folders cannot be picked: a drive's root, the home folder itself, a startup folder (or anything inside one), and
   the Manager's own install and configuration folders (or anything inside them). `pick` returns `None` and the plugin
@@ -280,6 +286,10 @@ fn export_catalogue() -> aio_plugin_sdk::Result<()> {
     };
     folder.write_str("catalogue/furni.json", "{}")?;
     folder.write("catalogue/icons/chair.png", &[0x89, b'P', b'N', b'G'])?;
+    // A large file in pieces: only one piece is in memory at a time.
+    for page in 0..3 {
+        folder.append_str("catalogue/items.sql", &format!("-- page {page}\n"))?;
+    }
     host::status(&format!("Saved in {}", folder.name()));
     folder.reveal()?;
     Ok(())

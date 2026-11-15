@@ -258,12 +258,12 @@ interface host {
     open-import-preview: func(file: borrow<picked-file>) -> result<_, string>;
 
     /// A folder the user picked in a dialog (API 1.1). The plugin never sees its path, only its name; it may create
-    /// new data files in it (and subfolders as needed) and rewrite the files it created through this handle, nothing
-    /// else. Paths follow the private-file rules: relative with `/`, at most 255 characters and 8 levels, the
-    /// characters A-Z a-z 0-9 . _ - only, no `..`, no drive, no reserved names. A path that already exists and was not
-    /// written through this handle gets `permission denied: <path> already exists`; a path leading through a link
-    /// (symlink or junction) is refused. One handle may write at most 100,000 files and 2 GiB in total, each file at
-    /// most 256 MiB (`permission denied: folder limit reached`).
+    /// new data files in it (and subfolders as needed) and rewrite or append to the files it created through this
+    /// handle, nothing else. Paths follow the private-file rules: relative with `/`, at most 255 characters and 8
+    /// levels, the characters A-Z a-z 0-9 . _ - only, no `..`, no drive, no reserved names. A path that already exists
+    /// and was not written through this handle gets `permission denied: <path> already exists`; a path leading through
+    /// a link (symlink or junction) is refused. One handle may write at most 100,000 files and 2 GiB in total, each
+    /// file at most 256 MiB (`permission denied: folder limit reached`).
     @since(version = 1.1.0)
     resource picked-folder {
         /// The folder's name (its last path component).
@@ -276,6 +276,15 @@ interface host {
         /// folders). A rewrite replaces the file whole (a failed one leaves the old content).
         @since(version = 1.1.0)
         write: func(path: string, data: list<u8>) -> result<_, string>;
+        /// Appends `data` to the file `path` that this handle created (with `write` or an earlier `append`), or creates
+        /// it (like a first `write`) when it does not exist yet, so a large file can be written in pieces. The same
+        /// path rules, data-file types and refusals as `write`: a file that exists and was not created through this
+        /// handle gets `permission denied: <path> already exists`. It counts against the same limits: the file at most
+        /// 256 MiB after the append, the handle's files at most 2 GiB in all, a new file one of the 100,000. A failed
+        /// append may leave part of `data` at the end of the file (a failed first one leaves no file). A later `write`
+        /// replaces the file whole, and it stays this handle's own.
+        @since(version = 1.1.0)
+        append: func(path: string, data: list<u8>) -> result<_, string>;
         /// Opens the folder in the file manager.
         @since(version = 1.1.0)
         reveal: func() -> result<_, string>;

@@ -8,6 +8,9 @@
 //!   (`permission denied: <path> already exists`);
 //! * rewrite a file it created through the same handle (and only that), through a temporary file renamed over it, so
 //!   a failed write never leaves a cut-off file;
+//! * append to a file it created through the same handle (or create it, like a first write): the file is opened
+//!   without following a link and must still be a plain file. A failed append may leave part of the data at the
+//!   end; the handle then counts the file's real size;
 //! * hand such a file (at most [`crate::runtime::MAX_FILE_READ`]) to the Manager's import preview.
 //!
 //! Every existing component below the picked root is looked at without following it ([`std::fs::symlink_metadata`]);
@@ -184,6 +187,38 @@ impl PickedFolder {
         self.total = self.total.saturating_sub(old).saturating_add(len);
     }
 
+    /// Checks an append of `len` bytes to `path` against the path rules and the limits (the file's size after the
+    /// append, the handle's total, a new file's count); nothing is touched yet.
+    pub(crate) fn check_append(&self, path: &str, len: u64) -> Result<WriteJob, String> {
+        let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
+        check_data_file(path, &segments)?;
+        let old = self.written.get(path).copied();
+        if old.unwrap_or(0).saturating_add(len) > self.limits.file
+            || (old.is_none() && self.written.len() >= self.limits.files)
+            || self.total.saturating_add(len) > self.limits.bytes
+        {
+            return Err(LIMIT_REACHED.into());
+        }
+        Ok(WriteJob { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments, own: old.is_some() })
+    }
+
+    /// Records an append of `len` bytes: what [`WriteJob::append`] did, or how it failed.
+    pub(crate) fn record_append(&mut self, path: &str, len: u64, outcome: &Result<Appended, AppendFailed>) {
+        match outcome {
+            Ok(Appended::Created) => self.record(path, len),
+            Ok(Appended::Extended) => {
+                let old = self.written.get(path).copied().unwrap_or(0);
+                self.record(path, old.saturating_add(len));
+            }
+            Err(AppendFailed::Refused(_)) => {}
+            // Part of the data may be in the file: count its real size, or (unknown) as if all of it were.
+            Err(AppendFailed::Partial { size, .. }) => {
+                let old = self.written.get(path).copied().unwrap_or(0);
+                self.record(path, size.unwrap_or(old.saturating_add(len)));
+            }
+        }
+    }
+
     /// Checks a read of `path` for the import preview: only a file this handle wrote; nothing is touched yet.
     pub(crate) fn read_job(&self, path: &str) -> Result<ReadJob, String> {
         let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
@@ -269,6 +304,45 @@ impl WriteJob {
         Ok(())
     }
 
+    /// Appends `data` to this handle's own file, or creates the file like a first [`run`](WriteJob::run) when it is
+    /// not there (also when the plugin's file was removed in the meantime). Blocking file I/O.
+    ///
+    /// The existing file is opened without following a link (`FILE_FLAG_OPEN_REPARSE_POINT` on Windows; on Unix the
+    /// opened file must be the one looked at) and must still be a plain file. A failed write may leave part of `data`
+    /// at the end: [`AppendFailed::Partial`] with the file's size read again.
+    pub(crate) fn append(self, data: &[u8]) -> Result<Appended, AppendFailed> {
+        let exists = || AppendFailed::Refused(format!("permission denied: {} already exists", self.rel));
+        let refused = AppendFailed::Refused;
+        let target = join(&self.root, &self.segments);
+        match walk(&self.root, &self.segments, &self.rel).map_err(refused)? {
+            Some(meta) if self.own && meta.is_file() => {}
+            Some(_) => return Err(exists()),
+            // Created like a first write: create-new, so a file that appears in the meantime is not touched.
+            None => return WriteJob { own: false, ..self }.run(data).map(|()| Appended::Created).map_err(refused),
+        }
+        self.check_manager(&target).map_err(refused)?;
+        // Right before opening: still a plain file of this handle, no link on the way.
+        let seen = match walk(&self.root, &self.segments, &self.rel).map_err(refused)? {
+            Some(meta) if meta.is_file() => meta,
+            _ => return Err(exists()),
+        };
+        let mut file = match open_for_append(&target) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(exists()),
+            Err(e) => return Err(refused(io_text(&e))),
+        };
+        let opened = file.metadata().map_err(|e| refused(io_text(&e)))?;
+        if !opened.is_file() || is_link(&opened) || !same_file(&seen, &opened) {
+            return Err(AppendFailed::Refused(format!("permission denied: {} leads through a link", self.rel)));
+        }
+        if let Err(e) = file.write_all(data) {
+            // Read again: the totals count what is really in the file.
+            let size = file.metadata().ok().map(|m| m.len());
+            return Err(AppendFailed::Partial { error: io_text(&e), size });
+        }
+        Ok(Appended::Extended)
+    }
+
     /// Refuses `target` when its deepest existing folder (canonical, so in its real letter case) is inside one of the
     /// Manager's folders.
     fn check_manager(&self, target: &Path) -> Result<(), String> {
@@ -306,6 +380,69 @@ fn replace(target: &Path, data: &[u8]) -> Result<(), String> {
         return Ok(());
     }
     Err("no free temporary name".into())
+}
+
+/// What a successful [`WriteJob::append`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Appended {
+    /// The file was not there: created with the data.
+    Created,
+    /// The handle's file was extended by the data.
+    Extended,
+}
+
+/// How a [`WriteJob::append`] failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AppendFailed {
+    /// Refused or failed before any byte was written (or a new file, removed again).
+    Refused(String),
+    /// The write failed part way: the end of the file may hold part of the data. `size` is the file's size read
+    /// again (`None`: it could not be read).
+    Partial { error: String, size: Option<u64> },
+}
+
+impl AppendFailed {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            AppendFailed::Refused(e) | AppendFailed::Partial { error: e, .. } => e,
+        }
+    }
+}
+
+/// Opens the existing file `target` for appending without following a link: on Windows a reparse point is opened
+/// itself (`FILE_FLAG_OPEN_REPARSE_POINT`), so the caller sees it in the handle's attributes. The sharing is the
+/// default one, the same as `write`'s (others may read, write and delete). Never creates the file.
+fn open_for_append(target: &Path) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    options.append(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    options.open(target)
+}
+
+/// The file opened (`opened`, from its handle) is the one looked at without following links (`seen`): on Unix the
+/// same device and inode, with a single name (no hard link to a file elsewhere); on Windows the same creation time
+/// (the open itself does not follow a link there).
+fn same_file(seen: &Metadata, opened: &Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        seen.dev() == opened.dev() && seen.ino() == opened.ino() && opened.nlink() == 1
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        seen.creation_time() == opened.creation_time()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (seen, opened);
+        true
+    }
 }
 
 fn join(root: &Path, segments: &[String]) -> PathBuf {
@@ -380,6 +517,27 @@ mod tests {
         fs::remove_file(&picked).unwrap();
         fs::create_dir(&picked).unwrap();
         assert_eq!(folder.reveal_path().unwrap(), fs::canonicalize(&picked).unwrap());
+    }
+
+    #[test]
+    fn a_failed_append_counts_the_real_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = FolderLimits { files: 10, bytes: 100, file: 100 };
+        let mut folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), limits).unwrap();
+        folder.record_append("a.bin", 30, &Ok(Appended::Created));
+        folder.record_append("a.bin", 20, &Ok(Appended::Extended));
+        assert_eq!((folder.written["a.bin"], folder.total), (50, 50));
+        // Refused before writing: nothing changes.
+        folder.record_append("a.bin", 40, &Err(AppendFailed::Refused("x".into())));
+        assert_eq!((folder.written["a.bin"], folder.total), (50, 50));
+        // 7 of 40 bytes made it: the size read again counts.
+        folder.record_append("a.bin", 40, &Err(AppendFailed::Partial { error: "disk full".into(), size: Some(57) }));
+        assert_eq!((folder.written["a.bin"], folder.total), (57, 57));
+        // The size could not be read: counted as if all of it were written.
+        folder.record_append("a.bin", 10, &Err(AppendFailed::Partial { error: "x".into(), size: None }));
+        assert_eq!((folder.written["a.bin"], folder.total), (67, 67));
+        assert_eq!(folder.check_append("a.bin", 34).err().as_deref(), Some(LIMIT_REACHED));
+        assert!(folder.check_append("a.bin", 33).is_ok());
     }
 
     #[test]

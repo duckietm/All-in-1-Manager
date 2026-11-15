@@ -53,7 +53,8 @@ usage:
   aio-plugin pack [--out <file>] [--locked] [--offline] [--features <f>]
       Builds, then packs dist/<id>.aiop (or --out). The same build gives the same bytes.
   aio-plugin check <file.aiop|dir>
-      Checks a package (or a built plugin folder) as the Manager does and prints what it shows.
+      Checks a package (or a built plugin folder) as the Manager does on install and load, and prints what
+      it shows and the API the component needs.
   aio-plugin dev
       Prints how to load the plugin in the current folder in the Manager's developer mode.
 ```
@@ -92,7 +93,7 @@ The project holds:
 | `README.md` | The commands of this page, in short. |
 
 > **`--sdk-path` is for local work only.** A plugin submitted to the official index must depend on the SDK through the
-> git tag dependency (`aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }`):
+> git tag dependency (`aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.1.0" }`):
 > the index's sealed offline build cannot see a local path.
 
 With `--sdk-path`, the SDK dependency in `Cargo.toml` is a path to your clone (absolute, with `/`), and the released
@@ -102,10 +103,10 @@ form stays there as a comment:
 [dependencies]
 aio-plugin-sdk = { path = "<clone>/source/plugins/sdk" }
 # The released SDK:
-# aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }
+# aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.1.0" }
 ```
 
-> **Once the tag `sdk-v1.0.0` exists, drop `--sdk-path`.** `aio-plugin new my-plugin --id my-plugin` then writes the
+> **Once the tag `sdk-v1.1.0` exists, drop `--sdk-path`.** `aio-plugin new my-plugin --id my-plugin` then writes the
 > git dependency above (uncommented), which works without a clone: the first build downloads the repository once and
 > `Cargo.lock` pins the exact commit. The tag is created when the SDK is released upstream; until then the git
 > dependency cannot be fetched, which is why this page uses `--sdk-path`. In an existing project, swap the two lines
@@ -159,6 +160,7 @@ The model in four lines:
 - The Manager makes one `Counter` with `new()` when the page opens, and keeps it while the page is open.
 - `render` describes the page from the current state. It is called when the page opens and after every event.
 - `on_event` gets what the user did and changes the state. An `Err(text)` is shown to the user and logged.
+  (A long job runs in steps in a third method, `tick`: see [Long jobs](ui.md#long-jobs).)
 - `export_plugin!(Counter)` makes `Counter` the component's plugin. Use it once per crate.
 
 Closing the page drops the instance: anything that must survive goes into the plugin's private files
@@ -173,7 +175,7 @@ Closing the page drops the instance: anything that must survive goes into the pl
   "version": "0.1.0",
   "author": "Your name",
   "description": "What My Plugin does, in one sentence.",
-  "api": "1.0",
+  "api": "1.1",
   "permissions": ["files"],
   "page_title": "My Plugin",
   "tile": {
@@ -192,7 +194,7 @@ Closing the page drops the instance: anything that must survive goes into the pl
 | `version` | `MAJOR.MINOR.PATCH`, plain numbers without leading zeros (at most 6 digits each). |
 | `author` | Who made it. An update must keep the same author (see [Publishing](publishing.md)). |
 | `description` | One sentence. |
-| `api` | `"1.0"`: the plugin API version the plugin needs. This Manager accepts `1.0`. |
+| `api` | `"1.1"`: the plugin API version the plugin needs. This Manager accepts `1.0` and `1.1`. A plugin built with SDK 1.1 needs `1.1`: with a lower value the Manager refuses to load it, and `aio-plugin check` says so. |
 | `permissions` | What the plugin may do: see [Permissions](permissions.md). At most 64, each one once. |
 | `tile` | Optional: a tile on the Dashboard and the Addons page (`title`, `description`, `color` as `#rrggbb`). |
 | `dev_wasm` | Optional, for developer mode only: where the built wasm is, relative to the folder. A package ignores it. |
@@ -211,14 +213,14 @@ aio-plugin build
    …
    Compiling wit-bindgen v0.63.0
    …
-   Compiling aio-plugin-sdk v1.0.0 (…\source\plugins\sdk)
+   Compiling aio-plugin-sdk v1.1.0 (…\source\plugins\sdk)
    Compiling my-plugin v0.1.0 (…\my-plugin)
-    Finished `release` profile [optimized] target(s) in 28.77s
+    Finished `release` profile [optimized] target(s) in 42.86s
 …\my-plugin\target\wasm32-wasip2\release\my_plugin.wasm
 ```
 
 `build` checks that the `wasm32-wasip2` target is installed, runs `cargo build --release --target wasm32-wasip2`,
-and prints the path of the built file. The first build compiles the SDK's dependencies (about 30 s here); later
+and prints the path of the built file. The first build compiles the SDK's dependencies (about 40 s here); later
 builds take a second.
 
 Options: `--locked` (use exactly the versions in `Cargo.lock`; fails without one), `--offline` (never use the
@@ -294,16 +296,16 @@ id:          my-plugin
 name:        My Plugin
 version:     0.1.0
 author:      Your name
-api:         1.0
+api:         1.1 (the component needs 1.1)
 permissions:
   - files: Keep its own files in a private folder (always allowed)
-size:        25331 bytes
-sha256:      54e16b3dcb117f372506ac6b465764348ee186a30b2b88556065584a2642e596
+size:        25466 bytes
+sha256:      7c763a2c4845994ae94aaf78f54c5453c47e72fce103f66de7225bf89fe75a06
 OK: the package is valid.
 ```
 
 `check` reads the package the way the Manager does when it installs one, checks that `plugin.wasm` is a
-WebAssembly component, and prints what the Manager's consent window will show: each permission in plain words, the
+WebAssembly component the Manager can load, and prints what the Manager's consent window will show: each permission in plain words, the
 size and the SHA-256. `aio-plugin check .` checks a built plugin folder without writing a package (it packs in memory,
 so it prints the same size and hash). A refused package exits with an error that names the problem, for example:
 
@@ -312,6 +314,13 @@ error: . is not a valid plugin package: Invalid table list in permission: *
 ```
 
 See [Troubleshooting](troubleshooting.md#a-refused-manifest-or-package) for the other messages.
+
+The `api` line also gives the API the component needs: the highest `aio:plugin` version it imports (1.1 for anything
+built with SDK 1.1). A manifest that says less is refused, as the Manager would refuse to load the plugin:
+
+```text
+error: . is not a valid plugin package: Plugin needs API 1.1 but its manifest says 1.0
+```
 
 ## 8. Try it in the Manager
 
@@ -365,6 +374,6 @@ This is how your users will install a plugin that is not in the official index, 
 
 ## Next
 
-- [The page (UI)](ui.md): what a page can hold and how events work.
-- [API reference](api.md): files, database, HTTP, local connections, scripts, dialogs.
+- [The page (UI)](ui.md): what a page can hold, how events work, and long jobs.
+- [API reference](api.md): files, picked folders, database, HTTP, local connections, scripts, dialogs.
 - `source/plugins/notes` in the repository: a commented example with files, dialogs and a database read.

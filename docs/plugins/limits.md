@@ -1,7 +1,7 @@
 # Limits
 
 Every limit the Manager puts on a plugin, in one place. "Per call" means per call into the plugin: `new` with the
-first `render`, one `on_event`, or one `render`.
+first `render`, one `on_event`, one `render`, or one `tick` of a [long job](ui.md#long-jobs) (API 1.1).
 
 ## Memory
 
@@ -18,13 +18,15 @@ file needs 32 MiB of the 64.
 
 | What | Limit |
 |---|---|
-| Plugin code per call (instantiation included) | 5 s |
+| Plugin code per call (instantiation included) | 5 s (each `tick` has its own 5 s) |
+| A long job (`tick` after `tick`) | No limit while the page is open; it ends when the page closes |
 | Waiting for the user (a dialog, an approval) | No limit, and not counted in the 5 s |
 | A database read (`Select::run`) | 30 s, not counted in the 5 s |
 | An approved database batch (`sql::write`) | 30 s once approved |
 | An HTTP request (`http::get`), redirects and body included | 60 s, not counted in the 5 s |
 | Connecting to a local port (`tcp::connect`) | 5 s, not counted in the 5 s |
 | One `Conn::recv` | 30 s, not counted in the 5 s |
+| One `Conn::recv_timeout` (API 1.1) | What you ask, at most 30 s (30,000 ms; a longer wait is cut to 30 s); not counted in the 5 s, and not an error when it runs out (`Ok(None)`) |
 | An approved script (`script::run`, `run_as_root`) | 600 s (10 minutes) once approved |
 
 Past the 5 s, the call is stopped and the plugin with it ("The plugin stopped: the plugin took too long and was
@@ -45,7 +47,7 @@ still running: close its page and try again."
 | Log entries per call (status texts included) | 1,000 |
 | Log bytes per call | 256 KiB |
 | Lines kept in the page's **Plugin log** | 2,000 |
-| Dialogs (`ask`, `prompt_text`, file pickers) per call | 20 |
+| Dialogs (`ask`, `prompt_text`, file pickers, the folder picker, `http:ask` questions) per call | 20 |
 | Text of `ask` and `prompt_text` (title, label, default) | 1,000 characters shown |
 | Title of a file dialog | 120 characters shown |
 
@@ -68,6 +70,20 @@ are replaced.
 
 When the exports folder is full, the status line says so and the file is not saved.
 
+## Picked folders (API 1.1)
+
+| What | Limit |
+|---|---|
+| Path | As private files: 255 bytes, 8 levels, names of `A-Z a-z 0-9 . _ -` only, no `..`, no drive, no device name |
+| File types | The last extension one of `json`, `sql`, `txt`, `md`, `csv`, `tsv`, `xml`, `html`, `png`, `gif`, `jpg`, `jpeg`, `webp`, `bmp`, `svg`, `zip`, `nitro`, `swf`, `bin`, `log` (any letter case); no name starting with `.` |
+| Files written through one `Folder` | 100,000 (`folders::MAX_FILES`) |
+| Bytes written through one `Folder`, in all | 2 GiB, the current sizes of its files (`folders::MAX_BYTES`) |
+| One file | 256 MiB (`folders::MAX_FILE`) |
+| A file handed to `Folder::open_import_preview` | 32 MiB |
+| `Folder::reveal` | Once every 2 s per `Folder` |
+
+Past a size or count limit, the write fails with `permission denied: folder limit reached`.
+
 ## SQL
 
 | What | Limit |
@@ -88,14 +104,18 @@ When the exports folder is full, the status line says so and the file is not sav
 | Redirects | 5, to the same host only, on its default port, never from https to http |
 | Response body | 32 MiB |
 | Status | 2xx; anything else is `HTTP <code>` |
+| Hosts allowed under `http:ask` (API 1.1) | 64 per plugin, remembered |
+| Hosts refused under `http:ask` (API 1.1) | Remembered for the session; after 256, every other host is refused without asking |
 
 ## Local TCP
 
 | What | Limit |
 |---|---|
 | Address | `127.0.0.1` only, declared ports only (1 to 65535) |
+| A port range `tcp:localhost:<a>-<b>` (API 1.1) | At most 16 ports |
 | Connections open at once | 4 |
-| Bytes returned by one `recv` | 1 MiB (`tcp::MAX_RECV`) |
+| Bytes returned by one `recv` or `recv_timeout` | 1 MiB (`tcp::MAX_RECV`) |
+| Wait of one `recv_timeout` | 30 s (`tcp::MAX_RECV_TIMEOUT`) |
 
 ## Scripts
 
@@ -133,6 +153,6 @@ These four page limits are `aio_plugin_sdk::ui::limits::{MAX_ELEMENTS, MAX_DEPTH
 | One `i18n/<lang>.json` | 512 KiB (`<lang>`: 1 to 16 characters `A-Z a-z 0-9 - _`) |
 | Plugin id | 2 to 40 characters: lowercase letters, digits and `-`, starting with a letter or digit; not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`) and not a built-in plugin's id |
 | `version` | `MAJOR.MINOR.PATCH`, each part at most 6 digits, no leading zeros |
-| `api` | `1.0` (this Manager implements API 1.0) |
+| `api` | `1.0` or `1.1` (this Manager implements API 1.1); at least the API the component imports |
 | Each manifest text | 500 characters, no control or invisible characters (tab and newline allowed) |
 | Permissions | 64, each one once |

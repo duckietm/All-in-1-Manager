@@ -9,7 +9,8 @@ as an `Event`.
 1. The page opens. The Manager makes the plugin's instance (`Plugin::new`) and calls `render`.
 2. The user clicks a button, ticks a checkbox, picks an option or edits an input. The Manager calls `on_event` with
    that one event.
-3. Whatever `on_event` returns, the Manager calls `render` again and shows the new page.
+3. Whatever `on_event` returns, the Manager calls `render` again and shows the new page. (A [long job](#long-jobs)
+   adds ticks between renders.)
 
 So `render` should only read the state and describe it; change the state in `on_event`. Events are handled one at a
 time, in order. While the plugin is busy, the Manager queues up to 32 events; past that, further clicks are dropped
@@ -18,6 +19,107 @@ and the status line says "<plugin> is busy: wait until it has finished."
 An `Err(text)` from `on_event` is shown above the page as "The plugin reported an error" with your text, and written
 to the plugin log. The plugin keeps running. A panic, running out of memory or going over the time limit stops it
 instead: the page says "The plugin stopped: <reason>" and offers **Reload**, which starts a fresh instance.
+
+## Long jobs
+
+Each call into the plugin has 5 s of plugin time. A job that takes longer (counting through a big table, a download
+in many parts, waiting for a local program) runs in steps instead, with API 1.1 (`"api": "1.1"`):
+
+1. An event starts the job and calls `host::keep_working()`.
+2. The Manager renders the page, then calls `Plugin::tick` for the first step.
+3. Each `tick` does one step and calls `host::keep_working()` again while work is left. The Manager renders after
+   every tick, so the page can show the progress.
+4. A tick (or an event) that does not call `keep_working` ends the job: no more ticks.
+
+Each tick is a call of its own, with its own 5 s and its own 20 dialogs. Keep a step well below that: a few hundred
+milliseconds of work, or one wait with `tcp::Conn::recv_timeout`.
+
+**Events go first.** The user can still use the page while the job runs. When an event waits, the Manager handles it
+before the next tick, so a **Cancel** button works: its event simply does not call `keep_working`. That also means
+**every event stops the job unless its handler asks again**: `keep_working` holds only for the call that makes it,
+and each event or tick starts without it. A render does not change it. So end `on_event` with
+`if self.running { host::keep_working() }`, as below.
+
+**What ends a job:** a tick or an event without `keep_working`; leaving the page; **Reload**; **Stop this plugin** (in
+a dialog) or **Reject and stop this plugin** (on an approval card); switching the plugin off; and the plugin stopping
+(a crash, or a call past its 5 s). Work never runs in the background: the job lives only while its page is open. While
+ticks run, the Manager shows a spinner above the page with "Working… leaving this page stops it". Save what must
+survive in the private files as you go.
+
+An `Err(text)` from `tick` is shown like one from `on_event` ("The plugin reported an error"). The job goes on only if
+that tick called `keep_working` before it returned.
+
+```rust
+use aio_plugin_sdk::ui::BannerKind;
+use aio_plugin_sdk::{export_plugin, host, Event, Plugin, Ui};
+
+const TOTAL: u64 = 1_000_000;
+/// One tick's work: far below the 5 s of a call.
+const STEP: u64 = 10_000;
+
+struct Job {
+    done: u64,
+    running: bool,
+    note: Option<String>,
+}
+
+impl Plugin for Job {
+    fn new() -> Self {
+        Job { done: 0, running: false, note: None }
+    }
+
+    fn render(&mut self, ui: &mut Ui) {
+        ui.heading("Counting");
+        ui.progress(self.done, TOTAL);
+        if self.running {
+            ui.button("cancel", "Cancel");
+        } else {
+            ui.primary_button("start", "Start");
+        }
+        if let Some(note) = &self.note {
+            ui.banner(BannerKind::Info, note.as_str());
+        }
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<(), String> {
+        match event {
+            Event::Clicked { id } if id == "start" => {
+                self.done = 0;
+                self.running = true;
+                self.note = None;
+            }
+            Event::Clicked { id } if id == "cancel" => {
+                self.running = false;
+                self.note = Some(format!("Cancelled at {}.", self.done));
+            }
+            _ => {}
+        }
+        // Every event clears the request: ask again while the job runs.
+        if self.running {
+            host::keep_working();
+        }
+        Ok(())
+    }
+
+    fn tick(&mut self) -> Result<(), String> {
+        if !self.running {
+            return Ok(());
+        }
+        self.done = (self.done + STEP).min(TOTAL);
+        if self.done < TOTAL {
+            host::keep_working();
+        } else {
+            self.running = false;
+            self.note = Some("Done.".into());
+        }
+        Ok(())
+    }
+}
+
+export_plugin!(Job);
+```
+
+`keep_working` is a host call: in a native `cargo test` it panics like the others, so test the step logic apart from it.
 
 ## The builder
 
@@ -98,7 +200,7 @@ What this means for your plugin:
   the click counts when it is released. So the plugin normally gets `Changed` for the field first, then `Clicked` for
   the button, and the button's handler can use the stored text (as `add` does in the example below).
 - **Text typed but never confirmed is lost** if the page closes while the field still has the focus.
-- There is no multi-line text field in API 1.0.
+- There is no multi-line text field.
 
 ## Rules and limits
 

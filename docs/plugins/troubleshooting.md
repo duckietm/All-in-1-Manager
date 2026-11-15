@@ -24,7 +24,7 @@ on the current folder: `cd` into the plugin project first.
 **`error: --locked needs a Cargo.lock next to the workspace's Cargo.toml: … is missing`**. Run a build without
 `--locked` once to create `Cargo.lock`, and commit it (the official index requires it).
 
-**Cargo cannot fetch `aio-plugin-sdk` from git (tag `sdk-v1.0.0` not found)**. The SDK's tag is created when the SDK
+**Cargo cannot fetch `aio-plugin-sdk` from git (tag `sdk-v1.1.0` not found)**. The SDK's tag is created when the SDK
 is released upstream. Until then, make the project with `--sdk-path <checkout>/source/plugins/sdk`, or replace the git
 line in `Cargo.toml` with `aio-plugin-sdk = { path = "<checkout>/source/plugins/sdk" }`.
 
@@ -46,7 +46,9 @@ Every other host call exists only inside the Manager. Test your logic and your p
 | `Invalid plugin id: <id>` | 2 to 40 characters: lowercase letters, digits and `-`, starting with a letter or digit. |
 | `The id <id> belongs to a built-in plugin` | Choose another id (`cms`, `gitea`, `sql-editor`, ... are taken). |
 | `Invalid version (expected MAJOR.MINOR.PATCH): <v>` | For example `1.0.0`, not `1.0` or `v1.0.0`. No leading zeros. |
-| `Unsupported plugin API: <api>` | Use `"api": "1.0"`. A higher minor version (`1.1`) needs a newer Manager. |
+| `Unsupported plugin API: <api>` | Use `"api": "1.1"` (or `"1.0"` for a plugin built with SDK 1.0). A higher minor version (`1.2`) needs a newer Manager. |
+| `The permission <p> needs API 1.1 ("api": "1.1" in the manifest)` | `http:ask` and port ranges are new in API 1.1: set `"api": "1.1"`. |
+| `Plugin needs API 1.1 but its manifest says 1.0` | The component imports API 1.1 (anything built with SDK 1.1 does) but the manifest says `"1.0"`: set `"api": "1.1"`. `aio-plugin check` reports this; the Manager refuses to load such a plugin with the same message. |
 | `name and page_title must not be empty` | Fill them in. |
 | `A manifest text is too long` | A text (name, author, description, page title, tile texts) has more than 500 characters. |
 | `A manifest text holds control or invisible characters` | Remove control characters (tab and newline are allowed) and invisible or text-direction characters. |
@@ -56,6 +58,7 @@ Every other host call exists only inside the Manager. Test your logic and your p
 | `Invalid permission: <p>` | A `sql:read-private:` permission that is not `<table>.<column>`. |
 | `Invalid host in permission: <p>` | Only the host name: `http:example.com`, not `http:https://example.com/` or `http:example.com:8080`. |
 | `Invalid port in permission: <p>` | A number from 1 to 65535. |
+| `Invalid port range in permission (the smaller port first, at most 16 ports): <p>` | Write `tcp:localhost:9092-9101`: the smaller port first, 16 ports at most. |
 | `A permission is listed twice: <p>` | The same permission, the same table for the same access, or the same host (any case) appears twice. |
 | `The package is larger than 32 MiB`, `<name> is too large` | See [Limits](limits.md#packages-and-manifests). |
 | `The package is not a zip`, `The package has too many files` | Not a `.aiop` made by `aio-plugin pack`, or more than 64 files. |
@@ -102,7 +105,7 @@ again; only the private files remain).
 | Reason | Meaning |
 |---|---|
 | `the plugin crashed: …` | The plugin panicked, aborted or ran out of memory (64 MiB). The panic message is in the plugin log (stderr). |
-| `the plugin took too long and was stopped` | One call ran more than 5 s of plugin code. Waiting for the user or for the database, network or a script does not count; a busy loop or a heavy computation does. Split the work over several events. |
+| `the plugin took too long and was stopped` | One call ran more than 5 s of plugin code. Waiting for the user or for the database, network or a script does not count; a busy loop or a heavy computation does. Split the work into the steps of a [long job](ui.md#long-jobs). |
 | `you stopped it` | The user chose **Stop this plugin** (or **Reject and stop this plugin**). |
 
 ## "The plugin reported an error"
@@ -133,6 +136,13 @@ rest of the message says what is missing:
 | `permission denied: '<url>': only the default port of https is allowed` | No custom port in URLs. |
 | `permission denied: port 3000 is not declared with tcp:localhost:3000` | Add `tcp:localhost:3000`. |
 | `permission denied: at most 4 local connections may be open at once` | Close or drop connections you no longer use. |
+| `permission denied: host <host> was refused` | The user said no under `http:ask`, now or earlier in this session. The Manager asks again after a restart. |
+| `permission denied: host <host> cannot be asked for` | `http:ask` asks only about public host names: not an IP address, `localhost`, a single-label or a `.local`, `.lan`, `.internal` or `.home.arpa` name. |
+| `permission denied: host <host> resolves to a local address` | Under `http:ask`, the host's addresses are all on this computer or the local network. |
+| `permission denied: at most 64 hosts can be allowed; forget one on the Plugins page` | The user allowed 64 hosts already: they can **Forget** some under **Hosts you allowed**. |
+| `permission denied: <path> is not a data file`, `... is hidden (a name starts with .)` | A [picked folder](api.md#folders) takes only data files (`json`, `png`, `sql`, ...) and no names starting with `.`. |
+| `permission denied: <path> already exists` | A picked folder never overwrites a file the plugin did not write through the same `Folder`. Choose another name, or let the user pick an empty folder. |
+| `permission denied: folder limit reached` | One `Folder` writes at most 100,000 files and 2 GiB, each file at most 256 MiB. |
 | `permission denied: running a script needs the 'ssh' permission` | Add `ssh` (or `ssh:root` for `run_as_root`). |
 | `permission denied: the script holds control or invisible characters …` | Use `\n` line endings, no `\r`, no escape sequences. |
 | `access denied: outside the private folder` | A path in the private folder leads out of it through a link. |
@@ -179,6 +189,16 @@ Related `Other` messages:
 
 **An input jumps back to its old text.** Store the `value` of `Changed` and render it back. See
 [Inputs report their text when they lose the focus](ui.md#inputs-report-their-text-when-they-lose-the-focus).
+
+**A long job stops when the user clicks something.** Every event clears the request for ticks. End `on_event` with
+`if self.running { host::keep_working() }` (see [Long jobs](ui.md#long-jobs)).
+
+**A long job stops when the user leaves the page.** That is by design: work runs only while the plugin's page is
+open. Reload, Stop and switching the plugin off end it too. Save progress in the private files as you go.
+
+**`folders::pick` returns `None` although the user picked a folder.** The folder cannot be picked: a drive's root,
+the home folder itself, a startup folder, or one of the Manager's folders. The plugin log says why
+(`the picked folder was refused: ...`); ask the user for a folder of its own.
 
 **`ask` returns `false` and the dialogs return `None` at once.** The call already opened 20 dialogs, or the user chose
 **Stop this plugin**. The log says "more than 20 dialogs in one call: further dialogs are cancelled without being

@@ -27,7 +27,7 @@ builds `--locked --offline` in a sandbox with no network and a read-only filesys
   `Cargo.toml`). A missing or stale lock file fails the build. The lock file also pins the SDK's git dependency to
   one commit.
 - **Depend on the SDK through the git tag**, as the template writes it:
-  `aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }`. The index's sealed
+  `aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.1.0" }`. The index's sealed
   offline build cannot see a local `--sdk-path` (which writes an absolute path on your machine), so a submission
   with a `path` dependency fails.
 - **Nothing may download during the build**: no `build.rs` that fetches files, no tool that needs the network.
@@ -101,8 +101,10 @@ package's manifest (id, version, author, API version, permissions) equals the in
   macros, and every change to `Cargo.lock` (each new or updated dependency is code that runs during the build).
 - No network access beyond the hosts declared in the manifest.
 - A plugin that uses `http:ask` (API 1.1: it asks the user before fetching from any other host) is listed with a
-  "contacts hosts you approve" badge. The Manager only asks about public host names: IP addresses, `localhost`,
-  single-label names and `.local`, `.lan`, `.internal` or `.home.arpa` names are refused without asking.
+  "contacts hosts you approve" badge, and the consent window shows that permission in the warning colour. The Manager
+  only asks about public host names: IP addresses, `localhost`, single-label names and `.local`, `.lan`, `.internal`
+  or `.home.arpa` names are refused without asking (see [Asking for hosts](permissions.md#asking-for-hosts-httpask)).
+  Explain in the pull request why the plugin cannot name its hosts with `http:<host>`.
 - Every permission must be justified in the pull request.
 - Maintainers can reject or remove a plugin, or revoke a version, without giving a reason.
 
@@ -118,7 +120,7 @@ id and another author is treated as a different plugin, and it does not get the 
 
 Updates are never automatic. The user sees **Update available (x.y.z)** on the plugin's card and clicks it; if the new
 version asks for more permissions, the consent window opens again with them marked "new in this version". The private
-folder is kept across updates.
+folder is kept across updates, and so are the hosts the user allowed under `http:ask`.
 
 Moving the plugin to another repository is an ownership change: every Manager would offer the new repository's code as
 an update. The check warns about it, and maintainers confirm it with the current author first.

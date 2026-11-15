@@ -1,14 +1,17 @@
 # API reference
 
-Every public item of `aio-plugin-sdk` 1.0.0, module by module, with the permission it needs, its limits and the error
+Every public item of `aio-plugin-sdk` 1.1.0, module by module, with the permission it needs, its limits and the error
 kinds it returns. The SDK's own documentation (`cargo doc --open` in your plugin project) has the same items with
 more examples.
 
 Every Rust sample of this guide is built for `wasm32-wasip2` by the SDK's test `tests/guide_samples.rs`, so they
 stay in step with the SDK. They need the permissions named next to them in the plugin's `manifest.json`.
 
+Items marked **API 1.1** are new in SDK 1.1 and need `"api": "1.1"` in the manifest. A plugin built with SDK 1.1
+needs it anyway (`aio-plugin check` says so), whether it uses them or not.
+
 Contents: [the crate root](#the-crate-root) · [errors](#errors) · [`ui`](#ui) · [`host`](#host) · [`files`](#files)
-· [`sql`](#sql) · [`http`](#http) · [`tcp`](#tcp) · [`script`](#script)
+· [`folders`](#folders) · [`sql`](#sql) · [`http`](#http) · [`tcp`](#tcp) · [`script`](#script)
 
 ## The crate root
 
@@ -17,6 +20,7 @@ pub trait Plugin: 'static {
     fn new() -> Self where Self: Sized;
     fn render(&mut self, ui: &mut Ui);
     fn on_event(&mut self, event: Event) -> std::result::Result<(), String>;
+    fn tick(&mut self) -> std::result::Result<(), String> { Ok(()) }
 }
 ```
 
@@ -25,17 +29,19 @@ pub trait Plugin: 'static {
 | `Plugin::new()` | The starting state. Called once, the first time the Manager needs the plugin (when its page opens), before the first `render`. Host calls are allowed here. |
 | `Plugin::render(&mut self, ui)` | Describes the page. Called when the page opens and after every event. See [The page](ui.md). |
 | `Plugin::on_event(&mut self, event)` | Handles one user action. `Err(text)` is shown to the user ("The plugin reported an error") and logged; the plugin keeps running and the page is rendered again. |
-| `export_plugin!(Type)` | Exports `Type` (which implements `Plugin`) as the component's plugin. Use it once, at the top level of the crate. On targets other than `wasm32` it expands to nothing, so `cargo test` works natively. |
+| `Plugin::tick(&mut self)` | **API 1.1.** One step of a long job: called after a render when the last event or tick called `host::keep_working`. Events waiting meanwhile go first. `Err(text)` is shown like one from `on_event`. The default does nothing. See [Long jobs](ui.md#long-jobs). |
+| `export_plugin!(Type)` | Exports `Type` (which implements `Plugin`) as the component's plugin, with its `render`, `on_event` and `tick`. Use it once, at the top level of the crate. On targets other than `wasm32` it expands to nothing, so `cargo test` works natively. |
 | `enum Event` | `Clicked { id: String }` or `Changed { id: String, value: String }`. `#[non_exhaustive]`: match it with a `_` arm. |
 | `Event::id(&self) -> &str` | The id of the control the event came from. |
 | `Ui` | The page builder (re-export of `ui::Ui`). |
 | `Error`, `ErrorKind`, `Result<T, E = Error>` | See [Errors](#errors). |
 
 The Manager keeps one instance per open page and calls it from one thread. The instance lives while the page is open;
-closing the page, switching the plugin off or removing it drops it. A plugin never runs in the background.
+closing the page, switching the plugin off or removing it drops it. A plugin never runs in the background: a long job
+runs in ticks only while its page is open.
 
-Each call into the plugin (`new` plus the first `render`, each `on_event`, each `render`) may run for at most 5 s of
-plugin time. Time spent in a dialog, waiting for an approval, or waiting on the database, the network or a local
+Each call into the plugin (`new` plus the first `render`, each `on_event`, each `render`, each `tick`) may run for at
+most 5 s of plugin time. Time spent in a dialog, waiting for an approval, or waiting on the database, the network or a local
 connection does not count: those have their own limits, listed below. See [Limits](limits.md).
 
 ## Errors
@@ -54,9 +60,9 @@ Every fallible call returns `aio_plugin_sdk::Result<T>`, that is `Result<T, aio_
 
 | Kind | When |
 |---|---|
-| `Denied` | The plugin is not allowed to do this: a permission is missing from its manifest, or the request is outside what the permission covers (another table, host, port, a private column, a path that leads out of the private folder). Also a picked file used the wrong way, and an HTTP redirect to another host. The message starts with `permission denied: ` in most cases (see [Troubleshooting](troubleshooting.md#permission-denied)). |
+| `Denied` | The plugin is not allowed to do this: a permission is missing from its manifest, or the request is outside what the permission covers (another table, host, port, a private column, a path that leads out of the private folder). Also a picked file used the wrong way, an HTTP redirect to another host, a host the user refused under `http:ask`, and a write a picked folder refuses. The message starts with `permission denied: ` in most cases (see [Troubleshooting](troubleshooting.md#permission-denied)). |
 | `Rejected` | The user was asked to approve a script or database changes and said no. |
-| `Timeout` | The action passed its time limit. The message is `<what> timed out after <n> s`. |
+| `Timeout` | The action passed its time limit. The message is `<what> timed out after <n> s`. (`Conn::recv_timeout` is not an error when its time is up: it returns `Ok(None)`.) |
 | `NotFound` | A private file that does not exist, or a picked file that was removed after the user chose it. The message is exactly `file not found`. |
 | `Other` | Anything else: no server connected (`Not connected`), a network or database error, `HTTP 404`, a quota, an invalid path, a value of the wrong type, a page past the limits. |
 
@@ -112,7 +118,7 @@ Permission: none.
 
 ## `host`
 
-The Manager itself: the plugin log, the status line, dialogs, and files the user picks. Permission: none.
+The Manager itself: the plugin log, the status line, dialogs, files the user picks, and long jobs. Permission: none.
 
 | Item | What it does |
 |---|---|
@@ -129,12 +135,14 @@ The Manager itself: the plugin log, the status line, dialogs, and files the user
 | `PickedFile::is_for_saving(&self) -> bool` | `true` for a file from `pick_save_file`. |
 | `PickedFile::read(&self) -> Result<Vec<u8>>` | The whole content of a file picked for opening. At most 32 MiB. |
 | `PickedFile::write(&self, data: &[u8]) -> Result<()>` | Replaces the content of a file picked for saving. |
+| `keep_working()` | **API 1.1.** Asks for one more `Plugin::tick` after the next render. It holds only for the call that makes it: each event and tick starts without it, so call it in every event handler and tick that leaves work to do. See [Long jobs](ui.md#long-jobs). |
 
 Before a file dialog opens, the Manager shows its own window saying what the plugin wants ("The plugin wants you to
 choose a file to open. It can read that one file, nothing else."). Every dialog of a plugin also offers **Stop this
 plugin**; the call then gets the cancel answer (`false` or `None`) and the plugin is stopped.
 
-Limits: one call (`render` or `on_event`) may open at most 20 dialogs. Past that, every further dialog gets the cancel
+Limits: one call (`render`, `on_event` or `tick`) may open at most 20 dialogs (the folder picker of
+[`folders`](#folders) included). Past that, every further dialog gets the cancel
 answer without being shown, and the log says once: "more than 20 dialogs in one call: further dialogs are cancelled
 without being shown". The user's time in a dialog does not count against the call's 5 s. The texts of `ask` and
 `prompt_text` are cut to 1,000 characters, a file dialog's title to 120. A log line keeps at most 4 KiB; one call may write at most 1,000 entries and 256 KiB (status texts
@@ -219,6 +227,64 @@ fn files_calls() -> aio_plugin_sdk::Result<()> {
 
 The folder is `configuration/plugins/ext/<id>/data/` for an installed plugin and
 `configuration/plugins/ext-dev/<id>/data/` for a developer folder. Removing the plugin deletes it.
+
+## `folders`
+
+**API 1.1.** A folder the user picks, where the plugin may create data files: an export, a downloaded catalogue with
+its pictures. Permission: none, because the user picks the folder each time. The plugin never sees the folder's path,
+only its name.
+
+| Item | What it does |
+|---|---|
+| `pick(title: &str) -> Option<Folder>` | Shows a folder dialog titled `title`. `None` if the user cancelled, picked a folder that cannot be picked (see below), or past the 20 dialogs of a call. |
+| `struct Folder` | A picked folder. Released when dropped. |
+| `Folder::name(&self) -> String` | The folder's name (its last path component), to tell the user where the files went. |
+| `Folder::write(&self, path: &str, data: &[u8]) -> Result<()>` | Creates the file `path` (and the folders it needs), or rewrites a file this `Folder` created. |
+| `Folder::write_str(&self, path: &str, text: &str) -> Result<()>` | The same with `text` as UTF-8. |
+| `Folder::reveal(&self) -> Result<()>` | Opens the folder in the system's file manager. At most once every 2 s per `Folder`. |
+| `Folder::open_import_preview(&self, path: &str) -> Result<()>` | Hands a file this `Folder` wrote, of at most 32 MiB, to the Catalogue's import, like `host::open_import_preview`. |
+| `DATA_EXTENSIONS` | The file types a plugin may write: `json`, `sql`, `txt`, `md`, `csv`, `tsv`, `xml`, `html`, `png`, `gif`, `jpg`, `jpeg`, `webp`, `bmp`, `svg`, `zip`, `nitro`, `swf`, `bin`, `log`. |
+| `MAX_FILES` | `100_000`: most files one `Folder` writes. |
+| `MAX_BYTES` | `2 * 1024 * 1024 * 1024`: most bytes one `Folder` writes in all (2 GiB, the current sizes of its files). |
+| `MAX_FILE` | `256 * 1024 * 1024`: the largest file (256 MiB). |
+
+Before the dialog opens, the Manager says what the plugin wants ("The plugin wants you to choose a folder. It can
+create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.").
+
+Rules:
+
+- paths follow the [`files`](#files) rules: relative with `/`, at most 255 bytes and 8 levels, names of
+  `A-Z a-z 0-9 . _ -`, no `..`, no drive, no Windows device name;
+- only data files: the last extension (any letter case) is one of `DATA_EXTENSIONS`, and no name in the path starts
+  with `.`;
+- a write creates a new file. A file that is already there and was not written through this `Folder` is never
+  touched, and neither is a path that leads through a link. A rewrite of the plugin's own file replaces it whole: a
+  failed rewrite leaves the old content;
+- a new `pick` of the same folder starts over: it cannot rewrite the files of an earlier `Folder`;
+- some folders cannot be picked: a drive's root, the home folder itself, a startup folder (or anything inside one), and
+  the Manager's own install and configuration folders (or anything inside them). `pick` returns `None` and the plugin
+  log says why, for example `the picked folder was refused: permission denied: pick a folder of its own for this`.
+
+| Kind | When |
+|---|---|
+| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
+| `NotFound` | `file not found` (`open_import_preview` of a file that was removed). |
+| `Other` | An invalid path (the [`files`](#files) message); `file larger than 32 MiB` (`open_import_preview`); `the file manager could not be opened (<kind>)`; other I/O errors. |
+
+```rust
+use aio_plugin_sdk::{folders, host};
+
+fn export_catalogue() -> aio_plugin_sdk::Result<()> {
+    let Some(folder) = folders::pick("Save the catalogue") else {
+        return Ok(()); // cancelled
+    };
+    folder.write_str("catalogue/furni.json", "{}")?;
+    folder.write("catalogue/icons/chair.png", &[0x89, b'P', b'N', b'G'])?;
+    host::status(&format!("Saved in {}", folder.name()));
+    folder.reveal()?;
+    Ok(())
+}
+```
 
 ## `sql`
 
@@ -322,7 +388,8 @@ The user's time to decide does not count against any limit; the approved batch t
 
 ## `http`
 
-HTTP(S) GET to the hosts the plugin declares. Permission: `http:<host>` for each host.
+HTTP(S) GET to the hosts the plugin declares. Permission: `http:<host>` for each host, and with API 1.1 `http:ask` to
+ask the user about other hosts.
 
 | Item | What it does |
 |---|---|
@@ -334,6 +401,12 @@ Rules:
   scheme's default port (80 or 443; no other port);
 - the host must equal a declared `http:<host>` exactly, ignoring case: `http:example.com` does not cover
   `www.example.com` or `api.example.com`; declare each one;
+- with `http:ask`, a request to a host that is not declared asks the user first ("<plugin> wants to fetch from
+  <host>. Allow?"). Only public host names are asked about: an IP address (in any form), `localhost` or a name ending
+  in `.localhost`, a single-label name and a name ending in `.local`, `.lan`, `.internal` or `.home.arpa` are refused
+  without asking, and so is a host whose addresses are all on this computer or the local network. **Yes** is remembered
+  for the plugin (at most 64 hosts; the user can **Forget** them on the Plugins page); **No** is remembered until the
+  Manager closes. See [Asking for hosts](permissions.md#asking-for-hosts-httpask);
 - a redirect is followed only to the same host, on its default port, and never from https to http; at most 5
   redirects;
 - a status other than 2xx is an error;
@@ -341,7 +414,7 @@ Rules:
 
 | Kind | When |
 |---|---|
-| `Denied` | `permission denied: host 'example.com' is not declared with http:example.com`; `permission denied: '<url>' is not an allowed http(s) URL`; `permission denied: only http and https URLs are allowed, not '<url>'`; `permission denied: a URL with user information is not allowed: '<url>'`; `permission denied: '<url>': only the default port of https is allowed`; a redirect to another host (the message ends with `a redirect to another host was refused`). |
+| `Denied` | `permission denied: host 'example.com' is not declared with http:example.com`; with `http:ask`: `permission denied: host <host> was refused` (the user said no, now or earlier in the session), `permission denied: host <host> cannot be asked for` (not a public host name), `permission denied: host <host> resolves to a local address`, `permission denied: at most 64 hosts can be allowed; forget one on the Plugins page`; `permission denied: '<url>' is not an allowed http(s) URL`; `permission denied: only http and https URLs are allowed, not '<url>'`; `permission denied: a URL with user information is not allowed: '<url>'`; `permission denied: '<url>': only the default port of https is allowed`; a redirect to another host (the message ends with `a redirect to another host was refused`). |
 | `Timeout` | `the request timed out after 60 s` |
 | `Other` | `HTTP <code>` (for example `HTTP 404`); `the response is larger than 32 MiB`; too many redirects; a network error. |
 
@@ -361,7 +434,7 @@ fn http_call() -> aio_plugin_sdk::Result<()> {
 ## `tcp`
 
 Connections to a program on the user's computer (for example G-Earth). Permission: `tcp:localhost:<port>` for each
-port.
+port, or with API 1.1 `tcp:localhost:<a>-<b>` for a range of at most 16 ports.
 
 | Item | What it does |
 |---|---|
@@ -369,17 +442,23 @@ port.
 | `struct Conn` | An open connection. Closed by `close` or when dropped. |
 | `Conn::send(&mut self, data: &[u8]) -> Result<()>` | Sends all of `data`. |
 | `Conn::recv(&mut self, max: usize) -> Result<Vec<u8>>` | Waits for data and returns what is available, at most `max` bytes (and at most `MAX_RECV`). An empty result means the other side closed the connection. `max` must be at least 1. |
+| `Conn::recv_timeout(&mut self, max: usize, timeout: Duration) -> Result<Option<Vec<u8>>>` | **API 1.1.** Like `recv`, but waits at most `timeout` (`std::time::Duration`; at most `MAX_RECV_TIMEOUT`, a longer one waits that long; a part of a millisecond counts as a whole one). `Ok(None)`: nothing arrived in time, the connection stays usable. `Ok(Some(empty))`: the other side closed the connection. A zero `timeout` takes only what has already arrived. |
 | `Conn::close(self)` | Closes the connection (the same as dropping it). |
-| `MAX_RECV` | `1024 * 1024`: most bytes one `recv` returns (1 MiB). |
+| `MAX_RECV` | `1024 * 1024`: most bytes one `recv` or `recv_timeout` returns (1 MiB). |
+| `MAX_RECV_TIMEOUT` | `Duration::from_secs(30)`: the longest wait of one `recv_timeout`. |
 
-Rules: only `127.0.0.1`; only a declared port; at most 4 connections open at once. Connecting has 5 s; each `recv`
-has 30 s. Every connection is closed when the plugin stops.
+Rules: only `127.0.0.1`; only a declared port (alone or in a range); at most 4 connections open at once. Connecting
+has 5 s; each `recv` has 30 s; `recv_timeout` waits as asked, at most 30 s. None of these waits counts against the
+call's 5 s. Every connection is closed when the plugin stops.
+
+In a [long job](ui.md#long-jobs), `recv_timeout` lets each tick wait a little and then return, so the page stays
+usable while a program is quiet.
 
 | Kind | When |
 |---|---|
 | `Denied` | `permission denied: port 3000 is not declared with tcp:localhost:3000`; `permission denied: at most 4 local connections may be open at once` |
 | `Timeout` | `connecting timed out after 5 s`; `recv timed out after 30 s` |
-| `Other` | `connecting to port <port> failed (<reason>)`, for example `(ConnectionRefused)` when nothing listens; `the connection is closed`; `max must be at least 1` (`recv(0)`); other I/O errors. |
+| `Other` | `connecting to port <port> failed (<reason>)`, for example `(ConnectionRefused)` when nothing listens; `the connection is closed`; `max must be at least 1` (`recv(0)`, `recv_timeout(0, ...)`); other I/O errors. |
 
 ```rust
 use aio_plugin_sdk::host::{self, Level};
@@ -395,6 +474,19 @@ fn tcp_call() -> aio_plugin_sdk::Result<()> {
     }
     conn.close();
     Ok(())
+}
+
+// manifest: "tcp:localhost:9092-9101" (API 1.1)
+fn tcp_poll(conn: &mut tcp::Conn) -> aio_plugin_sdk::Result<bool> {
+    // Wait at most 200 ms, then give the page back.
+    match conn.recv_timeout(4096, std::time::Duration::from_millis(200))? {
+        None => Ok(true),                           // nothing yet: try again in the next tick
+        Some(bytes) if bytes.is_empty() => Ok(false), // closed
+        Some(bytes) => {
+            host::log(Level::Debug, &format!("{} bytes", bytes.len()));
+            Ok(true)
+        }
+    }
 }
 ```
 

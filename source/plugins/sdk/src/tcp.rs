@@ -96,9 +96,11 @@ fn recv_max(max: usize) -> Result<u32> {
 }
 
 /// `timeout` for the host: whole milliseconds rounded up, at most [`MAX_RECV_TIMEOUT`].
+// `%`, not `is_multiple_of` (Rust 1.90): the SDK builds with Rust 1.88 (its `rust-version`).
+#[allow(clippy::manual_is_multiple_of)]
 fn timeout_ms(timeout: Duration) -> u32 {
     let timeout = timeout.min(MAX_RECV_TIMEOUT);
-    let ms = timeout.as_millis() + u128::from(!timeout.subsec_nanos().is_multiple_of(1_000_000));
+    let ms = timeout.as_millis() + u128::from(timeout.subsec_nanos() % 1_000_000 != 0);
     u32::try_from(ms).unwrap_or(u32::MAX)
 }
 

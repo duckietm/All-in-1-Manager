@@ -67,7 +67,7 @@ fn new_project_builds_and_checks() {
     ok(aio_plugin(root.path(), &["new", "demo-counter", "--id", "demo-counter", "--sdk-path", sdk.to_str().unwrap()]), "new");
     let cargo = std::fs::read_to_string(project.join("Cargo.toml")).unwrap();
     assert!(cargo.contains("aio-plugin-sdk = { path = \""), "{cargo}");
-    assert!(cargo.contains(r#"# aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }"#), "{cargo}");
+    assert!(cargo.contains(r#"# aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.1.0" }"#), "{cargo}");
 
     // A second `new` into the same folder is refused.
     assert!(!aio_plugin(root.path(), &["new", "demo-counter", "--id", "demo-counter"]).status.success());

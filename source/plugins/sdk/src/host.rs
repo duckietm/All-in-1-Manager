@@ -1,9 +1,10 @@
 //! The Manager itself: the plugin log, the status line, dialogs and the files the user picks.
 //!
-//! None of these needs a permission. A dialog (`ask`, [`prompt_text`], the file pickers) waits for the user, and
-//! that time does not count against the call's time limit; one call (one [`render`](crate::Plugin::render) or
-//! [`on_event`](crate::Plugin::on_event)) may open at most 20 dialogs. Past that, every further dialog gets the
-//! cancel answer (`false` or `None`) without being shown, and the plugin log says so once.
+//! None of these needs a permission. A dialog (`ask`, [`prompt_text`], the file pickers, the folder picker
+//! [`folders::pick`](crate::folders::pick)) waits for the user, and that time does not count against the call's time
+//! limit; one call (one [`render`](crate::Plugin::render), [`on_event`](crate::Plugin::on_event) or
+//! [`tick`](crate::Plugin::tick)) may open at most 20 dialogs. Past that, every further dialog gets the cancel answer
+//! (`false` or `None`) without being shown, and the plugin log says so once.
 //!
 //! These calls work only inside the Manager. Off `wasm32` (a native `cargo test`), [`log`] and [`status`] write
 //! to stderr; the other calls panic.

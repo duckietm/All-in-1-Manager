@@ -51,6 +51,7 @@ mod error;
 #[doc(hidden)]
 pub mod export;
 pub mod files;
+pub mod folders;
 pub mod host;
 pub mod http;
 pub mod script;

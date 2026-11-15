@@ -32,9 +32,11 @@ pub struct Error {
 #[non_exhaustive]
 pub enum ErrorKind {
     /// The plugin is not allowed to do this: a permission is missing from its manifest, or the request is outside
-    /// what the permission covers (another table, host, port or folder).
+    /// what the permission covers (another table, host, port or folder), including a write to a
+    /// [picked folder](crate::folders) that its rules refuse.
     Denied,
-    /// The user was asked to approve the action (a script, database changes) and said no.
+    /// The user was asked to approve the action (a script, database changes) and said no. (A host refused under
+    /// `http:ask` is [`Denied`](ErrorKind::Denied).)
     Rejected,
     /// The action took longer than the Manager allows.
     Timeout,
@@ -64,8 +66,9 @@ impl Error {
 
     /// An error the Manager returned from a host call, with its kind read from the text:
     ///
-    /// - `permission denied: ...` and `access denied...` (a missing permission, a path outside the private folder),
-    ///   the wrong use of a picked file and a refused redirect to another host are [`ErrorKind::Denied`];
+    /// - `permission denied: ...` and `access denied...` (a missing permission, a path outside the private folder, a
+    ///   host refused under `http:ask`, a write a picked folder refuses), the wrong use of a picked file and a refused
+    ///   redirect to another host are [`ErrorKind::Denied`];
     /// - `the user rejected ...` is [`ErrorKind::Rejected`];
     /// - `<what> timed out after <n> s` is [`ErrorKind::Timeout`];
     /// - exactly `file not found` is [`ErrorKind::NotFound`];
@@ -85,7 +88,8 @@ pub(crate) fn host_result<T>(result: std::result::Result<T, String>) -> Result<T
     result.map_err(Error::from_host)
 }
 
-/// How the host starts every permission refusal (`plugin_host` runtime.rs, sql.rs, net.rs, approvals.rs).
+/// How the host starts every permission refusal (`plugin_host` runtime.rs, sql.rs, net.rs, approvals.rs, folders.rs,
+/// and the app's plugins/services.rs for an `http:ask` host that resolves to a local address).
 const DENIED: &str = "permission denied";
 
 /// Texts of the host that refuse a request without the `permission denied` prefix.
@@ -146,8 +150,8 @@ impl From<Error> for String {
 mod tests {
     use super::*;
 
-    /// The texts below are copied verbatim from the host (`plugin_host` runtime.rs, sql.rs, net.rs, approvals.rs and
-    /// the app's plugins/services.rs).
+    /// The texts below are copied verbatim from the host (`plugin_host` runtime.rs, sql.rs, net.rs, approvals.rs,
+    /// folders.rs and the app's plugins/services.rs). `recv-timeout` reports a timeout as `none`, not as a text.
     #[test]
     fn error_kind_from_host_strings() {
         let denied = [
@@ -170,6 +174,26 @@ mod tests {
             "a file picked for saving cannot be read",
             "a file picked for opening cannot be written",
             "error following redirect for url (https://example.com/a): a redirect to another host was refused",
+            // API 1.1: port ranges, http:ask (net.rs, runtime.rs `ask_for_host`, the app's plugins/services.rs).
+            "permission denied: port 9200 is not declared with tcp:localhost:9200",
+            "permission denied: host 192.168.1.2 cannot be asked for",
+            "permission denied: host example.org was refused",
+            "permission denied: host example.org was refused (too many hosts were refused this session)",
+            "permission denied: at most 64 hosts can be allowed; forget one on the Plugins page",
+            "permission denied: host rebind.example.org resolves to a local address",
+            "permission denied: this host cannot fetch from asked hosts",
+            // API 1.1: picked folders (folders.rs).
+            "permission denied: folder limit reached",
+            "permission denied: this folder belongs to the Manager",
+            "permission denied: pick a folder of its own for this",
+            "permission denied: out/.hidden.txt is hidden (a name starts with .)",
+            "permission denied: out/run.exe is not a data file",
+            "permission denied: out/a.json was not written through this folder",
+            "permission denied: the folder was shown less than 2 s ago",
+            "permission denied: out/a.json already exists",
+            "permission denied: the folder was replaced by a link",
+            "permission denied: out/a.json leads through a link",
+            "permission denied: out/a.json leads through a file",
         ];
         for text in denied {
             assert_eq!(Error::from_host(text.to_string()).kind(), ErrorKind::Denied, "{text}");
@@ -208,6 +232,13 @@ mod tests {
             "the connection is closed",
             "max must be at least 1",
             "i/o error (Other)",
+            // API 1.1 failures that are not refusals (runtime.rs, folders.rs, the app's plugins/services.rs).
+            "invalid folder handle",
+            "not a file",
+            "the write stopped",
+            "no free temporary name",
+            "the file manager could not be opened (NotFound)",
+            "this host cannot show folders",
             // Look-alikes that are not the host's own refusals.
             "ssh: Permission denied (publickey)",
             "the user rejected",

@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use std::path::Path;
 
 /// The SDK as a git dependency, pinned to its release tag.
-pub const SDK_GIT: &str = r#"aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }"#;
+pub const SDK_GIT: &str = r#"aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.1.0" }"#;
 
 const CARGO_TOML: &str = include_str!("../templates/Cargo.toml.txt");
 const MANIFEST: &str = include_str!("../templates/manifest.json.txt");
@@ -112,11 +112,11 @@ mod tests {
         let dir = root.path().join("my-plugin");
         create(&dir, "my-plugin", None).unwrap();
         let cargo = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
-        assert!(cargo.contains(r#"aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }"#), "{cargo}");
+        assert!(cargo.contains(r#"aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.1.0" }"#), "{cargo}");
         assert!(cargo.contains("# aio-plugin-sdk = { path = "), "{cargo}");
         assert!(cargo.contains(r#"crate-type = ["cdylib"]"#));
         let manifest = aio_plugin_host::Manifest::parse(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
-        assert_eq!((manifest.id.as_str(), manifest.name.as_str(), manifest.api.as_str()), ("my-plugin", "My Plugin", "1.0"));
+        assert_eq!((manifest.id.as_str(), manifest.name.as_str(), manifest.api.as_str()), ("my-plugin", "My Plugin", "1.1"));
         assert_eq!(manifest.permissions, [aio_plugin_host::Permission::Files]);
         let json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(json["dev_wasm"], "target/wasm32-wasip2/release/my_plugin.wasm");

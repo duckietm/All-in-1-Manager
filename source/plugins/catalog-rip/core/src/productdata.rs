@@ -6,7 +6,33 @@
 use std::collections::HashMap;
 
 use anyhow::{bail, Context, Result};
+use serde::de::IgnoredAny;
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::Value;
+
+#[derive(Deserialize)]
+struct JsonDoc<'a> {
+    #[serde(borrow, default)]
+    productdata: Option<&'a RawValue>,
+}
+
+#[derive(Deserialize)]
+struct JsonSection<'a> {
+    #[serde(borrow, default)]
+    product: Option<&'a RawValue>,
+}
+
+/// The fields of a product entry that are used (any other is skipped unread).
+#[derive(Deserialize)]
+struct JsonProduct {
+    #[serde(default)]
+    code: Option<Value>,
+    #[serde(default)]
+    name: Option<Value>,
+    #[serde(default)]
+    description: Option<Value>,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Productdata {
@@ -19,14 +45,27 @@ impl Productdata {
         let text = text.trim_start_matches('\u{feff}').trim();
         let mut data = Self::default();
         if text.starts_with('{') {
-            let value: Value = serde_json::from_str(text).context("productdata JSON")?;
-            let list = value
-                .get("productdata")
-                .and_then(|p| p.get("product"))
-                .and_then(Value::as_array);
-            for p in list.into_iter().flatten() {
-                let field = |k: &str| p.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-                data.add(&field("code"), field("name"), field("description"));
+            // Read entry by entry (no tree of the whole document: it is megabytes).
+            let doc: Option<JsonDoc> = match serde_json::from_str(text) {
+                Ok(doc) => Some(doc),
+                Err(_) => {
+                    serde_json::from_str::<IgnoredAny>(text).context("productdata JSON")?;
+                    None
+                }
+            };
+            let list = doc
+                .and_then(|d| d.productdata)
+                .and_then(|p| serde_json::from_str::<JsonSection>(p.get()).ok())
+                .and_then(|s| s.product)
+                .and_then(|l| serde_json::from_str::<Vec<&RawValue>>(l.get()).ok());
+            for raw in list.into_iter().flatten() {
+                let Ok(p) = serde_json::from_str::<JsonProduct>(raw.get()) else {
+                    continue;
+                };
+                let field =
+                    |v: Option<Value>| v.as_ref().and_then(Value::as_str).unwrap_or("").to_string();
+                let code = field(p.code);
+                data.add(&code, field(p.name), field(p.description));
             }
         } else {
             for line in text.lines().map(str::trim).filter(|l| l.starts_with('[')) {
@@ -96,6 +135,14 @@ mod tests {
         assert_eq!(p.len(), 3);
         assert_eq!(p.get("C"), Some(("C", "x")));
         assert!(Productdata::parse("[]").is_err());
+        assert!(Productdata::parse("{\"productdata\": ").is_err());
+        assert!(Productdata::parse("{\"productdata\": 5}").is_err(), "no products");
+        // Entries that are not objects, and fields that are not text, are skipped / empty.
+        let json = r#"{"productdata":{"product":[3, {"code":"A","name":7}, {"code":"b","description":"d","x":[1]}]}, "y": {}}"#;
+        let p = Productdata::parse(json).unwrap();
+        assert_eq!(p.get("a"), Some(("", "")));
+        assert_eq!(p.get("B"), Some(("", "d")));
+        assert_eq!(p.len(), 2);
         assert_eq!(
             official_url("game-de.habbo.com").as_deref(),
             Some("https://www.habbo.de/gamedata/productdata_json/1")

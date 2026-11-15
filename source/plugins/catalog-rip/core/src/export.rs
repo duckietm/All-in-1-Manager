@@ -1,8 +1,10 @@
 //! What the rip produced, and how it is written: catalog.json, the Arcturus SQL and README.txt.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Serialize, Serializer};
 use serde_json::{json, Map, Value};
 
 use crate::furnidata::Furnidata;
@@ -180,6 +182,159 @@ pub fn catalog_json(catalog: &RippedCatalog) -> Value {
         "complete": catalog.complete,
         "catalogs": modes,
     })
+}
+
+/// catalog.json as [`catalog_json`] makes it, serialized straight from the catalogue: the same
+/// bytes (pretty-printed), without a JSON tree of the whole catalogue in memory. `extra`: one
+/// more field at the end (`product_names`).
+pub struct CatalogJson<'a, E> {
+    pub catalog: &'a RippedCatalog,
+    pub extra: Option<(&'a str, E)>,
+}
+
+impl<E: Serialize> Serialize for CatalogJson<'_, E> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let c = self.catalog;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("generator", &format!("{} (G-Earth)", c.generator))?;
+        map.serialize_entry("hotel", &c.hotel)?;
+        map.serialize_entry("host", &c.host)?;
+        map.serialize_entry("hotel_version", &c.hotel_version)?;
+        map.serialize_entry("client_type", &c.client_type)?;
+        map.serialize_entry("ripped_at", &c.ripped_at)?;
+        map.serialize_entry("complete", &c.complete)?;
+        map.serialize_entry("catalogs", &ModesJson(&c.modes))?;
+        if let Some((key, value)) = &self.extra {
+            map.serialize_entry(key, value)?;
+        }
+        map.end()
+    }
+}
+
+struct ModesJson<'a>(&'a [RippedMode]);
+
+impl Serialize for ModesJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+        for mode in self.0 {
+            seq.serialize_element(&ModeJson(mode))?;
+        }
+        seq.end()
+    }
+}
+
+struct ModeJson<'a>(&'a RippedMode);
+
+impl Serialize for ModeJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let m = self.0;
+        let root = &m.index.root;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("mode", &m.mode)?;
+        map.serialize_entry("new_additions_available", &m.index.new_additions_available)?;
+        map.serialize_entry("index_has_parent_ids", &m.index.has_parent_ids)?;
+        map.serialize_entry("root", &RootJson(root))?;
+        map.serialize_entry("failed_pages", &m.failed)?;
+        map.serialize_entry(
+            "pages",
+            &ChildrenJson {
+                node: root,
+                parent: -1,
+                ripped: m,
+            },
+        )?;
+        map.end()
+    }
+}
+
+struct RootJson<'a>(&'a IndexNode);
+
+impl Serialize for RootJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(3))?;
+        map.serialize_entry("name", &self.0.name)?;
+        map.serialize_entry("localization", &self.0.localization)?;
+        map.serialize_entry("icon", &self.0.icon)?;
+        map.end()
+    }
+}
+
+/// The children of `node`, each with `parent` as its parent id.
+struct ChildrenJson<'a> {
+    node: &'a IndexNode,
+    parent: i32,
+    ripped: &'a RippedMode,
+}
+
+impl Serialize for ChildrenJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut seq = serializer.serialize_seq(Some(self.node.children.len()))?;
+        for (i, child) in self.node.children.iter().enumerate() {
+            seq.serialize_element(&NodeJson {
+                node: child,
+                parent: self.parent,
+                order: i + 1,
+                ripped: self.ripped,
+            })?;
+        }
+        seq.end()
+    }
+}
+
+/// [`node_json`] as it serializes.
+struct NodeJson<'a> {
+    node: &'a IndexNode,
+    parent: i32,
+    order: usize,
+    ripped: &'a RippedMode,
+}
+
+impl Serialize for NodeJson<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let node = self.node;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &node.page_id)?;
+        map.serialize_entry("parent_id", &self.parent)?;
+        map.serialize_entry("order", &self.order)?;
+        map.serialize_entry("name", &node.name)?;
+        map.serialize_entry("localization", &node.localization)?;
+        map.serialize_entry("icon", &node.icon)?;
+        map.serialize_entry("visible", &node.visible)?;
+        map.serialize_entry("enabled", &(node.page_id > 0))?;
+        map.serialize_entry("index_offer_ids", &node.offer_ids)?;
+        match self.ripped.pages.get(&node.page_id) {
+            Some(page) => {
+                map.serialize_entry("layout", &page.layout)?;
+                map.serialize_entry("images", &page.images)?;
+                map.serialize_entry("texts", &page.texts)?;
+                if let Some(flag) = page.accept_season_currency_as_credits {
+                    map.serialize_entry("accept_season_currency_as_credits", &flag)?;
+                }
+                map.serialize_entry("packet_layout", &page.packet_layout)?;
+                map.serialize_entry("offers", &page.offers)?;
+                map.serialize_entry("frontpage_items", &page.frontpage_items)?;
+            }
+            None => {
+                let status = if node.page_id <= 0 {
+                    "not requestable (disabled page, id -1)"
+                } else if self.ripped.failed.contains(&node.page_id) {
+                    "no answer"
+                } else {
+                    "not ripped"
+                };
+                map.serialize_entry("page_status", status)?;
+            }
+        }
+        map.serialize_entry(
+            "children",
+            &ChildrenJson {
+                node,
+                parent: node.page_id,
+                ripped: self.ripped,
+            },
+        )?;
+        map.end()
+    }
 }
 
 // ---------------------------------------------------------------- sql helpers
@@ -680,54 +835,48 @@ pub fn arcturus_sql_with(
         .iter()
         .filter(|m| !m.mode.eq_ignore_ascii_case("NORMAL"))
         .collect();
-    let (page_rows, item_rows) = arcturus_rows(&normal, false, items, furnidata, &mut stats);
-    let (bc_page_rows, bc_item_rows) = arcturus_rows(&builders, true, items, furnidata, &mut stats);
+    let collect = |modes: &[&RippedMode], bc: bool, stats: &mut SqlStats| {
+        let (mut pages, mut offers) = (Vec::new(), Vec::new());
+        arcturus_rows(
+            modes,
+            bc,
+            items,
+            furnidata,
+            stats,
+            Rows::Both,
+            &mut |note, row| pages.push((note.to_string(), row)),
+            &mut |note, row| offers.push((note.to_string(), row)),
+        );
+        (pages, offers)
+    };
+    let (page_rows, item_rows) = collect(&normal, false, &mut stats);
+    let (bc_page_rows, bc_item_rows) = collect(&builders, true, &mut stats);
     stats.bc_pages = bc_page_rows.len();
     stats.bc_items = bc_item_rows.len();
 
     let unresolved_note = |sql: &mut String| {
-        if items.is_none() {
-            sql.push_str("-- item_ids are looked up in items_base while importing (subqueries on sprite_id + type,\n-- badges on item_name); a product the hotel does not have yields an empty entry.\n\n");
-        } else if stats.products_unresolved > 0 {
-            sql.push_str("-- Products the database did not have when ripping are looked up in items_base while\n-- importing (subqueries); a product the hotel still does not have yields an empty entry.\n\n");
-        }
+        sql.push_str(items_note(items.is_some(), stats.products_unresolved));
     };
 
-    let mut pages_sql = header("catalog_pages for Arcturus", catalog);
-    pages_sql.push_str("-- To replace the hotel's catalogue instead of adding to it, first run:\n--   DELETE FROM `catalog_items`; DELETE FROM `catalog_pages`;\n\n");
-    write_inserts(
-        &mut pages_sql,
-        "INSERT INTO `catalog_pages` (`id`, `parent_id`, `caption_save`, `caption`, `page_layout`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`, `club_only`, `catalog_mode`, `vip_only`, `page_headline`, `page_teaser`, `page_special`, `page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`, `room_id`, `includes`)",
-        &page_rows,
-    );
+    let mut pages_sql = header(SqlFile::Pages.title(), catalog);
+    pages_sql.push_str(SqlFile::Pages.note());
+    write_inserts(&mut pages_sql, SqlFile::Pages.head(), &page_rows);
     pages_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
 
-    let mut items_sql = header("catalog_items for Arcturus", catalog);
+    let mut items_sql = header(SqlFile::Items.title(), catalog);
     unresolved_note(&mut items_sql);
-    write_inserts(
-        &mut items_sql,
-        "INSERT INTO `catalog_items` (`id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`, `cost_points`, `points_type`, `amount`, `limited_stack`, `limited_sells`, `order_number`, `offer_id`, `song_id`, `extradata`, `have_offer`, `club_only`)",
-        &item_rows,
-    );
+    write_inserts(&mut items_sql, SqlFile::Items.head(), &item_rows);
     items_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
 
     let (mut pages_bc, mut items_bc) = (String::new(), String::new());
     if !builders.is_empty() {
-        pages_bc = header("catalog_pages_bc (Builders Club) for Arcturus", catalog);
-        pages_bc.push_str("-- To replace the Builders Club catalogue instead of adding to it, first run:\n--   DELETE FROM `catalog_items_bc`; DELETE FROM `catalog_pages_bc`;\n\n");
-        write_inserts(
-            &mut pages_bc,
-            "INSERT INTO `catalog_pages_bc` (`id`, `parent_id`, `caption`, `page_layout`, `icon_color`, `icon_image`, `order_num`, `visible`, `enabled`, `page_headline`, `page_teaser`, `page_special`, `page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`)",
-            &bc_page_rows,
-        );
+        pages_bc = header(SqlFile::PagesBc.title(), catalog);
+        pages_bc.push_str(SqlFile::PagesBc.note());
+        write_inserts(&mut pages_bc, SqlFile::PagesBc.head(), &bc_page_rows);
         pages_bc.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
-        items_bc = header("catalog_items_bc (Builders Club) for Arcturus", catalog);
+        items_bc = header(SqlFile::ItemsBc.title(), catalog);
         unresolved_note(&mut items_bc);
-        write_inserts(
-            &mut items_bc,
-            "INSERT INTO `catalog_items_bc` (`id`, `item_ids`, `page_id`, `catalog_name`, `order_number`, `extradata`)",
-            &bc_item_rows,
-        );
+        write_inserts(&mut items_bc, SqlFile::ItemsBc.head(), &bc_item_rows);
         items_bc.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
     }
 
@@ -740,21 +889,208 @@ pub fn arcturus_sql_with(
     }
 }
 
-/// The page and offer rows of some catalogues (one table set: normal, or the Builders Club's
-/// `_bc` tables with their fewer columns).
-fn arcturus_rows(
-    modes: &[&RippedMode],
-    bc: bool,
+/// One of the Arcturus SQL files ([`arcturus_sql_with`] makes the four at once,
+/// [`write_arcturus_file`] one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SqlFile {
+    Pages,
+    Items,
+    PagesBc,
+    ItemsBc,
+}
+
+impl SqlFile {
+    pub fn name(self) -> &'static str {
+        match self {
+            SqlFile::Pages => "catalog_pages.sql",
+            SqlFile::Items => "catalog_items.sql",
+            SqlFile::PagesBc => "catalog_pages_bc.sql",
+            SqlFile::ItemsBc => "catalog_items_bc.sql",
+        }
+    }
+
+    fn bc(self) -> bool {
+        matches!(self, SqlFile::PagesBc | SqlFile::ItemsBc)
+    }
+
+    fn pages(self) -> bool {
+        matches!(self, SqlFile::Pages | SqlFile::PagesBc)
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            SqlFile::Pages => "catalog_pages for Arcturus",
+            SqlFile::Items => "catalog_items for Arcturus",
+            SqlFile::PagesBc => "catalog_pages_bc (Builders Club) for Arcturus",
+            SqlFile::ItemsBc => "catalog_items_bc (Builders Club) for Arcturus",
+        }
+    }
+
+    /// What a page file says after its header.
+    fn note(self) -> &'static str {
+        match self {
+            SqlFile::Pages => "-- To replace the hotel's catalogue instead of adding to it, first run:\n--   DELETE FROM `catalog_items`; DELETE FROM `catalog_pages`;\n\n",
+            SqlFile::PagesBc => "-- To replace the Builders Club catalogue instead of adding to it, first run:\n--   DELETE FROM `catalog_items_bc`; DELETE FROM `catalog_pages_bc`;\n\n",
+            SqlFile::Items | SqlFile::ItemsBc => "",
+        }
+    }
+
+    fn head(self) -> &'static str {
+        match self {
+            SqlFile::Pages => "INSERT INTO `catalog_pages` (`id`, `parent_id`, `caption_save`, `caption`, `page_layout`, `icon_color`, `icon_image`, `min_rank`, `order_num`, `visible`, `enabled`, `club_only`, `catalog_mode`, `vip_only`, `page_headline`, `page_teaser`, `page_special`, `page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`, `room_id`, `includes`)",
+            SqlFile::Items => "INSERT INTO `catalog_items` (`id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`, `cost_points`, `points_type`, `amount`, `limited_stack`, `limited_sells`, `order_number`, `offer_id`, `song_id`, `extradata`, `have_offer`, `club_only`)",
+            SqlFile::PagesBc => "INSERT INTO `catalog_pages_bc` (`id`, `parent_id`, `caption`, `page_layout`, `icon_color`, `icon_image`, `order_num`, `visible`, `enabled`, `page_headline`, `page_teaser`, `page_special`, `page_text1`, `page_text2`, `page_text_details`, `page_text_teaser`)",
+            SqlFile::ItemsBc => "INSERT INTO `catalog_items_bc` (`id`, `item_ids`, `page_id`, `catalog_name`, `order_number`, `extradata`)",
+        }
+    }
+}
+
+/// What an item file says after its header: how item_ids are found.
+fn items_note(with_items_base: bool, products_unresolved: usize) -> &'static str {
+    if !with_items_base {
+        "-- item_ids are looked up in items_base while importing (subqueries on sprite_id + type,\n-- badges on item_name); a product the hotel does not have yields an empty entry.\n\n"
+    } else if products_unresolved > 0 {
+        "-- Products the database did not have when ripping are looked up in items_base while\n-- importing (subqueries); a product the hotel still does not have yields an empty entry.\n\n"
+    } else {
+        ""
+    }
+}
+
+/// The catalogues of a table set: normal, or Builders Club (`bc`).
+fn table_set(catalog: &RippedCatalog, bc: bool) -> Vec<&RippedMode> {
+    catalog
+        .modes
+        .iter()
+        .filter(|m| m.mode.eq_ignore_ascii_case("NORMAL") != bc)
+        .collect()
+}
+
+/// The products of the rip that items_base has no id for (all of them without items_base):
+/// [`SqlStats::products_unresolved`] of [`arcturus_sql_with`], counted without writing SQL.
+pub fn products_unresolved(
+    catalog: &RippedCatalog,
     items: Option<&ItemsBase>,
     furnidata: Option<&Furnidata>,
+) -> usize {
+    let mut count = 0;
+    for bc in [false, true] {
+        let modes = table_set(catalog, bc);
+        for row in table_rows(&modes, &mut 0) {
+            let Some(page) = row.page else { continue };
+            for product in page.offers.iter().flat_map(|o| &o.products) {
+                if items
+                    .and_then(|i| i.lookup_with(product, furnidata))
+                    .is_none()
+                {
+                    count += 1;
+                }
+            }
+        }
+    }
+    count
+}
+
+/// `INSERT ... VALUES` statements of [`ROWS_PER_INSERT`] rows, written as the rows come
+/// ([`write_inserts`] for rows that are not all there at once).
+struct Inserts {
+    head: &'static str,
+    rows: usize,
+}
+
+impl Inserts {
+    fn row(&mut self, out: &mut dyn fmt::Write, note: &str, row: &str) {
+        if self.rows.is_multiple_of(ROWS_PER_INSERT) {
+            let _ = out.write_str(self.head);
+            let _ = out.write_str(" VALUES\n");
+        } else {
+            let _ = out.write_str(",\n");
+        }
+        if !note.is_empty() {
+            let _ = writeln!(out, "-- {}", comment(note));
+        }
+        let _ = out.write_str(row);
+        self.rows += 1;
+        if self.rows.is_multiple_of(ROWS_PER_INSERT) {
+            let _ = out.write_str(";\n\n");
+        }
+    }
+
+    fn finish(&self, out: &mut dyn fmt::Write) {
+        if !self.rows.is_multiple_of(ROWS_PER_INSERT) {
+            let _ = out.write_str(";\n\n");
+        }
+    }
+}
+
+/// One Arcturus SQL file, written into `out` row by row: the bytes [`arcturus_sql_with`] makes
+/// for it, without the rows of the other files or a list of rows in memory. `false` (nothing
+/// written): a `_bc` file and no Builders Club catalogue was ripped. `products_unresolved`:
+/// [`products_unresolved`]. Adds what the file counts to `stats` (a page file its pages and
+/// synthetic page ids, an item file its offers and products; the `_bc` ones also `bc_pages` /
+/// `bc_items`), so the four files together count what [`arcturus_sql_with`] does.
+pub fn write_arcturus_file(
+    out: &mut dyn fmt::Write,
+    catalog: &RippedCatalog,
+    items: Option<&ItemsBase>,
+    furnidata: Option<&Furnidata>,
+    file: SqlFile,
+    products_unresolved: usize,
     stats: &mut SqlStats,
-) -> (Vec<(String, String)>, Vec<(String, String)>) {
-    // One row per page id; disabled pages (id -1 in the index) get new ids above the highest.
+) -> bool {
+    let modes = table_set(catalog, file.bc());
+    if file.bc() && modes.is_empty() {
+        return false;
+    }
+    let _ = out.write_str(&header(file.title(), catalog));
+    if file.pages() {
+        let _ = out.write_str(file.note());
+    } else {
+        let _ = out.write_str(items_note(items.is_some(), products_unresolved));
+    }
+    let mut inserts = Inserts {
+        head: file.head(),
+        rows: 0,
+    };
+    {
+        let mut write = |note: &str, row: String| inserts.row(out, note, &row);
+        let mut skip = |_: &str, _: String| {};
+        let (pages, offers): (RowSink, RowSink) = if file.pages() {
+            (&mut write, &mut skip)
+        } else {
+            (&mut skip, &mut write)
+        };
+        let want = if file.pages() { Rows::Pages } else { Rows::Items };
+        arcturus_rows(&modes, file.bc(), items, furnidata, stats, want, pages, offers);
+    }
+    inserts.finish(out);
+    let _ = out.write_str("SET FOREIGN_KEY_CHECKS = 1;\n");
+    match file {
+        SqlFile::PagesBc => stats.bc_pages += inserts.rows,
+        SqlFile::ItemsBc => stats.bc_items += inserts.rows,
+        SqlFile::Pages | SqlFile::Items => {}
+    }
+    true
+}
+
+/// Which rows [`arcturus_rows`] makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Rows {
+    Pages,
+    Items,
+    Both,
+}
+
+/// Gets each row as it is made: (note, `(values)`).
+type RowSink<'s> = &'s mut dyn FnMut(&str, String);
+
+/// One row per page id of a table set; disabled pages (id -1 in the index) get new ids above
+/// the highest, counted in `synthetic`.
+fn table_rows<'a>(modes: &[&'a RippedMode], synthetic: &mut usize) -> Vec<PageRow<'a>> {
     let mut next_synthetic = first_free_page_id(modes.iter().copied());
     let mut rows: Vec<PageRow> = Vec::new();
     let mut row_of: HashMap<i32, usize> = HashMap::new();
     for mode in modes {
-        for numbered in numbered_pages(mode, &mut next_synthetic, &mut stats.synthetic_page_ids) {
+        for numbered in numbered_pages(mode, &mut next_synthetic, synthetic) {
             match row_of.get(&numbered.id) {
                 Some(&existing) => {
                     let row = &mut rows[existing];
@@ -775,9 +1111,104 @@ fn arcturus_rows(
             }
         }
     }
+    rows
+}
 
-    let mut page_rows = Vec::with_capacity(rows.len());
-    let mut item_rows = Vec::new();
+/// A page row's `(values)`, with its note.
+fn page_row_values(row: &PageRow, bc: bool, stats: &mut SqlStats) -> (String, String) {
+    let node = row.node;
+    let layout_code = row.page.map(|p| p.layout.as_str()).unwrap_or("");
+    let mut note = String::new();
+    let layout = match arcturus_layout(layout_code) {
+        Some(l) => l,
+        None if layout_code.is_empty() => "default_3x3",
+        None => {
+            *stats
+                .unknown_layouts
+                .entry(layout_code.to_string())
+                .or_default() += 1;
+            note = format!("page {}: layout '{layout_code}' is not in Arcturus' page_layout enum, written as default_3x3", row.id);
+            "default_3x3"
+        }
+    };
+    let content = row
+        .page
+        .map(|p| map_page_content(&p.layout, &p.images, &p.texts))
+        .unwrap_or_default();
+    let t = &mut stats.truncated_values;
+    let visible = sql_str(if node.visible { "1" } else { "0" });
+    let enabled = sql_str(if node.page_id > 0 { "1" } else { "0" });
+    let values: Vec<String> = if bc {
+        vec![
+            row.id.to_string(),
+            row.parent_id.to_string(),
+            sql_str(&fit(&node.localization, 128, t)),
+            sql_str(layout),
+            "1".into(),
+            node.icon.to_string(),
+            row.order.to_string(),
+            visible,
+            enabled,
+            sql_str(&fit(&content.headline, 1024, t)),
+            sql_str(&fit(&content.teaser, 64, t)),
+            sql_str(&fit(&content.special, 2048, t)),
+            sql_str(&content.text1),
+            sql_str(&content.text2),
+            sql_str(&content.text_details),
+            sql_str(&content.text_teaser),
+        ]
+    } else {
+        vec![
+            row.id.to_string(),
+            row.parent_id.to_string(),
+            sql_str(&fit(&node.name, 128, t)),
+            sql_str(&fit(&node.localization, 128, t)),
+            sql_str(layout),
+            "1".into(),
+            node.icon.to_string(),
+            "1".into(),
+            row.order.to_string(),
+            visible,
+            enabled,
+            "'0'".into(),
+            sql_str("NORMAL"),
+            "'0'".into(),
+            sql_str(&fit(&content.headline, 1024, t)),
+            sql_str(&fit(&content.teaser, 64, t)),
+            sql_str(&fit(&content.special, 2048, t)),
+            sql_str(&content.text1),
+            sql_str(&content.text2),
+            sql_str(&content.text_details),
+            sql_str(&content.text_teaser),
+            "0".into(),
+            "''".into(),
+        ]
+    };
+    (note, format!("({})", values.join(", ")))
+}
+
+/// The page and offer rows of some catalogues (one table set: normal, or the Builders Club's
+/// `_bc` tables with their fewer columns), handed one at a time to `page_row` / `item_row`.
+/// `want` says which: the stats count only what is made (the synthetic page ids with the
+/// pages).
+#[allow(clippy::too_many_arguments)]
+fn arcturus_rows(
+    modes: &[&RippedMode],
+    bc: bool,
+    items: Option<&ItemsBase>,
+    furnidata: Option<&Furnidata>,
+    stats: &mut SqlStats,
+    want: Rows,
+    page_row: RowSink,
+    item_row: RowSink,
+) {
+    let mut scratch = 0;
+    let synthetic = if want == Rows::Items {
+        &mut scratch
+    } else {
+        &mut stats.synthetic_page_ids
+    };
+    let rows = table_rows(modes, synthetic);
     let mut seen_offers: HashSet<i32> = HashSet::new();
     // Repeated offers get explicit ids above every Habbo offer id: an AUTO_INCREMENT (NULL) id
     // could take a Habbo id that a later row inserts explicitly (duplicate key on import).
@@ -790,76 +1221,14 @@ fn arcturus_rows(
         .max(0)
         + 1;
     for row in &rows {
-        let node = row.node;
-        let layout_code = row.page.map(|p| p.layout.as_str()).unwrap_or("");
-        let mut note = String::new();
-        let layout = match arcturus_layout(layout_code) {
-            Some(l) => l,
-            None if layout_code.is_empty() => "default_3x3",
-            None => {
-                *stats
-                    .unknown_layouts
-                    .entry(layout_code.to_string())
-                    .or_default() += 1;
-                note = format!("page {}: layout '{layout_code}' is not in Arcturus' page_layout enum, written as default_3x3", row.id);
-                "default_3x3"
-            }
-        };
-        let content = row
-            .page
-            .map(|p| map_page_content(&p.layout, &p.images, &p.texts))
-            .unwrap_or_default();
-        let t = &mut stats.truncated_values;
-        let visible = sql_str(if node.visible { "1" } else { "0" });
-        let enabled = sql_str(if node.page_id > 0 { "1" } else { "0" });
-        let values: Vec<String> = if bc {
-            vec![
-                row.id.to_string(),
-                row.parent_id.to_string(),
-                sql_str(&fit(&node.localization, 128, t)),
-                sql_str(layout),
-                "1".into(),
-                node.icon.to_string(),
-                row.order.to_string(),
-                visible,
-                enabled,
-                sql_str(&fit(&content.headline, 1024, t)),
-                sql_str(&fit(&content.teaser, 64, t)),
-                sql_str(&fit(&content.special, 2048, t)),
-                sql_str(&content.text1),
-                sql_str(&content.text2),
-                sql_str(&content.text_details),
-                sql_str(&content.text_teaser),
-            ]
-        } else {
-            vec![
-                row.id.to_string(),
-                row.parent_id.to_string(),
-                sql_str(&fit(&node.name, 128, t)),
-                sql_str(&fit(&node.localization, 128, t)),
-                sql_str(layout),
-                "1".into(),
-                node.icon.to_string(),
-                "1".into(),
-                row.order.to_string(),
-                visible,
-                enabled,
-                "'0'".into(),
-                sql_str("NORMAL"),
-                "'0'".into(),
-                sql_str(&fit(&content.headline, 1024, t)),
-                sql_str(&fit(&content.teaser, 64, t)),
-                sql_str(&fit(&content.special, 2048, t)),
-                sql_str(&content.text1),
-                sql_str(&content.text2),
-                sql_str(&content.text_details),
-                sql_str(&content.text_teaser),
-                "0".into(),
-                "''".into(),
-            ]
-        };
-        page_rows.push((note, format!("({})", values.join(", "))));
-        stats.pages += 1;
+        if want != Rows::Items {
+            let (note, values) = page_row_values(row, bc, stats);
+            page_row(&note, values);
+            stats.pages += 1;
+        }
+        if want == Rows::Pages {
+            continue;
+        }
 
         let Some(page) = row.page else { continue };
         for (position, offer) in page.offers.iter().enumerate() {
@@ -952,11 +1321,10 @@ fn arcturus_rows(
                     sql_str(if offer.club_level > 0 { "1" } else { "0" }),
                 ]
             };
-            item_rows.push((note, format!("({})", values.join(", "))));
+            item_row(&note, format!("({})", values.join(", ")));
             stats.items += 1;
         }
     }
-    (page_rows, item_rows)
 }
 
 /// README.txt for the output folder.

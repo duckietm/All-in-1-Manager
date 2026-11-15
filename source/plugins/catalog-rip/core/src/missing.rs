@@ -4,13 +4,13 @@
 //! import (`aio_remote::furni_import::plan`) reads, so the furni can be added to items_base
 //! (with their client files) before the catalogue is imported.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::export::{ItemsBase, RippedCatalog};
-use crate::furnidata::Furnidata;
+use crate::furnidata::{Furnidata, FurniKey};
 use crate::productdata::Productdata;
 
 /// One product the hotel lacks.
@@ -96,7 +96,44 @@ pub fn missing_furni(
 
 /// The furnidata entries of the missing floor and wall furni (see the module docs).
 pub fn missing_furnidata(missing: &[MissingFurni], furnidata: &Furnidata) -> Value {
-    let wanted: Vec<(char, i32)> = missing
+    furnidata.subset(&missing_keys(missing))
+}
+
+/// The keys of [`missing_furni`] that [`missing_keys`] gives, without making the list: the
+/// furnidata entries to keep for missing_furnidata.json (empty without items_base).
+pub fn missing_furni_keys(
+    catalog: &RippedCatalog,
+    items: Option<&ItemsBase>,
+    furnidata: &Furnidata,
+) -> HashSet<FurniKey> {
+    let mut keys = HashSet::new();
+    let Some(items) = items else {
+        return keys;
+    };
+    for mode in &catalog.modes {
+        for page in mode.pages.values() {
+            for product in page.offers.iter().flat_map(|o| &o.products) {
+                let kind = match product.product_type.as_str() {
+                    "s" => 's',
+                    "i" => 'i',
+                    _ => continue,
+                };
+                let Some(class_id) = product.class_id else {
+                    continue;
+                };
+                if items.lookup_with(product, Some(furnidata)).is_none() {
+                    keys.insert((kind, class_id));
+                }
+            }
+        }
+    }
+    keys
+}
+
+/// The floor and wall furni of the missing products, in their order: the entries
+/// missing_furnidata.json lists (when the furnidata has them).
+pub fn missing_keys(missing: &[MissingFurni]) -> Vec<FurniKey> {
+    missing
         .iter()
         .filter_map(|m| {
             let kind = match m.product_type.as_str() {
@@ -106,8 +143,7 @@ pub fn missing_furnidata(missing: &[MissingFurni], furnidata: &Furnidata) -> Val
             };
             Some((kind, m.class_id?))
         })
-        .collect();
-    furnidata.subset(&wanted)
+        .collect()
 }
 
 #[cfg(test)]

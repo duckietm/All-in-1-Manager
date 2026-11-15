@@ -20,7 +20,7 @@
 //! The Manager previews every change of the file before writing anything.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::fmt::Write as _;
+use std::fmt::{self, Write as _};
 
 use serde::{Deserialize, Serialize};
 
@@ -262,14 +262,35 @@ pub fn manager_rows(
     catalog: &RippedCatalog,
     export: &ManagerExport,
 ) -> (Vec<ManagerRow>, ManagerStats, Vec<String>) {
+    let (mut pages, mut offers) = (Vec::new(), Vec::new());
+    let (stats, notes) = visit_manager_rows(catalog, export, true, true, &mut |row| {
+        if row.page {
+            pages.push(row)
+        } else {
+            offers.push(row)
+        }
+    });
+    pages.extend(offers);
+    (pages, stats, notes)
+}
+
+/// The rows of catalog_manager.sql as they are made (catalogue by catalogue, each page before
+/// its offers), handed to `emit`: the page rows when `want_pages`, the offer rows when
+/// `want_offers`. The stats count what is made (the synthetic page ids always); the notes are
+/// those of the offers.
+fn visit_manager_rows(
+    catalog: &RippedCatalog,
+    export: &ManagerExport,
+    want_pages: bool,
+    want_offers: bool,
+    emit: &mut dyn FnMut(ManagerRow),
+) -> (ManagerStats, Vec<String>) {
     let (mode, note) = effective_mode(catalog, export);
     let mut stats = ManagerStats {
         mode,
         note,
         ..ManagerStats::default()
     };
-    let mut page_rows = Vec::new();
-    let mut offer_rows = Vec::new();
     let mut notes = Vec::new();
     for ripped in &catalog.modes {
         let kind = catalog_type(&ripped.mode);
@@ -301,52 +322,57 @@ pub fn manager_rows(
         let mut skipped: Vec<(i32, String)> = Vec::new();
         let mut skipped_seen: HashSet<i32> = HashSet::new();
         for row in pages.iter().filter(|r| seen_pages.insert(r.id)) {
-            let node = row.node;
-            let layout_code = row.page.map(|p| p.layout.as_str()).unwrap_or("");
-            let layout = arcturus_layout(layout_code).unwrap_or("default_3x3");
-            let content = row
-                .page
-                .map(|p| map_page_content(&p.layout, &p.images, &p.texts))
-                .unwrap_or_default();
-            let a = &mut stats.adjusted_values;
-            let t = &mut stats.truncated_values;
-            let columns = vec![
-                ("parent_id", page_id(row.parent_id).to_string()),
-                ("caption_save", manager_str(&fit(&node.name, 128, t), a)),
-                ("caption", manager_str(&fit(&node.localization, 128, t), a)),
-                ("page_layout", format!("'{layout}'")),
-                ("icon_color", "1".into()),
-                ("icon_image", node.icon.to_string()),
-                ("min_rank", "1".into()),
-                ("order_num", row.order.to_string()),
-                ("visible", if node.visible { "1" } else { "0" }.into()),
-                ("enabled", if node.page_id > 0 { "1" } else { "0" }.into()),
-                ("club_only", "0".into()),
-                ("catalog_mode", format!("'{kind}'")),
-                ("vip_only", "0".into()),
-                ("page_headline", manager_str(&fit(&content.headline, 1024, t), a)),
-                ("page_teaser", manager_str(&fit(&content.teaser, 64, t), a)),
-                ("page_special", manager_str(&fit(&content.special, 2048, t), a)),
-                ("page_text1", manager_str(&content.text1, a)),
-                ("page_text2", manager_str(&content.text2, a)),
-                ("page_text_details", manager_str(&content.text_details, a)),
-                ("page_text_teaser", manager_str(&content.text_teaser, a)),
-                ("room_id", "0".into()),
-                ("includes", "''".into()),
-            ];
-            page_rows.push(ManagerRow {
-                page: true,
-                kind,
-                id: page_id(row.id),
-                columns,
-                label: if node.localization.is_empty() {
-                    node.name.clone()
-                } else {
-                    node.localization.clone()
-                },
-                has_content: row.page.is_some(),
-            });
-            stats.pages += 1;
+            if want_pages {
+                let node = row.node;
+                let layout_code = row.page.map(|p| p.layout.as_str()).unwrap_or("");
+                let layout = arcturus_layout(layout_code).unwrap_or("default_3x3");
+                let content = row
+                    .page
+                    .map(|p| map_page_content(&p.layout, &p.images, &p.texts))
+                    .unwrap_or_default();
+                let a = &mut stats.adjusted_values;
+                let t = &mut stats.truncated_values;
+                let columns = vec![
+                    ("parent_id", page_id(row.parent_id).to_string()),
+                    ("caption_save", manager_str(&fit(&node.name, 128, t), a)),
+                    ("caption", manager_str(&fit(&node.localization, 128, t), a)),
+                    ("page_layout", format!("'{layout}'")),
+                    ("icon_color", "1".into()),
+                    ("icon_image", node.icon.to_string()),
+                    ("min_rank", "1".into()),
+                    ("order_num", row.order.to_string()),
+                    ("visible", if node.visible { "1" } else { "0" }.into()),
+                    ("enabled", if node.page_id > 0 { "1" } else { "0" }.into()),
+                    ("club_only", "0".into()),
+                    ("catalog_mode", format!("'{kind}'")),
+                    ("vip_only", "0".into()),
+                    ("page_headline", manager_str(&fit(&content.headline, 1024, t), a)),
+                    ("page_teaser", manager_str(&fit(&content.teaser, 64, t), a)),
+                    ("page_special", manager_str(&fit(&content.special, 2048, t), a)),
+                    ("page_text1", manager_str(&content.text1, a)),
+                    ("page_text2", manager_str(&content.text2, a)),
+                    ("page_text_details", manager_str(&content.text_details, a)),
+                    ("page_text_teaser", manager_str(&content.text_teaser, a)),
+                    ("room_id", "0".into()),
+                    ("includes", "''".into()),
+                ];
+                emit(ManagerRow {
+                    page: true,
+                    kind,
+                    id: page_id(row.id),
+                    columns,
+                    label: if node.localization.is_empty() {
+                        node.name.clone()
+                    } else {
+                        node.localization.clone()
+                    },
+                    has_content: row.page.is_some(),
+                });
+                stats.pages += 1;
+            }
+            if !want_offers {
+                continue;
+            }
 
             let Some(page) = row.page else { continue };
             for (position, offer) in page.offers.iter().enumerate() {
@@ -435,7 +461,7 @@ pub fn manager_rows(
                     ("have_offer", if offer.bundle_purchase_allowed { "1" } else { "0" }.into()),
                     ("club_only", if offer.club_level > 0 { "1" } else { "0" }.into()),
                 ];
-                offer_rows.push(ManagerRow {
+                emit(ManagerRow {
                     page: false,
                     kind,
                     id,
@@ -449,17 +475,35 @@ pub fn manager_rows(
         skipped.sort();
         notes.extend(skipped.into_iter().map(|(_, n)| n));
     }
-    page_rows.extend(offer_rows);
-    (page_rows, stats, notes)
+    (stats, notes)
 }
 
 /// The whole rip as one file for the Manager's catalogue import.
 pub fn manager_sql_with(catalog: &RippedCatalog, export: &ManagerExport) -> ManagerSql {
     let (rows, mut stats, notes) = manager_rows(catalog, export);
-    let mode = stats.mode;
     let mut text = String::new();
+    write_head(&mut text, catalog, export, &mut stats);
+    for row in &rows {
+        text.push_str(&row.insert());
+        text.push('\n');
+    }
+    for note in notes {
+        let _ = writeln!(text, "-- skipped: {}", comment(&note));
+    }
+    ManagerSql { text, stats }
+}
+
+/// The first lines of catalog_manager.sql: what it is, then the DELETE lines of the mode
+/// (counted in `stats`).
+fn write_head(
+    out: &mut dyn fmt::Write,
+    catalog: &RippedCatalog,
+    export: &ManagerExport,
+    stats: &mut ManagerStats,
+) {
+    let mode = stats.mode;
     let _ = writeln!(
-        text,
+        out,
         "-- Catalog Studio restricted SQL export.\n-- Catalogue ripped from {} ({}, {} client {}) on {} by {}.\n-- Import it in the All-in-1 Manager's catalogue page ({}); the import shows every change before applying it.",
         comment(&catalog.hotel),
         comment(&catalog.host),
@@ -470,11 +514,11 @@ pub fn manager_sql_with(catalog: &RippedCatalog, export: &ManagerExport) -> Mana
         mode.label(),
     );
     if !stats.note.is_empty() {
-        let _ = writeln!(text, "-- {}", comment(&stats.note));
+        let _ = writeln!(out, "-- {}", comment(&stats.note));
     }
     match mode {
         ManagerMode::Replace => {
-            text.push_str("DELETE FROM catalog_items;\nDELETE FROM catalog_pages;\n")
+            let _ = out.write_str("DELETE FROM catalog_items;\nDELETE FROM catalog_pages;\n");
         }
         ManagerMode::ReplaceRipped => {
             let existing = export.existing.cloned().unwrap_or_default();
@@ -483,7 +527,7 @@ pub fn manager_sql_with(catalog: &RippedCatalog, export: &ManagerExport) -> Mana
             for kind in &kinds {
                 for id in existing.offers.get(*kind).into_iter().flatten() {
                     let _ = writeln!(
-                        text,
+                        out,
                         "DELETE FROM catalog_items WHERE id = {id} AND catalog_type = '{kind}';"
                     );
                     stats.deleted_offers += 1;
@@ -492,7 +536,7 @@ pub fn manager_sql_with(catalog: &RippedCatalog, export: &ManagerExport) -> Mana
             for kind in &kinds {
                 for id in existing.pages.get(*kind).into_iter().flatten() {
                     let _ = writeln!(
-                        text,
+                        out,
                         "DELETE FROM catalog_pages WHERE id = {id} AND catalog_type = '{kind}';"
                     );
                     stats.deleted_pages += 1;
@@ -501,14 +545,43 @@ pub fn manager_sql_with(catalog: &RippedCatalog, export: &ManagerExport) -> Mana
         }
         ManagerMode::Add => {}
     }
-    for row in &rows {
-        text.push_str(&row.insert());
-        text.push('\n');
-    }
+}
+
+
+/// catalog_manager.sql written into `out` as its rows are made: the bytes [`manager_sql_with`]
+/// makes, without the rows in memory (the rows are made twice: the pages, then the offers).
+pub fn write_manager_sql(
+    out: &mut dyn fmt::Write,
+    catalog: &RippedCatalog,
+    export: &ManagerExport,
+) -> ManagerStats {
+    let (mode, note) = effective_mode(catalog, export);
+    let mut stats = ManagerStats {
+        mode,
+        note,
+        ..ManagerStats::default()
+    };
+    write_head(out, catalog, export, &mut stats);
+    let mut write_row = |row: ManagerRow| {
+        let _ = out.write_str(&row.insert());
+        let _ = out.write_char('\n');
+    };
+    let (pages, _) = visit_manager_rows(catalog, export, true, false, &mut write_row);
+    let (offers, notes) = visit_manager_rows(catalog, export, false, true, &mut write_row);
     for note in notes {
-        let _ = writeln!(text, "-- skipped: {}", comment(&note));
+        let _ = writeln!(out, "-- skipped: {}", comment(&note));
     }
-    ManagerSql { text, stats }
+    ManagerStats {
+        pages: pages.pages,
+        offers: offers.offers,
+        offers_unresolved: offers.offers_unresolved,
+        offers_without_products: offers.offers_without_products,
+        renumbered_offers: offers.renumbered_offers,
+        synthetic_page_ids: pages.synthetic_page_ids,
+        adjusted_values: pages.adjusted_values + offers.adjusted_values,
+        truncated_values: pages.truncated_values + offers.truncated_values,
+        ..stats
+    }
 }
 
 /// The README paragraph about catalog_manager.sql.

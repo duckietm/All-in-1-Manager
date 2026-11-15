@@ -59,6 +59,15 @@ fn items_rows() -> Vec<ItemsBaseRow> {
     ]
 }
 
+/// The data files a rip wrote (not README.txt, not the images).
+fn data_files(summary: &Summary) -> usize {
+    summary
+        .files
+        .iter()
+        .filter(|f| *f != "README.txt" && *f != "images")
+        .count()
+}
+
 fn done(run: &Run) -> &Summary {
     match &run.end {
         Step::Done(summary) => summary,
@@ -868,12 +877,13 @@ fn cancel_stops_within_one_tick() {
         },
     );
     let (cancel_step, requests_then) = cancelled_at.expect("cancelled during the pages");
-    // The step after the cancel ends the requests and lets G-Earth go; the one after it writes
-    // the output and ends the job.
+    let partial = failed(&run).partial.as_ref().expect("what was written");
+    // The step after the cancel ends the requests and lets G-Earth go; the next ones write the
+    // output, one data file per step, and the last one README.txt (no images).
     assert_eq!(
         run.steps,
-        cancel_step + 2,
-        "the second step after the cancel ends the job"
+        cancel_step + 1 + data_files(partial) + 1,
+        "the job ends right after the output is written"
     );
     assert_eq!(
         sim.g().requests.len(),
@@ -1251,12 +1261,13 @@ fn gearth_closing_ends_the_session_and_keeps_partial_output() {
         failure.partial.is_some(),
         "the indexes and pages read are written"
     );
-    // The step that lost G-Earth returns at once (before the export's fetches); the next one
-    // writes the partial output and ends the job.
+    // The step that lost G-Earth returns at once (before the export's fetches); the next ones
+    // write the partial output (one data file per step) and end the job.
+    let partial = failure.partial.as_ref().unwrap();
     assert_eq!(
         closed_at,
-        Some((run.steps - 1, Step::Running)),
-        "the session ended the step before the job's last"
+        Some((run.steps - data_files(partial) - 1, Step::Running)),
+        "the session ended in the step before the export"
     );
 }
 
@@ -1451,7 +1462,7 @@ fn learning_keeps_what_comes_after_the_last_id() {
 }
 
 #[test]
-fn cancel_with_furnidata_fetches_at_most_twice_in_its_step() {
+fn cancel_with_furnidata_still_reads_it_one_fetch_per_step() {
     let sim = Sim::new(official_hotel());
     let mut opts = sim_options();
     opts.use_furnidata = true; // an official hotel: furnidata and productdata from its host
@@ -1461,6 +1472,7 @@ fn cancel_with_furnidata_fetches_at_most_twice_in_its_step() {
     let mut sink = MemSink::default();
     let mut cancel_step = None;
     let mut step = 0;
+    let (mut before, mut most) = (0, 0);
     let run = sim.run(
         &mut job,
         &mut fetch,
@@ -1469,6 +1481,8 @@ fn cancel_with_furnidata_fetches_at_most_twice_in_its_step() {
         |_| 20,
         |job, _, _| {
             step += 1;
+            most = most.max(calls.get() - before);
+            before = calls.get();
             let p = job.progress();
             if cancel_step.is_none() && p.phase == Phase::Pages && p.done >= 2 {
                 job.cancel();
@@ -1476,14 +1490,17 @@ fn cancel_with_furnidata_fetches_at_most_twice_in_its_step() {
             }
         },
     );
+    let failure = failed(&run);
+    // The next step lets G-Earth go; then one step per download, one per data file, and the
+    // last one writes README.txt.
+    let partial = failure.partial.as_ref().unwrap();
     assert_eq!(
         run.steps,
-        cancel_step.unwrap() + 2,
-        "the next step lets G-Earth go, the one after it ends the job"
+        cancel_step.unwrap() + 1 + 2 + data_files(partial) + 1
     );
-    let failure = failed(&run);
     assert!(failure.cancelled);
     assert_eq!(calls.get(), 2);
+    assert_eq!(most, 1, "one fetch per step");
     assert_eq!(
         fetch.asked,
         [

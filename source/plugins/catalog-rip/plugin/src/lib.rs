@@ -211,6 +211,10 @@ impl Run {
                 if !job.uses_gearth() && conn.take().is_some() {
                     log.push("Closed the connection to G-Earth.".into());
                 }
+                // Memory: the files still to write (catalog.json, the biggest) do not need it.
+                if !job.uses_items_base() {
+                    self.items = None;
+                }
                 match step {
                     Step::Running => {
                         self.waiting = None;

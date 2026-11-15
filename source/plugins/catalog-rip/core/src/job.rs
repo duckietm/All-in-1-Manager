@@ -28,9 +28,9 @@ use crate::gearth::{self, ExtensionInfo, GEarth, GEarthEvent};
 use crate::images::{self, ImageJob, ImageStats};
 use crate::learn::Learner;
 use crate::manager::{ExistingCatalogue, ManagerMode, ManagerStats};
-use crate::missing::MissingFurni;
+use crate::missing::{self, MissingFurni};
 use crate::names::hotel_name;
-use crate::output::{self, n0, DataFiles};
+use crate::output::{self, n0, DataExport};
 use crate::packets::{self, CatalogIndex, CatalogPage, Headers};
 use crate::productdata::{self, Productdata};
 use crate::profiles::{self, builtin_profiles, DetectedBy, HeaderMap, HotelKind, HotelProfile};
@@ -259,7 +259,8 @@ pub enum Phase {
     Pages,
     /// Reading the extra messages (club offers, bundle discounts, gift wrapping).
     Extras,
-    /// Writing the data files (and reading the furnidata / productdata for them).
+    /// Writing the data files, one per step (and reading the furnidata / productdata for them,
+    /// one per step).
     Export,
     /// Downloading the images, then README.txt.
     Images,
@@ -454,7 +455,8 @@ enum Poll<T> {
 enum ExportStage {
     Furnidata,
     Productdata,
-    Write,
+    /// The data files, one per step.
+    Data,
     SiteConfig {
         urls: Vec<String>,
         next: usize,
@@ -496,9 +498,18 @@ enum State {
 struct Out {
     catalog: RippedCatalog,
     database_note: String,
+    /// An items_base was given (the plugin may drop it once [`Job::uses_items_base`] is false).
+    with_items_base: bool,
+    /// The source furnidata: the class names, and the entries of the furni items_base lacks
+    /// (dropped once missing_furnidata.json is written).
     furnidata: Option<Furnidata>,
+    /// The source productdata (dropped once the data files are written).
     products: Option<Productdata>,
-    data: Option<DataFiles>,
+    /// Class / product names in them (for the README and the summary).
+    furnidata_names: Option<usize>,
+    productdata_names: usize,
+    /// The data files, one per step.
+    data: DataExport,
     files: Vec<String>,
     catalog_url: String,
     icon_url: String,
@@ -638,10 +649,10 @@ impl Job {
     /// (its catalogue was whole; the images stop where they were).
     ///
     /// A cancel during the requests ends them in the step that sees it, which lets G-Earth go
-    /// and returns (no fetch while the G-Earth connection is still open). The next step finishes
-    /// the export whatever its budget: like the built-in, it still reads the furnidata and the
-    /// productdata when they are used, so that step may take up to two (blocking) fetches. It
-    /// downloads no images and no client configuration.
+    /// and returns (no fetch while the G-Earth connection is still open). The next steps finish
+    /// the export whatever their budget, as the export always goes: like the built-in, it still
+    /// reads the furnidata and the productdata when they are used (one download per step), then
+    /// writes one data file per step. It downloads no images and no client configuration.
     pub fn cancel(&mut self) {
         self.cancel = true;
     }
@@ -666,6 +677,21 @@ impl Job {
     /// G-Earth stops holding game packets for the extension.
     pub fn uses_gearth(&self) -> bool {
         self.gearth.is_some()
+    }
+
+    /// Whether the job still reads [`JobIo::items`]. False once the data files that use it are
+    /// written (and when the job ended): the plugin may drop the hotel's items_base then.
+    pub fn uses_items_base(&self) -> bool {
+        match &self.state {
+            State::Export(ExportStage::Data) => self
+                .out
+                .as_ref()
+                .is_none_or(|out| out.data.needs_items_base()),
+            State::Export(ExportStage::SiteConfig { .. }) | State::Images | State::Finished => {
+                false
+            }
+            _ => true,
+        }
     }
 
     fn say(&mut self, text: impl Into<String>) {
@@ -814,8 +840,8 @@ impl Job {
     }
 
     /// Whether a (blocking) fetch may start now: within the budget, or as the first thing of a
-    /// step (so a job stepped with tiny budgets still gets on). A cancelled job finishes its
-    /// export in the step that saw the cancel (see [`Job::cancel`]).
+    /// step (so a job stepped with tiny budgets still gets on). A cancelled job gets on with its
+    /// export whatever the budget (see [`Job::cancel`]).
     fn may_fetch(&self, now: u64, end: u64) -> bool {
         self.cancel || now < end || !(self.pumped || self.fetched)
     }
@@ -1885,8 +1911,8 @@ impl Job {
                 generator: &self.options.generator,
             },
             &self.accepted,
-            &self.indexes,
-            &self.pages,
+            std::mem::take(&mut self.indexes),
+            std::mem::take(&mut self.pages),
             &self.failed,
             whole,
         );
@@ -1900,9 +1926,12 @@ impl Job {
         self.out = Some(Out {
             catalog,
             database_note,
+            with_items_base: io.items.is_some(),
             furnidata: None,
             products: None,
-            data: None,
+            furnidata_names: None,
+            productdata_names: 0,
+            data: DataExport::new(),
             files: Vec::new(),
             catalog_url: String::new(),
             icon_url: String::new(),
@@ -1984,8 +2013,14 @@ impl Job {
                 self.fetched = true;
                 let host = self.connection.as_ref().expect("connection").host.clone();
                 self.say(format!("Reading the furnidata of {host} ({source}) ..."));
+                let catalog = &self.out.as_ref().expect("out").catalog;
+                // Of the whole entries, only those of the furni items_base lacks are kept (for
+                // missing_furnidata.json); the response is dropped at the end of this step.
                 let loaded = Self::fetch_source(io, &source).and_then(|bytes| {
-                    furnidata::load(&source, &bytes).map_err(|e| format!("{e:#}"))
+                    furnidata::load_keeping(&source, &bytes, |names| {
+                        Some(missing::missing_furni_keys(catalog, io.items, names))
+                    })
+                    .map_err(|e| format!("{e:#}"))
                 });
                 match loaded {
                     Ok(data) => {
@@ -1993,17 +2028,20 @@ impl Job {
                             "Furnidata: {} class names; products are matched by class name.",
                             n0(data.len())
                         ));
-                        self.out.as_mut().expect("out").furnidata = Some(data);
+                        let out = self.out.as_mut().expect("out");
+                        out.furnidata_names = Some(data.len());
+                        out.furnidata = Some(data);
                     }
                     Err(e) => self.warn(&format!(
                         "the furnidata could not be read ({e}); products are matched by sprite id."
                     )),
                 }
-                Ctl::Continue
+                // One download and parse per step.
+                Ctl::Yield
             }
             ExportStage::Productdata => {
                 if !self.options.use_furnidata {
-                    self.state = State::Export(ExportStage::Write);
+                    self.state = State::Export(ExportStage::Data);
                     return Ctl::Continue;
                 }
                 let profile_url = self
@@ -2015,13 +2053,13 @@ impl Job {
                     &profile_url,
                     productdata::official_url,
                 ) else {
-                    self.state = State::Export(ExportStage::Write);
+                    self.state = State::Export(ExportStage::Data);
                     return Ctl::Continue;
                 };
                 if !can_fetch {
                     return Ctl::Yield;
                 }
-                self.state = State::Export(ExportStage::Write);
+                self.state = State::Export(ExportStage::Data);
                 self.fetched = true;
                 let loaded = Self::fetch_source(io, &source).and_then(|bytes| {
                     productdata::load(&source, &bytes).map_err(|e| format!("{e:#}"))
@@ -2029,13 +2067,15 @@ impl Job {
                 match loaded {
                     Ok(data) => {
                         self.say(format!("Productdata: {} product names.", n0(data.len())));
-                        self.out.as_mut().expect("out").products = Some(data);
+                        let out = self.out.as_mut().expect("out");
+                        out.productdata_names = data.len();
+                        out.products = Some(data);
                     }
                     Err(e) => self.warn(&format!("the productdata could not be read ({e}).")),
                 }
-                Ctl::Continue
+                Ctl::Yield
             }
-            ExportStage::Write => self.write_data(io),
+            ExportStage::Data => self.write_data(io),
             ExportStage::SiteConfig {
                 urls,
                 next,
@@ -2100,9 +2140,12 @@ impl Job {
             .filter(|s| !s.trim().is_empty())
     }
 
+    /// The next data file (one per step: each is serialized into memory whole, and the biggest
+    /// take a good part of the plugin's memory and of a tick's time); once all are written, on
+    /// to the images.
     fn write_data(&mut self, io: &mut JobIo) -> Ctl {
         let out = self.out.as_mut().expect("out");
-        let data = output::data_files(&output::ExportInput {
+        let made = out.data.next_file(&output::ExportInput {
             catalog: &out.catalog,
             items: io.items,
             furnidata: out.furnidata.as_ref(),
@@ -2111,20 +2154,28 @@ impl Job {
             existing: io.existing,
             extra_answers: &self.extra_answers,
         });
-        for (name, bytes) in &data.files {
-            let path = format!("{}/{name}", self.folder);
-            if let Err(e) = io.sink.write(&path, bytes) {
+        if let Some(made) = made {
+            let path = format!("{}/{}", self.folder, made.file.name());
+            if let Err(e) = io.sink.write(&path, &made.bytes) {
                 return Ctl::End(Step::Failed(
                     Abort::new(format!("writing {path}: {e}")).failure(),
                 ));
             }
-            out.files.push(name.clone());
+            drop(made.bytes);
+            if !out.data.needs_furnidata_entries() {
+                if let Some(furnidata) = out.furnidata.as_mut() {
+                    furnidata.entries.clear();
+                }
+            }
+            for line in made.log {
+                self.say(line);
+            }
+            return Ctl::Yield;
         }
-        let lines = data.log.clone();
-        out.data = Some(data);
-        for line in lines {
-            self.say(line);
-        }
+        out.files = out.data.files();
+        // The images need neither.
+        out.furnidata = None;
+        out.products = None;
         // The image URLs: the settings', else the client configuration's, else the profile's.
         match self.site_config_source() {
             Some(source) if self.options.download_images && !self.cancel => {
@@ -2259,7 +2310,7 @@ impl Job {
     /// README.txt, the summary, and the end of the job.
     fn finish(&mut self, io: &mut JobIo) -> Ctl {
         let out = self.out.as_ref().expect("out");
-        let data = out.data.as_ref().expect("data files");
+        let data = &out.data;
         let profile = self.profile.as_ref().expect("profile");
         let cancelled = self.cancel;
         let readme = output::readme(&output::ReadmeInput {
@@ -2268,10 +2319,10 @@ impl Job {
             images: out.images_text.as_deref().unwrap_or_default(),
             database_note: &out.database_note,
             manager: &data.manager,
-            with_items_base: io.items.is_some(),
+            with_items_base: out.with_items_base,
             profile,
             missing_furni: data.missing_furni.len(),
-            furnidata_names: out.furnidata.as_ref().map(Furnidata::len),
+            furnidata_names: out.furnidata_names,
             cancelled,
             crlf: self.options.readme_crlf,
         });
@@ -2307,7 +2358,7 @@ impl Job {
 
     fn summary(&self) -> Summary {
         let out = self.out.as_ref().expect("out");
-        let data = out.data.as_ref().expect("data files");
+        let data = &out.data;
         let profile = self.profile.as_ref().expect("profile");
         let catalog = &out.catalog;
         let mut summary = Summary {
@@ -2330,8 +2381,8 @@ impl Job {
             manager: data.manager.clone(),
             complete: catalog.complete,
             elapsed_ms: self.elapsed_ms,
-            furnidata_names: out.furnidata.as_ref().map(Furnidata::len).unwrap_or(0),
-            productdata_names: out.products.as_ref().map(Productdata::len).unwrap_or(0),
+            furnidata_names: out.furnidata_names.unwrap_or(0),
+            productdata_names: out.productdata_names,
             learned_headers: self.learned,
             learned_profile: self.learned_profile.clone(),
             delay_ms: self.delay,

@@ -7,9 +7,10 @@
 //! `packets/`, catalog_changes.json and catalog_manager_changes.sql, so the README never has
 //! their PACKETS and CHANGES sections.)
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{fmt, io};
 
-use crate::export::{self, ItemsBase, RippedCatalog, RippedMode, SqlStats};
+use crate::export::{self, ItemsBase, RippedCatalog, RippedMode, SqlFile, SqlStats};
 use crate::extras;
 use crate::furnidata::Furnidata;
 use crate::manager::{self, ExistingCatalogue, ManagerExport, ManagerMode, ManagerStats};
@@ -49,30 +50,33 @@ pub struct Source<'a> {
 
 /// The catalogue as the rip writes it: per catalogue in `modes` that has an index, every page
 /// of its tree that answered; `failed` lists the pages without an answer.
+///
+/// The indexes and pages are moved into it (a page no tree lists is dropped): the catalogue is
+/// the biggest thing a rip holds, and is not kept twice.
 pub fn assemble(
     source: &Source,
     modes: &[String],
-    indexes: &HashMap<String, CatalogIndex>,
-    pages: &HashMap<(String, i32), CatalogPage>,
+    mut indexes: HashMap<String, CatalogIndex>,
+    mut pages: HashMap<(String, i32), CatalogPage>,
     failed: &BTreeMap<String, Vec<i32>>,
     complete: bool,
 ) -> RippedCatalog {
     let mut out = Vec::new();
     for mode in modes {
-        let Some(index) = indexes.get(mode) else {
+        let Some(index) = indexes.remove(mode) else {
             continue;
         };
         let mut found = HashMap::new();
         for (node, _, _) in index.walk() {
-            if node.page_id > 0 {
-                if let Some(page) = pages.get(&(mode.clone(), node.page_id)) {
-                    found.insert(node.page_id, page.clone());
+            if node.page_id > 0 && !found.contains_key(&node.page_id) {
+                if let Some(page) = pages.remove(&(mode.clone(), node.page_id)) {
+                    found.insert(node.page_id, page);
                 }
             }
         }
         out.push(RippedMode {
             mode: mode.clone(),
-            index: index.clone(),
+            index,
             pages: found,
             failed: failed.get(mode).cloned().unwrap_or_default(),
         });
@@ -125,6 +129,10 @@ fn pretty(value: &impl serde::Serialize) -> Vec<u8> {
 /// was ripped), catalog_manager.sql, missing_furni.json and missing_furnidata.json (when
 /// products are missing; the latter only with a furnidata), catalog_extras.json (when an extra
 /// answered).
+///
+/// All at once, through the built-in's JSON trees and lists of rows: the reference for
+/// [`DataExport`], which the job uses (one file at a time, the same bytes, a fraction of the
+/// memory).
 pub fn data_files(input: &ExportInput) -> DataFiles {
     let catalog = input.catalog;
     let mut files = Vec::new();
@@ -199,6 +207,318 @@ pub fn data_files(input: &ExportInput) -> DataFiles {
         manager: manager.stats,
         missing_furni,
         log,
+    }
+}
+
+// ---------------------------------------------------------------- one file at a time
+
+/// A data file of the rip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataFile {
+    Catalog,
+    Sql(SqlFile),
+    Manager,
+    MissingFurni,
+    MissingFurnidata,
+    Extras,
+}
+
+impl DataFile {
+    pub fn name(self) -> &'static str {
+        match self {
+            DataFile::Catalog => "catalog.json",
+            DataFile::Sql(file) => file.name(),
+            DataFile::Manager => "catalog_manager.sql",
+            DataFile::MissingFurni => "missing_furni.json",
+            DataFile::MissingFurnidata => "missing_furnidata.json",
+            DataFile::Extras => "catalog_extras.json",
+        }
+    }
+}
+
+/// The data files in the built-in's order (as [`data_files`] lists them).
+const LISTED: [DataFile; 9] = [
+    DataFile::Catalog,
+    DataFile::Sql(SqlFile::Pages),
+    DataFile::Sql(SqlFile::Items),
+    DataFile::Sql(SqlFile::PagesBc),
+    DataFile::Sql(SqlFile::ItemsBc),
+    DataFile::Manager,
+    DataFile::MissingFurni,
+    DataFile::MissingFurnidata,
+    DataFile::Extras,
+];
+
+/// The order [`DataExport`] makes them in: catalog.json, the biggest file, last, once the
+/// furnidata entries are no longer needed.
+const MADE: [DataFile; 9] = [
+    DataFile::Sql(SqlFile::Pages),
+    DataFile::Sql(SqlFile::Items),
+    DataFile::Sql(SqlFile::PagesBc),
+    DataFile::Sql(SqlFile::ItemsBc),
+    DataFile::Manager,
+    DataFile::MissingFurni,
+    DataFile::MissingFurnidata,
+    DataFile::Extras,
+    DataFile::Catalog,
+];
+
+/// One data file made by [`DataExport::next_file`].
+#[derive(Debug, Clone)]
+pub struct MadeFile {
+    pub file: DataFile,
+    pub bytes: Vec<u8>,
+    /// Log lines the built-in writes while making it.
+    pub log: Vec<String>,
+}
+
+/// The data files of [`data_files`], made one per call of [`DataExport::next_file`] with the
+/// same bytes, so the plugin holds one file at a time: each is serialized straight from the
+/// catalogue (no JSON tree, no list of rows) into a buffer of exactly its size.
+#[derive(Debug, Clone, Default)]
+pub struct DataExport {
+    next: usize,
+    products_unresolved: Option<usize>,
+    made: Vec<DataFile>,
+    /// Filled as the SQL files are made.
+    pub sql: SqlStats,
+    /// Filled when catalog_manager.sql is made.
+    pub manager: ManagerStats,
+    /// Filled when missing_furni.json is due (also when it is not written: nothing missing).
+    pub missing_furni: Vec<MissingFurni>,
+}
+
+/// Counts what is written.
+struct Count(usize);
+
+impl fmt::Write for Count {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0 += s.len();
+        Ok(())
+    }
+}
+
+impl io::Write for Count {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0 += buf.len();
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Text written twice: counted, then into a buffer of exactly that size (a growing buffer
+/// would hold up to twice the file while it moves).
+fn exact_text(mut write: impl FnMut(&mut dyn fmt::Write)) -> Vec<u8> {
+    let mut count = Count(0);
+    write(&mut count);
+    let mut text = String::with_capacity(count.0);
+    write(&mut text);
+    text.into_bytes()
+}
+
+/// [`pretty`] into a buffer of exactly its size.
+fn exact_json(value: &impl serde::Serialize) -> Vec<u8> {
+    let mut count = Count(0);
+    if serde_json::to_writer_pretty(&mut count, value).is_err() {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(count.0);
+    if serde_json::to_writer_pretty(&mut out, value).is_err() {
+        return Vec::new();
+    }
+    out
+}
+
+/// missing_furni.json.
+#[derive(serde::Serialize)]
+struct MissingJson<'a> {
+    count: usize,
+    furni: &'a [MissingFurni],
+}
+
+impl DataExport {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Makes the next data file (serializing one file at most); `None` once every file is made.
+    /// A file with nothing to say (the `_bc` pair without a Builders Club catalogue, the
+    /// missing furni without missing products, the extras without answers) is skipped.
+    pub fn next_file(&mut self, input: &ExportInput) -> Option<MadeFile> {
+        let catalog = input.catalog;
+        while let Some(&file) = MADE.get(self.next) {
+            self.next += 1;
+            let mut log = Vec::new();
+            let bytes = match file {
+                DataFile::Sql(sql) => {
+                    let bc = catalog
+                        .modes
+                        .iter()
+                        .any(|m| !m.mode.eq_ignore_ascii_case("NORMAL"));
+                    if matches!(sql, SqlFile::PagesBc | SqlFile::ItemsBc) && !bc {
+                        continue;
+                    }
+                    let unresolved = *self.products_unresolved.get_or_insert_with(|| {
+                        export::products_unresolved(catalog, input.items, input.furnidata)
+                    });
+                    let before = self.sql.clone();
+                    let stats = &mut self.sql;
+                    exact_text(|out| {
+                        *stats = before.clone();
+                        export::write_arcturus_file(
+                            out,
+                            catalog,
+                            input.items,
+                            input.furnidata,
+                            sql,
+                            unresolved,
+                            stats,
+                        );
+                    })
+                }
+                DataFile::Manager => {
+                    let export = ManagerExport {
+                        items: input.items,
+                        furnidata: input.furnidata,
+                        mode: input.manager_mode,
+                        existing: if input.manager_mode == ManagerMode::Replace {
+                            None
+                        } else {
+                            input.existing
+                        },
+                    };
+                    let stats = &mut self.manager;
+                    let bytes = exact_text(|out| {
+                        *stats = manager::write_manager_sql(out, catalog, &export);
+                    });
+                    if !self.manager.note.is_empty() {
+                        log.push(format!("Manager import file: {}", self.manager.note));
+                    }
+                    bytes
+                }
+                DataFile::MissingFurni => {
+                    self.missing_furni = missing::missing_furni(
+                        catalog,
+                        input.items,
+                        input.furnidata,
+                        input.products,
+                    );
+                    if self.missing_furni.is_empty() {
+                        continue;
+                    }
+                    log.push(format!(
+                        "{} products are not in the hotel's items_base: missing_furni.json{}.",
+                        n0(self.missing_furni.len()),
+                        if input.furnidata.is_some() {
+                            " and missing_furnidata.json (for the furni import)"
+                        } else {
+                            ""
+                        }
+                    ));
+                    exact_json(&MissingJson {
+                        count: self.missing_furni.len(),
+                        furni: &self.missing_furni,
+                    })
+                }
+                DataFile::MissingFurnidata => {
+                    let Some(data) = input.furnidata.filter(|_| !self.missing_furni.is_empty())
+                    else {
+                        continue;
+                    };
+                    let wanted = missing::missing_keys(&self.missing_furni);
+                    exact_json(&data.subset_json(&wanted))
+                }
+                DataFile::Extras => {
+                    if input.extra_answers.is_empty() {
+                        continue;
+                    }
+                    pretty(&extras::extras_json(input.extra_answers))
+                }
+                DataFile::Catalog => exact_json(&export::CatalogJson {
+                    catalog,
+                    extra: input.products.map(|products| {
+                        (
+                            "product_names",
+                            ProductNamesJson {
+                                catalog,
+                                furnidata: input.furnidata,
+                                products,
+                            },
+                        )
+                    }),
+                }),
+            };
+            self.made.push(file);
+            return Some(MadeFile { file, bytes, log });
+        }
+        None
+    }
+
+    /// Whether a file still to make reads the hotel's items_base (the item SQL files,
+    /// catalog_manager.sql, missing_furni.json).
+    pub fn needs_items_base(&self) -> bool {
+        MADE[self.next.min(MADE.len())..].iter().any(|f| {
+            matches!(
+                f,
+                DataFile::Sql(_) | DataFile::Manager | DataFile::MissingFurni
+            )
+        })
+    }
+
+    /// Whether a file still to make needs the furnidata's entries (missing_furnidata.json).
+    pub fn needs_furnidata_entries(&self) -> bool {
+        MADE[self.next.min(MADE.len())..].contains(&DataFile::MissingFurnidata)
+    }
+
+    /// The files made so far, in the built-in's order.
+    pub fn files(&self) -> Vec<String> {
+        LISTED
+            .iter()
+            .filter(|f| self.made.contains(f))
+            .map(|f| f.name().to_string())
+            .collect()
+    }
+}
+
+/// [`product_names`] as it serializes, straight from the catalogue and the productdata.
+pub struct ProductNamesJson<'a> {
+    pub catalog: &'a RippedCatalog,
+    pub furnidata: Option<&'a Furnidata>,
+    pub products: &'a Productdata,
+}
+
+#[derive(serde::Serialize)]
+struct NameJson<'a> {
+    name: &'a str,
+    description: &'a str,
+}
+
+impl serde::Serialize for ProductNamesJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(None)?;
+        let mut seen: HashSet<&str> = HashSet::new();
+        for mode in &self.catalog.modes {
+            for page in mode.pages.values() {
+                for offer in &page.offers {
+                    let names = offer
+                        .products
+                        .iter()
+                        .filter_map(|p| self.furnidata.and_then(|f| f.classname(p)));
+                    for code in std::iter::once(offer.localization_id.as_str()).chain(names) {
+                        if let Some((name, description)) = self.products.get(code) {
+                            if seen.insert(code) {
+                                map.serialize_entry(code, &NameJson { name, description })?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        map.end()
     }
 }
 

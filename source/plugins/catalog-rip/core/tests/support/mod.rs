@@ -504,3 +504,133 @@ pub fn without_page_mode(packet: Packet) -> Packet {
         body,
     }
 }
+
+// ------------------------------------------------------------------ G-Earth over std::net
+
+/// The G-Earth client's [`Transport`] over a blocking `std::net::TcpStream` (tests only; the
+/// plugin uses the host's TCP connection).
+pub struct StdTransport(pub std::net::TcpStream);
+
+impl StdTransport {
+    pub fn connect(port: u16) -> StdTransport {
+        let stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream.set_nodelay(true).ok();
+        StdTransport(stream)
+    }
+
+    /// Closes the sending side and reads until the peer closes too, so everything sent was
+    /// read before the socket goes (closing with unread data can reset the connection).
+    pub fn finish(self) {
+        use std::io::Read;
+        let mut s = self.0;
+        s.shutdown(std::net::Shutdown::Write).ok();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        let mut buf = [0u8; 4096];
+        while matches!(s.read(&mut buf), Ok(n) if n > 0) {}
+    }
+}
+
+impl catalog_rip_core::transport::Transport for StdTransport {
+    fn send(&mut self, data: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        self.0.write_all(data).map_err(|e| e.to_string())
+    }
+
+    fn recv(&mut self, max: usize, timeout_ms: u32) -> Result<Option<Vec<u8>>, String> {
+        use std::io::{ErrorKind, Read};
+        let mut buf = vec![0u8; max];
+        // A zero read timeout is refused by std: zero means "only what is there already".
+        if timeout_ms == 0 {
+            self.0.set_nonblocking(true).map_err(|e| e.to_string())?;
+        } else {
+            self.0
+                .set_read_timeout(Some(std::time::Duration::from_millis(timeout_ms.into())))
+                .map_err(|e| e.to_string())?;
+        }
+        let read = self.0.read(&mut buf);
+        if timeout_ms == 0 {
+            self.0.set_nonblocking(false).map_err(|e| e.to_string())?;
+        }
+        match read {
+            Ok(n) => {
+                buf.truncate(n);
+                Ok(Some(buf))
+            }
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+}
+
+/// G-Earth's side of the socket: reads whole frames, keeping partial ones between calls.
+pub struct FrameReader {
+    pub stream: std::net::TcpStream,
+    buf: Vec<u8>,
+}
+
+impl FrameReader {
+    pub fn new(stream: std::net::TcpStream) -> FrameReader {
+        FrameReader {
+            stream,
+            buf: Vec::new(),
+        }
+    }
+
+    fn take_frame(&mut self) -> Option<Packet> {
+        if self.buf.len() < 4 {
+            return None;
+        }
+        let len = i32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        if self.buf.len() < 4 + len {
+            return None;
+        }
+        let frame: Vec<u8> = self.buf.drain(..4 + len).collect();
+        Some(Packet {
+            header: u16::from_be_bytes([frame[4], frame[5]]),
+            body: frame[6..].to_vec(),
+        })
+    }
+
+    /// The next frame. `Ok(None)`: nothing within `timeout` (None waits for ever);
+    /// `Err(())`: the connection closed or failed.
+    pub fn next(&mut self, timeout: Option<std::time::Duration>) -> Result<Option<Packet>, ()> {
+        use std::io::{ErrorKind, Read};
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+        loop {
+            if let Some(frame) = self.take_frame() {
+                return Ok(Some(frame));
+            }
+            let wait = match deadline {
+                Some(d) => {
+                    let left = d.saturating_duration_since(std::time::Instant::now());
+                    if left.is_zero() {
+                        return Ok(None);
+                    }
+                    Some(left)
+                }
+                None => None,
+            };
+            self.stream.set_read_timeout(wait).map_err(|_| ())?;
+            let mut chunk = [0u8; 16 * 1024];
+            match self.stream.read(&mut chunk) {
+                Ok(0) => return Err(()),
+                Ok(n) => self.buf.extend_from_slice(&chunk[..n]),
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                    return Ok(None)
+                }
+                Err(_) => return Err(()),
+            }
+        }
+    }
+
+    /// Blocks until the next frame; None when the connection closed.
+    pub fn read_frame(&mut self) -> Option<Packet> {
+        self.next(None).ok().flatten()
+    }
+
+    pub fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        use std::io::Write;
+        self.stream.write_all(data)
+    }
+}

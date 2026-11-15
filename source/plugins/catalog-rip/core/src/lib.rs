@@ -2,16 +2,18 @@
 //!
 //! Everything here takes bytes or strings in and returns bytes or strings out: no files, no
 //! sockets, no clock, no threads. It builds natively (tests) and for `wasm32-wasip2`. The
-//! plugin supplies the I/O (G-Earth connection, HTTP, picked folders) and the current time
-//! (a [`Timestamp`]).
+//! plugin supplies the I/O (the G-Earth connection as a [`transport::Transport`], HTTP, picked
+//! folders) and the current time (a [`Timestamp`]); [`gearth::GEarth`] speaks G-Earth's
+//! extension protocol over that transport, synchronously.
 //!
-//! Not in the core (later tasks): `gearth`, `rip`, `images` (download), `recording`,
+//! Not in the core (later tasks): `rip`, `images` (download), `recording`,
 //! `gearth_log`, `diff`, `gearth_install`, `translations`, `http`.
 
 pub mod conn;
 pub mod export;
 pub mod extras;
 pub mod furnidata;
+pub mod gearth;
 pub mod learn;
 pub mod manager;
 pub mod missing;
@@ -21,6 +23,7 @@ pub mod productdata;
 pub mod profiles;
 pub mod site_config;
 pub mod time;
+pub mod transport;
 pub mod wire;
 
 use std::path::PathBuf;

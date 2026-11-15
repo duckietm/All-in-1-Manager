@@ -1,7 +1,7 @@
 //! G-Earth's ConnectionStart message as plain data: the packet info list and the hotel connection.
 //!
-//! In the built-in crate these live in `gearth.rs` (the socket client, a later task); they are
-//! pure and the profile/header code needs them, so they live here and `gearth` re-exports them.
+//! In the built-in crate these live in `gearth.rs` (the G-Earth client); the profile/header code
+//! needs them too, so they live here and `gearth` re-exports them.
 
 use anyhow::Result;
 

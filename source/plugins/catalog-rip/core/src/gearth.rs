@@ -72,6 +72,8 @@ const MAX_FRAME: i32 = 64 * 1024 * 1024;
 const RECV_MAX: usize = 64 * 1024;
 /// The longest single wait inside a pump: a pump returns soon after its events arrive.
 const SLICE_MS: u32 = 20;
+/// Zero-timeout reads after a timed read that got data (see [`GEarth::pump`]).
+pub const DRAIN_POLLS: usize = 64;
 
 /// What went wrong with the connection to G-Earth. Once a pump fails, every later pump fails
 /// the same way: the connection is done.
@@ -235,41 +237,87 @@ pub struct GEarth {
     watch_all: bool,
     /// The connection failed: every later pump says so.
     failed: Option<Error>,
+    /// G-Earth's InfoRequest was answered.
+    handshaken: bool,
 }
 
 impl GEarth {
     /// Answers G-Earth's InfoRequest on a fresh connection. Fails when the other side closes,
     /// says something else first, or says nothing within `timeout_ms` (then it is not G-Earth).
     pub fn handshake(
-        t: &mut impl Transport,
+        t: &mut (impl Transport + ?Sized),
         info: &ExtensionInfo,
         timeout_ms: u32,
     ) -> Result<GEarth, Error> {
-        let mut g = GEarth {
+        let mut g = GEarth::start(info);
+        if g.handshake_step(t, timeout_ms)? {
+            Ok(g)
+        } else {
+            Err(Error::NoInfoRequest)
+        }
+    }
+
+    /// A client whose handshake has not happened yet: [`GEarth::handshake_step`] does it a bit
+    /// at a time (for a caller that must not wait long in one go).
+    pub fn start(info: &ExtensionInfo) -> GEarth {
+        GEarth {
             info: info.clone(),
             buf: Vec::new(),
             watched: HashSet::new(),
             watch_all: false,
             failed: None,
-        };
-        let mut remaining = timeout_ms;
+            handshaken: false,
+        }
+    }
+
+    /// Waits at most `budget_ms` (0: one look at what is there) for G-Earth's InfoRequest and
+    /// answers it. `Ok(true)`: the handshake is done (also on every later call); `Ok(false)`:
+    /// not yet, call again (bytes of a partly read InfoRequest are kept). Fails as
+    /// [`GEarth::handshake`] does; the caller decides how long to keep trying.
+    pub fn handshake_step(
+        &mut self,
+        t: &mut (impl Transport + ?Sized),
+        budget_ms: u32,
+    ) -> Result<bool, Error> {
+        if self.handshaken {
+            return Ok(true);
+        }
+        if let Some(error) = &self.failed {
+            return Err(error.clone());
+        }
+        let result = self.handshake_into(t, budget_ms);
+        if let Err(error) = &result {
+            self.failed = Some(error.clone());
+        }
+        result
+    }
+
+    fn handshake_into(
+        &mut self,
+        t: &mut (impl Transport + ?Sized),
+        budget_ms: u32,
+    ) -> Result<bool, Error> {
+        let mut remaining = budget_ms;
+        let mut looked = false;
         let first = loop {
-            if let Some(frame) = g.take_frame()? {
+            if let Some(frame) = self.take_frame()? {
                 break frame;
             }
-            if remaining == 0 {
-                return Err(Error::NoInfoRequest);
+            if remaining == 0 && looked {
+                return Ok(false);
             }
             let slice = remaining.min(SLICE_MS);
             remaining -= slice;
-            g.read(t, slice)?;
+            self.read(t, slice)?;
+            looked = true;
         };
         if first.header != ids::INFO_REQUEST {
             return Err(Error::NotGEarth(first.header));
         }
-        t.send(&info.message().to_bytes())
+        t.send(&self.info.message().to_bytes())
             .map_err(Error::Transport)?;
-        Ok(g)
+        self.handshaken = true;
+        Ok(true)
     }
 
     /// Report packets with this header and direction as [`GEarthEvent::Packet`].
@@ -284,25 +332,28 @@ impl GEarth {
     }
 
     /// Sends a game packet to the hotel server through G-Earth (as the user's client).
-    pub fn send_to_server(&mut self, t: &mut impl Transport, packet: &Packet) -> Result<(), Error> {
+    pub fn send_to_server(&mut self, t: &mut (impl Transport + ?Sized), packet: &Packet) -> Result<(), Error> {
         self.send(t, &send_to_server_message(packet))
     }
 
     /// A line in G-Earth's extension console.
-    pub fn console_log(&mut self, t: &mut impl Transport, text: &str) -> Result<(), Error> {
+    pub fn console_log(&mut self, t: &mut (impl Transport + ?Sized), text: &str) -> Result<(), Error> {
         let message = Writer::new(ids::EXTENSION_CONSOLE_LOG)
             .string_latin1(text)
             .to_bytes();
         self.send(t, &message)
     }
 
-    /// Reads what G-Earth sent, waiting at most `budget_ms` in all (the timeouts given to
-    /// [`Transport::recv`] add up to at most this; 0 only takes what is there already). Every
-    /// intercepted packet read is answered unchanged, in order, before this returns. Returns
-    /// once the budget is spent, or earlier when there are events and nothing more is coming.
+    /// Reads what G-Earth sent, waiting at most `budget_ms` in all: the budget is a ceiling, not
+    /// a duration (the timeouts given to [`Transport::recv`] add up to at most this; 0 only
+    /// takes what is there already). Every intercepted packet read is answered unchanged, in
+    /// order, before this returns. After a read that got data, what else is already there is
+    /// taken at once with zero-timeout reads (not charged to the budget, at most
+    /// [`DRAIN_POLLS`] per timed read), so a burst is answered in one go. Returns once the
+    /// budget is spent, or as soon as there are events and nothing more is there.
     pub fn pump(
         &mut self,
-        t: &mut impl Transport,
+        t: &mut (impl Transport + ?Sized),
         budget_ms: u32,
     ) -> Result<Vec<GEarthEvent>, Error> {
         if let Some(error) = &self.failed {
@@ -326,7 +377,7 @@ impl GEarth {
 
     fn pump_into(
         &mut self,
-        t: &mut impl Transport,
+        t: &mut (impl Transport + ?Sized),
         budget_ms: u32,
         events: &mut Vec<GEarthEvent>,
     ) -> Result<(), Error> {
@@ -337,7 +388,24 @@ impl GEarth {
             let slice = remaining.min(SLICE_MS);
             remaining -= slice;
             if self.read(t, slice)? {
+                // Take the rest of a burst now: polls that wait for nothing.
+                // A failure there comes after the frames already read: those are handled first.
+                let mut drained = Ok(());
+                for _ in 0..DRAIN_POLLS {
+                    match self.read(t, 0) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(error) => {
+                            drained = Err(error);
+                            break;
+                        }
+                    }
+                }
                 self.handle_frames(t, events)?;
+                drained?;
+                if !events.is_empty() {
+                    return Ok(());
+                }
             } else if !events.is_empty() {
                 return Ok(());
             }
@@ -348,7 +416,7 @@ impl GEarth {
     }
 
     /// One recv into the buffer: false when nothing came in time.
-    fn read(&mut self, t: &mut impl Transport, timeout_ms: u32) -> Result<bool, Error> {
+    fn read(&mut self, t: &mut (impl Transport + ?Sized), timeout_ms: u32) -> Result<bool, Error> {
         match t.recv(RECV_MAX, timeout_ms).map_err(Error::Transport)? {
             None => Ok(false),
             Some(data) if data.is_empty() => Err(Error::Closed),
@@ -359,7 +427,7 @@ impl GEarth {
         }
     }
 
-    fn send(&mut self, t: &mut impl Transport, data: &[u8]) -> Result<(), Error> {
+    fn send(&mut self, t: &mut (impl Transport + ?Sized), data: &[u8]) -> Result<(), Error> {
         if let Some(error) = &self.failed {
             return Err(error.clone());
         }
@@ -397,7 +465,7 @@ impl GEarth {
     /// when a later frame is unreadable.
     fn handle_frames(
         &mut self,
-        t: &mut impl Transport,
+        t: &mut (impl Transport + ?Sized),
         events: &mut Vec<GEarthEvent>,
     ) -> Result<(), Error> {
         let mut out = Vec::new();
@@ -640,7 +708,46 @@ mod tests {
             g.pump(&mut t, 10_000).unwrap(),
             [GEarthEvent::ConnectionEnd]
         );
-        assert_eq!(t.timeouts, [SLICE_MS, SLICE_MS]);
+        // The read that got the event, then one poll that finds nothing more.
+        assert_eq!(t.timeouts, [SLICE_MS, 0]);
+    }
+
+    #[test]
+    fn pump_drains_a_burst_without_charging_the_budget() {
+        // Three frames arrive in three reads right after each other: one timed slice reads the
+        // first, then zero-timeout polls take the rest until nothing is there.
+        let frame = || Some(Writer::new(ids::CONNECTION_END).to_bytes());
+        let mut t = Script::new([Some(info_request()), frame(), frame(), frame(), None]);
+        let mut g = handshaken(&mut t);
+        assert_eq!(g.pump(&mut t, SLICE_MS).unwrap().len(), 3);
+        assert_eq!(t.timeouts, [SLICE_MS, 0, 0, 0]);
+
+        // A burst that never ends: at most 64 polls per timed slice, then the budget decides.
+        let mut t = Script::new([Some(info_request())]);
+        let mut g = handshaken(&mut t);
+        t.answers = std::iter::repeat_n(frame(), 1_000).collect();
+        let events = g.pump(&mut t, SLICE_MS).unwrap();
+        assert_eq!(events.len(), 65);
+        assert_eq!(t.timeouts.len(), 65);
+        assert_eq!(t.timeouts.iter().sum::<u32>(), SLICE_MS);
+    }
+
+    #[test]
+    fn handshake_in_steps_keeps_partial_bytes() {
+        // The InfoRequest arrives a byte at a time over several short steps.
+        let bytes = info_request();
+        let mut t = Script::new(bytes.iter().map(|&b| Some(vec![b])));
+        let mut g = GEarth::start(&ExtensionInfo::default());
+        let mut steps = 0;
+        while !g.handshake_step(&mut t, 0).unwrap() {
+            steps += 1;
+            assert!(steps < 100);
+        }
+        assert_eq!(steps, bytes.len() - 1);
+        assert_eq!(t.sent_frames(), [ExtensionInfo::default().message()]);
+        // Done: a further step does nothing.
+        assert!(g.handshake_step(&mut t, 0).unwrap());
+        assert!(t.sent.is_empty());
     }
 
     #[test]

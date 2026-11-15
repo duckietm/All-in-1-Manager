@@ -4,7 +4,7 @@
 use crate::build::{self, Options};
 use crate::pack;
 use aio_plugin_host::package::{inspect, Package};
-use aio_plugin_host::display_safe;
+use aio_plugin_host::{display_safe, BUILTIN_IDS};
 use anyhow::{bail, Context, Result};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
@@ -52,7 +52,8 @@ pub fn report(bytes: &[u8], pkg: &Package) -> String {
 
 /// Checks `bytes` as the Manager does on install, plus that the wasm is a component.
 pub fn check_bytes(bytes: &[u8]) -> Result<String> {
-    let pkg = inspect(bytes, &[])?;
+    // The Manager refuses the ids of its built-in plugins.
+    let pkg = inspect(bytes, BUILTIN_IDS)?;
     if !pkg.wasm.starts_with(&COMPONENT_HEADER) {
         bail!("plugin.wasm is not a WebAssembly component (build it for {}, crate-type cdylib)", build::TARGET);
     }
@@ -73,8 +74,12 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn package(permissions: &[&str], wasm: &[u8]) -> Vec<u8> {
+        package_with_id("demo", permissions, wasm)
+    }
+
+    fn package_with_id(id: &str, permissions: &[&str], wasm: &[u8]) -> Vec<u8> {
         let manifest = serde_json::json!({
-            "id": "demo", "name": "Demo", "version": "1.2.3", "author": "Someone", "description": "A demo",
+            "id": id, "name": "Demo", "version": "1.2.3", "author": "Someone", "description": "A demo",
             "api": "1.0", "permissions": permissions, "page_title": "Demo",
         });
         let files = BTreeMap::from([("manifest.json".to_string(), manifest.to_string().into_bytes()), ("plugin.wasm".to_string(), wasm.to_vec())]);
@@ -106,5 +111,8 @@ mod tests {
         assert!(check_bytes(&package(&["files"], b"\0asm\x01\0\0\0")).unwrap_err().to_string().contains("not a WebAssembly component"));
         assert!(check_bytes(&package(&["root"], &component)).is_err());
         assert!(check_bytes(b"not a zip").is_err());
+        // A built-in plugin's id: the Manager would refuse the install.
+        let error = check_bytes(&package_with_id("cms", &["files"], &component)).unwrap_err().to_string();
+        assert!(error.contains("built-in"), "{error}");
     }
 }

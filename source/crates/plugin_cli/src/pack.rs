@@ -7,6 +7,7 @@
 //! window 15, memory level 8), no extra fields, no data descriptors, no comments.
 
 use crate::build::{self, Options};
+use aio_plugin_host::manifest::valid_id;
 use anyhow::{bail, Context, Result};
 use flate2::write::DeflateEncoder;
 use flate2::{Compression, Crc};
@@ -138,8 +139,10 @@ fn plugin_id(dir: &Path) -> Result<String> {
     let manifest: serde_json::Value =
         serde_json::from_slice(&std::fs::read(dir.join("manifest.json"))?).context("manifest.json is not valid JSON")?;
     match manifest["id"].as_str() {
-        Some(id) if !id.is_empty() => Ok(id.to_string()),
-        _ => bail!("manifest.json has no id"),
+        // Checked before the build, and before it becomes part of the output path.
+        Some(id) if valid_id(id) => Ok(id.to_string()),
+        Some(id) => bail!("manifest.json has an invalid id {id:?} (2 to 40 characters: lowercase letters, digits and dashes)"),
+        None => bail!("manifest.json has no id"),
     }
 }
 
@@ -181,5 +184,30 @@ mod tests {
             i += 30 + name_len + csize;
         }
         assert_eq!(zip, ["manifest.json", "plugin.wasm", "icon.png", "i18n/de.json", "i18n/it.json"]);
+    }
+
+    #[test]
+    fn deflate_matches_stock_zlib_golden_vector() {
+        // 4 MB of text, pseudo-random bytes (xorshift32), zeros and a short cycle. The expected sha256 is of
+        // `zlib.compressobj(9, zlib.DEFLATED, -15)` on Python 3.13 (stock zlib 1.3.1), what `zipfile` writes;
+        // so a deflate backend that drifts fails here on every system, with or without Python.
+        let mut data = Vec::new();
+        for i in 0..40000u32 {
+            data.extend(format!("line {i}: the quick brown fox jumps over the lazy dog {}\n", i * 7 % 1000).bytes());
+        }
+        let mut x: u32 = 0x1234_5678;
+        for _ in 0..1 << 20 {
+            x ^= x << 13;
+            x ^= x >> 17;
+            x ^= x << 5;
+            data.push(x as u8);
+        }
+        data.extend(std::iter::repeat_n(0u8, 256 * 1024));
+        data.extend((0..512 * 1024u32).map(|i| (i % 251) as u8));
+        assert_eq!(data.len(), 4_219_498);
+        let out = deflate(&data).unwrap();
+        assert_eq!(out.len(), 1_247_983);
+        use sha2::Digest as _;
+        assert_eq!(format!("{:x}", sha2::Sha256::digest(&out)), "e2b48e3a3e17ddbaeba6418ad58b7b377940b7fd212504cdd6da86aab7712517");
     }
 }

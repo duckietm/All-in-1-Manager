@@ -109,6 +109,21 @@ fn numbers(s: &str, min: usize, max: usize) -> Option<Vec<u32>> {
         .collect()
 }
 
+/// The ids of the Manager's built-in plugins: an external plugin may not use them (the app checks that this list
+/// matches its plugins; `aio-plugin check` and `new` refuse them).
+pub const BUILTIN_IDS: &[&str] = &[
+    "cms",
+    "gitea",
+    "fail2ban",
+    "crowdsec",
+    "default-catalog",
+    "sql-editor",
+    "habbo-assets",
+    "deploy-assets",
+    "asset-import",
+    "asset-explorer",
+];
+
 /// `^[a-z0-9][a-z0-9-]{1,39}$`
 pub fn valid_id(id: &str) -> bool {
     let b = id.as_bytes();

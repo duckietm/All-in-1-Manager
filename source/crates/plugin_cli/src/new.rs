@@ -1,6 +1,7 @@
 //! `new`: a plugin project that builds, packs and loads as it is.
 
 use aio_plugin_host::manifest::valid_id;
+use aio_plugin_host::BUILTIN_IDS;
 use anyhow::{bail, Context, Result};
 use std::path::Path;
 
@@ -55,6 +56,11 @@ pub fn create(dir: &Path, id: &str, sdk_path: Option<&Path>) -> Result<()> {
     if !valid_id(id) {
         bail!("invalid plugin id {id:?}: 2 to 40 characters, lowercase letters, digits and dashes, starting with a letter or digit");
     }
+    if BUILTIN_IDS.contains(&id) {
+        bail!("the id {id} belongs to a built-in plugin of the Manager; choose another");
+    }
+    // Everything that can fail is checked before the folder is made, so a mistake leaves nothing behind.
+    let sdk = sdk_dependency(sdk_path)?;
     if dir.exists() {
         let mut entries = std::fs::read_dir(dir).with_context(|| format!("{} exists and is not a folder", dir.display()))?;
         if entries.next().is_some() {
@@ -63,18 +69,18 @@ pub fn create(dir: &Path, id: &str, sdk_path: Option<&Path>) -> Result<()> {
     }
     let krate = crate_name(id);
     let name = display_name(id);
-    let fill = |template: &str| -> Result<String> {
-        Ok(template
-            .replace("{{sdk}}", &sdk_dependency(sdk_path)?)
+    let fill = |template: &str| -> String {
+        template
+            .replace("{{sdk}}", &sdk)
             .replace("{{crate}}", &krate)
             .replace("{{wasm}}", &krate.replace('-', "_"))
             .replace("{{id}}", id)
-            .replace("{{name}}", &name))
+            .replace("{{name}}", &name)
     };
     std::fs::create_dir_all(dir.join("src")).with_context(|| format!("cannot create {}", dir.display()))?;
     for (file, template) in [("Cargo.toml", CARGO_TOML), ("manifest.json", MANIFEST), ("src/lib.rs", LIB_RS), (".gitignore", GITIGNORE), ("README.md", README)] {
         let path = dir.join(file);
-        std::fs::write(&path, fill(template)?).with_context(|| format!("cannot write {}", path.display()))?;
+        std::fs::write(&path, fill(template)).with_context(|| format!("cannot write {}", path.display()))?;
     }
     Ok(())
 }
@@ -90,6 +96,11 @@ mod tests {
         std::fs::write(root.path().join("file"), "x").unwrap();
         let error = create(root.path(), "good-id", None).unwrap_err();
         assert!(error.to_string().contains("not empty"), "{error}");
+        assert!(create(&root.path().join("b"), "cms", None).unwrap_err().to_string().contains("built-in"));
+        // A bad --sdk-path leaves no half-made folder behind.
+        let target = root.path().join("c");
+        assert!(create(&target, "good-id", Some(&root.path().join("no-sdk"))).is_err());
+        assert!(!target.exists());
     }
 
     #[test]

@@ -92,10 +92,12 @@ impl Args {
 }
 
 fn run(raw: &[String]) -> Result<()> {
-    let Some((command, rest)) = raw.split_first() else {
+    // `--help` or `-h` anywhere (`aio-plugin new --help`) prints the usage.
+    if raw.is_empty() || raw.iter().any(|a| a == "--help" || a == "-h") {
         print!("{USAGE}");
         return Ok(());
-    };
+    }
+    let (command, rest) = (&raw[0], &raw[1..]);
     let args = Args::parse(rest)?;
     let here = || std::env::current_dir().context("cannot read the current folder");
     match command.as_str() {
@@ -126,7 +128,7 @@ fn run(raw: &[String]) -> Result<()> {
             args.only(&[], 0)?;
             print!("{}", build::dev_text(&here()?)?);
         }
-        "help" | "--help" | "-h" => print!("{USAGE}"),
+        "help" => print!("{USAGE}"),
         other => bail!("unknown command {other} (try aio-plugin help)"),
     }
     Ok(())

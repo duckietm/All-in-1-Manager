@@ -21,24 +21,27 @@ fn ok(output: Output, what: &str) -> String {
 
 /// A Python 3 whose zlib is stock zlib (on Windows `python3` may be the store's placeholder, and python.org 3.14+
 /// is built on zlib-ng, whose deflate gives other bytes).
-fn python() -> &'static str {
+fn python() -> Option<&'static str> {
     let stock = |p: &&str| {
         let probe = Command::new(p).args(["-c", "import zlib; print(hasattr(zlib, 'ZLIBNG_VERSION') or 'ng' in zlib.ZLIB_RUNTIME_VERSION)"]).output();
         probe.is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "False")
     };
-    ["python3", "python", "py"]
-        .into_iter()
-        .find(stock)
-        .expect("pack_matches_pack_plugin_py needs a Python 3 on stock zlib (python3, python or py on PATH; not zlib-ng)")
+    ["python3", "python", "py"].into_iter().find(stock)
 }
 
 #[test]
 fn pack_matches_pack_plugin_py() {
+    // pack.rs checks the deflate bytes against a stock-zlib golden vector without Python; this compares with the
+    // script itself, which needs a Python on stock zlib (CI pins Python 3.13).
+    let Some(python) = python() else {
+        eprintln!("SKIPPED pack_matches_pack_plugin_py: no Python 3 on stock zlib (python3, python or py) on PATH; a zlib-ng Python packs other bytes");
+        return;
+    };
     let hello = repo().join("source/plugins/hello");
     let out = tempfile::tempdir().unwrap();
     let (py, rs) = (out.path().join("py.aiop"), out.path().join("rs.aiop"));
     let script = repo().join("source/tools/pack_plugin.py");
-    let packed = Command::new(python()).arg(&script).arg(&hello).args(["--locked", "--out"]).arg(&py).output().unwrap();
+    let packed = Command::new(python).arg(&script).arg(&hello).args(["--locked", "--out"]).arg(&py).output().unwrap();
     ok(packed, "pack_plugin.py");
     ok(aio_plugin(&hello, &["pack", "--locked", "--out", rs.to_str().unwrap()]), "aio-plugin pack");
     let (py, rs) = (std::fs::read(&py).unwrap(), std::fs::read(&rs).unwrap());

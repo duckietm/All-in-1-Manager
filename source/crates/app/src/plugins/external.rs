@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::index::{IndexSource, SignedIndex, OFFICIAL_PACKAGE_PREFIX};
-use super::{packs, PLUGINS};
+use super::packs;
 use crate::i18n::{n, t};
 
 /// An installed external plugin, as the Plugins page lists it.
@@ -290,8 +290,9 @@ fn wait_until_stopped(id: &str) -> Result<()> {
     Ok(())
 }
 
-fn reserved_ids() -> Vec<&'static str> {
-    PLUGINS.iter().map(|p| p.id).collect()
+/// The built-in plugins' ids (the host's list, which a test keeps equal to `PLUGINS`).
+fn reserved_ids() -> &'static [&'static str] {
+    aio_plugin_host::BUILTIN_IDS
 }
 
 /// Reads a package file, refusing anything over the 32 MiB limit without reading it all.
@@ -724,7 +725,7 @@ impl ExternalPlugins {
     /// Reads and checks a package file. Blocking: run it off the window's thread.
     pub fn prepare(&self, path: &Path) -> Result<Pending> {
         let bytes = read_capped(path)?;
-        let package = package::inspect(&bytes, &reserved_ids())?;
+        let package = package::inspect(&bytes, reserved_ids())?;
         let previous = self.list.lock().iter().find(|i| i.manifest.id == package.manifest.id).map(|i| i.manifest.clone());
         Ok(Pending { package, previous, verified: None })
     }
@@ -744,7 +745,7 @@ impl ExternalPlugins {
             bail!("This version was revoked by the official index: {reason}");
         }
         check_integrity(entry, &bytes)?;
-        let package = package::inspect(&bytes, &reserved_ids())?;
+        let package = package::inspect(&bytes, reserved_ids())?;
         check_matches_entry(&package.manifest, entry)?;
         let verified = Verification { source: signed.source, key_id: signed.key_id.to_string(), sequence: signed.index.sequence, sha256: entry.sha256.clone() };
         let previous = self.list.lock().iter().find(|i| i.manifest.id == package.manifest.id).map(|i| i.manifest.clone());
@@ -973,6 +974,7 @@ const PERMISSION_TEXTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugins::PLUGINS;
     use std::io::Write;
 
     const PERMISSIONS: &[&str] = &[
@@ -1017,6 +1019,14 @@ mod tests {
         }
         let write = permission_text(&Permission::parse("sql:write:rooms").unwrap());
         assert_eq!(write, "Change the table rooms of the hotel database (you approve each change)");
+    }
+
+    #[test]
+    fn builtin_ids_are_the_plugins() {
+        let plugins: std::collections::BTreeSet<&str> = PLUGINS.iter().map(|p| p.id).collect();
+        let host: std::collections::BTreeSet<&str> = aio_plugin_host::BUILTIN_IDS.iter().copied().collect();
+        assert_eq!(plugins, host, "aio_plugin_host::BUILTIN_IDS must list exactly the built-in plugins");
+        assert_eq!(host.len(), aio_plugin_host::BUILTIN_IDS.len(), "an id is listed twice");
     }
 
     #[test]

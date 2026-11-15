@@ -28,7 +28,7 @@ pub use async_trait::async_trait;
 /// The engine type of [`runtime::engine`], for apps that keep one without depending on wasmtime.
 pub use wasmtime::Engine;
 
-pub use manifest::{display_safe, Manifest, Tile};
+pub use manifest::{display_safe, Manifest, Tile, BUILTIN_IDS};
 #[cfg(feature = "test-hooks")]
 pub use package::{install_failing_after_move_aside, install_failing_with_data_restore_failure, install_with_fault, Fault, Step};
 pub use package::{inspect, install, installed, remove, Package};

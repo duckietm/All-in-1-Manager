@@ -38,6 +38,9 @@ pub enum ErrorKind {
     Rejected,
     /// The action took longer than the Manager allows.
     Timeout,
+    /// The file does not exist: a private file that was never written ([`files::read`](crate::files::read)), or a
+    /// picked file that was removed after the user chose it.
+    NotFound,
     /// Anything else: a network or file error, a page past the Manager's limits, a value the host refused.
     Other,
 }
@@ -65,6 +68,7 @@ impl Error {
     ///   the wrong use of a picked file and a refused redirect to another host are [`ErrorKind::Denied`];
     /// - `the user rejected ...` is [`ErrorKind::Rejected`];
     /// - `<what> timed out after <n> s` is [`ErrorKind::Timeout`];
+    /// - exactly `file not found` is [`ErrorKind::NotFound`];
     /// - anything else is [`ErrorKind::Other`].
     pub(crate) fn from_host(message: String) -> Self {
         Self { kind: host_kind(&message), message }
@@ -93,6 +97,9 @@ const DENIED_TEXTS: &[&str] = &[
     "a file picked for opening cannot be written",
 ];
 
+/// The host's whole text for a missing file (runtime.rs `io_text`).
+const NOT_FOUND: &str = "file not found";
+
 /// A redirect off the checked host, refused by the Manager's HTTP client (app plugins/services.rs); it ends the
 /// request error's text.
 const REDIRECT_REFUSED: &str = "a redirect to another host was refused";
@@ -104,6 +111,8 @@ fn host_kind(text: &str) -> ErrorKind {
         ErrorKind::Rejected
     } else if is_timeout(text) {
         ErrorKind::Timeout
+    } else if text == NOT_FOUND {
+        ErrorKind::NotFound
     } else {
         ErrorKind::Other
     }
@@ -182,11 +191,12 @@ mod tests {
             assert_eq!(Error::from_host(text.to_string()).kind(), ErrorKind::Timeout, "{text}");
         }
 
+        assert_eq!(Error::from_host("file not found".to_string()).kind(), ErrorKind::NotFound);
+
         let other = [
             "Not connected",
             "The server changed since the request",
             "Dry run: there is no database",
-            "file not found",
             "file larger than 32 MiB",
             "the private folder is full (64 MiB)",
             "the private folder is full (10000 files and folders)",
@@ -202,6 +212,8 @@ mod tests {
             "ssh: Permission denied (publickey)",
             "the user rejected",
             "the job timed out after a while",
+            "file not found: notes.txt",
+            "the file not found",
         ];
         for text in other {
             assert_eq!(Error::from_host(text.to_string()).kind(), ErrorKind::Other, "{text}");

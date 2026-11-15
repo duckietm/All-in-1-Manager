@@ -67,20 +67,37 @@ pub fn prompt_text(title: &str, label: &str, default: &str) -> Option<String> {
     host::prompt_text(title, label, default)
 }
 
-/// Shows an open-file dialog. `extensions` are without dots (`["sql", "txt"]`); an empty list allows every file.
-/// `None` if the user cancelled (or past the dialog limit).
+/// Shows an open-file dialog. `extensions` are without dots (`["sql", "txt"]`, or a `Vec<String>`); an empty list
+/// allows every file (write it with its type, for example `[] as [&str; 0]`). `None` if the user cancelled (or
+/// past the dialog limit).
 ///
 /// The file can only be [read](PickedFile::read) (or handed to [`open_import_preview`]).
-pub fn pick_open_file(title: &str, extensions: &[&str]) -> Option<PickedFile> {
+///
+/// ```no_run
+/// use aio_plugin_sdk::host;
+///
+/// if let Some(file) = host::pick_open_file("Import a catalogue", ["sql"]) {
+///     let bytes = file.read();
+///     # let _ = bytes;
+/// }
+/// let any = host::pick_open_file("Any file", [] as [&str; 0]);
+/// # let _ = any;
+/// ```
+pub fn pick_open_file(title: &str, extensions: impl IntoIterator<Item = impl AsRef<str>>) -> Option<PickedFile> {
     let file = host::pick_open_file(title, &owned(extensions))?;
     Some(PickedFile { file, mode: Mode::Open })
 }
 
 /// Shows a save-file dialog with `suggested_name` filled in. `extensions` are without dots; an empty list allows
-/// every file. `None` if the user cancelled (or past the dialog limit).
+/// every file (write it with its type, for example `[] as [&str; 0]`). `None` if the user cancelled (or past the
+/// dialog limit).
 ///
 /// The file can only be [written](PickedFile::write).
-pub fn pick_save_file(title: &str, suggested_name: &str, extensions: &[&str]) -> Option<PickedFile> {
+pub fn pick_save_file(
+    title: &str,
+    suggested_name: &str,
+    extensions: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Option<PickedFile> {
     let file = host::pick_save_file(title, suggested_name, &owned(extensions))?;
     Some(PickedFile { file, mode: Mode::Save })
 }
@@ -93,8 +110,8 @@ pub fn open_import_preview(file: &PickedFile) -> Result<()> {
     crate::error::host_result(host::open_import_preview(&file.file))
 }
 
-fn owned(list: &[&str]) -> Vec<String> {
-    list.iter().map(|s| s.to_string()).collect()
+fn owned(list: impl IntoIterator<Item = impl AsRef<str>>) -> Vec<String> {
+    list.into_iter().map(|s| s.as_ref().to_string()).collect()
 }
 
 /// What a [`PickedFile`] was picked for.

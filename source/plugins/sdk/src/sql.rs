@@ -5,8 +5,9 @@
 //!
 //! # Reading
 //!
-//! Needs `sql:read:<table>` for the table. Private columns (passwords, tokens, secrets, IP addresses, machine ids,
-//! auth tickets) also need `sql:read-private:<table>.<column>`.
+//! Needs `sql:read:<table>` for the table, written exactly as declared (case included). Table and column names
+//! are identifiers: a letter or `_`, then letters, digits or `_`, at most 64 in all. A [private
+//! column](self#private-columns) needs one more permission.
 //!
 //! ```no_run
 //! use aio_plugin_sdk::sql::{Op, Select};
@@ -29,6 +30,7 @@
 //! The Manager's rules for a read:
 //! - the columns must be listed: there is no `*`, and at most 256 columns;
 //! - at most 64 conditions, combined with AND;
+//! - a float in a condition must be finite (no NaN or infinity);
 //! - at most 1,000 rows without [`limit`](Select::limit), and never more than 10,000 (a larger limit is lowered
 //!   to 10,000);
 //! - the query has 30 s.
@@ -55,12 +57,25 @@
 //! The Manager's rules for a change:
 //! - an update or a delete needs at least one condition (there is no "every row");
 //! - an insert or an update sets at least one column, each column once, at most 256;
+//! - a float must be finite (no NaN or infinity), in values and in conditions;
 //! - a batch has 1 to 1,000 operations and at most 8 MiB of values;
 //! - a user who says no gives [`ErrorKind::Rejected`]; applying the changes has 30 s.
 //!
-//! A refused request is [`ErrorKind::Denied`]. The SDK refuses the cheap cases
-//! (no columns, no condition on an update or delete, an empty batch, more than 1,000 operations) before calling the
-//! Manager, with the same error.
+//! # Private columns
+//!
+//! A private column needs `sql:read-private:<table>.<column>` to be read, used in a filter, or written (set by an
+//! insert or update), on top of `sql:read:<table>` or `sql:write:<table>`. These columns are private (case
+//! ignored):
+//! - on `users`: `password`, `mail`, `ip_register`, `ip_current`, `auth_ticket` and `machine_id`;
+//! - on every table: a column named exactly `ip` or `machine_id`, and every column whose name contains `password`,
+//!   `token`, `secret` or `ip_`.
+//!
+//! # Refusals
+//!
+//! A refused request is [`ErrorKind::Denied`]. The SDK refuses these cases itself, before calling the Manager and
+//! with the Manager's own message: a read without columns; an empty batch or one of more than 1,000 operations; an
+//! insert or update that sets no column; an update or delete without a condition; a float that is not finite, in a
+//! value or in a condition other than [`Op::IsNull`] and [`Op::NotNull`]. The Manager checks everything again.
 
 use std::sync::Arc;
 
@@ -248,6 +263,9 @@ impl Select {
     pub fn run(&self) -> Result<Vec<Row>> {
         if self.columns.is_empty() {
             return Err(Error::denied("list the columns to read (there is no 'every column')"));
+        }
+        if let Some(reason) = conditions_refusal(&self.conditions) {
+            return Err(Error::denied(reason));
         }
         let rows = host_result(host::sql_select(&self.to_wit()))?;
         let columns: Arc<[String]> = rows.columns.into();
@@ -489,13 +507,21 @@ impl WriteOp {
     /// Why the Manager would refuse this operation for a reason the SDK can see without asking it.
     fn refusal(&self) -> Option<String> {
         match &self.0 {
-            OpKind::Update(u) if u.conditions.is_empty() => {
-                Some(format!("an update of '{}' needs at least one condition", u.table))
+            OpKind::Insert(i) => assignments_refusal(&i.values),
+            OpKind::Update(u) => assignments_refusal(&u.set).or_else(|| {
+                if u.conditions.is_empty() {
+                    Some(format!("an update of '{}' needs at least one condition", u.table))
+                } else {
+                    conditions_refusal(&u.conditions)
+                }
+            }),
+            OpKind::Delete(d) => {
+                if d.conditions.is_empty() {
+                    Some(format!("a delete from '{}' needs at least one condition", d.table))
+                } else {
+                    conditions_refusal(&d.conditions)
+                }
             }
-            OpKind::Delete(d) if d.conditions.is_empty() => {
-                Some(format!("a delete from '{}' needs at least one condition", d.table))
-            }
-            _ => None,
         }
     }
 
@@ -537,6 +563,30 @@ fn checked_batch(ops: impl IntoIterator<Item = WriteOp>) -> Result<Vec<wit::Writ
         return Err(Error::denied(reason));
     }
     Ok(ops.iter().map(WriteOp::to_wit).collect())
+}
+
+/// The host's text for a NaN or infinite float (host sql.rs `value`).
+const NOT_FINITE: &str = "a float value must be finite";
+
+fn finite(v: &Value) -> bool {
+    !matches!(v, Value::Float(f) if !f.is_finite())
+}
+
+/// The host's refusal of an insert's or update's values that the SDK can see: no column set, or a float that is
+/// not finite.
+fn assignments_refusal(list: &[(String, Value)]) -> Option<String> {
+    if list.is_empty() {
+        return Some("an insert or update must set at least one column".into());
+    }
+    list.iter().any(|(_, v)| !finite(v)).then(|| NOT_FINITE.into())
+}
+
+/// The host's refusal of conditions that the SDK can see: a float that is not finite (the value of `IsNull` and
+/// `NotNull` is ignored, as on the host).
+fn conditions_refusal(list: &[Condition]) -> Option<String> {
+    list.iter()
+        .any(|c| !matches!(c.op, Op::IsNull | Op::NotNull) && !finite(&c.value))
+        .then(|| NOT_FINITE.into())
 }
 
 fn value_to_wit(v: &Value) -> wit::SqlValue {
@@ -628,6 +678,12 @@ mod tests {
         let error = Select::from("users").run().unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Denied);
         assert_eq!(error.message(), "permission denied: list the columns to read (there is no 'every column')");
+
+        let error = Select::from("t").columns(["a"]).filter("b", Op::Gt, f64::NAN).run().unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Denied);
+        assert_eq!(error.message(), "permission denied: a float value must be finite");
+        // The value of IS NULL is ignored: nothing to refuse (not run, it would call the host).
+        assert!(conditions_refusal(&[Condition::new("b", Op::IsNull, f64::NAN)]).is_none());
     }
 
     #[test]
@@ -703,6 +759,18 @@ mod tests {
             refused(vec![insert("a").value("x", 1).into(), delete("users").into()]),
             "permission denied: a delete from 'users' needs at least one condition"
         );
+        // The host's texts (host sql.rs `assignments`, `value`).
+        let no_column = "permission denied: an insert or update must set at least one column";
+        assert_eq!(refused(vec![insert("pages").into()]), no_column);
+        assert_eq!(refused(vec![update("users").filter("id", Op::Eq, 1).into()]), no_column);
+        let not_finite = "permission denied: a float value must be finite";
+        assert_eq!(refused(vec![insert("a").value("x", f64::NAN).into()]), not_finite);
+        assert_eq!(refused(vec![update("a").set("x", f64::INFINITY).filter("y", Op::Eq, 1).into()]), not_finite);
+        assert_eq!(refused(vec![update("a").set("x", 1).filter("y", Op::Lt, f64::INFINITY).into()]), not_finite);
+        assert_eq!(refused(vec![delete("a").filter("y", Op::Eq, f32::NEG_INFINITY).into()]), not_finite);
+        // The value of IS NULL / IS NOT NULL is ignored, as on the host.
+        checked_batch([delete("a").filter("y", Op::IsNull, f64::NAN).into()]).unwrap();
+
         let many: Vec<WriteOp> = (0..=MAX_WRITE_OPS).map(|i| insert("a").value("x", i as i64).into()).collect();
         assert_eq!(refused(many), "permission denied: more than 1000 operations in one batch");
 

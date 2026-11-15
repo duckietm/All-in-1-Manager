@@ -34,17 +34,26 @@ impl Everything {
                 }
             }
             "open" => {
-                if let Some(file) = host::pick_open_file("Open", &["sql"]) {
+                let extensions: Vec<String> = vec!["sql".into(), "txt".into()];
+                if let Some(file) = host::pick_open_file("Open", &extensions) {
                     self.lines.push(format!("{} bytes", file.read()?.len()));
                     host::open_import_preview(&file)?;
                     self.file = Some(file);
                 }
             }
             "save" => {
-                if let Some(file) = host::pick_save_file("Save", "out.txt", &[]) {
+                if let Some(file) = host::pick_save_file("Save", "out.txt", [] as [&str; 0]) {
                     file.write(b"data")?;
                     self.lines.push(file.name());
                 }
+                if let Some(file) = host::pick_save_file("Save", "out.sql", ["sql"]) {
+                    file.write(b"--")?;
+                }
+                if let Some(bytes) = files::read_if_exists("maybe.bin")? {
+                    self.lines.push(bytes.len().to_string());
+                }
+                let saved = files::read_to_string_if_exists("maybe.txt")?.unwrap_or_default();
+                self.lines.push(saved);
             }
             "files" => {
                 files::write_str("a/b.txt", "x")?;

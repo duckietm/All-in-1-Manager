@@ -43,6 +43,8 @@ pub struct Source<'a> {
     pub client_type: &'a str,
     /// `YYYY-mm-dd HH:MM:SS`.
     pub ripped_at: &'a str,
+    /// What makes the files ([`RippedCatalog::generator`]).
+    pub generator: &'a str,
 }
 
 /// The catalogue as the rip writes it: per catalogue in `modes` that has an index, every page
@@ -81,6 +83,7 @@ pub fn assemble(
         hotel_version: source.hotel_version.to_string(),
         client_type: source.client_type.to_string(),
         ripped_at: source.ripped_at.to_string(),
+        generator: source.generator.to_string(),
         complete,
         modes: out,
     }

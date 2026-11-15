@@ -29,6 +29,9 @@ pub struct RippedCatalog {
     pub ripped_at: String,
     pub complete: bool,
     pub modes: Vec<RippedMode>,
+    /// What made the files, for their headers ("Catalogue ripper plugin 0.1.0"; the built-in
+    /// wrote "All-in-1 Manager <version>" there).
+    pub generator: String,
 }
 
 /// One page of a mode's tree with the id it is written under.
@@ -168,7 +171,7 @@ pub fn catalog_json(catalog: &RippedCatalog) -> Value {
         })
         .collect();
     json!({
-        "generator": format!("All-in-1 Manager {} catalogue ripper (G-Earth)", env!("CARGO_PKG_VERSION")),
+        "generator": format!("{} (G-Earth)", catalog.generator),
         "hotel": catalog.hotel,
         "host": catalog.host,
         "hotel_version": catalog.hotel_version,
@@ -625,13 +628,13 @@ const ROWS_PER_INSERT: usize = 250;
 
 fn header(title: &str, catalog: &RippedCatalog) -> String {
     format!(
-        "-- {title}\n-- Ripped from {} ({}, {} client {}) on {} by All-in-1 Manager {}.\n-- Import catalog_pages.sql first, then catalog_items.sql (see README.txt).\n\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n",
+        "-- {title}\n-- Ripped from {} ({}, {} client {}) on {} by {}.\n-- Import catalog_pages.sql first, then catalog_items.sql (see README.txt).\n\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n",
         catalog.hotel,
         catalog.host,
         catalog.client_type,
         catalog.hotel_version,
         catalog.ripped_at,
-        env!("CARGO_PKG_VERSION"),
+        catalog.generator,
     )
 }
 
@@ -976,9 +979,8 @@ pub fn readme(
     );
     let _ = writeln!(
         text,
-        "Ripped: {} by All-in-1 Manager {}",
-        catalog.ripped_at,
-        env!("CARGO_PKG_VERSION")
+        "Ripped: {} by {}",
+        catalog.ripped_at, catalog.generator
     );
     if !catalog.complete {
         let _ = writeln!(text, "\n*** INCOMPLETE: the hotel connection ended during the rip; the files hold what was read until then. ***");

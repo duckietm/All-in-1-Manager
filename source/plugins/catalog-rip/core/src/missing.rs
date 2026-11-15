@@ -178,6 +178,7 @@ mod tests {
             hotel_version: String::new(),
             client_type: String::new(),
             ripped_at: String::new(),
+            generator: String::new(),
             complete: true,
             modes: vec![RippedMode {
                 mode: "NORMAL".into(),

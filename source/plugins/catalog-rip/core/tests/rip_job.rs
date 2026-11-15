@@ -32,9 +32,13 @@ fn options(port: u16) -> RipOptions {
         resend_every_ms: 500,
         download_images: false,
         use_furnidata: false,
+        generator: GENERATOR.into(),
         ..RipOptions::default()
     }
 }
+
+/// What the test rips name as their maker (the plugin passes its own name and version).
+const GENERATOR: &str = "Catalogue ripper plugin 9.9.9";
 
 fn items_rows() -> Vec<ItemsBaseRow> {
     let row = |id, sprite_id, t: &str, name: &str| ItemsBaseRow {
@@ -140,6 +144,7 @@ fn builtin_output(images_downloaded: usize) -> BTreeMap<String, Vec<u8>> {
         hotel_version: "WIN63-202501011200-123".into(),
         client_type: "FLASH".into(),
         ripped_at: Timestamp::new(UNIX_SECS).date_time(),
+        generator: GENERATOR.into(),
         complete: true,
         modes,
     };
@@ -391,6 +396,7 @@ fn full_rip_matches_reconstructed_builtin_output() {
     let path = |name: &str| format!("{FOLDER}/{name}");
     let json: serde_json::Value = serde_json::from_str(&sink.text(&path("catalog.json"))).unwrap();
     assert_eq!(json["hotel"], "habbo.nl");
+    assert_eq!(json["generator"], "Catalogue ripper plugin 9.9.9 (G-Earth)");
     assert_eq!(json["catalogs"][0]["failed_pages"], serde_json::json!([7]));
     assert_eq!(json["catalogs"][0]["pages"][3]["page_status"], "no answer");
     assert_eq!(json["catalogs"][1]["pages"][0]["packet_layout"], "classic");
@@ -402,6 +408,8 @@ fn full_rip_matches_reconstructed_builtin_output() {
     let readme = sink.text(&path("README.txt"));
     assert!(readme.contains("Import catalog_pages.sql, then catalog_items.sql"));
     assert!(readme.contains("ALL-IN-1 MANAGER IMPORT"));
+    assert!(readme.contains("by Catalogue ripper plugin 9.9.9\r\n"), "{readme}");
+    assert!(items_sql.contains(" by Catalogue ripper plugin 9.9.9.\n"));
     assert!(readme.contains("Habbo (official) (official Habbo)"));
     assert!(!readme.contains("CANCELLED"));
     assert_eq!(

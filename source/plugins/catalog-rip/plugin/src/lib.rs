@@ -16,7 +16,7 @@
 mod adapters;
 
 use adapters::{
-    add_profile, all_profiles, items_row, parse_delay, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
+    add_profile, all_profiles, extension_info, generator, items_row, parse_delay, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
     SourceError, SysClock, FIRST_PORT, LAST_PORT, PROFILES_FILE, SQL_LIMIT,
 };
 use aio_plugin_sdk::folders::{self, Folder};
@@ -289,6 +289,8 @@ impl Ripper {
             normal: self.normal,
             builders_club: self.builders_club,
             download_images: self.images,
+            generator: generator(),
+            extension: extension_info(),
             ..RipOptions::default()
         }
     }

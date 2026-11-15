@@ -460,13 +460,13 @@ pub fn manager_sql_with(catalog: &RippedCatalog, export: &ManagerExport) -> Mana
     let mut text = String::new();
     let _ = writeln!(
         text,
-        "-- Catalog Studio restricted SQL export.\n-- Catalogue ripped from {} ({}, {} client {}) on {} by All-in-1 Manager {}.\n-- Import it in the All-in-1 Manager's catalogue page ({}); the import shows every change before applying it.",
+        "-- Catalog Studio restricted SQL export.\n-- Catalogue ripped from {} ({}, {} client {}) on {} by {}.\n-- Import it in the All-in-1 Manager's catalogue page ({}); the import shows every change before applying it.",
         comment(&catalog.hotel),
         comment(&catalog.host),
         comment(&catalog.client_type),
         comment(&catalog.hotel_version),
         comment(&catalog.ripped_at),
-        env!("CARGO_PKG_VERSION"),
+        comment(&catalog.generator),
         mode.label(),
     );
     if !stats.note.is_empty() {

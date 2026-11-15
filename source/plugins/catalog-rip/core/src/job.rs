@@ -171,7 +171,14 @@ pub struct RipOptions {
     /// README.txt with Windows line ends (the built-in writes them on Windows, where the
     /// Manager runs).
     pub readme_crlf: bool,
+    /// What the file headers name as their maker ("Catalogue ripper plugin 0.1.0"). Default:
+    /// [`DEFAULT_GENERATOR`].
+    #[serde(skip)]
+    pub generator: String,
 }
+
+/// The maker named in the file headers when the options name none.
+pub const DEFAULT_GENERATOR: &str = concat!("catalog-rip-core ", env!("CARGO_PKG_VERSION"));
 
 impl Default for RipOptions {
     fn default() -> Self {
@@ -200,6 +207,7 @@ impl Default for RipOptions {
             gearth_port: gearth::PORT_ONSET,
             handshake_timeout_ms: 3_000,
             readme_crlf: true,
+            generator: DEFAULT_GENERATOR.into(),
         }
     }
 }
@@ -1874,6 +1882,7 @@ impl Job {
                 hotel_version: &connection.hotel_version,
                 client_type: &connection.client_type,
                 ripped_at: &ripped_at,
+                generator: &self.options.generator,
             },
             &self.accepted,
             &self.indexes,

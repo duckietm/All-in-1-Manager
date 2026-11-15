@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use aio_plugin_sdk::folders::Folder;
 use aio_plugin_sdk::sql::Value;
 use aio_plugin_sdk::{http, tcp};
+use catalog_rip_core::gearth::ExtensionInfo;
 use catalog_rip_core::job::{MAX_DELAY_MS, MIN_DELAY_MS};
 use catalog_rip_core::profiles::{load_profiles, read_profile_file};
 use catalog_rip_core::transport::Transport;
@@ -400,6 +401,21 @@ pub fn add_profile(existing: Option<&str>, file_name: &str, json: &str) -> Resul
     serde_json::to_string_pretty(&list).map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------- what the plugin calls itself
+
+/// The plugin's version (the manifest's; a test keeps them equal).
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The maker the output files name in their headers.
+pub fn generator() -> String {
+    format!("Catalogue ripper plugin {VERSION}")
+}
+
+/// What G-Earth shows in its Extensions tab: the core's text with the plugin's version.
+pub fn extension_info() -> ExtensionInfo {
+    ExtensionInfo { version: VERSION.into(), ..ExtensionInfo::default() }
+}
+
 // ---------------------------------------------------------------- settings
 
 /// The delay input's text as milliseconds between two requests.
@@ -684,6 +700,16 @@ mod tests {
         let (file, json) = learned("x (learned)", 1);
         let error = add_profile(Some("{ not json"), &file, &json).unwrap_err();
         assert!(error.contains("was not changed"), "{error}");
+    }
+
+    #[test]
+    fn the_files_and_gearth_name_the_plugin_and_its_version() {
+        let manifest: serde_json::Value = serde_json::from_str(include_str!("../manifest.json")).unwrap();
+        assert_eq!(manifest["version"], VERSION, "manifest.json and Cargo.toml give the same version");
+        assert_eq!(generator(), format!("Catalogue ripper plugin {VERSION}"));
+        let info = extension_info();
+        assert_eq!(info.version, VERSION);
+        assert_eq!(info.title, ExtensionInfo::default().title);
     }
 
     #[test]

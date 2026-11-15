@@ -1,0 +1,83 @@
+//! "hello": the example All-in-1 Manager plugin, written on `aio-plugin-sdk`.
+//!
+//! A plugin never draws anything itself: `render` describes the page with the `Ui` builder,
+//! `on_event` receives what the user did (a button click, an edited input) and the host calls
+//! `render` again afterwards. This plugin only uses `host::log` and the private data folder
+//! (`files`, permission `files`).
+//!
+//! The Cargo features `runaway`, `hog`, `sleeper`, `asker` and `scripter` are test-only variants
+//! used by the host's sandbox tests; the default build has none of them.
+
+use aio_plugin_sdk::{export_plugin, files, host, Event, Plugin, Ui};
+
+/// The private file that keeps the counter between sessions.
+const COUNT_FILE: &str = "count.txt";
+
+/// How many times the user has greeted so far; a missing or unreadable file counts as 0.
+fn read_count() -> u64 {
+    files::read_to_string_if_exists(COUNT_FILE)
+        .ok()
+        .flatten()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+struct Hello {
+    /// What the user typed into the `name` input.
+    name: String,
+}
+
+impl Plugin for Hello {
+    fn new() -> Self {
+        Hello { name: String::new() }
+    }
+
+    // With the `runaway` feature everything after the loop is unreachable on purpose.
+    #[cfg_attr(feature = "runaway", allow(unreachable_code, unused_variables))]
+    fn render(&mut self, ui: &mut Ui) {
+        // Test variants (see Cargo.toml). Compiled out of the default build.
+        #[cfg(feature = "runaway")]
+        loop {
+            std::hint::black_box(());
+        }
+        #[cfg(feature = "sleeper")]
+        std::thread::sleep(std::time::Duration::from_secs(3600));
+        #[cfg(feature = "asker")]
+        host::log(host::Level::Info, &format!("asked: {}", host::ask("Continue?")));
+        #[cfg(feature = "scripter")]
+        match aio_plugin_sdk::script::run("echo hi") {
+            Ok(r) => host::log(host::Level::Info, &format!("script: {} {}", r.exit_code, r.output.trim_end())),
+            Err(e) => host::log(host::Level::Error, &format!("script failed: {e}")),
+        }
+        #[cfg(feature = "hog")]
+        {
+            // Touch every page so the memory is really used, and keep it alive until the end.
+            let mut hog = vec![0u8; 80 * 1024 * 1024];
+            for i in (0..hog.len()).step_by(4096) {
+                hog[i] = 1;
+            }
+            std::hint::black_box(&hog);
+        }
+
+        ui.heading("Hello");
+        ui.input("name", "Name", self.name.clone());
+        ui.primary_button("greet", "Greet");
+        ui.text(format!("Greeted {} times", read_count()));
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<(), String> {
+        match event {
+            Event::Changed { id, value } if id == "name" => self.name = value,
+            Event::Clicked { id } if id == "greet" => {
+                host::log(host::Level::Info, &format!("Hello {}", self.name));
+                let count = read_count() + 1;
+                files::write_str(COUNT_FILE, &count.to_string())?;
+            }
+            // Other events do not concern this plugin.
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+export_plugin!(Hello);

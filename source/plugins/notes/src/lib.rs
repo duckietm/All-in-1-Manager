@@ -27,6 +27,8 @@ const TITLE_FILE: &str = "title.txt";
 const DEFAULT_TITLE: &str = "My notes";
 /// How many users the table shows.
 const USER_LIMIT: u32 = 10;
+/// The Manager's limit for the text of an input; a longer value would not be accepted.
+const INPUT_LIMIT: usize = 4000;
 
 /// The state of the page. The instance lives as long as the plugin is open, so fields keep
 /// their values between `render` and `on_event` calls.
@@ -63,9 +65,14 @@ fn load_users() -> Result<Vec<[String; 2]>, String> {
         .limit(USER_LIMIT)
         .run()
         .map_err(|e| match e.kind() {
-            ErrorKind::Denied => "This plugin is not allowed to read the users table.".to_string(),
-            // "Not connected" and similar: the Manager has no server to ask.
-            _ => format!("The user list is not available right now ({e}). Connect to the server and refresh."),
+            ErrorKind::Denied => {
+                "The users table is not available: the plugin lacks the `sql:read:users` permission, or there is no database access (no server connected).".to_string()
+            }
+            ErrorKind::Rejected => "The request was rejected, so the user list was not loaded.".to_string(),
+            ErrorKind::Timeout => "The server did not answer in time. Try Refresh users again.".to_string(),
+            // `ErrorKind` is `#[non_exhaustive]`, so a catch-all arm is required. NotFound and
+            // Other get the text of the error.
+            _ => format!("The user list is not available right now ({e})."),
         })?;
     let mut table = Vec::new();
     for row in rows {
@@ -116,27 +123,35 @@ impl Notes {
 }
 
 impl Plugin for Notes {
-    /// Called once, when the plugin starts: load what was saved before.
+    /// Called lazily, on first use (the first render or event), not when the plugin is installed.
+    /// It loads what was saved before. It may call the host (here: one SQL query), and that
+    /// call counts against the time limit of that first render or event.
     fn new() -> Self {
-        Notes {
-            text: load(NOTES_FILE, ""),
-            title: load(TITLE_FILE, DEFAULT_TITLE),
-            message: None,
-            users: load_users(),
+        let mut text = load(NOTES_FILE, "");
+        // A notes.txt edited by hand can be longer than an input accepts: keep the first
+        // INPUT_LIMIT characters (cut on a character boundary, never inside one) and say so.
+        let mut message = None;
+        if let Some((cut, _)) = text.char_indices().nth(INPUT_LIMIT) {
+            text.truncate(cut);
+            message = Some((
+                BannerKind::Info,
+                format!("The saved note was longer than {INPUT_LIMIT} characters and was shortened."),
+            ));
         }
+        Notes { text, title: load(TITLE_FILE, DEFAULT_TITLE), message, users: load_users() }
     }
 
     /// Describe the page from the current state. No side effects here.
     fn render(&mut self, ui: &mut Ui) {
-        ui.heading(self.title.clone());
+        ui.heading(self.title.as_str());
 
         if let Some((kind, text)) = &self.message {
-            ui.banner(*kind, text.clone());
+            ui.banner(*kind, text.as_str());
         }
 
         // The note. The Manager reports the text when the field loses focus (Enter or a click
         // elsewhere), and the 4,000 character limit of an input applies.
-        ui.input("notes", "Notes", self.text.clone());
+        ui.input("notes", "Notes", self.text.as_str());
         ui.row(|ui| {
             ui.button("export", "Export...");
             ui.button("rename", "Rename note title...");
@@ -146,7 +161,7 @@ impl Plugin for Notes {
         ui.card("Recent users", |ui| match &self.users {
             Ok(rows) if rows.is_empty() => ui.text("There are no users yet."),
             Ok(rows) => ui.table(["ID", "Username"], rows.iter().cloned()),
-            Err(why) => ui.banner(BannerKind::Warning, why.clone()),
+            Err(why) => ui.banner(BannerKind::Warning, why.as_str()),
         });
         ui.button("refresh", "Refresh users");
     }
@@ -165,7 +180,11 @@ impl Plugin for Notes {
             Event::Clicked { id } => match id.as_str() {
                 "export" => self.export(),
                 "rename" => self.rename(),
-                "refresh" => self.users = load_users(),
+                "refresh" => {
+                    // Old status banners ("Exported...") no longer apply.
+                    self.message = None;
+                    self.users = load_users();
+                }
                 _ => {}
             },
             _ => {}

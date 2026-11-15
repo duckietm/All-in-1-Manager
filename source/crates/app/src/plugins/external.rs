@@ -186,12 +186,21 @@ pub struct ExternalPlugins {
     revoked: Mutex<Revocations>,
 }
 
-/// The revocations of the index last applied ([`ExternalPlugins::set_revocations`]): they lock the switch of every
-/// installed plugin they cover.
+/// The revocations applied last ([`ExternalPlugins::set_revocations`]): they lock the switch of every installed
+/// plugin they cover. The official ones (the persisted lock, see [`super::index::RevocationLock`]) always apply; the
+/// test index's only add to them (Ruling 8).
 #[derive(Debug, Clone, Default)]
 struct Revocations {
-    source: IndexSource,
-    list: Vec<Revoked>,
+    official: Vec<Revoked>,
+    test: Vec<Revoked>,
+}
+
+impl Revocations {
+    /// The revocation covering `version` of `id`, the official one first.
+    fn find(&self, id: &str, version: &str) -> Option<(IndexSource, &Revoked)> {
+        let official = self.official.iter().find(|r| covers(r, id, version)).map(|r| (IndexSource::Official, r));
+        official.or_else(|| self.test.iter().find(|r| covers(r, id, version)).map(|r| (IndexSource::Test, r)))
+    }
 }
 
 /// Why an installed plugin is revoked, and by which index.
@@ -710,6 +719,10 @@ impl ExternalPlugins {
         if let Some(revoked) = signed.index.revocation_for(&entry.id, &entry.version) {
             bail!("This version was revoked by the index: {}", display_safe(&revoked.reason, 300));
         }
+        // Official revocations apply to every index, the test one too (Ruling 8).
+        if let Some(reason) = self.official_revocation(&entry.id, &entry.version) {
+            bail!("This version was revoked by the official index: {reason}");
+        }
         check_integrity(entry, &bytes)?;
         let package = package::inspect(&bytes, &reserved_ids())?;
         check_matches_entry(&package.manifest, entry)?;
@@ -731,35 +744,37 @@ impl ExternalPlugins {
         offered_update(index, &installed).cloned()
     }
 
-    /// Records the revocations of `index`, an index of `source`, in place of the ones recorded before, and returns the
-    /// ids of the installed plugins they cover (the caller switches those off). A test index revokes only while
-    /// `developer_mode` is on. An expired index revokes too. A plugin no longer covered is unlocked but not switched
-    /// on again: that stays the user's choice.
-    pub fn set_revocations(&self, index: &Index, source: IndexSource, developer_mode: bool) -> Vec<String> {
-        let list = if source == IndexSource::Test && !developer_mode { Vec::new() } else { index.revoked.clone() };
-        *self.revoked.lock() = Revocations { source, list };
+    /// Records the revocations to enforce in place of the ones recorded before, and returns the ids of the installed
+    /// plugins they cover (the caller switches those off): `official`, those of the official revocation lock, always;
+    /// `test`, those of the test index, only while `developer_mode` is on, and only in addition to the official ones.
+    /// An expired index revokes too. A plugin no longer covered is unlocked but not switched on again: that stays the
+    /// user's choice.
+    pub fn set_revocations(&self, official: &[Revoked], test: &[Revoked], developer_mode: bool) -> Vec<String> {
+        let test = if developer_mode { test.to_vec() } else { Vec::new() };
+        *self.revoked.lock() = Revocations { official: official.to_vec(), test };
         self.revoked_installed()
-    }
-
-    /// Forgets every revocation (the index the settings choose has none to say: not set up, or a test index left
-    /// with developer mode).
-    pub fn clear_revocations(&self) {
-        *self.revoked.lock() = Revocations::default();
     }
 
     /// The installed plugins (developer folders are not installed) the recorded revocations cover.
     pub fn revoked_installed(&self) -> Vec<String> {
         let installed: Vec<Manifest> = self.list.lock().iter().map(|i| i.manifest.clone()).collect();
         let revoked = self.revoked.lock();
-        installed.into_iter().filter(|m| revoked.list.iter().any(|r| covers(r, &m.id, &m.version))).map(|m| m.id).collect()
+        installed.into_iter().filter(|m| revoked.find(&m.id, &m.version).is_some()).map(|m| m.id).collect()
     }
 
-    /// Why the installed plugin `id` is revoked, if the recorded revocations cover its installed version.
+    /// Why the installed plugin `id` is revoked, if the recorded revocations cover its installed version (an official
+    /// revocation is named before a test one).
     pub fn revocation(&self, id: &str) -> Option<Revocation> {
         let version = self.list.lock().iter().find(|i| i.manifest.id == id).map(|i| i.manifest.version.clone())?;
         let revoked = self.revoked.lock();
-        let found = revoked.list.iter().find(|r| covers(r, id, &version))?;
-        Some(Revocation { source: revoked.source, reason: display_safe(&found.reason, 300) })
+        let (source, found) = revoked.find(id, &version)?;
+        Some(Revocation { source, reason: display_safe(&found.reason, 300) })
+    }
+
+    /// The official revocation recorded for `version` of `id` (whatever index is installed from).
+    fn official_revocation(&self, id: &str, version: &str) -> Option<String> {
+        let revoked = self.revoked.lock();
+        revoked.official.iter().find(|r| covers(r, id, version)).map(|r| display_safe(&r.reason, 300))
     }
 
     /// Whether the user may switch the plugin `id` on: not while it is revoked.
@@ -769,8 +784,8 @@ impl ExternalPlugins {
 
     /// [`ExternalPlugins::set_revocations`], then `switch_off` with the on/off key ([`settings_id`]) of every plugin
     /// it covers.
-    pub fn apply_revocations_with(&self, index: &Index, source: IndexSource, developer_mode: bool, mut switch_off: impl FnMut(&str)) {
-        for id in self.set_revocations(index, source, developer_mode) {
+    pub fn apply_revocations_with(&self, official: &[Revoked], test: &[Revoked], developer_mode: bool, mut switch_off: impl FnMut(&str)) {
+        for id in self.set_revocations(official, test, developer_mode) {
             switch_off(&settings_id(&id));
         }
     }
@@ -798,6 +813,9 @@ impl ExternalPlugins {
             let manifest = &pending.package.manifest;
             if let Some(revoked) = current.index.revocation_for(&manifest.id, &manifest.version) {
                 bail!("This version was revoked by the index: {}", display_safe(&revoked.reason, 300));
+            }
+            if let Some(reason) = self.official_revocation(&manifest.id, &manifest.version) {
+                bail!("This version was revoked by the official index: {reason}");
             }
         }
         // The consent was given for a comparison with this version: if the installed one changed meanwhile, ask again.
@@ -873,13 +891,14 @@ fn switch_off(key: &str) {
     }
 }
 
-/// Enforces the revocations of `index` (an index of `source`, current or expired) on the installed plugins: each one
-/// it revokes is switched off, which closes its page and stops its instance on the next frame (the milestone-1 stop
-/// path: `App::sync_external`), and its switch stays locked while the index applied last revokes it. Called after
-/// every refresh and after the cache loads at startup.
-pub fn apply_revocations(index: &Index, source: IndexSource) {
+/// Enforces `official` (the official revocation lock) and `test` (the revocations of the test index, current or
+/// expired, only in developer mode) on the installed plugins: each one they revoke is switched off, which closes its
+/// page and stops its instance on the next frame (the milestone-1 stop path: `App::sync_external`), and its switch
+/// stays locked while they revoke it. Called at startup (the lock alone), after the cache loads, after every refresh
+/// and when the developer settings change.
+pub fn apply_revocations(official: &[Revoked], test: &[Revoked]) {
     let plugins = plugins();
-    plugins.apply_revocations_with(index, source, plugins.developer_enabled(), switch_off);
+    plugins.apply_revocations_with(official, test, plugins.developer_enabled(), switch_off);
 }
 
 /// Switches off again every installed plugin the recorded revocations cover (after an install from a file).
@@ -1704,7 +1723,7 @@ mod tests {
         let ext = two_installed(dir.path());
         let index = revoking(&[("demo", &["1.0.0"], "Steals\u{202e} tokens"), ("other", &["1.0.0"], "Only the old one")], "2026-12-30T10:00:00Z");
         let mut switched_off = Vec::new();
-        ext.apply_revocations_with(&index, IndexSource::Official, false, |key| switched_off.push(key.to_string()));
+        ext.apply_revocations_with(&index.revoked, &[], false, |key| switched_off.push(key.to_string()));
         // Only the installed version is covered: other 2.0.0 is not revoked.
         assert_eq!(switched_off, vec!["ext:demo".to_string()]);
         let revocation = ext.revocation("demo").unwrap();
@@ -1713,12 +1732,12 @@ mod tests {
         assert!(!ext.may_switch_on("demo"), "locked while revoked");
         assert!(ext.may_switch_on("other"));
         // "*" covers every version.
-        ext.set_revocations(&revoking(&[("other", &["*"], "All of it")], "2026-12-30T10:00:00Z"), IndexSource::Official, false);
+        ext.set_revocations(&revoking(&[("other", &["*"], "All of it")], "2026-12-30T10:00:00Z").revoked, &[], false);
         assert_eq!(ext.revoked_installed(), vec!["other".to_string()]);
         // A test index revokes only while developer mode is on.
-        assert!(ext.set_revocations(&index, IndexSource::Test, false).is_empty());
+        assert!(ext.set_revocations(&[], &index.revoked, false).is_empty());
         assert!(ext.may_switch_on("demo"));
-        assert_eq!(ext.set_revocations(&index, IndexSource::Test, true), vec!["demo".to_string()]);
+        assert_eq!(ext.set_revocations(&[], &index.revoked, true), vec!["demo".to_string()]);
         assert_eq!(ext.revocation("demo").unwrap().source, IndexSource::Test);
         // A plugin that is not installed has nothing to lock.
         assert!(ext.revocation("absent").is_none() && ext.may_switch_on("absent"));
@@ -1732,9 +1751,45 @@ mod tests {
         let now: chrono::DateTime<chrono::Utc> = "2026-11-13T10:00:00Z".parse().unwrap();
         assert_eq!(aio_plugin_index::check_fresh(&index, None, now), aio_plugin_index::Freshness::Expired);
         let mut switched_off = Vec::new();
-        ext.apply_revocations_with(&index, IndexSource::Official, false, |key| switched_off.push(key.to_string()));
+        ext.apply_revocations_with(&index.revoked, &[], false, |key| switched_off.push(key.to_string()));
         assert_eq!(switched_off, vec!["ext:demo".to_string()]);
         assert!(!ext.may_switch_on("demo"));
+    }
+
+    #[test]
+    fn official_revocations_hold_beside_test_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = two_installed(dir.path());
+        let official = revoking(&[("demo", &["*"], "Official reason")], "2026-12-30T10:00:00Z").revoked;
+        let test = revoking(&[("other", &["2.0.0"], "Test reason"), ("demo", &["1.0.0"], "Test says demo")], "2026-12-30T10:00:00Z").revoked;
+        // A test index that revokes nothing does not lift an official revocation.
+        assert_eq!(ext.set_revocations(&official, &[], true), vec!["demo".to_string()]);
+        // Test revocations add to the official ones; where both cover a plugin, the official one is named.
+        assert_eq!(ext.set_revocations(&official, &test, true), vec!["demo".to_string(), "other".to_string()]);
+        assert_eq!(ext.revocation("demo").unwrap(), Revocation { source: IndexSource::Official, reason: "Official reason".into() });
+        assert_eq!(ext.revocation("other").unwrap().source, IndexSource::Test);
+        // Developer mode off: the test ones go, the official ones stay.
+        assert_eq!(ext.set_revocations(&official, &test, false), vec!["demo".to_string()]);
+        assert!(ext.may_switch_on("other") && !ext.may_switch_on("demo"));
+    }
+
+    #[test]
+    fn officially_revoked_version_is_refused_from_a_test_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let prefix = "http://127.0.0.1:9/packages/";
+        let bytes = aiop_api("Someone", "demo", "1.0.0", "1.0", &[]);
+        let entry = entry_json(prefix, &bytes, "demo", "1.0.0", "Someone", &[]);
+        let signed = signed_index(prefix, IndexSource::Test, vec![entry], serde_json::json!([]));
+        let listed = signed.index.entry("demo").unwrap().clone();
+        let pending = ext.prepare_verified(&signed, &listed, bytes.clone()).unwrap();
+        ext.set_revocations(&revoking(&[("demo", &["1.0.0"], "Officially bad")], "2026-12-30T10:00:00Z").revoked, &[], true);
+        let error = ext.prepare_verified(&signed, &listed, bytes).unwrap_err().to_string();
+        assert!(error.contains("official index") && error.contains("Officially bad"), "{error}");
+        // A consent given before the revocation arrived is refused too.
+        let error = ext.commit_against(&pending, Some(&signed)).unwrap_err().to_string();
+        assert!(error.contains("Officially bad"), "{error}");
+        assert!(ext.list().is_empty());
     }
 
     #[test]
@@ -1743,20 +1798,16 @@ mod tests {
         let ext = two_installed(dir.path());
         // The on/off store: the keys switched off.
         let mut off: std::collections::BTreeSet<String> = Default::default();
-        ext.apply_revocations_with(&revoking(&[("demo", &["1.0.0"], "Broken")], "2026-12-30T10:00:00Z"), IndexSource::Official, false, |key| {
+        ext.apply_revocations_with(&revoking(&[("demo", &["1.0.0"], "Broken")], "2026-12-30T10:00:00Z").revoked, &[], false, |key| {
             off.insert(key.to_string());
         });
         assert!(off.contains("ext:demo") && !ext.may_switch_on("demo"));
         // A newer index no longer revokes it: unlocked, but nothing switches it on again.
         let mut switched = Vec::new();
-        ext.apply_revocations_with(&revoking(&[], "2026-12-30T10:00:00Z"), IndexSource::Official, false, |key| switched.push(key.to_string()));
+        ext.apply_revocations_with(&revoking(&[], "2026-12-30T10:00:00Z").revoked, &[], false, |key| switched.push(key.to_string()));
         assert!(switched.is_empty());
         assert!(off.contains("ext:demo"), "it stays off until the user switches it on");
         assert!(ext.may_switch_on("demo"));
         assert!(ext.revocation("demo").is_none());
-        // Forgetting the revocations (no index any more) unlocks as well.
-        ext.set_revocations(&revoking(&[("demo", &["*"], "Broken")], "2026-12-30T10:00:00Z"), IndexSource::Official, false);
-        ext.clear_revocations();
-        assert!(ext.may_switch_on("demo"));
     }
 }

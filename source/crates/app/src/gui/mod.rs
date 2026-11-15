@@ -297,6 +297,8 @@ impl App {
             dry_run,
             requests: Arc::new(Mutex::new(Vec::new())),
         };
+        // The official revocation lock before any plugin page can open: it holds offline and with an unusable cache.
+        crate::plugins::index::apply_revocation_lock();
         let wizards = views::wizards(&shared);
         let mut app = Self {
             page: Page::Dashboard,

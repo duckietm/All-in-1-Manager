@@ -1,7 +1,9 @@
 //! The official signed plugin index: fetched from [`OFFICIAL_INDEX_URL`] (and its `.sig`), verified with
 //! [`OFFICIAL_INDEX_KEYS`], checked for rollback against the highest `sequence` ever accepted, and cached in
 //! configuration/plugins/index/ (`index.json`, `index.json.sig`, `state.json`). The cache is verified again every time
-//! it is loaded, so a key removed from the program invalidates it.
+//! it is loaded, so a key removed from the program invalidates it. The revocations of the newest verified official
+//! index are also kept apart as the revocation lock (`revoked.json`, [`RevocationLock`]): they hold offline, with an
+//! unusable cache, and while a test index is used.
 //!
 //! Developer mode only: the settings `plugin_index_url` and `plugin_index_test_keys` replace the official url and
 //! keys (see [`feed_for`]); that index is cached apart, in configuration/plugins/index/test/, so it never mixes with
@@ -9,11 +11,11 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use aio_core::InstallerSettings;
-use aio_plugin_index::{check_fresh, verify_and_parse, Freshness, Index, KeyId, MAX_INDEX_BYTES};
+use aio_plugin_index::{check_fresh, verify_and_parse, Freshness, Index, KeyId, Revoked, MAX_INDEX_BYTES};
 use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -356,6 +358,67 @@ async fn refresh_in(
     }
 }
 
+/// `revoked.json`: the revocations of the newest verified official index, and its sequence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LockFile {
+    sequence: u64,
+    /// `(id, versions or ["*"], reason)` as the index says them.
+    revoked: Vec<Revoked>,
+}
+
+/// Name of the revocation lock in configuration/plugins/index/.
+pub const LOCK_FILE: &str = "revoked.json";
+/// Largest `revoked.json` read (it holds at most what one index can say).
+const MAX_LOCK_BYTES: u64 = MAX_INDEX_BYTES as u64;
+
+/// The official revocation lock (Ruling 7): the revocations of the newest verified official index, persisted in
+/// configuration/plugins/index/revoked.json so they hold offline and with a cache that no longer verifies (or is
+/// gone). It is replaced only by a verified official index with a higher sequence; a test index never touches it. It
+/// is read before any plugin page can open ([`apply_revocation_lock`]).
+pub struct RevocationLock {
+    path: PathBuf,
+    held: Mutex<Option<LockFile>>,
+}
+
+impl RevocationLock {
+    /// The lock saved in `index_dir` (configuration/plugins/index/); none when it is missing or unreadable.
+    pub fn load(index_dir: &Path) -> RevocationLock {
+        let path = index_dir.join(LOCK_FILE);
+        let held = std::fs::metadata(&path)
+            .ok()
+            .filter(|m| m.len() <= MAX_LOCK_BYTES)
+            .and_then(|_| std::fs::read(&path).ok())
+            .and_then(|bytes| serde_json::from_slice::<LockFile>(&bytes).ok());
+        RevocationLock { path, held: Mutex::new(held) }
+    }
+
+    /// The locked revocations.
+    pub fn revoked(&self) -> Vec<Revoked> {
+        self.held.lock().as_ref().map(|l| l.revoked.clone()).unwrap_or_default()
+    }
+
+    /// The sequence of the index the lock comes from.
+    pub fn sequence(&self) -> Option<u64> {
+        self.held.lock().as_ref().map(|l| l.sequence)
+    }
+
+    /// Takes the revocations of `index`, a verified official index, when it is newer than the one held (or none is
+    /// held): in memory at once, and on disk atomically. A failed write keeps the new lock in memory for this run.
+    fn accept(&self, index: &Index) -> std::io::Result<()> {
+        let mut held = self.held.lock();
+        if held.as_ref().is_some_and(|l| l.sequence >= index.sequence) {
+            return Ok(());
+        }
+        let lock = LockFile { sequence: index.sequence, revoked: index.revoked.clone() };
+        *held = Some(lock.clone());
+        if let Some(dir) = self.path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        write_atomic(&self.path, &serde_json::to_vec_pretty(&lock).map_err(std::io::Error::other)?)
+    }
+}
+
 /// The index state and the developer settings it was loaded for. The developer settings held here are the ones that
 /// count: [`IndexStore::settings_changed`] is the only way to change them, and a test state is never served while
 /// they say developer mode is off.
@@ -363,6 +426,7 @@ pub struct IndexStore {
     root: PathBuf,
     official_keys: Vec<(String, String)>,
     inner: Mutex<Shared>,
+    lock: Arc<RevocationLock>,
 }
 
 struct Shared {
@@ -371,11 +435,14 @@ struct Shared {
 }
 
 impl IndexStore {
-    /// A store loaded from the cache that `settings` choose; `root` is configuration/plugins/.
-    pub fn new(root: PathBuf, official_keys: &[(&str, &str)], settings: &InstallerSettings, now: DateTime<Utc>) -> IndexStore {
+    /// A store loaded from the cache that `settings` choose; `root` is configuration/plugins/ and `lock` the official
+    /// revocation lock of `root` (the process-wide one: [`revocation_lock`]).
+    pub fn new(root: PathBuf, official_keys: &[(&str, &str)], settings: &InstallerSettings, lock: Arc<RevocationLock>, now: DateTime<Utc>) -> IndexStore {
         let official_keys: Vec<(String, String)> = official_keys.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-        let store = IndexStore { root, official_keys, inner: Mutex::new(Shared { state: IndexState::default(), settings: settings.clone() }) };
+        let shared = Shared { state: IndexState::default(), settings: settings.clone() };
+        let store = IndexStore { root, official_keys, inner: Mutex::new(shared), lock };
         let state = load_for(settings, &store.keys(), &store.root, now);
+        store.note(&state);
         store.inner.lock().state = state;
         store
     }
@@ -384,10 +451,19 @@ impl IndexStore {
         self.official_keys.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect()
     }
 
+    /// A verified official index raises the revocation lock when it is newer (a write failure is not fatal: the lock
+    /// in memory holds for this run, and the next accepted index writes it again).
+    fn note(&self, state: &IndexState) {
+        if let (IndexSource::Official, Some(index)) = (state.source, &state.index) {
+            let _ = self.lock.accept(index);
+        }
+    }
+
     /// The developer settings changed (developer mode, the test url or keys): the state in memory is dropped and the
     /// cache of the index the new settings choose is loaded instead.
     pub fn settings_changed(&self, settings: &InstallerSettings, now: DateTime<Utc>) {
         let state = load_for(settings, &self.keys(), &self.root, now);
+        self.note(&state);
         let mut inner = self.inner.lock();
         inner.settings = settings.clone();
         inner.state = state;
@@ -397,6 +473,17 @@ impl IndexStore {
     pub fn state(&self) -> IndexState {
         let inner = self.inner.lock();
         served(&inner.state, inner.settings.developer_mode)
+    }
+
+    /// The revocations to enforce now: the official lock always (Ruling 8), and the served test index's (developer
+    /// mode only) in addition.
+    pub fn revocations(&self) -> (Vec<Revoked>, Vec<Revoked>) {
+        let state = self.state();
+        let test = match (state.source, state.index) {
+            (IndexSource::Test, Some(index)) => index.revoked,
+            _ => Vec::new(),
+        };
+        (self.lock.revoked(), test)
     }
 
     /// The index to install and update from: see [`installable`].
@@ -414,6 +501,8 @@ impl IndexStore {
     pub async fn refresh(&self, client: &reqwest::Client, now: DateTime<Utc>) -> IndexState {
         let settings = self.inner.lock().settings.clone();
         let state = refresh_in(client, &settings, &self.keys(), &self.root, now).await;
+        // A verified official index counts for the lock even when the settings changed meanwhile.
+        self.note(&state);
         let mut inner = self.inner.lock();
         if source_kind(&inner.settings) == state.source && inner.settings == settings {
             inner.state = state;
@@ -422,10 +511,17 @@ impl IndexStore {
     }
 }
 
+/// The process-wide official revocation lock, read from configuration/plugins/index/revoked.json the first time it
+/// is needed (only that small file: no cache, no verification).
+pub fn revocation_lock() -> &'static Arc<RevocationLock> {
+    static LOCK: OnceLock<Arc<RevocationLock>> = OnceLock::new();
+    LOCK.get_or_init(|| Arc::new(RevocationLock::load(&super::packs::root().join("index"))))
+}
+
 /// The process-wide store, loaded from the cache the saved settings choose the first time it is needed.
 fn store() -> &'static IndexStore {
     static STORE: OnceLock<IndexStore> = OnceLock::new();
-    STORE.get_or_init(|| IndexStore::new(super::packs::root(), OFFICIAL_INDEX_KEYS, &InstallerSettings::load(), Utc::now()))
+    STORE.get_or_init(|| IndexStore::new(super::packs::root(), OFFICIAL_INDEX_KEYS, &InstallerSettings::load(), revocation_lock().clone(), Utc::now()))
 }
 
 static REPAINT: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
@@ -461,21 +557,28 @@ pub fn signed_index_for_install() -> Option<SignedIndex> {
 /// settings, saved or not. The index state follows them at once.
 pub fn developer_settings_changed(settings: &InstallerSettings) {
     store().settings_changed(settings, Utc::now());
-    // The revocations follow the index the new settings choose; with none (not set up, or a test index left with
-    // developer mode) nothing is revoked any more. A plugin switched off stays off.
-    match store().state() {
-        IndexState { index: Some(index), source, .. } => super::external::apply_revocations(&index, source),
-        _ => super::external::plugins().clear_revocations(),
-    }
+    // The official lock stays; the test revocations follow the index the new settings choose (none when it is not a
+    // test index any more). A plugin switched off stays off.
+    apply_revocations();
     repaint();
 }
 
-/// Applies the revocations of the index known now (the verified cache, before any fetch): at startup.
+/// Enforces the official revocation lock alone, without loading the index cache: called while the window is being
+/// created, before any plugin page can open, so revocations hold offline and with an unusable cache.
+pub fn apply_revocation_lock() {
+    super::external::apply_revocations(&revocation_lock().revoked(), &[]);
+}
+
+/// Enforces the revocations known now ([`IndexStore::revocations`]): the official lock and the test index's.
+fn apply_revocations() {
+    let (official, test) = store().revocations();
+    super::external::apply_revocations(&official, &test);
+}
+
+/// Loads the index cache (verifying it, which may raise the lock) and applies the revocations: at startup, before
+/// the first fetch.
 pub fn apply_cached_revocations() {
-    let state = store().state();
-    if let Some(index) = &state.index {
-        super::external::apply_revocations(index, state.source);
-    }
+    apply_revocations();
 }
 
 /// Fetches and checks the index the settings choose (use [`index_client`]), updates [`index_state`], applies its
@@ -483,10 +586,8 @@ pub fn apply_cached_revocations() {
 /// index is not set up.
 pub async fn refresh(client: &reqwest::Client) -> IndexState {
     let state = store().refresh(client, Utc::now()).await;
-    // A failed check keeps the verified index it had, which still revokes what it revoked.
-    if let Some(index) = &state.index {
-        super::external::apply_revocations(index, state.source);
-    }
+    // A failed check keeps the lock and the verified index it had, which still revoke what they revoked.
+    apply_revocations();
     repaint();
     state
 }
@@ -820,9 +921,14 @@ pub(crate) mod tests {
 
     /// An official cache under `root`, signed with `secret`, of sequence `sequence`.
     fn official_cache(root: &Path, secret: &[u8; 32], sequence: u64) {
+        official_cache_revoking(root, secret, sequence, json!([]));
+    }
+
+    /// [official_cache] whose index revokes `revoked`.
+    fn official_cache_revoking(root: &Path, secret: &[u8; 32], sequence: u64, revoked: serde_json::Value) {
         let index = serde_json::to_vec(&json!({
             "schema": 1, "sequence": sequence, "generated": "2026-11-13T10:00:00Z", "expires": "2026-12-13T10:00:00Z",
-            "plugins": [], "revoked": []
+            "plugins": [], "revoked": revoked
         }))
         .unwrap();
         let dir = root.join("index");
@@ -830,6 +936,104 @@ pub(crate) mod tests {
         std::fs::write(dir.join("index.json"), &index).unwrap();
         std::fs::write(dir.join("index.json.sig"), aio_plugin_index::sign(&index, secret)).unwrap();
         std::fs::write(dir.join("state.json"), format!("{{\"sequence\":{sequence}}}")).unwrap();
+    }
+
+    /// A revocation lock read from `root`/index, as at a start of the program.
+    fn lock_of(root: &Path) -> Arc<RevocationLock> {
+        Arc::new(RevocationLock::load(&root.join("index")))
+    }
+
+    fn ids(revoked: &[Revoked]) -> Vec<(String, Vec<String>)> {
+        revoked.iter().map(|r| (r.id.clone(), r.versions.clone())).collect()
+    }
+
+    #[test]
+    fn revocation_lock_survives_restart_without_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let key = public(&OTHER);
+        let (id, b64) = key.split_once(':').unwrap();
+        let keys = [(id, b64)];
+        official_cache_revoking(root.path(), &OTHER, 5, json!([{ "id": "demo", "versions": ["*"], "reason": "Steals tokens" }]));
+        let lock_path = root.path().join("index").join(LOCK_FILE);
+
+        // The verified official cache writes the lock.
+        let store = IndexStore::new(root.path().to_path_buf(), &keys, &InstallerSettings::default(), lock_of(root.path()), now());
+        assert_eq!(ids(&store.revocations().0), vec![("demo".to_string(), vec!["*".to_string()])]);
+        assert!(lock_path.exists());
+        let leftovers: Vec<_> = std::fs::read_dir(root.path().join("index")).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(leftovers.len(), 4, "no temporary files: {leftovers:?}");
+
+        // A restart offline with the cache gone (or no longer verifying): the lock alone still revokes.
+        std::fs::remove_file(root.path().join("index").join("index.json")).unwrap();
+        let lock = lock_of(root.path());
+        assert_eq!(lock.sequence(), Some(5));
+        assert_eq!(lock.revoked()[0].reason, "Steals tokens");
+        let store = IndexStore::new(root.path().to_path_buf(), &keys, &InstallerSettings::default(), lock.clone(), now());
+        assert!(store.state().index.is_none());
+        assert_eq!(ids(&store.revocations().0), vec![("demo".to_string(), vec!["*".to_string()])]);
+        // Without the official key in the program (a corrupt cache, a removed key): the lock holds too.
+        let store = IndexStore::new(root.path().to_path_buf(), &[], &InstallerSettings::default(), lock_of(root.path()), now());
+        assert_eq!(store.revocations().0.len(), 1);
+
+        // An older official index (a cache restored from a backup) does not replace the lock...
+        official_cache_revoking(root.path(), &OTHER, 4, json!([]));
+        std::fs::write(root.path().join("index").join("state.json"), "{\"sequence\":4}").unwrap();
+        let store = IndexStore::new(root.path().to_path_buf(), &keys, &InstallerSettings::default(), lock_of(root.path()), now());
+        assert_eq!(store.state().index.map(|i| i.sequence), Some(4));
+        assert_eq!(store.revocations().0.len(), 1, "the lock comes from a newer index");
+        assert_eq!(lock_of(root.path()).sequence(), Some(5));
+        // ...a newer one does, even when it revokes nothing any more.
+        official_cache_revoking(root.path(), &OTHER, 6, json!([]));
+        let store = IndexStore::new(root.path().to_path_buf(), &keys, &InstallerSettings::default(), lock_of(root.path()), now());
+        assert!(store.revocations().0.is_empty());
+        assert_eq!(lock_of(root.path()).sequence(), Some(6));
+
+        // A broken lock file is no lock (nothing else to go on), and is replaced by the next verified index.
+        std::fs::write(&lock_path, "not json").unwrap();
+        assert_eq!(lock_of(root.path()).sequence(), None);
+    }
+
+    #[tokio::test]
+    async fn official_revocation_applies_during_test_index() {
+        let server = Server::start().await;
+        let root = tempfile::tempdir().unwrap();
+        let key = public(&OTHER);
+        let (id, b64) = key.split_once(':').unwrap();
+        let keys = [(id, b64)];
+        official_cache_revoking(root.path(), &OTHER, 3, json!([{ "id": "demo", "versions": ["1.0.0"], "reason": "Official" }]));
+        // An earlier run without developer mode accepted that official index: the lock holds its revocation.
+        IndexStore::new(root.path().to_path_buf(), &keys, &InstallerSettings::default(), lock_of(root.path()), now());
+        let lock = lock_of(root.path());
+        assert_eq!(lock.sequence(), Some(3));
+
+        // Developer mode with a test index that revokes nothing (and lists hello): the official revocation stays.
+        let dev = dev_settings(&server);
+        let store = IndexStore::new(root.path().to_path_buf(), &keys, &dev, lock.clone(), now());
+        assert_eq!(store.state().source, IndexSource::Test);
+        assert_eq!(ids(&store.revocations().0), vec![("demo".to_string(), vec!["1.0.0".to_string()])], "read from the lock");
+        let (bytes, sig) = signed(&server, 10);
+        server.publish(&bytes, &sig);
+        store.refresh(&client(), now()).await;
+        let (official, test) = store.revocations();
+        assert_eq!(official.len(), 1);
+        assert!(test.is_empty());
+
+        // A test index that revokes adds to the official revocations, and never raises the lock.
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        value["sequence"] = json!(11);
+        value["revoked"] = json!([{ "id": "other", "versions": ["*"], "reason": "Test" }]);
+        let revoking = serde_json::to_vec(&value).unwrap();
+        server.publish(&revoking, &aio_plugin_index::sign(&revoking, &SECRET));
+        store.refresh(&client(), now()).await;
+        let (official, test) = store.revocations();
+        assert_eq!((ids(&official), ids(&test)), (vec![("demo".into(), vec!["1.0.0".into()])], vec![("other".into(), vec!["*".into()])]));
+        assert_eq!(lock.sequence(), Some(3));
+        assert_eq!(lock_of(root.path()).revoked().len(), 1);
+
+        // Developer mode off: the test ones go, the official ones stay.
+        store.settings_changed(&InstallerSettings { developer_mode: false, ..dev }, now());
+        let (official, test) = store.revocations();
+        assert_eq!((official.len(), test.len()), (1, 0));
     }
 
     #[tokio::test]
@@ -842,7 +1046,7 @@ pub(crate) mod tests {
         let keys = [(id, b64)];
 
         let dev = dev_settings(&server);
-        let store = IndexStore::new(root.path().to_path_buf(), &keys, &dev, now());
+        let store = IndexStore::new(root.path().to_path_buf(), &keys, &dev, lock_of(root.path()), now());
         assert_eq!(store.state().source, IndexSource::Test);
         assert!(store.state().index.is_none(), "no test cache yet");
         let (bytes, sig) = signed(&server, 10);
@@ -897,7 +1101,7 @@ pub(crate) mod tests {
         assert_eq!(installable(&test, true).map(|i| i.sequence), Some(10));
         assert_eq!(served(&test, true), test);
         // A test state that sneaked into the store is not served once developer mode is off.
-        let store = IndexStore::new(root.path().to_path_buf(), &[], &InstallerSettings::default(), now());
+        let store = IndexStore::new(root.path().to_path_buf(), &[], &InstallerSettings::default(), lock_of(root.path()), now());
         store.inner.lock().state = test.clone();
         assert_eq!(store.state(), IndexState::default());
         assert!(store.for_install().is_none());

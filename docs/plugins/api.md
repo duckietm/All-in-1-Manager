@@ -4,8 +4,8 @@ Every public item of `aio-plugin-sdk` 1.0.0, module by module, with the permissi
 kinds it returns. The SDK's own documentation (`cargo doc --open` in your plugin project) has the same items with
 more examples.
 
-All samples on this page were compiled for `wasm32-wasip2` (with clippy `-D warnings`) in a test crate. They need the
-permissions named next to them in the plugin's `manifest.json`.
+Every Rust sample of this guide is built for `wasm32-wasip2` by the SDK's test `tests/guide_samples.rs`, so they
+stay in step with the SDK. They need the permissions named next to them in the plugin's `manifest.json`.
 
 Contents: [the crate root](#the-crate-root) · [errors](#errors) · [`ui`](#ui) · [`host`](#host) · [`files`](#files)
 · [`sql`](#sql) · [`http`](#http) · [`tcp`](#tcp) · [`script`](#script)

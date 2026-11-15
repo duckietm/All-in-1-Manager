@@ -1892,41 +1892,18 @@ installed shows "id already installed" and does not run.
 
 ### Building a plugin
 
-A plugin is a WebAssembly component for the `plugin` world of the WIT package `aio:plugin@1.0.0`, in
-`source/wit/aio-plugin/plugin.wit`. That file is the whole API: the page description, the events and the `host`
-imports (log, status line, questions, file picking, the private folder, scripts, database, HTTP, local TCP). The
-Manager accepts API 1.x. In Rust, a plugin is a crate built for `wasm32-wasip2` (`rustup target add wasm32-wasip2`)
-with `crate-type = ["cdylib"]` and `wit-bindgen`.
+A plugin is a Rust crate built for `wasm32-wasip2` on the SDK crate `aio-plugin-sdk` (`source/plugins/sdk`), which
+supports the plugin API `aio:plugin@1.0.0` (`source/wit/aio-plugin/plugin.wit`); a plugin depends on the SDK only. The
+`aio-plugin` tool (`source/crates/plugin_cli`) creates, builds, packs (`dist/<id>.aiop`, reproducible) and checks a
+plugin. The examples are `source/plugins/hello` and `source/plugins/notes`.
 
-`source/plugins/hello` is the example: a greeting form with a counter it keeps in its private folder. Its
-`manifest.json` has the id, name, version, author, description, `api` (`"1.0"`), the permissions, a page title and an
-optional tile. Build and pack it with:
+The [plugin developer guide](docs/plugins/README.md) covers it all: [getting started](docs/plugins/getting-started.md),
+[the page](docs/plugins/ui.md), [the API](docs/plugins/api.md), [permissions](docs/plugins/permissions.md),
+[limits](docs/plugins/limits.md), [publishing to the official index](docs/plugins/publishing.md) and
+[troubleshooting](docs/plugins/troubleshooting.md).
 
-```
-python source/tools/pack_plugin.py source/plugins/hello
-```
-
-This builds the crate into `source/plugins/hello/target/` (its `.cargo/config.toml` sets that) and writes
-`dist/hello.aiop`: a zip with `manifest.json`, `plugin.wasm` and, when present, `icon.png` and `i18n/<lang>.json`.
-Install the `.aiop` from the Plugins page, or load the folder `source/plugins/hello` in developer mode: its
-`dev_wasm` points at the built file. Packing is reproducible: the same files always give the same `.aiop` bytes (a
-fixed entry order, time 1980-01-01 00:00:00, mode 0644 and compression). `--locked` builds with exactly the
-versions in the workspace's `Cargo.lock` (and fails when there is none) and `--offline` never touches the network:
-both are for reproducible builds, as in the index repository's CI. The `i18n/` files are accepted in a package but not used yet: in API 1.0 a
-plugin's texts are shown as it writes them, and translating them comes in a later milestone.
-
-A plugin crate outside this repository needs the WIT file: copy the folder `source/wit/aio-plugin` (it holds
-`plugin.wit`) into your crate, for example as `wit/aio-plugin`, and point `wit-bindgen` at it:
-
-```rust
-wit_bindgen::generate!({ world: "plugin", path: "wit/aio-plugin" });
-```
-
-`source/plugins/hello/src/lib.rs` shows the rest: implement the generated `Guest` trait (`render` and `on-event`) and
-`export!` it.
-
-To have a plugin listed in the official index, see the index repository (`all-in-1-plugins/index`): its README
-says how to submit one.
+`source/tools/pack_plugin.py` packs a plugin the same way as `aio-plugin pack` (byte for byte when Python's zlib is stock
+zlib, not zlib-ng; it warns otherwise); the official index's CI uses it.
 
 ## Settings
 

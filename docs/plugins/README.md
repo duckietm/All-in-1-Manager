@@ -22,8 +22,8 @@ Manager, which checks every call against the permissions the plugin declared and
 
 ## What you need
 
-- Rust (stable) with the `wasm32-wasip2` target.
-- The `aio-plugin` tool (crate `aio-plugin-cli` in this repository).
+- Rust 1.97 or newer (1.88 for a plugin alone) with the `wasm32-wasip2` target.
+- A clone of this repository, for the `aio-plugin` tool (crate `aio-plugin-cli`) and, until the SDK is tagged, the SDK itself.
 - All-in-1 Manager, to try the plugin.
 
 ## The pieces

@@ -129,7 +129,8 @@ before drawing, so a plugin cannot imitate the Manager's own screens.
 ## A full example
 
 A task list with an input, a button, a select, checkboxes and a progress bar, saved in the plugin's private folder
-(permission `files`). It was compiled for `wasm32-wasip2` with clippy `-D warnings`, and its test passes.
+(permission `files`). The SDK's test `tests/guide_samples.rs` builds it for `wasm32-wasip2`
+and runs its test.
 
 ```rust
 use aio_plugin_sdk::ui::BannerKind;

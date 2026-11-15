@@ -3,8 +3,8 @@
 This page takes you from nothing to a plugin running in All-in-1 Manager: install the tools, create a project, build
 it, test it, pack it, check the package, and load it in the Manager.
 
-Every command below was run on Windows 11 with Rust 1.99.1; the output is real, with long paths shortened to `…`.
-On Linux the commands are the same.
+Every command below was run on Windows 11 with Rust 1.99.1 (`x86_64-pc-windows-gnu`); the output is real, with long
+paths shortened to `…`. On Linux the commands are the same.
 
 ## 1. Install Rust and the target
 
@@ -14,14 +14,27 @@ Install Rust from <https://rustup.rs>, then add the WebAssembly target plugins a
 rustup target add wasm32-wasip2
 ```
 
+Use **Rust 1.97 or newer**: the `aio-plugin` tool needs 1.97 (its `wasmtime` dependencies declare it). A plugin alone
+needs 1.88 (the SDK's `rust-version`; checked by building a plugin with 1.88.0). `rustup update` gets the current
+stable.
+
 A plugin is a WebAssembly *component* for WASI preview 2. The older `wasm32-wasip1` and `wasm32-unknown-unknown`
 targets give a core module, which the Manager cannot load.
 
-## 2. Install the `aio-plugin` tool
+> **Windows.** Either rustup toolchain works: MSVC (`x86_64-pc-windows-msvc`, the default) or GNU
+> (`x86_64-pc-windows-gnu`). The plugin itself is built for `wasm32-wasip2` either way and needs no C compiler.
+> Installing the `aio-plugin` tool (step 2) compiles some C code (zlib), so it needs the toolchain's C compiler: the
+> Visual Studio Build Tools ("Desktop development with C++", which rustup's installer offers) for MSVC, or MinGW-w64
+> `gcc` for GNU. This page was made with the GNU toolchain.
 
-The tool is the crate `aio-plugin-cli` in the All-in-1 Manager repository. From a checkout of the repository:
+## 2. Get the repository and install the `aio-plugin` tool
+
+The tool (crate `aio-plugin-cli`) and the SDK (`source/plugins/sdk`) are in the All-in-1 Manager repository. Clone it
+once, next to where you will keep your plugins:
 
 ```sh
+git clone https://github.com/duckietm/All-in-1-Manager
+cd All-in-1-Manager
 cargo install --path source/crates/plugin_cli --locked
 ```
 
@@ -50,8 +63,12 @@ non-zero exit code.
 
 ## 3. Create a project
 
+Go back out of the clone and create the project next to it. `--sdk-path` points the project at the SDK in your clone
+(replace `<clone>` with the clone's folder, for example `../All-in-1-Manager` or `C:/src/All-in-1-Manager`):
+
 ```sh
-aio-plugin new my-plugin --id my-plugin
+cd ..
+aio-plugin new my-plugin --id my-plugin --sdk-path <clone>/source/plugins/sdk
 ```
 
 ```text
@@ -74,24 +91,23 @@ The project holds:
 | `.gitignore` | Ignores `/target` and `/dist`. |
 | `README.md` | The commands of this page, in short. |
 
-The SDK dependency in `Cargo.toml` is a git dependency on its release tag:
+With `--sdk-path`, the SDK dependency in `Cargo.toml` is a path to your clone (absolute, with `/`), and the released
+form stays there as a comment:
 
 ```toml
 [dependencies]
-aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }
+aio-plugin-sdk = { path = "<clone>/source/plugins/sdk" }
+# The released SDK:
+# aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }
 ```
 
-The first build downloads the repository once; `Cargo.lock` then pins the exact commit.
+> **Once the tag `sdk-v1.0.0` exists, drop `--sdk-path`.** `aio-plugin new my-plugin --id my-plugin` then writes the
+> git dependency above (uncommented), which works without a clone: the first build downloads the repository once and
+> `Cargo.lock` pins the exact commit. The tag is created when the SDK is released upstream; until then the git
+> dependency cannot be fetched, which is why this page uses `--sdk-path`. In an existing project, swap the two lines
+> by hand.
 
-> **Before the SDK is released.** The tag `sdk-v1.0.0` is created when the SDK is merged upstream. Until then, use a
-> local checkout of the repository with `--sdk-path`, which writes a path dependency instead (the git line stays in
-> `Cargo.toml` as a comment, ready to switch back):
->
-> ```sh
-> aio-plugin new my-plugin --id my-plugin --sdk-path <checkout>/source/plugins/sdk
-> ```
->
-> The output on this page was made that way.
+The first build writes `Cargo.lock`. Commit it with your project: `--locked` builds and the official index need it.
 
 ### `src/lib.rs`
 
@@ -295,7 +311,8 @@ See [Troubleshooting](troubleshooting.md#a-refused-manifest-or-package) for the 
 
 ## 8. Try it in the Manager
 
-There are two ways. Developer mode is the one for day-to-day work.
+You need a Manager version with external plugins: its **Plugins** page has **Install from file …**. There are two
+ways to load your plugin. Developer mode is the one for day-to-day work.
 
 ### Developer mode (run from the folder)
 
@@ -313,7 +330,8 @@ Developer folder: …\my-plugin
 The Manager loads target/wasm32-wasip2/release/my_plugin.wasm (the manifest's dev_wasm) from that folder.
 ```
 
-1. In the Manager, open **Settings** and switch **Developer mode** on.
+1. In the Manager, open **Settings** (sidebar, under **GENERAL**). Scroll to the **Developer mode** card (after
+   **Repository branches**, before **SSH keys**) and switch it **On**.
 2. Open the **Plugins** page. Under **Developer plugins**, click **Load a plugin folder …** and pick your project
    folder (the one with `manifest.json`).
 3. The consent window **Load this plugin folder?** lists the permissions. Click **Load**.

@@ -2,6 +2,8 @@
 name = "aio-plugin-sdk"
 version = "1.0.0"
 edition = "2021"
+# The oldest Rust that builds the SDK and its dependencies for wasm32-wasip2 (wit-bindgen 0.63 pulls in wit-component and wasm-encoder 0.262, which declare 1.88).
+rust-version = "1.88"
 publish = false
 description = "SDK for All-in-1 Manager plugins: WebAssembly components for the aio:plugin@1.0.0 world"
 

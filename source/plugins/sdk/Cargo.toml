@@ -1,0 +1,11 @@
+[package]
+name = "aio-plugin-sdk"
+version = "1.0.0"
+edition = "2021"
+publish = false
+description = "SDK for All-in-1 Manager plugins: WebAssembly components for the aio:plugin@1.0.0 world"
+
+[dependencies]
+# The bindings are generated from ../../wit/aio-plugin (relative to this crate), so a git dependency on the
+# repository builds the SDK unchanged. Plugin crates depend only on this crate, never on wit-bindgen.
+wit-bindgen = "0.63"

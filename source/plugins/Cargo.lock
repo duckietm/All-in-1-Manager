@@ -3,6 +3,13 @@
 version = 4
 
 [[package]]
+name = "aio-plugin-sdk"
+version = "1.0.0"
+dependencies = [
+ "wit-bindgen",
+]
+
+[[package]]
 name = "anyhow"
 version = "1.0.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"

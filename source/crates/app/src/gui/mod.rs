@@ -76,7 +76,10 @@ pub enum Page {
     Doctor,
     History,
     Settings,
+    Plugins,
     About,
+    /// The page of an external plugin: its index in `plugins::external::plugins().list()`.
+    External(u16),
 }
 
 /// What every page gets: the login, the runtime for its tasks, the questions, and the status line.
@@ -135,6 +138,27 @@ impl Shared {
             future.await;
             ctx.request_repaint();
         });
+    }
+}
+
+#[cfg(test)]
+impl Shared {
+    /// A `Shared` without a window: for tests of what pages and plugins do with it.
+    pub fn for_tests(runtime: tokio::runtime::Handle) -> Self {
+        let ctx = egui::Context::default();
+        Shared {
+            runtime,
+            dialogs: Dialogs::new(ctx.clone()),
+            ctx,
+            session: Arc::new(Mutex::new(None)),
+            status: Arc::new(Mutex::new(String::new())),
+            dry_run: false,
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    pub fn set_session_for_tests(&self, server: Option<Arc<dyn Server>>) {
+        *self.session.lock() = server;
     }
 }
 
@@ -239,7 +263,10 @@ pub struct App {
     debug: views::debug::DebugView,
     history: views::history::HistoryView,
     about: views::about::AboutView,
+    plugins: views::plugins::PluginsView,
     dashboard: views::dashboard::Dashboard,
+    /// The open external plugin page (its running instance); None on every other page.
+    external: Option<views::external_plugin::ExternalPluginView>,
     /// The connection was lost: the login opens again as soon as nothing runs any more.
     login_pending: bool,
     last_watch: f64,
@@ -291,7 +318,9 @@ impl App {
             debug: views::debug::DebugView::new(&shared),
             history: views::history::HistoryView::new(&shared),
             about: views::about::AboutView::new(&shared),
+            plugins: views::plugins::PluginsView,
             dashboard: views::dashboard::Dashboard::new(&shared),
+            external: None,
             shared,
             login_pending: false,
             last_watch: 0.0,
@@ -320,6 +349,9 @@ impl App {
             || self.hotel_view.busy()
             || self.gamedata.busy()
             || self.settings.busy()
+            || views::plugins::busy()
+            // An approved plugin script or write batch that runs (guest calls and approval waits do not count).
+            || self.external.as_ref().is_some_and(|v| v.executing())
     }
 
     /// Opens the login (at startup, from a Log in button, or after a lost connection).
@@ -404,6 +436,8 @@ impl App {
         if self.any_busy() && page != self.page {
             return;
         }
+        // A page of a plugin that is switched off (a request from a card, a saved link): the dashboard instead.
+        let page = if crate::plugins::page_visible(page) { page } else { Page::Dashboard };
         self.page = page;
         let session = self.shared.session();
         if let Some(wizard) = self.wizards.get(page) {
@@ -656,9 +690,20 @@ impl App {
             ),
             Page::History => (t("History").into(), t("What ran on which server, with its log: every install step and tool.").into()),
             Page::About => (t("About").into(), "All-in-1 Manager".into()),
+            Page::Plugins => (t("Plugins").into(), t("Switch the optional parts of the program on or off, and download the data they need.").into()),
             Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, and your own SSH keys.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
+            Page::External(index) => {
+                let info = self.external.as_ref().map(|v| v.info().clone()).or_else(|| crate::plugins::external::plugins().get(index as usize));
+                match info {
+                    Some(info) => (
+                        aio_plugin_host::display_safe(&info.manifest.page_title, 80),
+                        aio_plugin_host::display_safe(&info.manifest.description, 200),
+                    ),
+                    None => (t("Plugins").into(), String::new()),
+                }
+            }
         };
         (title, subtitle)
     }
@@ -749,15 +794,32 @@ impl App {
                         ),
                         ("sidebar:hotel", t("HOTEL"), vec![(t("Catalogue"), Icon::Shopping, Page::CatalogManager), (t("Catalogue explorer"), Icon::FolderSync, Page::CatalogExplorer), (t("Builders Club explorer"), Icon::Cube, Page::BuildersExplorer), (t("Content"), Icon::Star, Page::Content), (t("Logs"), Icon::History, Page::Logs), (t("Players"), Icon::Account, Page::Players), (t("Housekeeping"), Icon::Shield, Page::Housekeeping), (t("Hotel view"), Icon::Image, Page::HotelView), (t("Gamedata"), Icon::File, Page::Gamedata)]),
                         ("sidebar:tools", t("TOOLS"), vec![(t("Tools"), Icon::Wrench, Page::Tools), ("Debug", Icon::Bug, Page::Debug), (t("History"), Icon::History, Page::History)]),
-                        ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("About"), Icon::Info, Page::About)]),
+                        ("sidebar:general", t("GENERAL"), vec![(t("Settings"), Icon::Cog, Page::Settings), (t("Plugins"), Icon::Puzzle, Page::Plugins), (t("About"), Icon::Info, Page::About)]),
                     ];
-                    for (key, heading, items) in groups {
+                    for (key, heading, mut items) in groups {
+                        // The pages of switched-off plugins are not in the menu; Addons goes when every addon is off.
+                        items.retain(|(_, _, page)| if *page == Page::Addons { crate::plugins::any_addon_visible() } else { crate::plugins::page_visible(*page) });
+                        if items.is_empty() {
+                            continue;
+                        }
                         ui.add_space(14.0);
                         let open = collapse::heading(ui, key, heading, 10.5, Fixed::sidebar_muted(), 12.0);
                         ui.add_space(2.0);
                         for (label, icon, page) in items {
                             if open || selected(page) {
                                 nav(ui, label, icon, page);
+                            }
+                        }
+                    }
+                    // External plugins that are on, under their own heading; their page titles are plugin text.
+                    let external = crate::plugins::external_pages();
+                    if !external.is_empty() {
+                        ui.add_space(14.0);
+                        let open = collapse::heading(ui, "sidebar:plugins", t("PLUGINS"), 10.5, Fixed::sidebar_muted(), 12.0);
+                        ui.add_space(2.0);
+                        for (page, info) in external {
+                            if open || selected(page) {
+                                nav(ui, &aio_plugin_host::display_safe(&info.manifest.page_title, 26), Icon::Puzzle, page);
                             }
                         }
                     }
@@ -829,7 +891,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::Debug | Page::History | Page::Plugins | Page::External(_) => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -877,10 +939,52 @@ impl App {
         Some(wizard.status()).filter(|s| s != t("Ready."))
     }
 
+    /// Keeps the external plugin instance in step with the page: one while its page is open, none otherwise. The open
+    /// page follows its plugin by id when the list changes, and closes (to the Plugins page) when the plugin is gone or
+    /// switched off.
+    fn sync_external(&mut self) {
+        let Page::External(index) = self.page else {
+            self.external = None;
+            return;
+        };
+        let list = crate::plugins::external::plugins();
+        if let Some(view) = &mut self.external {
+            if view.index == index {
+                let now = list.index_of(view.id()).and_then(|i| u16::try_from(i).ok()).filter(|i| crate::plugins::page_visible(Page::External(*i)));
+                match now {
+                    Some(now) => {
+                        view.index = now;
+                        self.page = Page::External(now);
+                    }
+                    None => {
+                        self.external = None;
+                        self.page = Page::Plugins;
+                    }
+                }
+                return;
+            }
+        }
+        // Another plugin's page was chosen: the old instance goes first.
+        self.external = None;
+        match list.get(index as usize).filter(|_| crate::plugins::page_visible(self.page)) {
+            Some(info) => self.external = Some(views::external_plugin::ExternalPluginView::open(info, index, &self.shared)),
+            None => self.page = Page::Plugins,
+        }
+    }
+
     fn page(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        self.sync_external();
         let shared = self.shared.clone();
         let session = shared.session();
         let page = self.page;
+        // A plugin page whose data pack is missing (and not running) shows how to download it first.
+        let pack_missing = crate::plugins::plugin_for(page).and_then(|p| p.pack).is_some_and(|p| !p.is_installed());
+        if pack_missing && !self.wizards.get(page).is_some_and(|w| w.is_busy()) {
+            scroll(ui, |ui| {
+                views::plugins::pack_ready(ui, palette, &shared, page);
+            });
+            return;
+        }
         if let Some(wizard) = self.wizards.get(page) {
             let mut action = None;
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -944,6 +1048,20 @@ impl App {
                 scroll(ui, |ui| self.settings.show_with(ui, palette, &shared, |ui| tools.settings_backup_card(ui, palette, &shared)))
             }
             Page::About => scroll(ui, |ui| self.about.show(ui, palette, &shared)),
+            Page::Plugins => {
+                let mut open = None;
+                scroll(ui, |ui| open = self.plugins.show(ui, palette, &shared));
+                if let Some(page) = open {
+                    self.navigate(page);
+                }
+            }
+            Page::External(_) => {
+                if let Some(view) = self.external.as_mut() {
+                    // The approval cards stay in view above the scrolling plugin content.
+                    view.show_pinned(ui, palette, &shared);
+                    scroll(ui, |ui| view.show_content(ui, palette, &shared));
+                }
+            }
             Page::Addons => {
                 let mut clicked = None;
                 scroll(ui, |ui| clicked = views::addons::show(ui, palette));

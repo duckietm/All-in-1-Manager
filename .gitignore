@@ -64,3 +64,9 @@ Thumbs.db
 /*.desktop
 /all-in-1-manager
 /all-in-1-manager-dev
+
+# Packed example plugins (source/tools/pack_plugin.py)
+/dist/
+
+# Example plugin builds
+/source/plugins/**/target/

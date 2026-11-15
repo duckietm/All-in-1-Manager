@@ -23,6 +23,8 @@ use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
 use crate::i18n::{t, tf};
 
 /// The game's catalogue colours: the same in the light and the dark theme, as in the client.
+// Clippy 1.99 flags the thread_local below although its initializer is already `const`.
+#[allow(clippy::missing_const_for_thread_local)]
 mod game {
     use std::cell::Cell;
 

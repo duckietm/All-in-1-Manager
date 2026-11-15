@@ -849,6 +849,8 @@ impl SettingsView {
         ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.branches_card(ui, palette));
         ui.add_space(18.0);
+        widgets::card(ui, palette, margin, |ui| developer_card(ui, palette, shared));
+        ui.add_space(18.0);
         widgets::card(ui, palette, margin, |ui| self.keys_card(ui, palette, shared));
     }
 }
@@ -882,6 +884,25 @@ pub(crate) fn language_button(ui: &mut egui::Ui, palette: &Palette, name: &str, 
     crate::gui::flags::paint(painter, flag, domain);
     painter.galley(egui::pos2(flag.right() + 8.0, rect.center().y - galley.size().y / 2.0), galley, palette.text);
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// Developer mode: plugins can be loaded straight from a folder (Plugins page). Off by default.
+fn developer_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+    card_heading(
+        ui,
+        palette,
+        t("Developer mode"),
+        t("For people who write plugins: load a plugin from its folder, with a Reload button, without packing it. Such a plugin is not verified and gets the same warnings and permission questions as one from a file."),
+    );
+    let plugins = crate::plugins::external::plugins();
+    let mut on = plugins.developer_enabled();
+    ui.horizontal(|ui| {
+        if widgets::switch(ui, palette, &mut on).changed() {
+            crate::plugins::external::set_developer_mode(on);
+            shared.set_status(if on { t("Developer mode is on.") } else { t("Developer mode is off: the plugin folders are hidden and stopped.") });
+        }
+        ui.label(if on { t("On") } else { t("Off") });
+    });
 }
 
 fn card_heading(ui: &mut egui::Ui, palette: &Palette, title: &str, text: &str) {

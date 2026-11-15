@@ -253,8 +253,15 @@ fn show_diff(got: &BTreeMap<String, Vec<u8>>, want: &BTreeMap<String, Vec<u8>>) 
 
 // ------------------------------------------------------------------ over TCP
 
+/// Pins the job's glue (what it asks, assembles and hands to the exporters, the files it
+/// writes, README.txt, the images and their order of URLs) against a reconstruction of the
+/// built-in's output: the same packets parsed into a `RippedCatalog` and written by the
+/// exporters that are byte-identical to the built-in's (`export.rs`, `manager.rs`), with the
+/// README sections the built-in's `Output::write` adds copied into [`builtin_output`]. It is
+/// not a differential run of the built-in crate (that crate is not a dependency here); the
+/// exporters themselves are covered by being byte-identical copies.
 #[test]
-fn full_rip_matches_builtin_output() {
+fn full_rip_matches_reconstructed_builtin_output() {
     let (port, seen, fake) = start(official());
     let mut opts = options(port);
     opts.download_images = true;
@@ -1324,4 +1331,321 @@ fn nothing_to_rip_and_no_gearth() {
         Some(catalog_rip_core::gearth::Error::NoInfoRequest)
     );
     assert_eq!(clock.0.get(), 3_000, "the handshake timeout");
+}
+
+// ------------------------------------------------------------------ review fixes
+
+/// A fetch that takes `ms` of simulated time per call and answers as `inner` does; the count
+/// of calls is shared.
+fn slow_fetch(
+    clock: &SimClock,
+    ms: u64,
+    mut inner: MemFetch,
+) -> (MemFetch, Rc<std::cell::Cell<usize>>) {
+    let clock = clock.clone();
+    let calls = Rc::new(std::cell::Cell::new(0));
+    let counted = calls.clone();
+    let fetch = MemFetch {
+        answer: Box::new(move |url| {
+            counted.set(counted.get() + 1);
+            clock.0.set(clock.0.get() + ms);
+            (inner.answer)(url)
+        }),
+        asked: Vec::new(),
+    };
+    (fetch, calls)
+}
+
+#[test]
+fn an_answer_that_comes_during_the_delay_is_still_asked_and_counted() {
+    // Page 2's first answer is lost (the delay doubles to 100 ms); with its retry, page 3's
+    // answer comes unasked 50 ms later, while page 3 waits for the delay. As in the built-in,
+    // page 3 is still asked, and its answer counts towards speeding up again.
+    let mut hotel = big_hotel(20);
+    hotel.lose_first.insert((2, "NORMAL".into()), 1);
+    hotel.also_answer.insert((2, 2), (3, 50));
+    let sim = Sim::new(hotel);
+    let mut job = Job::new(RipOptions {
+        rip_extras: false,
+        builders_club: false,
+        ..sim_options()
+    });
+    let run = sim.run(
+        &mut job,
+        &mut MemFetch::none(),
+        &mut MemSink::default(),
+        None,
+        |_| 30,
+        |_, _, _| {},
+    );
+    assert_eq!(done(&run).pages, 20);
+    let requests = page_requests(&sim);
+    let ids: Vec<i32> = requests.iter().map(|r| r.0).collect();
+    assert_eq!(
+        &ids[..5],
+        [1, 2, 2, 3, 4],
+        "page 3 is asked although its answer is there"
+    );
+    let gap_before = |page: i32| {
+        let i = requests.iter().position(|r| r.0 == page).unwrap();
+        requests[i].1 - requests[i - 1].1
+    };
+    assert_eq!(gap_before(3), 100);
+    // 15 answers in a row (pages 3-17, page 3 included) bring the delay back to 50 ms.
+    assert_eq!(gap_before(17), 100);
+    assert_eq!(gap_before(18), 50);
+}
+
+#[test]
+fn learning_keeps_what_comes_after_the_last_id() {
+    // The user's client opens the catalogue: its requests and the answers go by together; the
+    // last id is learned from the page answer, and the NORMAL index that follows in the same
+    // read is kept for the requests. This hotel never answers the ripper's index request, so
+    // the rip only gets on with the kept index.
+    let index = index_packet(INDEX, "NORMAL", &normal_roots(), true, false);
+    let mut hotel = official_hotel();
+    hotel.connection.host = "game.unknown-retro.org".into();
+    hotel.connection.hotel_version = "WIN63-custom".into();
+    hotel.connection.packets = Vec::new();
+    hotel.index = Box::new(|_| None);
+    hotel.browse_after_start = vec![
+        (true, packets::get_catalog_index(GET_INDEX, "NORMAL")),
+        (false, index.clone()),
+        (true, packets::get_catalog_page(GET_PAGE, 3, "NORMAL")),
+        (false, page_answer(3, "NORMAL").unwrap()),
+        (false, index),
+    ];
+    let sim = Sim::new(hotel);
+    let mut job = Job::new(RipOptions {
+        builders_club: false,
+        rip_extras: false,
+        ..sim_options()
+    });
+    let run = sim.run(
+        &mut job,
+        &mut MemFetch::none(),
+        &mut MemSink::default(),
+        None,
+        |_| 50,
+        |_, _, _| {},
+    );
+    let report = done(&run);
+    assert!(report.learned_headers);
+    assert_eq!(report.pages, 6);
+    assert!(run.log_text().contains("CatalogPage 804 (learned)"));
+    sim.g().check_echoes();
+}
+
+#[test]
+fn cancel_with_furnidata_fetches_at_most_twice_in_its_step() {
+    let sim = Sim::new(official_hotel());
+    let mut opts = sim_options();
+    opts.use_furnidata = true; // an official hotel: furnidata and productdata from its host
+    opts.download_images = true;
+    let mut job = Job::new(opts);
+    let (mut fetch, calls) = slow_fetch(&sim.clock, 30, MemFetch::none());
+    let mut sink = MemSink::default();
+    let mut cancel_step = None;
+    let mut step = 0;
+    let run = sim.run(
+        &mut job,
+        &mut fetch,
+        &mut sink,
+        None,
+        |_| 20,
+        |job, _, _| {
+            step += 1;
+            let p = job.progress();
+            if cancel_step.is_none() && p.phase == Phase::Pages && p.done >= 2 {
+                job.cancel();
+                cancel_step = Some(step);
+            }
+        },
+    );
+    assert_eq!(
+        run.steps,
+        cancel_step.unwrap() + 1,
+        "ended by the next step"
+    );
+    let failure = failed(&run);
+    assert!(failure.cancelled);
+    assert_eq!(calls.get(), 2);
+    assert_eq!(
+        fetch.asked,
+        [
+            "https://www.habbo.nl/gamedata/furnidata_json/1",
+            "https://www.habbo.nl/gamedata/productdata_json/1"
+        ]
+    );
+    let partial = failure.partial.as_ref().unwrap();
+    assert!(!partial.files.iter().any(|f| f == "images"));
+    let readme = sink.text(&format!("{}/README.txt", partial.folder));
+    assert!(readme.contains("CANCELLED"));
+}
+
+#[test]
+fn no_fetch_starts_after_the_budget() {
+    // A read that overshoots its timeout (as socket timeouts do): the club offers answer is
+    // read 25 ms late, so the requests end after the step's budget. The furnidata is not
+    // fetched in that step any more, but first thing in the next one.
+    struct Overshoot(Link, SimClock);
+    impl Transport for Overshoot {
+        fn send(&mut self, data: &[u8]) -> Result<(), String> {
+            self.0.send(data)
+        }
+        fn recv(&mut self, max: usize, timeout_ms: u32) -> Result<Option<Vec<u8>>, String> {
+            let got = self.0.recv(max, timeout_ms)?;
+            let club = self.0 .0.borrow().requests.last().map(|r| r.0) == Some(3285);
+            if club
+                && got
+                    .as_ref()
+                    .is_some_and(|f| f.len() > 6 && f[4..6] == [0, 3])
+            {
+                self.1 .0.set(self.1 .0.get() + 25);
+            }
+            Ok(got)
+        }
+    }
+    const BUDGET: u64 = 20;
+    let sim = Sim::new(official_hotel());
+    let mut opts = sim_options();
+    opts.use_furnidata = true;
+    opts.download_images = true;
+    opts.catalog_url = Some(format!("{CDN}/c_images/catalogue"));
+    opts.icon_url = Some(format!("{CDN}/icons/icon_"));
+    opts.site_config_url = Some(format!("{CDN}/client"));
+    let mut job = Job::new(opts);
+    // Every fetch takes 30 ms, longer than a step's budget. A fetch must start within the
+    // budget, or as the first thing of its step.
+    let step_start = Rc::new(std::cell::Cell::new(0u64));
+    let late = Rc::new(std::cell::Cell::new(0usize));
+    let (mut fetch, calls) = {
+        let (clock, start, late) = (sim.clock.clone(), step_start.clone(), late.clone());
+        let mut inner = fake_cdn();
+        let calls = Rc::new(std::cell::Cell::new(0));
+        let counted = calls.clone();
+        let fetch = MemFetch {
+            answer: Box::new(move |url| {
+                let now = clock.0.get();
+                if now > start.get() && now - start.get() >= BUDGET {
+                    late.set(late.get() + 1);
+                }
+                counted.set(counted.get() + 1);
+                clock.0.set(now + 30);
+                (inner.answer)(url)
+            }),
+            asked: Vec::new(),
+        };
+        (fetch, calls)
+    };
+    let mut before = 0;
+    let mut most = 0;
+    let run = run_job(
+        &mut job,
+        Overshoot(sim.link.clone(), sim.clock.clone()),
+        drop,
+        &mut fetch,
+        &mut MemSink::default(),
+        &sim.clock,
+        (None, None),
+        |_| BUDGET as u32,
+        |_, _| {
+            most = most.max(calls.get() - before);
+            before = calls.get();
+            step_start.set(sim.clock.0.get());
+        },
+    );
+    let report = done(&run);
+    assert_eq!(report.images.downloaded, 26);
+    assert_eq!(
+        &fetch.asked[..2],
+        [
+            "https://www.habbo.nl/gamedata/furnidata_json/1",
+            "https://www.habbo.nl/gamedata/productdata_json/1"
+        ]
+    );
+    assert!(calls.get() > 30, "{}", calls.get());
+    assert_eq!(late.get(), 0, "no fetch started after the budget");
+    assert_eq!(most, 1, "one fetch per step at most");
+}
+
+#[test]
+fn image_fallback_order() {
+    let sim = Sim::new(official_hotel());
+    let mut opts = sim_options();
+    opts.download_images = true;
+    opts.catalog_url = Some(format!("{CDN}/c_images/catalogue"));
+    opts.icon_url = Some(format!("{CDN}/icons/icon_"));
+    let mut job = Job::new(opts);
+    // The CDN lacks cr_infopic3 (Habbo's image host has it, as png) and front_teaser (nobody
+    // has it).
+    let mut cdn = fake_cdn();
+    let mut fetch = MemFetch {
+        answer: Box::new(move |url| {
+            if url == "https://images.habbo.com/c_images/catalogue/cr_infopic3.png" {
+                return Ok(b"habbo".to_vec());
+            }
+            if url.contains("cr_infopic3") || url.contains("front_teaser") {
+                return Err(catalog_rip_core::job::FetchError::NotFound);
+            }
+            (cdn.answer)(url)
+        }),
+        asked: Vec::new(),
+    };
+    let mut sink = MemSink::default();
+    let run = sim.run(&mut job, &mut fetch, &mut sink, None, |_| 50, |_, _, _| {});
+    let report = done(&run);
+    let asked = |name: &str| -> Vec<String> {
+        fetch
+            .asked
+            .iter()
+            .filter(|u| u.contains(name))
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        asked("cr_infopic3"),
+        [
+            format!("{CDN}/c_images/catalogue/cr_infopic3.gif"),
+            format!("{CDN}/c_images/catalogue/cr_infopic3.png"),
+            "https://images.habbo.com/c_images/catalogue/cr_infopic3.gif".to_string(),
+            "https://images.habbo.com/c_images/catalogue/cr_infopic3.png".to_string(),
+        ]
+    );
+    assert_eq!(asked("front_teaser").len(), 4);
+    assert_eq!(report.images.downloaded, 25);
+    assert_eq!(report.images.missing, 1);
+    assert_eq!(report.images.missing_names, ["front_teaser"]);
+    let files = sink.under(&report.folder);
+    assert_eq!(files["images/cr_infopic3.png"], b"habbo");
+    let readme = String::from_utf8(files["README.txt"].clone()).unwrap();
+    assert!(
+        readme.contains("images:                        25 downloaded, 1 not on the server"),
+        "{readme}"
+    );
+}
+
+#[test]
+fn images_folder_is_listed_when_images_were_tried() {
+    let files = |download_images: bool| {
+        let sim = Sim::new(official_hotel());
+        let mut job = Job::new(RipOptions {
+            download_images,
+            ..sim_options()
+        });
+        let run = sim.run(
+            &mut job,
+            &mut MemFetch::none(),
+            &mut MemSink::default(),
+            None,
+            |_| 50,
+            |_, _, _| {},
+        );
+        let report = done(&run);
+        assert_eq!(report.images.downloaded, 0);
+        report.files.clone()
+    };
+    // Nothing found, but tried: the built-in had made the folder, and listed it.
+    assert!(files(true).iter().any(|f| f == "images"));
+    assert!(!files(false).iter().any(|f| f == "images"));
 }

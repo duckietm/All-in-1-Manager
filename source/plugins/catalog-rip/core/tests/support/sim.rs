@@ -44,6 +44,12 @@ pub struct SimHotel {
     pub noise_every_ms: Option<u64>,
     /// The hotel connection ends at this page request (by count, 1-based).
     pub end_at_page_request: Option<usize>,
+    /// (page id, nth request of it) -> (another page, ms): that page's answer comes this long
+    /// after the request, unasked (as when the user's client asks for it).
+    pub also_answer: HashMap<(i32, usize), (i32, u64)>,
+    /// Game packets that go by together (to_server, packet), 20 ms after the hotel connection
+    /// starts: the user's client opening the catalogue.
+    pub browse_after_start: Vec<(bool, Packet)>,
 }
 
 /// The official test hotel of `support` (NORMAL and BUILDERS_CLUB, G-Earth packet info).
@@ -69,6 +75,8 @@ pub fn official_hotel() -> SimHotel {
         latency_ms: 5,
         noise_every_ms: None,
         end_at_page_request: None,
+        also_answer: HashMap::new(),
+        browse_after_start: Vec::new(),
     }
 }
 
@@ -204,6 +212,9 @@ impl SimGEarth {
                 self.schedule(later, init, None);
                 let start = self.hotel.connection.message().to_bytes();
                 self.schedule(later, start, None);
+                for (to_server, packet) in std::mem::take(&mut self.hotel.browse_after_start) {
+                    self.intercept(later + 20, to_server, &packet);
+                }
                 if let Some(every) = self.hotel.noise_every_ms {
                     self.next_noise = Some(later + every);
                 }
@@ -250,6 +261,13 @@ impl SimGEarth {
                         }
                         let asked = self.asked.entry((page_id, mode.clone())).or_default();
                         *asked += 1;
+                        let nth = *asked;
+                        if let Some(&(other, ms)) = self.hotel.also_answer.get(&(page_id, nth)) {
+                            if let Some(answer) = (self.hotel.page)(other, &mode) {
+                                self.intercept(now + ms, false, &answer);
+                            }
+                        }
+                        let asked = &self.asked[&(page_id, mode.clone())];
                         let lost = self
                             .hotel
                             .lose_first

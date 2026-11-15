@@ -421,6 +421,10 @@ struct Request {
     packet: Packet,
     label: String,
     stage: Stage,
+    /// Whether the answer was already there was looked at (once, before the first send: an
+    /// answer that comes while the request waits for the delay is counted after sending, as
+    /// the built-in does).
+    looked: bool,
 }
 
 /// What a state handler tells the step loop.
@@ -516,6 +520,8 @@ pub struct Job {
     backlog: Vec<GEarthEvent>,
     /// G-Earth was pumped in this step (every step pumps at least once).
     pumped: bool,
+    /// Something was fetched in this step.
+    fetched: bool,
     connection: Option<ConnectionInfo>,
     profile: Option<HotelProfile>,
     headers: Option<Headers>,
@@ -583,6 +589,7 @@ impl Job {
             gearth: None,
             backlog: Vec::new(),
             pumped: false,
+            fetched: false,
             connection: None,
             profile: None,
             headers: None,
@@ -621,6 +628,11 @@ impl Job {
     /// while it still asked the hotel ends as [`Step::Failed`] (with [`Failure::partial`] and
     /// `cancelled`), one cancelled during the export or the image downloads as [`Step::Done`]
     /// (its catalogue was whole; the images stop where they were).
+    ///
+    /// The step that sees the cancel finishes the export whatever its budget: like the
+    /// built-in, it still reads the furnidata and the productdata when they are used, so that
+    /// step may take up to two (blocking) fetches. It downloads no images and no client
+    /// configuration.
     pub fn cancel(&mut self) {
         self.cancel = true;
     }
@@ -678,6 +690,7 @@ impl Job {
         }
         let end = io.clock.now_ms().saturating_add(budget_ms.into());
         self.pumped = false;
+        self.fetched = false;
         if self.cancel {
             if let Some(Ctl::End(step)) = self.on_cancel(io) {
                 return self.end(step);
@@ -786,6 +799,13 @@ impl Job {
     /// packets G-Earth holds are answered even with a budget of 0).
     fn out_of_time(&self, now: u64, end: u64) -> bool {
         now >= end && self.pumped
+    }
+
+    /// Whether a (blocking) fetch may start now: within the budget, or as the first thing of a
+    /// step (so a job stepped with tiny budgets still gets on). A cancelled job finishes its
+    /// export in the step that saw the cancel (see [`Job::cancel`]).
+    fn may_fetch(&self, now: u64, end: u64) -> bool {
+        self.cancel || now < end || !(self.pumped || self.fetched)
     }
 
     /// A G-Earth error ends the G-Earth session.
@@ -1141,7 +1161,8 @@ impl Job {
                 Ok((_, false)) => return Ctl::Yield,
                 Err(abort) => return Ctl::End(Step::Failed(abort.failure())),
             };
-            for event in events {
+            let mut events = events.into_iter();
+            while let Some(event) = events.next() {
                 match event {
                     GEarthEvent::Packet(p) => {
                         let State::Learn { learner, .. } = &mut self.state else {
@@ -1150,6 +1171,14 @@ impl Job {
                         if let Some(name) = learner.observe(p.to_server, &p.packet) {
                             let line = format!("Learned {name} = {}.", p.packet.header);
                             self.say(line);
+                        }
+                        let State::Learn { learner, .. } = &self.state else {
+                            unreachable!()
+                        };
+                        if learner.headers().is_some() {
+                            // What came after it is for the requests (an answer to one, say).
+                            self.backlog.extend(events);
+                            break;
                         }
                     }
                     GEarthEvent::ConnectionEnd => {
@@ -1396,6 +1425,7 @@ impl Job {
             want,
             packet,
             label,
+            looked: false,
             stage: Stage::Send(if once {
                 WaitKind::Once
             } else {
@@ -1433,8 +1463,11 @@ impl Job {
             // How long to wait (pump) before looking again; None: look again at once.
             let wait_until: u64 = match req.stage {
                 Stage::Send(kind) => {
-                    if matches!(kind, WaitKind::First | WaitKind::Once) && self.have(&req.want) {
-                        return Poll::Ready(Ok(true));
+                    if !req.looked {
+                        req.looked = true;
+                        if self.have(&req.want) {
+                            return Poll::Ready(Ok(true));
+                        }
                     }
                     let next = self.last_send.map_or(now, |last| last + self.delay);
                     if now >= next {
@@ -1909,13 +1942,14 @@ impl Job {
 
     fn export(&mut self, io: &mut JobIo, end: u64) -> Ctl {
         let site_source = self.site_config_source();
+        let can_fetch = self.may_fetch(io.clock.now_ms(), end);
         let State::Export(stage) = &mut self.state else {
             unreachable!()
         };
         match stage {
             ExportStage::Furnidata => {
-                *stage = ExportStage::Productdata;
                 if !self.options.use_furnidata {
+                    self.state = State::Export(ExportStage::Productdata);
                     return Ctl::Continue;
                 }
                 let profile_url = self.profile.as_ref().and_then(|p| p.furnidata_url.clone());
@@ -1924,8 +1958,14 @@ impl Job {
                     &profile_url,
                     furnidata::official_url,
                 ) else {
+                    self.state = State::Export(ExportStage::Productdata);
                     return Ctl::Continue;
                 };
+                if !can_fetch {
+                    return Ctl::Yield;
+                }
+                self.state = State::Export(ExportStage::Productdata);
+                self.fetched = true;
                 let host = self.connection.as_ref().expect("connection").host.clone();
                 self.say(format!("Reading the furnidata of {host} ({source}) ..."));
                 let loaded = Self::fetch_source(io, &source).and_then(|bytes| {
@@ -1943,11 +1983,11 @@ impl Job {
                         "the furnidata could not be read ({e}); products are matched by sprite id."
                     )),
                 }
-                self.after_fetch(io, end)
+                Ctl::Continue
             }
             ExportStage::Productdata => {
-                *stage = ExportStage::Write;
                 if !self.options.use_furnidata {
+                    self.state = State::Export(ExportStage::Write);
                     return Ctl::Continue;
                 }
                 let profile_url = self
@@ -1959,8 +1999,14 @@ impl Job {
                     &profile_url,
                     productdata::official_url,
                 ) else {
+                    self.state = State::Export(ExportStage::Write);
                     return Ctl::Continue;
                 };
+                if !can_fetch {
+                    return Ctl::Yield;
+                }
+                self.state = State::Export(ExportStage::Write);
+                self.fetched = true;
                 let loaded = Self::fetch_source(io, &source).and_then(|bytes| {
                     productdata::load(&source, &bytes).map_err(|e| format!("{e:#}"))
                 });
@@ -1971,7 +2017,7 @@ impl Job {
                     }
                     Err(e) => self.warn(&format!("the productdata could not be read ({e}).")),
                 }
-                self.after_fetch(io, end)
+                Ctl::Continue
             }
             ExportStage::Write => self.write_data(io),
             ExportStage::SiteConfig {
@@ -1981,7 +2027,11 @@ impl Job {
             } => {
                 let source = site_source.expect("site config");
                 if let Some(url) = urls.get(*next).cloned() {
+                    if !can_fetch {
+                        return Ctl::Yield;
+                    }
                     *next += 1;
+                    self.fetched = true;
                     match io.fetch.get(&url) {
                         Ok(bytes) => {
                             let text = String::from_utf8_lossy(&bytes);
@@ -2000,7 +2050,7 @@ impl Job {
                             return self.begin_images(None);
                         }
                     }
-                    return self.after_fetch(io, end);
+                    return Ctl::Continue;
                 }
                 let fetched = std::mem::take(fetched);
                 match site_config::load(&source, &fetched) {
@@ -2019,16 +2069,6 @@ impl Job {
                     }
                 }
             }
-        }
-    }
-
-    /// After a fetch: on in this step unless the budget is spent (a cancelled job finishes its
-    /// export in the step that saw the cancel).
-    fn after_fetch(&mut self, io: &mut JobIo, end: u64) -> Ctl {
-        if !self.cancel && io.clock.now_ms() >= end {
-            Ctl::Yield
-        } else {
-            Ctl::Continue
         }
     }
 
@@ -2125,6 +2165,7 @@ impl Job {
         let folder = self.folder.clone();
         loop {
             let cancelled = self.cancel;
+            let can_fetch = self.may_fetch(io.clock.now_ms(), end);
             let out = self.out.as_mut().expect("out");
             if out.images_text.is_some() {
                 return self.finish(io);
@@ -2138,6 +2179,10 @@ impl Job {
                 out.images_text = Some(text);
                 continue;
             }
+            // The images folder is made for the first image tried (as the built-in does).
+            if !out.files.iter().any(|f| f == "images") {
+                out.files.push("images".into());
+            }
             let job = &out.plan[out.next_image];
             let url = job.urls[out.next_url].clone();
             let last_url = out.next_url + 1 == job.urls.len();
@@ -2146,7 +2191,10 @@ impl Job {
             // Ok(Some(true)): there; Ok(Some(false)): on no URL; Ok(None): try the next URL.
             let outcome: Result<Option<bool>, String> = if out.written.contains(&dest) {
                 Ok(Some(true))
+            } else if !can_fetch {
+                return Ctl::Yield;
             } else {
+                self.fetched = true;
                 match io.fetch.get(&url) {
                     Ok(bytes) => {
                         let path = format!("{folder}/{dest}");
@@ -2182,18 +2230,12 @@ impl Job {
                     }
                     out.next_image += 1;
                     out.next_url = 0;
-                    if out.stats.downloaded > 0 && !out.files.iter().any(|f| f == "images") {
-                        out.files.push("images".into());
-                    }
                     self.progress.done = out.next_image as u64;
                     self.progress.label = label;
                 }
             }
             if let Some(line) = line {
                 self.say(line);
-            }
-            if io.clock.now_ms() >= end {
-                return Ctl::Yield;
             }
         }
     }

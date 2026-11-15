@@ -29,6 +29,11 @@ pub const OFFICIAL_PACKAGE_PREFIX: &str = "https://github.com/all-in-1-plugins/i
 /// The keys the official index may be signed with: `(key id, base64 public key)`, at most two at once (rotation).
 /// Empty until the owner generates the real key: then nothing is fetched and the index is "not set up yet".
 pub const OFFICIAL_INDEX_KEYS: &[(&str, &str)] = &[];
+
+/// The ids of [`OFFICIAL_INDEX_KEYS`].
+pub fn official_key_ids() -> Vec<&'static str> {
+    OFFICIAL_INDEX_KEYS.iter().map(|(id, _)| *id).collect()
+}
 /// The `.sig` file is two short lines.
 pub const MAX_SIG_BYTES: usize = 4 * 1024;
 /// Both downloads together.
@@ -119,11 +124,22 @@ pub struct IndexFeed {
     pub cache: PathBuf,
 }
 
-/// `state.json`: the highest sequence ever accepted from this source.
+/// `state.json`: the highest sequence ever accepted from this source, and the key that signed that index.
+///
+/// The floor counts only while `key_id` is still a trusted key of the source ([`stored_sequence`]): rotating away
+/// from a stolen key resets it. Otherwise one index signed with a stolen key and a huge sequence would make every
+/// later, honest index a "rollback" for good. A fetched index may also raise it by at most [`MAX_SEQUENCE_JUMP`].
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Stored {
     sequence: u64,
+    key_id: String,
 }
+
+/// The most a fetched index may raise the stored sequence in one step. The index repository adds 1 per publish (a
+/// few a month), so an honest index never comes near it; it bounds how far one index signed with a stolen key can
+/// push the floor of a Manager that still trusts that key (until the rotation resets the floor, see [`Stored`]).
+pub const MAX_SEQUENCE_JUMP: u64 = 1_000_000;
 
 /// The source to use, `plugins_root` being configuration/plugins/. Developer mode with a `plugin_index_url` uses
 /// that url, its `.sig`, the `plugin_index_test_keys` and the package prefix `<the url's directory>/packages/`
@@ -201,10 +217,12 @@ impl IndexFeed {
     }
 }
 
-/// The highest sequence accepted from the source cached in `dir`, if `state.json` is readable.
-fn stored_sequence(dir: &Path) -> Option<u64> {
+/// The highest sequence accepted from the source cached in `dir`, if `state.json` is readable and was recorded under
+/// a key the source still trusts (`trusted`); the floor of a key that was rotated out is ignored (see [`Stored`]).
+fn stored_sequence(dir: &Path, trusted: &[(&str, &str)]) -> Option<u64> {
     let text = std::fs::read(dir.join("state.json")).ok()?;
-    serde_json::from_slice::<Stored>(&text).ok().map(|s| s.sequence)
+    let stored = serde_json::from_slice::<Stored>(&text).ok()?;
+    trusted.iter().any(|(id, _)| *id == stored.key_id).then_some(stored.sequence)
 }
 
 /// The cached index of `source`, verified again with its keys and checked against `state.json`.
@@ -224,7 +242,7 @@ pub fn load_cache_from(source: &IndexFeed, now: DateTime<Utc>) -> IndexState {
         return invalid("it cannot be read");
     };
     match verify_and_parse(&bytes, &sig, &source.key_refs(), &source.package_prefix) {
-        Ok((index, key)) => match check_fresh(&index, stored_sequence(dir), now) {
+        Ok((index, key)) => match check_fresh(&index, stored_sequence(dir, &source.key_refs()), now) {
             Freshness::Rollback => IndexState { error: Some(ROLLBACK.to_string()), ..empty },
             fresh => IndexState { index: Some(index), freshness: Some(fresh), key_id: Some(key), ..empty },
         },
@@ -254,14 +272,20 @@ async fn fetch_verified(client: &reqwest::Client, source: &IndexFeed, now: DateT
         .map_err(|e| format!("The plugin index could not be downloaded: {e}"))?;
     let sig = String::from_utf8(sig_bytes).map_err(|_| "The index signature file is not in the expected format".to_string())?;
     let (index, key) = verify_and_parse(&index_bytes, &sig, &source.key_refs(), &source.package_prefix).map_err(|e| format!("{e:#}"))?;
-    // The highest sequence seen: state.json, or the verified cache if state.json was lost.
-    let last = stored_sequence(&source.cache).into_iter().chain(cached.map(|i| i.sequence)).max();
+    // The highest sequence seen: state.json (while its key is still trusted), or the verified cache if state.json was
+    // lost.
+    let last = stored_sequence(&source.cache, &source.key_refs()).into_iter().chain(cached.map(|i| i.sequence)).max();
     let freshness = check_fresh(&index, last, now);
     if freshness == Freshness::Rollback {
         return Err(ROLLBACK.to_string());
     }
-    let sequence = last.map_or(index.sequence, |l| l.max(index.sequence));
-    let error = write_cache(&source.cache, &index_bytes, &sig, sequence).err().map(|e| safe(&format!("The plugin index could not be saved: {e}")));
+    if let Some(last) = last.filter(|l| index.sequence - l > MAX_SEQUENCE_JUMP) {
+        return Err(format!("The index number jumped too far ahead ({} after {last}); it is refused", index.sequence));
+    }
+    // Not a rollback, so index.sequence >= last: the new floor is this index's, under its key.
+    let error = write_cache(&source.cache, &index_bytes, &sig, index.sequence, key.as_str())
+        .err()
+        .map(|e| safe(&format!("The plugin index could not be saved: {e}")));
     Ok(IndexState { source: source.kind, index: Some(index), freshness: Some(freshness), error, checked: Some(now), key_id: Some(key) })
 }
 
@@ -300,9 +324,9 @@ fn error_text(e: &reqwest::Error) -> String {
 /// Writes the three cache files, each to a temporary file then renamed over the old one. `state.json` (the new
 /// sequence) goes first: a crash or a failure after it leaves the sequence raised and, at worst, a cache older than
 /// it (refused as a rollback until the next fetch) or one that no longer verifies; never a lower floor.
-fn write_cache(dir: &Path, index: &[u8], sig: &str, sequence: u64) -> std::io::Result<()> {
+fn write_cache(dir: &Path, index: &[u8], sig: &str, sequence: u64, key_id: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    let state = serde_json::to_vec(&Stored { sequence }).map_err(std::io::Error::other)?;
+    let state = serde_json::to_vec(&Stored { sequence, key_id: key_id.to_string() }).map_err(std::io::Error::other)?;
     write_atomic(&dir.join("state.json"), &state)?;
     write_atomic(&dir.join("index.json"), index)?;
     write_atomic(&dir.join("index.json.sig"), sig.as_bytes())
@@ -358,11 +382,12 @@ async fn refresh_in(
     }
 }
 
-/// `revoked.json`: the revocations of the newest verified official index, and its sequence.
+/// `revoked.json`: the revocations of the newest verified official index, its sequence and the key that signed it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LockFile {
     sequence: u64,
+    key_id: String,
     /// `(id, versions or ["*"], reason)` as the index says them.
     revoked: Vec<Revoked>,
 }
@@ -376,43 +401,58 @@ const MAX_LOCK_BYTES: u64 = MAX_INDEX_BYTES as u64;
 /// configuration/plugins/index/revoked.json so they hold offline and with a cache that no longer verifies (or is
 /// gone). It is replaced only by a verified official index with a higher sequence; a test index never touches it. It
 /// is read before any plugin page can open ([`apply_revocation_lock`]).
+///
+/// The lock records the key that signed its index. A lock whose key is no longer an official key (rotated out, for
+/// example because it was stolen) keeps revoking what it revokes, but its sequence no longer counts: the first
+/// verified official index replaces it, whatever its sequence. Otherwise a stolen key could sign a huge sequence with
+/// an empty list and un-revoke every plugin for good.
 pub struct RevocationLock {
     path: PathBuf,
-    held: Mutex<Option<LockFile>>,
+    held: Mutex<Option<Held>>,
+}
+
+/// The lock in memory.
+struct Held {
+    file: LockFile,
+    /// The key of `file` is an official key: its sequence counts.
+    trusted: bool,
 }
 
 impl RevocationLock {
-    /// The lock saved in `index_dir` (configuration/plugins/index/); none when it is missing or unreadable.
-    pub fn load(index_dir: &Path) -> RevocationLock {
+    /// The lock saved in `index_dir` (configuration/plugins/index/); none when it is missing or unreadable. `trusted`
+    /// are the ids of the official keys.
+    pub fn load(index_dir: &Path, trusted: &[&str]) -> RevocationLock {
         let path = index_dir.join(LOCK_FILE);
         let held = std::fs::metadata(&path)
             .ok()
             .filter(|m| m.len() <= MAX_LOCK_BYTES)
             .and_then(|_| std::fs::read(&path).ok())
-            .and_then(|bytes| serde_json::from_slice::<LockFile>(&bytes).ok());
+            .and_then(|bytes| serde_json::from_slice::<LockFile>(&bytes).ok())
+            .map(|file| Held { trusted: trusted.contains(&file.key_id.as_str()), file });
         RevocationLock { path, held: Mutex::new(held) }
     }
 
-    /// The locked revocations.
+    /// The locked revocations (also those of a lock whose key is no longer trusted, until a trusted index replaces it).
     pub fn revoked(&self) -> Vec<Revoked> {
-        self.held.lock().as_ref().map(|l| l.revoked.clone()).unwrap_or_default()
+        self.held.lock().as_ref().map(|h| h.file.revoked.clone()).unwrap_or_default()
     }
 
-    /// The sequence of the index the lock comes from.
+    /// The sequence of the index the lock comes from, when it counts (its key is still trusted).
     #[cfg(test)]
     pub fn sequence(&self) -> Option<u64> {
-        self.held.lock().as_ref().map(|l| l.sequence)
+        self.held.lock().as_ref().filter(|h| h.trusted).map(|h| h.file.sequence)
     }
 
-    /// Takes the revocations of `index`, a verified official index, when it is newer than the one held (or none is
-    /// held): in memory at once, and on disk atomically. A failed write keeps the new lock in memory for this run.
-    fn accept(&self, index: &Index) -> std::io::Result<()> {
+    /// Takes the revocations of `index`, a verified official index signed with `key_id`, when it is newer than the one
+    /// held (or none is held, or the one held comes from a key that is no longer trusted): in memory at once, and on
+    /// disk atomically. A failed write keeps the new lock in memory for this run.
+    fn accept(&self, index: &Index, key_id: &KeyId) -> std::io::Result<()> {
         let mut held = self.held.lock();
-        if held.as_ref().is_some_and(|l| l.sequence >= index.sequence) {
+        if held.as_ref().is_some_and(|h| h.trusted && h.file.sequence >= index.sequence) {
             return Ok(());
         }
-        let lock = LockFile { sequence: index.sequence, revoked: index.revoked.clone() };
-        *held = Some(lock.clone());
+        let lock = LockFile { sequence: index.sequence, key_id: key_id.to_string(), revoked: index.revoked.clone() };
+        *held = Some(Held { file: lock.clone(), trusted: true });
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -455,8 +495,8 @@ impl IndexStore {
     /// A verified official index raises the revocation lock when it is newer (a write failure is not fatal: the lock
     /// in memory holds for this run, and the next accepted index writes it again).
     fn note(&self, state: &IndexState) {
-        if let (IndexSource::Official, Some(index)) = (state.source, &state.index) {
-            let _ = self.lock.accept(index);
+        if let (IndexSource::Official, Some(index), Some(key)) = (state.source, &state.index, &state.key_id) {
+            let _ = self.lock.accept(index, key);
         }
     }
 
@@ -516,7 +556,7 @@ impl IndexStore {
 /// is needed (only that small file: no cache, no verification).
 pub fn revocation_lock() -> &'static Arc<RevocationLock> {
     static LOCK: OnceLock<Arc<RevocationLock>> = OnceLock::new();
-    LOCK.get_or_init(|| Arc::new(RevocationLock::load(&super::packs::root().join("index"))))
+    LOCK.get_or_init(|| Arc::new(RevocationLock::load(&super::packs::root().join("index"), &official_key_ids())))
 }
 
 /// The process-wide store, loaded from the cache the saved settings choose the first time it is needed.
@@ -852,6 +892,130 @@ pub(crate) mod tests {
         assert_eq!(refresh_from(&client(), &source, now()).await.error, None);
     }
 
+    /// `index_json` of `sequence`, signed with `secret`.
+    fn signed_with(server: &Server, secret: &[u8; 32], sequence: u64) -> (Vec<u8>, String) {
+        let bytes = index_json(server, sequence, "2026-12-13T10:00:00Z");
+        let sig = aio_plugin_index::sign(&bytes, secret);
+        (bytes, sig)
+    }
+
+    #[tokio::test]
+    async fn floor_from_untrusted_key_is_ignored() {
+        let server = Server::start().await;
+        let root = tempfile::tempdir().unwrap();
+        // Both keys trusted (OTHER plays the key that is later found stolen).
+        let both = InstallerSettings { plugin_index_test_keys: vec![public(&SECRET), public(&OTHER)], ..dev_settings(&server) };
+        let source = feed_for(&both, &[], root.path()).unwrap();
+        let (bytes, sig) = signed_with(&server, &SECRET, 10);
+        server.publish(&bytes, &sig);
+        assert_eq!(refresh_from(&client(), &source, now()).await.error, None);
+
+        // The stolen key pushes the floor as far as it may in one step; state.json records that key.
+        let pushed = 10 + MAX_SEQUENCE_JUMP;
+        let (bytes, sig) = signed_with(&server, &OTHER, pushed);
+        server.publish(&bytes, &sig);
+        assert_eq!(refresh_from(&client(), &source, now()).await.error, None);
+        assert_eq!(sequence_file(&source.cache), pushed);
+        let state: serde_json::Value = serde_json::from_slice(&std::fs::read(source.cache.join("state.json")).unwrap()).unwrap();
+        assert_eq!(state["key_id"], kid(&OTHER));
+
+        // While that key is trusted, the honest next index is a rollback.
+        let (honest, honest_sig) = signed_with(&server, &SECRET, 11);
+        server.publish(&honest, &honest_sig);
+        assert_eq!(refresh_from(&client(), &source, now()).await.error.as_deref(), Some(ROLLBACK));
+
+        // The rotation drops the stolen key: its floor (and its cache) no longer count, the honest index is accepted
+        // and becomes the floor, under the trusted key.
+        let rotated = feed_for(&dev_settings(&server), &[], root.path()).unwrap();
+        assert_eq!(rotated.cache, source.cache);
+        let loaded = load_cache_from(&rotated, now());
+        assert!(loaded.index.is_none(), "the stolen key's cache no longer verifies");
+        assert_ne!(loaded.error.as_deref(), Some(ROLLBACK));
+        let state = refresh_from(&client(), &rotated, now()).await;
+        assert_eq!(state.error, None);
+        assert_eq!(state.index.map(|i| i.sequence), Some(11));
+        assert_eq!(sequence_file(&rotated.cache), 11);
+        // A restart keeps the new floor: an older index is refused again.
+        assert_eq!(load_cache_from(&rotated, now()).index.map(|i| i.sequence), Some(11));
+        let (older, older_sig) = signed_with(&server, &SECRET, 10);
+        server.publish(&older, &older_sig);
+        assert_eq!(refresh_from(&client(), &rotated, now()).await.error.as_deref(), Some(ROLLBACK));
+
+        // A state.json without a key id (or with an unknown one) is no floor at all.
+        std::fs::write(rotated.cache.join("state.json"), "{\"sequence\":99}").unwrap();
+        assert_eq!(stored_sequence(&rotated.cache, &rotated.key_refs()), None);
+        std::fs::write(rotated.cache.join("state.json"), state_json(&[7; 32], 99)).unwrap();
+        assert_eq!(stored_sequence(&rotated.cache, &rotated.key_refs()), None);
+        std::fs::write(rotated.cache.join("state.json"), state_json(&SECRET, 99)).unwrap();
+        assert_eq!(stored_sequence(&rotated.cache, &rotated.key_refs()), Some(99));
+    }
+
+    #[tokio::test]
+    async fn huge_sequence_jump_refused() {
+        let server = Server::start().await;
+        let root = tempfile::tempdir().unwrap();
+        let source = accepted(&server, root.path()).await;
+
+        // u64::MAX, or anything more than MAX_SEQUENCE_JUMP above the floor: refused, nothing stored.
+        for sequence in [u64::MAX, 10 + MAX_SEQUENCE_JUMP + 1] {
+            let (bytes, sig) = signed(&server, sequence);
+            server.publish(&bytes, &sig);
+            let state = refresh_from(&client(), &source, now()).await;
+            assert!(state.error.as_deref().is_some_and(|e| e.contains("too far ahead")), "{:?}", state.error);
+            assert_eq!(state.index.map(|i| i.sequence), Some(10), "the cached index stays");
+            assert_eq!(sequence_file(&source.cache), 10);
+        }
+        // Exactly the largest step is accepted.
+        let (bytes, sig) = signed(&server, 10 + MAX_SEQUENCE_JUMP);
+        server.publish(&bytes, &sig);
+        assert_eq!(refresh_from(&client(), &source, now()).await.error, None);
+        assert_eq!(sequence_file(&source.cache), 10 + MAX_SEQUENCE_JUMP);
+
+        // A first index (no floor yet) may have any sequence.
+        let fresh = tempfile::tempdir().unwrap();
+        let first = feed_for(&dev_settings(&server), &[], fresh.path()).unwrap();
+        let (bytes, sig) = signed(&server, u64::MAX - 1);
+        server.publish(&bytes, &sig);
+        assert_eq!(refresh_from(&client(), &first, now()).await.error, None);
+    }
+
+    #[test]
+    fn lock_from_untrusted_key_is_ignored() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("index");
+        std::fs::create_dir_all(&dir).unwrap();
+        // A lock from an index signed with OTHER (later found stolen): a huge sequence, one revocation.
+        let lock_file = json!({
+            "sequence": u64::MAX, "key_id": kid(&OTHER),
+            "revoked": [{ "id": "demo", "versions": ["*"], "reason": "From the old key" }]
+        });
+        std::fs::write(dir.join(LOCK_FILE), lock_file.to_string()).unwrap();
+
+        // While OTHER is trusted its sequence counts: a newer-looking index can never replace it.
+        let other_trusted = RevocationLock::load(&dir, &[kid(&OTHER).as_str()]);
+        assert_eq!(other_trusted.sequence(), Some(u64::MAX));
+
+        // After the rotation (only SECRET trusted): its sequence no longer counts, but it still revokes...
+        let key = public(&SECRET);
+        let (id, b64) = key.split_once(':').unwrap();
+        let rotated = Arc::new(RevocationLock::load(&dir, &[id]));
+        assert_eq!(rotated.sequence(), None);
+        assert_eq!(ids(&rotated.revoked()), vec![("demo".to_string(), vec!["*".to_string()])]);
+        // ...until the first verified official index, whatever its sequence, replaces it, under the trusted key.
+        official_cache_revoking(root.path(), &SECRET, 3, json!([{ "id": "evil", "versions": ["1.0.0"], "reason": "New" }]));
+        let store = IndexStore::new(root.path().to_path_buf(), &[(id, b64)], &InstallerSettings::default(), rotated.clone(), now());
+        assert_eq!(ids(&store.revocations().0), vec![("evil".to_string(), vec!["1.0.0".to_string()])]);
+        assert_eq!(rotated.sequence(), Some(3));
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join(LOCK_FILE)).unwrap()).unwrap();
+        assert_eq!((saved["sequence"].as_u64(), saved["key_id"].as_str()), (Some(3), Some(id)));
+        // From now on the normal rule: an older index does not replace it.
+        let reloaded = RevocationLock::load(&dir, &[id]);
+        assert_eq!(reloaded.sequence(), Some(3));
+        official_cache_revoking(root.path(), &SECRET, 2, json!([]));
+        let store = IndexStore::new(root.path().to_path_buf(), &[(id, b64)], &InstallerSettings::default(), Arc::new(reloaded), now());
+        assert_eq!(store.revocations().0.len(), 1);
+    }
+
     #[tokio::test]
     async fn fetch_failure_keeps_cache() {
         let server = Server::start().await;
@@ -936,12 +1100,23 @@ pub(crate) mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("index.json"), &index).unwrap();
         std::fs::write(dir.join("index.json.sig"), aio_plugin_index::sign(&index, secret)).unwrap();
-        std::fs::write(dir.join("state.json"), format!("{{\"sequence\":{sequence}}}")).unwrap();
+        std::fs::write(dir.join("state.json"), state_json(secret, sequence)).unwrap();
     }
 
-    /// A revocation lock read from `root`/index, as at a start of the program.
+    /// The key id of `secret`.
+    fn kid(secret: &[u8; 32]) -> String {
+        public(secret).split_once(':').unwrap().0.to_string()
+    }
+
+    /// A `state.json` recording `sequence` under the key of `secret`.
+    fn state_json(secret: &[u8; 32], sequence: u64) -> String {
+        json!({ "sequence": sequence, "key_id": kid(secret) }).to_string()
+    }
+
+    /// A revocation lock read from `root`/index, as at a start of the program (both test keys trusted).
     fn lock_of(root: &Path) -> Arc<RevocationLock> {
-        Arc::new(RevocationLock::load(&root.join("index")))
+        let (secret, other) = (kid(&SECRET), kid(&OTHER));
+        Arc::new(RevocationLock::load(&root.join("index"), &[secret.as_str(), other.as_str()]))
     }
 
     fn ids(revoked: &[Revoked]) -> Vec<(String, Vec<String>)> {
@@ -978,7 +1153,7 @@ pub(crate) mod tests {
 
         // An older official index (a cache restored from a backup) does not replace the lock...
         official_cache_revoking(root.path(), &OTHER, 4, json!([]));
-        std::fs::write(root.path().join("index").join("state.json"), "{\"sequence\":4}").unwrap();
+        std::fs::write(root.path().join("index").join("state.json"), state_json(&OTHER, 4)).unwrap();
         let store = IndexStore::new(root.path().to_path_buf(), &keys, &InstallerSettings::default(), lock_of(root.path()), now());
         assert_eq!(store.state().index.map(|i| i.sequence), Some(4));
         assert_eq!(store.revocations().0.len(), 1, "the lock comes from a newer index");

@@ -184,6 +184,8 @@ pub struct ExternalPlugins {
     list: Mutex<Vec<ExternalInfo>>,
     dev: Mutex<Dev>,
     revoked: Mutex<Revocations>,
+    /// The ids of the official index keys: a verified install signed with another key is not shown as verified.
+    trusted_keys: Vec<String>,
 }
 
 /// The revocations applied last ([`ExternalPlugins::set_revocations`]): they lock the switch of every installed
@@ -479,9 +481,10 @@ fn source_name(source: IndexSource) -> &'static str {
 }
 
 /// True when the plugin installed in `dir` with `manifest` was installed from the official index and its files are
-/// unchanged since: `verified.json` parses, is from the official index, has the manifest's version, and the hashes
-/// of `plugin.wasm` and `manifest.json` on disk are the recorded ones.
-fn is_verified(dir: &Path, manifest: &Manifest) -> bool {
+/// unchanged since: `verified.json` parses, is from the official index, was signed with a key that is still one of
+/// `trusted_keys` (a rotation away from a stolen key takes the mark off what that key's index installed), has the
+/// manifest's version, and the hashes of `plugin.wasm` and `manifest.json` on disk are the recorded ones.
+fn is_verified(dir: &Path, manifest: &Manifest, trusted_keys: &[String]) -> bool {
     let path = dir.join(VERIFIED_FILE);
     if std::fs::metadata(&path).map_or(true, |m| m.len() > MAX_VERIFIED_BYTES) {
         return false;
@@ -490,6 +493,7 @@ fn is_verified(dir: &Path, manifest: &Manifest) -> bool {
         return false;
     };
     record.source == source_name(IndexSource::Official)
+        && trusted_keys.contains(&record.key_id)
         && record.version == manifest.version
         && file_sha256(&dir.join("plugin.wasm")).is_ok_and(|h| h == record.wasm_sha256)
         && file_sha256(&dir.join("manifest.json")).is_ok_and(|h| h == record.manifest_sha256)
@@ -519,8 +523,24 @@ fn version_key(version: &str) -> Option<[u64; 3]> {
 }
 
 impl ExternalPlugins {
+    /// The plugins installed under `root`; "Verified" trusts the official index keys (and, in tests, the test key).
     pub fn new(root: PathBuf) -> Self {
-        let this = Self { root, list: Mutex::new(Vec::new()), dev: Mutex::new(Dev::default()), revoked: Mutex::new(Revocations::default()) };
+        #[allow(unused_mut)]
+        let mut trusted: Vec<String> = super::index::official_key_ids().into_iter().map(str::to_string).collect();
+        #[cfg(test)]
+        trusted.push(tests::test_key_id());
+        Self::with_trusted_keys(root, trusted)
+    }
+
+    /// [`ExternalPlugins::new`] with `trusted_keys` as the ids of the keys whose verified installs count.
+    fn with_trusted_keys(root: PathBuf, trusted_keys: Vec<String>) -> Self {
+        let this = Self {
+            root,
+            list: Mutex::new(Vec::new()),
+            dev: Mutex::new(Dev::default()),
+            revoked: Mutex::new(Revocations::default()),
+            trusted_keys,
+        };
         this.reload();
         this
     }
@@ -529,7 +549,7 @@ impl ExternalPlugins {
     pub fn reload(&self) {
         let list = package::installed(&self.root)
             .into_iter()
-            .map(|manifest| ExternalInfo { verified: is_verified(&self.dir(&manifest.id), &manifest), manifest, dev: false })
+            .map(|manifest| ExternalInfo { verified: is_verified(&self.dir(&manifest.id), &manifest, &self.trusted_keys), manifest, dev: false })
             .collect();
         *self.list.lock() = list;
     }
@@ -807,10 +827,13 @@ impl ExternalPlugins {
             let Some(current) = current else {
                 bail!("The plugin index cannot be used to install right now (it is out of date or not available). Try again after it is checked.");
             };
-            if current.source != verification.source || current.key_id.as_str() != verification.key_id {
+            let manifest = &pending.package.manifest;
+            // The index must still list exactly these bytes (a delisted or replaced entry is not installed).
+            let still_listed =
+                current.index.entry(&manifest.id).is_some_and(|e| e.sha256 == verification.sha256 && e.version == manifest.version);
+            if current.source != verification.source || current.key_id.as_str() != verification.key_id || !still_listed {
                 bail!("The plugin index changed while you were deciding. Open the plugin again.");
             }
-            let manifest = &pending.package.manifest;
             if let Some(revoked) = current.index.revocation_for(&manifest.id, &manifest.version) {
                 bail!("This version was revoked by the index: {}", display_safe(&revoked.reason, 300));
             }
@@ -1250,6 +1273,11 @@ mod tests {
 
     use crate::plugins::index::tests::{public, Server, SECRET};
 
+    /// The id of the key the test indexes are signed with ([`ExternalPlugins::new`] trusts it in tests).
+    pub(super) fn test_key_id() -> String {
+        public(&SECRET).split_once(':').unwrap().0.to_string()
+    }
+
     fn aiop_api(author: &str, id: &str, version: &str, api: &str, permissions: &[&str]) -> Vec<u8> {
         let manifest = serde_json::json!({
             "id": id, "name": "Demo", "version": version, "author": author, "description": "A demo",
@@ -1482,6 +1510,9 @@ mod tests {
         // A restart reads it again.
         let restarted = ExternalPlugins::new(root.clone());
         assert!(restarted.list()[0].verified);
+        // A release that no longer trusts the key (rotated away from a stolen key): no longer verified.
+        let rotated = ExternalPlugins::with_trusted_keys(root.clone(), vec!["0000000000000000".into()]);
+        assert!(!rotated.list()[0].verified);
 
         // plugin.wasm changed on disk: no longer verified.
         let wasm = root.join("demo/plugin.wasm");
@@ -1617,6 +1648,13 @@ mod tests {
         assert!(ext.commit_against(&pending, Some(&test)).is_err());
         let other_key = SignedIndex { key_id: aio_plugin_index::key_id(&[1; 32]), ..signed.clone() };
         assert!(ext.commit_against(&pending, Some(&other_key)).is_err());
+        nothing_installed(&ext);
+        // The index no longer lists it (delisted, not revoked), or lists other bytes under this version.
+        let delisted = signed_index(p, IndexSource::Official, vec![], serde_json::json!([]));
+        assert!(ext.commit_against(&pending, Some(&delisted)).unwrap_err().to_string().contains("changed"));
+        let other_bytes = aiop("demo", "1.0.0", &["ssh"]);
+        let replaced = signed_index(p, IndexSource::Official, vec![entry_json(p, &other_bytes, "demo", "1.0.0", "Someone", &["ssh"])], serde_json::json!([]));
+        assert!(ext.commit_against(&pending, Some(&replaced)).is_err());
         nothing_installed(&ext);
 
         // Another version revoked: it installs, verified. A file install never needs the index.

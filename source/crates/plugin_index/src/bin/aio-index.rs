@@ -130,13 +130,19 @@ fn previous_sequence(path: &str, pubkeys: &str, prefix: &str) -> Result<u64> {
 }
 
 fn build(a: &Args) -> Result<()> {
-    a.only(&["entries", "revoked", "previous", "pubkey", "days", "prefix", "out"], 0)?;
+    a.only(&["entries", "revoked", "previous", "pubkey", "min-sequence", "days", "prefix", "out"], 0)?;
     let prefix = a.get("prefix")?;
     let days: i64 = a.get("days")?.parse().ok().filter(|d| (1..=365).contains(d)).context("--days must be 1 to 365")?;
     let previous = match a.get("previous")? {
         // The very first index (bootstrap): nothing to verify.
         "none" => 0,
         path => previous_sequence(path, a.get("pubkey").context("--previous <index.json> needs --pubkey")?, prefix)?,
+    };
+    // --min-sequence N: the new sequence is at least N. Only for recovery, when index.json was lost or restored too
+    // old: Managers refuse anything below the highest sequence they stored, so the next index must jump past it.
+    let min_sequence: u64 = match a.flags.get("min-sequence") {
+        Some(n) => n.parse().ok().filter(|n| *n >= 1).context("--min-sequence must be a whole number from 1")?,
+        None => 1,
     };
     let dir = a.get("entries")?;
     let mut files = Vec::new();
@@ -161,7 +167,7 @@ fn build(a: &Args) -> Result<()> {
     let now = Utc::now();
     let index = Index {
         schema: aio_plugin_index::SCHEMA,
-        sequence: previous.checked_add(1).context("sequence overflow")?,
+        sequence: previous.checked_add(1).context("sequence overflow")?.max(min_sequence),
         generated: now,
         expires: now + Duration::days(days),
         plugins,

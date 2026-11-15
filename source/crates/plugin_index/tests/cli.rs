@@ -129,6 +129,29 @@ fn build_increments_sequence() {
 }
 
 #[test]
+fn build_min_sequence() {
+    let t = tempfile::tempdir().unwrap();
+    setup_entries(t.path());
+    let (secret, public) = keypair(&t.path().join("key"));
+    let seq = |p: &Path| serde_json::from_slice::<Value>(&std::fs::read(p).unwrap()).unwrap()["sequence"].as_u64().unwrap();
+    // Recovery after a lost index.json: jump past what Managers stored.
+    let first = t.path().join("first.json");
+    let o = build_with(t.path(), &["--previous", "none", "--min-sequence", "500"], &first);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(seq(&first), 500);
+    // Below previous + 1 it changes nothing.
+    ok(&["sign", "--key", s(&secret), "--prefix", PREFIX, s(&first)]);
+    let second = t.path().join("second.json");
+    let o = build_with(t.path(), &["--previous", s(&first), "--pubkey", &public, "--min-sequence", "3"], &second);
+    assert!(o.status.success(), "{}", stderr(&o));
+    assert_eq!(seq(&second), 501);
+    for bad in ["0", "-1", "x", ""] {
+        let o = build_with(t.path(), &["--previous", "none", "--min-sequence", bad], &t.path().join("bad.json"));
+        assert!(!o.status.success() && stderr(&o).contains("--min-sequence"), "{bad}: {}", stderr(&o));
+    }
+}
+
+#[test]
 fn build_verifies_previous_index() {
     let t = tempfile::tempdir().unwrap();
     setup_entries(t.path());

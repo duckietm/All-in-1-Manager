@@ -1835,6 +1835,16 @@ old one. The new key does not start the numbering again: `aio-index build --prev
 verifies the previous index (with either key) and continues from its sequence number, so the highest number each
 Manager has stored stays valid and nothing is refused as a rollback.
 
+The highest number (`state.json`) and the revocation list (`revoked.json`) are saved together with the id of the key
+that signed their index. When a Manager release no longer trusts that key (a rotation away from a stolen key), the
+stored number no longer counts and the saved revocation list is replaced by the first verified index, whatever its
+number (until then it keeps revoking what it revoked). Plugins installed from an index of a key that is no longer
+trusted lose "Verified by the official index". A fetched index may also raise the stored number by at most 1,000,000
+at once; a bigger jump is refused. So an index signed with a stolen key can neither push the number so high that no
+honest index is accepted again, nor empty the revocation list for good: shipping a Manager without that key undoes
+it. If `index.json` is ever lost, `aio-index build --min-sequence <n>` starts the new index at `n` (above the highest
+number published), so Managers accept it.
+
 ### Limits and safety
 
 - A plugin gets at most 64 MiB of memory and 5 seconds per call. Time spent waiting for you (a dialog, an approval)

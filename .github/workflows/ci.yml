@@ -99,3 +99,21 @@ jobs:
           for example in hello notes; do
             (cd "source/plugins/$example" && "$tool" pack --locked && "$tool" check dist/*.aiop)
           done
+
+  # The SDK promises `rust-version = "1.88"` (source/plugins/sdk/Cargo.toml): build it and the examples with exactly
+  # that toolchain, so a newer language or library feature cannot slip in.
+  plugins-msrv:
+    name: Plugin SDK on Rust 1.88
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: source/plugins
+          key: msrv-1.88
+      - name: Build the SDK and examples with Rust 1.88 (wasm32-wasip2)
+        working-directory: source/plugins
+        run: cargo build --target wasm32-wasip2 --locked -p aio-plugin-sdk -p hello -p notes

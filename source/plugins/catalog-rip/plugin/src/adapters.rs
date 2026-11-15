@@ -102,11 +102,13 @@ pub const PROBE_EVERY_MS: u64 = 2_000;
 
 /// When the idle page looks for G-Earth, and what it found.
 ///
-/// One port per probe, at most every [`PROBE_EVERY_MS`]: on Windows a refused connection to a local port takes
-/// about 2 s, so a sweep of the ten ports in one render would freeze the page for 20 s. The page probes on its own
-/// only until one whole sweep of 9092-9101 got no answer; then it waits for [`Probe::sweep_again`] ("Check again",
-/// or a rip that ended; "Rip catalogue" tries every port itself). A port that answered is rechecked (one cheap
-/// connect); when it stops answering, one new sweep starts at 9092.
+/// One port per probe: on Windows a refused connection to a local port takes about 2 s, so a sweep of the ten ports
+/// in one call would freeze the page for 20 s. The idle page is rendered only after an event, so on its own it
+/// probes at most one port per render, at most every [`PROBE_EVERY_MS`], until one whole sweep of 9092-9101 got no
+/// answer. [`Probe::start_sweep`] ("Check again", or a rip that ended) runs one whole sweep in ticks, one port per
+/// tick ([`Probe::sweep_port`]), and stops at the first port that answers or after the last one ("Rip catalogue"
+/// tries every port itself). A port that answered is rechecked (one cheap connect); when it stops answering, one new
+/// sweep starts at 9092.
 #[derive(Debug, Default, Clone)]
 pub struct Probe {
     last_ms: Option<u64>,
@@ -115,14 +117,15 @@ pub struct Probe {
     found: Option<u16>,
     /// Ports of the current sweep that did not answer.
     misses: u16,
-    last_tried: Option<u16>,
+    /// A sweep runs in ticks.
+    sweeping: bool,
 }
 
 impl Probe {
-    /// The port to try at `now_ms`, or `None`: the last probe was less than [`PROBE_EVERY_MS`] ago, or a whole
-    /// sweep got no answer.
+    /// The port a render may try at `now_ms`, or `None`: a sweep runs in ticks, the last probe was less than
+    /// [`PROBE_EVERY_MS`] ago, or a whole sweep got no answer.
     pub fn due(&self, now_ms: u64) -> Option<u16> {
-        if self.none_answered() {
+        if self.sweeping || self.none_answered() {
             return None;
         }
         if let Some(last) = self.last_ms {
@@ -136,10 +139,10 @@ impl Probe {
     /// What the probe of `port` at `now_ms` gave.
     pub fn record(&mut self, now_ms: u64, port: u16, answered: bool) {
         self.last_ms = Some(now_ms);
-        self.last_tried = Some(port);
         if answered {
             self.found = Some(port);
             self.misses = 0;
+            self.sweeping = false;
             return;
         }
         if self.found == Some(port) {
@@ -150,15 +153,43 @@ impl Probe {
         } else {
             self.next = (self.next + 1) % PORT_COUNT;
             self.misses = self.misses.saturating_add(1);
+            if self.misses >= PORT_COUNT {
+                self.sweeping = false;
+            }
         }
     }
 
-    /// One more sweep, starting now at 9092 ("Check again", or a rip ended). A found port is just rechecked now.
-    pub fn sweep_again(&mut self) {
+    /// One whole sweep in ticks, from 9092 ("Check again", or a rip ended). A found port is rechecked first.
+    pub fn start_sweep(&mut self) {
         self.last_ms = None;
+        self.sweeping = true;
         if self.found.is_none() {
             self.next = 0;
             self.misses = 0;
+        }
+    }
+
+    /// The port the next tick of a sweep tries; `None` when no sweep runs.
+    pub fn sweep_port(&self) -> Option<u16> {
+        self.sweeping.then(|| self.found.unwrap_or(FIRST_PORT + self.next))
+    }
+
+    /// The idle page's line about G-Earth.
+    pub fn status(&self) -> String {
+        let ports = format!("{FIRST_PORT}\u{2013}{LAST_PORT}");
+        if let Some(port) = self.sweep_port() {
+            return format!("Checking port {port}\u{2026}");
+        }
+        match self.found {
+            Some(port) => format!("Something answers on port {port} (G-Earth?)."),
+            None if self.none_answered() => {
+                format!("Not found on ports {ports}. Start G-Earth, then click Check again.")
+            }
+            None if self.misses > 0 => format!(
+                "Not found on ports {FIRST_PORT}\u{2013}{} so far. Start G-Earth, then click Check again.",
+                FIRST_PORT + self.misses - 1
+            ),
+            None => format!("Start G-Earth, then click Check again to look for it on ports {ports}."),
         }
     }
 
@@ -166,9 +197,6 @@ impl Probe {
         self.found
     }
 
-    pub fn last_tried(&self) -> Option<u16> {
-        self.last_tried
-    }
 
     /// Every port was tried since the last one that answered.
     pub fn none_answered(&self) -> bool {
@@ -484,8 +512,49 @@ mod tests {
         p.record(6_000, 9093, false);
         assert_eq!(p.found(), None);
         assert_eq!(p.due(8_000), Some(9092), "a new sweep starts at 9092");
-        p.sweep_again();
-        assert_eq!(p.due(8_001), Some(9092), "Check again does not wait");
+    }
+
+    /// Records misses on every port a tick sweep asks for until it asks for none.
+    fn tick_sweep(p: &mut Probe, answers: Option<u16>) -> Vec<u16> {
+        let mut tried = Vec::new();
+        while let Some(port) = p.sweep_port() {
+            assert!(tried.len() < 100, "the sweep never stops");
+            assert_eq!(p.due(0), None, "renders do not probe while a sweep runs");
+            assert_eq!(p.status(), format!("Checking port {port}\u{2026}"));
+            p.record(0, port, Some(port) == answers);
+            tried.push(port);
+        }
+        tried
+    }
+
+    #[test]
+    fn check_again_sweeps_every_port_in_ticks_once() {
+        let all: Vec<u16> = (9092..=9101).collect();
+        let mut p = Probe::default();
+        assert_eq!(p.status(), "Start G-Earth, then click Check again to look for it on ports 9092\u{2013}9101.");
+        p.record(0, 9092, false);
+        p.record(2_000, 9093, false);
+        assert_eq!(p.status(), "Not found on ports 9092\u{2013}9093 so far. Start G-Earth, then click Check again.");
+
+        // Check again: the whole sweep from 9092, one port per tick, without waiting; then it stops.
+        p.start_sweep();
+        assert_eq!(tick_sweep(&mut p, None), all);
+        assert!(p.none_answered());
+        assert_eq!(p.sweep_port(), None);
+        assert_eq!(p.status(), "Not found on ports 9092\u{2013}9101. Start G-Earth, then click Check again.");
+
+        // It stops at the first port that answers.
+        p.start_sweep();
+        assert_eq!(tick_sweep(&mut p, Some(9095)), [9092, 9093, 9094, 9095]);
+        assert_eq!(p.status(), "Something answers on port 9095 (G-Earth?).");
+
+        // With a port found, a sweep rechecks it; gone, it sweeps every port.
+        p.start_sweep();
+        assert_eq!(tick_sweep(&mut p, Some(9095)), [9095]);
+        p.start_sweep();
+        let mut expected = vec![9095];
+        expected.extend(&all);
+        assert_eq!(tick_sweep(&mut p, None), expected);
     }
 
     /// Records misses on every port the probe asks for until it asks for none.
@@ -510,13 +579,9 @@ mod tests {
         assert_eq!(p.due(now + 60_000), None, "no more probing on its own");
         assert_eq!(p.connect_order(), all);
 
-        // Check again (or a rip that ended): one more whole sweep.
-        p.sweep_again();
-        assert!(!p.none_answered());
-        assert_eq!(sweep_without_answer(&mut p, &mut now), all);
-
         // A found port that stops answering starts one sweep of all ten ports.
-        p.sweep_again();
+        p.start_sweep();
+        assert_eq!(p.sweep_port(), Some(9092));
         p.record(now, 9092, false);
         p.record(now + PROBE_EVERY_MS, 9093, false);
         p.record(now + 2 * PROBE_EVERY_MS, 9094, true);

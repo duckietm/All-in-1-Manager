@@ -426,8 +426,8 @@ impl Ripper {
             _ => "The catalogue rip stopped.",
         });
         self.outcome = Some(Outcome { ended, folder: run.folder, options: run.options, items: run.items });
-        // Look for G-Earth again: one more sweep (or a recheck of the port that answered).
-        self.probe.sweep_again();
+        // Look for G-Earth again: one more sweep in ticks (or a recheck of the port that answered).
+        self.probe.start_sweep();
     }
 
     fn import(&mut self) {
@@ -445,14 +445,29 @@ impl Ripper {
         }
     }
 
-    /// While idle: one G-Earth port, at most every 2 s.
+    /// While idle, in a render: one G-Earth port, at most every 2 s (not while a sweep runs in ticks).
     fn probe(&mut self) {
-        let now = self.clock.now_ms();
-        if let Some(port) = self.probe.due(now) {
-            // Connected and closed at once: G-Earth forgets an extension that leaves before it says who it is.
-            let answered = tcp::connect(port).is_ok();
-            self.probe.record(self.clock.now_ms(), port, answered);
+        if let Some(port) = self.probe.due(self.clock.now_ms()) {
+            self.probe_port(port);
         }
+    }
+
+    /// One tick of a "Check again" sweep: one port.
+    fn sweep(&mut self) {
+        if let Some(port) = self.probe.sweep_port() {
+            self.probe_port(port);
+        }
+    }
+
+    fn probe_port(&mut self, port: u16) {
+        // Connected and closed at once: G-Earth forgets an extension that leaves before it says who it is.
+        let answered = tcp::connect(port).is_ok();
+        self.probe.record(self.clock.now_ms(), port, answered);
+    }
+
+    /// Whether another tick is needed: a rip or a sweep runs.
+    fn busy(&self) -> bool {
+        self.run.is_some() || self.probe.sweep_port().is_some()
     }
 
     fn render_gearth(&self, ui: &mut Ui) {
@@ -465,22 +480,13 @@ impl Ripper {
                 }
                 return;
             }
-            match self.probe.found() {
-                Some(port) => ui.text(format!("Something answers on port {port} (G-Earth?).")),
-                None => {
-                    ui.text("Start G-Earth and log in to the hotel.");
-                    ui.text(format!("Download G-Earth: {GEARTH_RELEASES}"));
-                    let tried = match self.probe.last_tried() {
-                        Some(_) if self.probe.none_answered() => format!(
-                            "Nothing answers on ports {FIRST_PORT} to {LAST_PORT}. Click Check again once G-Earth runs."
-                        ),
-                        Some(port) => format!("Looking for G-Earth on ports {FIRST_PORT} to {LAST_PORT} (last tried: {port})."),
-                        None => format!("Looking for G-Earth on ports {FIRST_PORT} to {LAST_PORT}."),
-                    };
-                    ui.text(tried);
-                }
+            ui.text(self.probe.status());
+            if self.probe.found().is_none() {
+                ui.text(format!("Download G-Earth: {GEARTH_RELEASES}"));
             }
-            ui.button("check", "Check again");
+            if self.probe.sweep_port().is_none() {
+                ui.button("check", "Check again");
+            }
         });
     }
 
@@ -605,7 +611,7 @@ impl Plugin for Ripper {
                 "rip" if !running => self.start(),
                 "retry" if !running => self.retry(),
                 "cancel" => self.cancel(),
-                "check" => self.probe.sweep_again(),
+                "check" => self.probe.start_sweep(),
                 "reveal" => self.reveal(),
                 "import" => self.import(),
                 _ => {}
@@ -636,20 +642,26 @@ impl Plugin for Ripper {
             _ => {}
         }
         // Every event stops the ticks unless it asks again.
-        if self.run.is_some() {
+        if self.busy() {
             host::keep_working();
         }
         Ok(())
     }
 
     fn tick(&mut self) -> Result<(), String> {
-        let Some(run) = self.run.as_mut() else { return Ok(()) };
-        let mut lines = Vec::new();
-        let ended = run.tick(&self.clock, &mut lines);
-        self.push_log(lines);
-        match ended {
-            Some(ended) => self.finish(ended),
-            None => host::keep_working(),
+        match self.run.as_mut() {
+            Some(run) => {
+                let mut lines = Vec::new();
+                let ended = run.tick(&self.clock, &mut lines);
+                self.push_log(lines);
+                if let Some(ended) = ended {
+                    self.finish(ended);
+                }
+            }
+            None => self.sweep(),
+        }
+        if self.busy() {
+            host::keep_working();
         }
         Ok(())
     }

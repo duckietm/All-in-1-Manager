@@ -258,6 +258,12 @@ impl Index {
 }
 
 impl Entry {
+    /// Checks one entry the way [`Index::parse`] checks each of its entries (for tools that build an index).
+    pub fn check(&self, url_prefix: &str) -> Result<()> {
+        check_prefix(url_prefix)?;
+        check_entry(self, url_prefix)
+    }
+
     /// The permissions as parsed values ([`Index::parse`] already refused any that do not parse).
     pub fn permissions(&self) -> Result<Vec<Permission>> {
         self.permissions.iter().map(|p| Permission::parse(p)).collect()

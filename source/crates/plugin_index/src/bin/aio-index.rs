@@ -110,28 +110,50 @@ fn entry(a: &Args) -> Result<()> {
     Ok(())
 }
 
+/// The sequence of the previous index at `path`, after its signature (`<path>.sig`) verifies with one of `pubkeys`
+/// (base64 public keys separated by spaces or commas: the old and the new key during a rotation) and it parses as
+/// the Manager would parse it. A new key continues the same sequence (Ruling 12).
+fn previous_sequence(path: &str, pubkeys: &str, prefix: &str) -> Result<u64> {
+    let mut trusted = Vec::new();
+    for key in pubkeys.split(|c: char| c == ',' || c.is_whitespace()).filter(|k| !k.is_empty()) {
+        trusted.push((key_id(&decode_32(key, "a --pubkey key")?).to_string(), key.to_string()));
+    }
+    if trusted.is_empty() {
+        bail!("--pubkey has no key");
+    }
+    let trusted: Vec<(&str, &str)> = trusted.iter().map(|(id, key)| (id.as_str(), key.as_str())).collect();
+    let bytes = read(path)?;
+    let sig_path = format!("{path}.sig");
+    let sig = String::from_utf8(read(&sig_path)?).ok().with_context(|| format!("{sig_path} is not text"))?;
+    let (index, _) = verify_and_parse(&bytes, &sig, &trusted, prefix).with_context(|| format!("the previous index {path} does not verify"))?;
+    Ok(index.sequence)
+}
+
 fn build(a: &Args) -> Result<()> {
-    a.only(&["entries", "revoked", "previous", "days", "prefix", "out"], 0)?;
+    a.only(&["entries", "revoked", "previous", "pubkey", "days", "prefix", "out"], 0)?;
     let prefix = a.get("prefix")?;
     let days: i64 = a.get("days")?.parse().ok().filter(|d| (1..=365).contains(d)).context("--days must be 1 to 365")?;
     let previous = match a.get("previous")? {
+        // The very first index (bootstrap): nothing to verify.
         "none" => 0,
-        path => {
-            let v: serde_json::Value = serde_json::from_slice(&read(path)?).context("the previous index is not valid json")?;
-            v["sequence"].as_u64().context("the previous index has no sequence")?
-        }
+        path => previous_sequence(path, a.get("pubkey").context("--previous <index.json> needs --pubkey")?, prefix)?,
     };
     let dir = a.get("entries")?;
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .with_context(|| format!("cannot read {dir}"))?
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .collect();
+    let mut files = Vec::new();
+    for item in std::fs::read_dir(dir).with_context(|| format!("cannot read {dir}"))? {
+        let path = item.with_context(|| format!("cannot read {dir}"))?.path();
+        if path.extension().is_some_and(|x| x == "json") {
+            files.push(path);
+        }
+    }
     files.sort();
+    // Any entry file that cannot be read or is not a valid entry fails the build: a plugin must never drop out of a
+    // signed index silently.
     let mut plugins = Vec::new();
     for f in &files {
-        let e: Entry = serde_json::from_slice(&read(&f.to_string_lossy())?)
-            .with_context(|| format!("{} is not a valid entry", f.display()))?;
+        let name = f.display();
+        let e: Entry = serde_json::from_slice(&read(&f.to_string_lossy())?).with_context(|| format!("{name} is not a valid entry"))?;
+        e.check(prefix).with_context(|| format!("{name} is not a valid entry"))?;
         plugins.push(e);
     }
     plugins.sort_by(|x, y| x.id.cmp(&y.id));

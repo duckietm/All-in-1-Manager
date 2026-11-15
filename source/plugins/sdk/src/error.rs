@@ -179,6 +179,7 @@ mod tests {
             "permission denied: host 192.168.1.2 cannot be asked for",
             "permission denied: host example.org was refused",
             "permission denied: host example.org was refused (too many hosts were refused this session)",
+            "permission denied: host example.org was not asked (too many dialogs in one call)",
             "permission denied: at most 64 hosts can be allowed; forget one on the Plugins page",
             "permission denied: host rebind.example.org resolves to a local address",
             "permission denied: this host cannot fetch from asked hosts",

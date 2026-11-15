@@ -137,6 +137,7 @@ rest of the message says what is missing:
 | `permission denied: port 3000 is not declared with tcp:localhost:3000` | Add `tcp:localhost:3000`. |
 | `permission denied: at most 4 local connections may be open at once` | Close or drop connections you no longer use. |
 | `permission denied: host <host> was refused` | The user said no under `http:ask`, now or earlier in this session. The Manager asks again after a restart. |
+| `permission denied: host <host> was not asked (too many dialogs in one call)` | The call had already opened 20 dialogs, so the question was not shown and nothing was remembered. Ask fewer things per call; the next call asks again. |
 | `permission denied: host <host> cannot be asked for` | `http:ask` asks only about public host names: not an IP address, `localhost`, a single-label or a `.local`, `.lan`, `.internal` or `.home.arpa` name. |
 | `permission denied: host <host> resolves to a local address` | Under `http:ask`, the host's addresses are all on this computer or the local network. |
 | `permission denied: at most 64 hosts can be allowed; forget one on the Plugins page` | The user allowed 64 hosts already: they can **Forget** some under **Hosts you allowed**. |

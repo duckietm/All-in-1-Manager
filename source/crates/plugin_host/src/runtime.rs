@@ -513,9 +513,9 @@ impl HostState {
         if self.hosts.is_full() {
             return Err(deny(format!("at most {MAX_ASKED_HOSTS} hosts can be allowed; forget one on the Plugins page")));
         }
-        // Past the dialog limit the question gets the cancel answer, not shown and not remembered.
+        // Past the dialog limit the question is not shown and nothing is remembered: the user did not refuse.
         if !self.dialog_allowed() {
-            return Err(refused());
+            return Err(deny(format!("host {host} was not asked (too many dialogs in one call)")));
         }
         let (services, name) = (self.services.clone(), self.plugin_name.clone());
         match self.waiting(services.ask_host(&name, host)).await {
@@ -1003,10 +1003,12 @@ impl HostPickedFolder for HostState {
         self.services.reveal_folder(&root)
     }
 
+    /// Like `write`: the checks first, then the read (up to 32 MiB) off the async workers with the clock paused.
     async fn open_import_preview(&mut self, folder: Resource<PickedFolder>, path: String) -> Result<(), String> {
+        let job = self.folder(&folder)?.read_job(&path)?;
         let (name, bytes) = {
             let _paused = Paused::begin(&self.clock);
-            self.folder(&folder)?.read_own(&path)?
+            tokio::task::spawn_blocking(move || job.run()).await.map_err(|_| "the read stopped".to_string())??
         };
         self.services.open_import_preview(name, bytes);
         Ok(())

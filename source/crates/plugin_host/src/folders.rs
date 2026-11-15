@@ -184,20 +184,13 @@ impl PickedFolder {
         self.total = self.total.saturating_sub(old).saturating_add(len);
     }
 
-    /// The bytes and name of `path`, a file this handle wrote, for the import preview.
-    pub(crate) fn read_own(&self, path: &str) -> Result<(String, Vec<u8>), String> {
+    /// Checks a read of `path` for the import preview: only a file this handle wrote; nothing is touched yet.
+    pub(crate) fn read_job(&self, path: &str) -> Result<ReadJob, String> {
         let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
         if !self.written.contains_key(path) {
             return Err(format!("permission denied: {path} was not written through this folder"));
         }
-        match walk(&self.root, &segments, path)? {
-            Some(meta) if meta.is_file() => {}
-            Some(_) => return Err("not a file".into()),
-            None => return Err("file not found".into()),
-        }
-        let target = join(&self.root, &segments);
-        let bytes = read_limited(&target)?;
-        Ok((segments.last().cloned().unwrap_or_default(), bytes))
+        Ok(ReadJob { root: self.root.clone(), rel: path.to_string(), segments })
     }
 
     /// The folder to show in the file manager, at most once per [`REVEAL_SPACING`].
@@ -206,8 +199,33 @@ impl PickedFolder {
             return Err(format!("permission denied: the folder was shown less than {} s ago", REVEAL_SPACING.as_secs()));
         }
         check_root(&self.root)?;
+        // Still a folder: a file put in its place would be opened, not shown.
+        if !fs::symlink_metadata(&self.root).map_err(|e| io_text(&e))?.is_dir() {
+            return Err("permission denied: the folder is no longer a folder".into());
+        }
         self.last_reveal = Some(Instant::now());
         Ok(self.root.clone())
+    }
+}
+
+/// A checked read of a file a handle wrote ([`PickedFolder::read_job`]), run off the async workers.
+#[derive(Debug)]
+pub(crate) struct ReadJob {
+    root: PathBuf,
+    rel: String,
+    segments: Vec<String>,
+}
+
+impl ReadJob {
+    /// The file's name and bytes (at most the read limit). Blocking file I/O.
+    pub(crate) fn run(self) -> Result<(String, Vec<u8>), String> {
+        match walk(&self.root, &self.segments, &self.rel)? {
+            Some(meta) if meta.is_file() => {}
+            Some(_) => return Err("not a file".into()),
+            None => return Err("file not found".into()),
+        }
+        let bytes = read_limited(&join(&self.root, &self.segments))?;
+        Ok((self.segments.last().cloned().unwrap_or_default(), bytes))
     }
 }
 
@@ -341,4 +359,36 @@ fn walk(root: &Path, segments: &[String], rel: &str) -> Result<Option<Metadata>,
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reveal_refuses_a_root_that_is_no_longer_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let picked = dir.path().join("out");
+        fs::create_dir(&picked).unwrap();
+        let mut folder = PickedFolder::open(&picked, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        // Replaced by a file of the same name: the path still canonicalises to itself, but it is not the folder.
+        fs::remove_dir(&picked).unwrap();
+        fs::write(&picked, b"not a folder").unwrap();
+        let error = folder.reveal_path().unwrap_err();
+        assert!(error.starts_with("permission denied:"), "{error}");
+        // A folder again: shown.
+        fs::remove_file(&picked).unwrap();
+        fs::create_dir(&picked).unwrap();
+        assert_eq!(folder.reveal_path().unwrap(), fs::canonicalize(&picked).unwrap());
+    }
+
+    #[test]
+    fn read_job_reads_only_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        assert!(folder.read_job("a.json").unwrap_err().starts_with("permission denied:"));
+        folder.check_write("a.json", 2).unwrap().run(b"{}").unwrap();
+        folder.record("a.json", 2);
+        assert_eq!(folder.read_job("a.json").unwrap().run().unwrap(), ("a.json".to_string(), b"{}".to_vec()));
+    }
 }

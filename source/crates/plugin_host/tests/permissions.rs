@@ -861,6 +861,23 @@ async fn refused_host_not_asked_again_in_session() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn host_past_the_dialog_budget_is_not_asked() {
+    let root = tempfile::tempdir().unwrap();
+    let hosts = Arc::new(AskedHosts::persisted(root.path().join("http-hosts.json")));
+    let fake = Arc::new(Fake { body: 1, hosts: Some(hosts.clone()), ..Fake::default() });
+    let mut inst = hello_with(root.path(), &["http:ask"], fake.clone()).await;
+    let host = inst.host_for_tests();
+    for _ in 0..aio_plugin_host::runtime::MAX_DIALOGS {
+        host.ask("Again?".into()).await;
+    }
+    let asked = fake.asks.lock().unwrap().len();
+    let e = denied(host.http_get("https://other.example.org/".into()).await);
+    assert_eq!(e, "permission denied: host other.example.org was not asked (too many dialogs in one call)");
+    assert_eq!(fake.asks.lock().unwrap().len(), asked, "no question shown");
+    assert!(hosts.allowed().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn undeclared_host_without_ask_denied() {
     let root = tempfile::tempdir().unwrap();
     let fake = Arc::new(Fake { body: 1, ..Fake::default() });
@@ -918,10 +935,18 @@ fn local_addresses_are_recognised() {
         "127.0.0.1", "127.255.0.9", "10.1.2.3", "172.16.0.1", "172.31.255.255", "192.168.0.10", "169.254.1.1", "0.0.0.0",
         "100.64.0.1", "100.127.255.255", "::1", "::", "fc00::1", "fd12:3456::1", "fe80::1", "febf::1", "::ffff:127.0.0.1",
         "::ffff:192.168.1.1", "::ffff:100.64.0.1", "64:ff9b::7f00:1", "224.0.0.1", "255.255.255.255",
+        // Local-use NAT64, IPv4-translated, site-local, 6to4 of a local address, IETF protocol assignments,
+        // benchmarking and the reserved 240/4.
+        "64:ff9b:1::1", "64:ff9b:1:ffff::808:808", "::ffff:0:127.0.0.1", "::ffff:0:10.0.0.1", "fec0::1", "feff::1",
+        "2002:7f00:1::1", "2002:c0a8:101::", "192.0.0.1", "192.0.0.255", "198.18.0.1", "198.19.255.255", "240.0.0.1",
+        "250.1.2.3",
     ] {
         assert!(is_local_address(local.parse::<IpAddr>().unwrap()), "{local}");
     }
-    for public in ["8.8.8.8", "172.32.0.1", "100.128.0.1", "93.184.216.34", "2606:4700::1111", "::ffff:8.8.8.8"] {
+    for public in [
+        "8.8.8.8", "172.32.0.1", "100.128.0.1", "93.184.216.34", "2606:4700::1111", "::ffff:8.8.8.8", "::ffff:0:8.8.8.8",
+        "2002:808:808::1", "64:ff9b:2::1", "192.0.1.1", "198.17.255.255", "198.20.0.1", "223.255.255.1",
+    ] {
         assert!(!is_local_address(public.parse::<IpAddr>().unwrap()), "{public}");
     }
 }

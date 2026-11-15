@@ -131,8 +131,10 @@ pub fn askable_host(host: &str) -> bool {
 }
 
 /// An address an asked host must not lead to: loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7), link-local
-/// (169.254/16, fe80::/10), unspecified, CGNAT (100.64/10), "this network" (0/8), broadcast and multicast, and the
-/// IPv4-mapped, IPv4-compatible and NAT64 (64:ff9b::/96) forms of any of these.
+/// (169.254/16, fe80::/10), site-local (fec0::/10), unspecified, CGNAT (100.64/10), "this network" (0/8), IETF protocol
+/// assignments (192.0.0/24), benchmarking (198.18/15), reserved (240/4, broadcast included) and multicast; local-use
+/// NAT64 (64:ff9b:1::/48) as a whole; and the IPv4-mapped, IPv4-translated (::ffff:0:0/96), IPv4-compatible, NAT64
+/// (64:ff9b::/96) and 6to4 (2002::/16) forms of any of these IPv4 ones.
 pub fn is_local_address(ip: std::net::IpAddr) -> bool {
     use std::net::{IpAddr, Ipv4Addr};
     fn v4(ip: Ipv4Addr) -> bool {
@@ -145,6 +147,9 @@ pub fn is_local_address(ip: std::net::IpAddr) -> bool {
             || ip.is_multicast()
             || a == 0
             || (a == 100 && (64..128).contains(&b))
+            || (a == 192 && b == 0 && ip.octets()[2] == 0)
+            || (a == 198 && (b == 18 || b == 19))
+            || a >= 240
     }
     match ip {
         IpAddr::V4(ip) => v4(ip),
@@ -153,16 +158,22 @@ pub fn is_local_address(ip: std::net::IpAddr) -> bool {
             if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
                 return true;
             }
-            if (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80 {
+            // Unique local, link-local, site-local (deprecated, still routed locally), local-use NAT64.
+            if (s[0] & 0xfe00) == 0xfc00 || (s[0] & 0xffc0) == 0xfe80 || (s[0] & 0xffc0) == 0xfec0 || s[..3] == [0x64, 0xff9b, 1] {
                 return true;
             }
             if let Some(mapped) = ip.to_ipv4_mapped() {
                 return v4(mapped);
             }
-            // IPv4-compatible (::a.b.c.d) and NAT64 (64:ff9b::a.b.c.d) carry an IPv4 address in the low 32 bits.
-            let embedded = Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8);
-            if s[..6] == [0; 6] || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-                return v4(embedded);
+            let ipv4 = |hi: u16, lo: u16| Ipv4Addr::new((hi >> 8) as u8, hi as u8, (lo >> 8) as u8, lo as u8);
+            // IPv4-compatible (::a.b.c.d), IPv4-translated (::ffff:0:a.b.c.d) and NAT64 (64:ff9b::a.b.c.d) carry an
+            // IPv4 address in the low 32 bits.
+            if s[..6] == [0; 6] || s[..6] == [0, 0, 0, 0, 0xffff, 0] || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                return v4(ipv4(s[6], s[7]));
+            }
+            // 6to4 (2002:a.b.c.d::/48) carries it right after the prefix.
+            if s[0] == 0x2002 {
+                return v4(ipv4(s[1], s[2]));
             }
             false
         }

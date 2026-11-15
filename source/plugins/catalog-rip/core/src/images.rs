@@ -68,8 +68,10 @@ pub fn has_extension(name: &str) -> bool {
     })
 }
 
+/// The extension of the file a URL names (its `?query` and `#fragment` left out).
 pub fn extension_of(url: &str) -> Option<&str> {
-    let last = url.rsplit('/').next()?;
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let last = path.rsplit('/').next()?;
     let (_, ext) = last.rsplit_once('.')?;
     Some(ext)
 }
@@ -204,5 +206,21 @@ mod tests {
             ..job
         };
         assert_eq!(named.dest("http://x/whatever.gif"), "images/a.png");
+    }
+
+    #[test]
+    fn extension_ignores_query_and_fragment() {
+        assert_eq!(extension_of("http://x/h.gif?v=2"), Some("gif"));
+        assert_eq!(extension_of("http://x/h.png#top"), Some("png"));
+        assert_eq!(extension_of("http://x/h.png?a=b.c#d.e"), Some("png"));
+        assert_eq!(extension_of("http://x/h?file=a.gif"), None);
+        let job = ImageJob {
+            label: "h".into(),
+            urls: vec![],
+            dest_dir: "images".into(),
+            stem: "h".into(),
+        };
+        assert_eq!(job.dest("http://x/h.gif?v=2"), "images/h.gif");
+        assert_eq!(job.dest("http://x/h?v=1.5"), "images/h.png");
     }
 }

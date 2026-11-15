@@ -86,6 +86,16 @@ fn new_project_builds_and_checks() {
     // The folder, packed in memory, gives the same package.
     let folder = ok(aio_plugin(root.path(), &["check", "demo-counter"]), "check folder");
     assert!(folder.contains(&sha), "{folder}");
+    // The SDK 1.1 component needs API 1.1, which the template's manifest says.
+    assert!(text.lines().any(|l| l == "api:         1.1 (the component needs 1.1)"), "{text}");
+    // Under a manifest that says 1.0 the Manager would refuse to load it, and so does check.
+    let manifest_path = project.join("manifest.json");
+    let manifest = std::fs::read_to_string(&manifest_path).unwrap();
+    std::fs::write(&manifest_path, manifest.replace(r#""api": "1.1""#, r#""api": "1.0""#)).unwrap();
+    let low = aio_plugin(root.path(), &["check", "demo-counter"]);
+    let stderr = String::from_utf8_lossy(&low.stderr);
+    assert!(!low.status.success() && stderr.contains("Plugin needs API 1.1 but its manifest says 1.0"), "{stderr}");
+    std::fs::write(&manifest_path, manifest).unwrap();
 
     let dev = ok(aio_plugin(&project, &["dev"]), "dev");
     assert!(dev.contains("turn on Developer mode") && dev.contains("demo-counter"), "{dev}");

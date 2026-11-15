@@ -1108,6 +1108,23 @@ fn needed_api_minor(component: &Component, engine: &Engine) -> u32 {
         .unwrap_or(0)
 }
 
+/// The API minor version the component `wasm` needs (the highest `aio:plugin/*@1.<minor>` it imports); compiles it
+/// with `engine` (an [`engine`]), so it fails as a load would for bytes that are not a component the host can compile.
+/// For tools (`aio-plugin check`); a load does the same check itself.
+pub fn component_api_minor(engine: &Engine, wasm: &[u8]) -> Result<u32> {
+    let component = Component::from_binary(engine, wasm).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+    Ok(needed_api_minor(&component, engine))
+}
+
+/// The load's refusal of a component that needs API 1.`needed` under a `manifest` that promises less (or more than
+/// this host has, [`HOST_API_MINOR`]).
+pub fn check_api(needed: u32, manifest: &Manifest) -> Result<()> {
+    if needed > manifest.api_minor().min(HOST_API_MINOR) {
+        bail!("Plugin needs API 1.{needed} but its manifest says 1.{}", manifest.api_minor());
+    }
+    Ok(())
+}
+
 /// One loaded plugin. `Send`: run its calls on a tokio worker thread, never on the egui thread.
 pub struct PluginInstance {
     store: Store<HostState>,
@@ -1173,10 +1190,7 @@ impl PluginInstance {
             .context("compiling the plugin stopped")?
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
         // The manifest promises the API the component is built for (`HOST_API_MINOR` caps what it may say).
-        let needed = needed_api_minor(&component, engine);
-        if needed > manifest.api_minor().min(HOST_API_MINOR) {
-            bail!("Plugin needs API 1.{needed} but its manifest says 1.{}", manifest.api_minor());
-        }
+        check_api(needed_api_minor(&component, engine), &manifest)?;
         let has_tick = component.component_type().get_export(engine, "tick").is_some();
         let hosts = services.asked_hosts();
         let mut linker: Linker<HostState> = Linker::new(engine);

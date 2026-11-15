@@ -4,7 +4,7 @@
 //! aio-plugin new <dir> --id <id> [--sdk-path <dir>]   a new plugin project
 //! aio-plugin build [--locked] [--offline] [--features f]   cargo build for wasm32-wasip2, release
 //! aio-plugin pack [--out file] [build flags]           build, then pack dist/<id>.aiop
-//! aio-plugin check <file.aiop|dir>                     what the Manager will see: id, permissions, sha256
+//! aio-plugin check <file.aiop|dir>                     what the Manager will see: id, api, permissions, sha256
 //! aio-plugin dev                                       how to load this folder in developer mode
 //! ```
 //!
@@ -32,7 +32,8 @@ usage:
   aio-plugin pack [--out <file>] [--locked] [--offline] [--features <f>]
       Builds, then packs dist/<id>.aiop (or --out). The same build gives the same bytes.
   aio-plugin check <file.aiop|dir>
-      Checks a package (or a built plugin folder) as the Manager does and prints what it shows.
+      Checks a package (or a built plugin folder) as the Manager does on install and load, and prints what
+      it shows and the API the component needs.
   aio-plugin dev
       Prints how to load the plugin in the current folder in the Manager's developer mode.
 ";

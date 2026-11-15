@@ -40,6 +40,8 @@ so you can license your plugin as you like. The rest of All-in-1 Manager stays G
 - `source/crates/plugin_cli`: the `aio-plugin` tool (`new`, `build`, `pack`, `check`, `dev`).
 - `source/plugins/hello` and `source/plugins/notes`: two example plugins. `notes` is commented line by line and shows
   private files, dialogs, a database read and how to fail gracefully.
+- `source/plugins/catalog-rip/plugin`: a third, real-sized example, the Catalogue ripper: a long job in ticks over a
+  local TCP connection (G-Earth), HTTP with `http:ask`, a picked folder and the import preview.
 
 ## What is new in API 1.1
 

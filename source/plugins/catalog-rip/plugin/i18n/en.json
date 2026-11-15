@@ -1,0 +1,15 @@
+{
+  "name": "Catalogue ripper",
+  "description": "Reads a hotel's catalogue through G-Earth while you are logged in, and saves it as SQL and JSON files with the images, ready to import.",
+  "tile.title": "Catalogue ripper",
+  "tile.description": "Rip a hotel's catalogue through G-Earth.",
+  "page.intro": "Reads the catalogue of the hotel you are logged in to through G-Earth, and saves it as SQL and JSON files (with the images) in a folder you choose.",
+  "gearth.start": "Start G-Earth and log in to the hotel.",
+  "gearth.download": "Download G-Earth: https://github.com/sirjonasxx/G-Earth/releases",
+  "button.rip": "Rip catalogue",
+  "button.cancel": "Cancel",
+  "button.reveal": "Open folder",
+  "button.import": "Import into hotel",
+  "button.retry": "Try again",
+  "button.check": "Check again"
+}

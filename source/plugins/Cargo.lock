@@ -22,6 +22,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
+name = "catalog-rip"
+version = "0.1.0"
+dependencies = [
+ "aio-plugin-sdk",
+ "catalog-rip-core",
+ "serde_json",
+]
+
+[[package]]
 name = "catalog-rip-core"
 version = "0.1.0"
 dependencies = [

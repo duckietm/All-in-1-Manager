@@ -91,12 +91,15 @@ jobs:
       - name: SDK tests
         working-directory: source/plugins
         run: cargo test -p aio-plugin-sdk
+      - name: Catalogue ripper tests
+        working-directory: source/plugins
+        run: cargo test -p catalog-rip-core -p catalog-rip
       - name: Build the aio-plugin tool
         run: cargo build --release -p aio-plugin-cli
       - name: Pack and check the examples
         run: |
           tool="$GITHUB_WORKSPACE/target/release/aio-plugin"
-          for example in hello notes; do
+          for example in hello notes catalog-rip/plugin; do
             (cd "source/plugins/$example" && "$tool" pack --locked && "$tool" check dist/*.aiop)
           done
 

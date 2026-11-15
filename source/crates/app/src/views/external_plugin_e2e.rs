@@ -198,7 +198,10 @@ async fn events_queued_during_ticks_go_before_the_next_tick() {
 
     // Three ticks of 2 s each; between them the page is drawn and the window shows that work runs.
     page.events.send(UiEvent::Clicked("slow".into())).unwrap();
-    until(&page, "the page after the first tick", |s| s.page.as_ref().is_some_and(|p| texts(p).contains(&"Ticked 1 times".to_string()))).await;
+    // The plugin logs "starting tick N" before each 2 s tick, so the cancel below lands inside tick 2 for sure.
+    wait_for("the second tick", || page.output.lock().log.lines().iter().any(|l| l == "[info] starting tick 2")).await;
+    let shown = page.state.lock().page.clone().unwrap();
+    assert!(texts(&shown).contains(&"Ticked 1 times".to_string()), "the page after tick 1 is drawn: {:?}", texts(&shown));
     assert!(page.state.lock().ticking, "the second tick runs now");
     assert!(page.state.lock().busy);
     // Sent while the second tick runs: it reaches the plugin right after that tick, before a third one.
@@ -220,11 +223,13 @@ async fn closing_the_page_stops_the_ticks() {
     let page = open(support::hello_aiop_with("ticker"), &[], None);
     until(&page, "the first page", |s| s.page.is_some() && !s.busy).await;
     page.events.send(UiEvent::Clicked("slow".into())).unwrap();
-    until(&page, "the ticks", |s| s.ticking).await;
+    // Inside tick 1 (2 s long) for sure once the plugin logged its start.
+    wait_for("the first tick", || page.output.lock().log.lines().iter().any(|l| l == "[info] starting tick 1")).await;
     // Closing the page drops the sender: the task ends after the tick that runs, without the ones still asked for.
     drop(page.events);
     page.task.await.unwrap();
     let last = page.state.lock().page.clone().unwrap();
-    assert!(!texts(&last).contains(&"Ticked 3 times".to_string()), "{:?}", texts(&last));
+    assert!(texts(&last).contains(&"Ticked 1 times".to_string()), "{:?}", texts(&last));
+    assert!(!page.output.lock().log.lines().iter().any(|l| l == "[info] starting tick 2"), "no tick after the close");
     assert!(!external::is_live("hello"));
 }

@@ -87,6 +87,8 @@ mod ticker {
                     std::hint::black_box(());
                 }
             }
+            // Logged before the work, so a test knows a tick is under way.
+            host::log(host::Level::Info, &format!("starting tick {}", self.ticked + 1));
             std::thread::sleep(self.pace);
             self.ticked += 1;
             self.left = self.left.saturating_sub(1);

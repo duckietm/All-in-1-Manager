@@ -1000,7 +1000,7 @@ impl PluginInstance {
         // The manifest promises the API the component is built for (`HOST_API_MINOR` caps what it may say).
         let needed = needed_api_minor(&component, engine);
         if needed > manifest.api_minor().min(HOST_API_MINOR) {
-            bail!("Plugin needs API 1.{needed} but its manifest says {}", manifest.api);
+            bail!("Plugin needs API 1.{needed} but its manifest says 1.{}", manifest.api_minor());
         }
         let has_tick = component.component_type().get_export(engine, "tick").is_some();
         let mut linker: Linker<HostState> = Linker::new(engine);

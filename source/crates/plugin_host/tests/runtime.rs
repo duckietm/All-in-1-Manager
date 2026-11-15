@@ -539,11 +539,14 @@ async fn manifest_1_0_with_1_1_imports_is_refused() {
     let dir = install_hello(root.path(), &support::hello_aiop());
     let mut manifest = aio_plugin_host::installed(root.path()).into_iter().next().unwrap();
     assert_eq!(manifest.api, "1.1", "hello is built for API 1.1");
-    manifest.api = "1.0".into();
-    let refused = PluginInstance::load(&engine(), &dir, manifest, Arc::new(Fake::default()), Arc::new(Approvals::new())).await;
-    match refused {
-        Ok(_) => panic!("a 1.1 component under a 1.0 manifest must be refused"),
-        Err(e) => assert_eq!(format!("{e:#}"), "Plugin needs API 1.1 but its manifest says 1.0"),
+    // "1.0.0" is the same API as "1.0": the message names the normalised version.
+    for api in ["1.0", "1.0.0"] {
+        manifest.api = api.into();
+        let refused = PluginInstance::load(&engine(), &dir, manifest.clone(), Arc::new(Fake::default()), Arc::new(Approvals::new())).await;
+        match refused {
+            Ok(_) => panic!("a 1.1 component under a {api} manifest must be refused"),
+            Err(e) => assert_eq!(format!("{e:#}"), "Plugin needs API 1.1 but its manifest says 1.0", "{api}"),
+        }
     }
 }
 

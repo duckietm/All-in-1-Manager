@@ -172,6 +172,7 @@ fn build(a: &Args) -> Result<()> {
         expires: now + Duration::days(days),
         plugins,
         revoked,
+        needs_newer: Vec::new(),
     };
     let mut json = serde_json::to_string_pretty(&index)?;
     json.push('\n');

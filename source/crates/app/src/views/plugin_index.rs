@@ -27,6 +27,8 @@ use crate::plugins::index::{self, IndexSource, IndexState, NOT_SET_UP};
 
 /// Install and Update wait for a current index.
 pub const OUT_OF_DATE: &str = n("The index is out of date");
+/// An entry for a newer API, or with a permission this Manager does not know.
+pub const NEEDS_NEWER: &str = n("Needs a newer All-in-1 Manager");
 
 /// What an entry's button does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,13 +69,11 @@ fn permission_line(raw: &str) -> (String, bool) {
 
 /// The entries of `index` matching `query` (in the name, author or description, ignoring case), in the index's order.
 /// `installed` are the installed plugins (not developer folders); `can_install` is false when the index may not be
-/// installed from (out of date).
+/// installed from (out of date). The entries that need a newer Manager come last and cannot be installed.
 pub fn rows(index: &Index, installed: &[Manifest], can_install: bool, query: &str) -> Vec<Row> {
     let query = query.trim().to_lowercase();
-    index
-        .plugins
-        .iter()
-        .map(|entry| {
+    let all = index.plugins.iter().map(|e| (e, false)).chain(index.needs_newer.iter().map(|e| (e, true)));
+    all.map(|(entry, needs_newer)| {
             let action = match installed.iter().find(|m| m.id == entry.id) {
                 Some(manifest) => match external::offered_update(index, manifest) {
                     Some(update) => Action::Update { version: display_safe(&update.version, 40) },
@@ -84,7 +84,12 @@ pub fn rows(index: &Index, installed: &[Manifest], can_install: bool, query: &st
                     None => Action::Install,
                 },
             };
-            let blocked = (!can_install && matches!(action, Action::Install | Action::Update { .. })).then_some(OUT_OF_DATE);
+            let actionable = matches!(action, Action::Install | Action::Update { .. });
+            let blocked = match (actionable, needs_newer, can_install) {
+                (true, true, _) => Some(NEEDS_NEWER),
+                (true, false, false) => Some(OUT_OF_DATE),
+                _ => None,
+            };
             Row {
                 id: entry.id.clone(),
                 name: display_safe(&entry.name, 60),
@@ -277,7 +282,7 @@ impl PluginIndexView {
         let can_install = index::installable(&state, developer_mode).is_some();
         let list = rows(index, &installed, can_install, &self.query);
         if list.is_empty() {
-            widgets::muted(ui, palette, if index.plugins.is_empty() { t("The index lists no plugin yet.") } else { t("No plugin matches the search.") }, 12.5);
+            widgets::muted(ui, palette, if index.plugins.is_empty() && index.needs_newer.is_empty() { t("The index lists no plugin yet.") } else { t("No plugin matches the search.") }, 12.5);
         }
         let busy = busy();
         for row in list {
@@ -404,6 +409,7 @@ mod tests {
             expires: "2026-12-13T10:00:00Z".parse().unwrap(),
             plugins,
             revoked,
+            needs_newer: Vec::new(),
         }
     }
 
@@ -460,6 +466,28 @@ mod tests {
         let fresh = find("fresh");
         assert_eq!(fresh.permissions.len(), 2);
         assert!(fresh.permissions.iter().any(|(text, sensitive)| *sensitive && text.contains("private column")));
+    }
+
+    #[test]
+    fn entries_for_a_newer_manager_are_shown_but_not_installable() {
+        let mut index = index_of(vec![entry("fresh", "1.0.0", "Someone")], vec![]);
+        let mut newer = entry("future", "1.0.0", "Someone");
+        newer.permissions = vec!["teleport:anywhere".into()];
+        index.needs_newer = vec![newer, entry("future-installed", "2.0.0", "Someone")];
+        let installed = vec![manifest("future-installed", "1.0.0", "Someone")];
+        let list = rows(&index, &installed, true, "");
+        assert_eq!(list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["fresh", "future", "future-installed"]);
+        let future = &list[1];
+        assert_eq!(future.blocked, Some(NEEDS_NEWER));
+        let look = button(future, None, false);
+        assert!(!look.enabled);
+        assert_eq!(look.hint.as_deref(), Some("Needs a newer All-in-1 Manager"));
+        // An unknown permission is shown as its (made safe) text.
+        assert_eq!(future.permissions, vec![("teleport:anywhere".to_string(), false)]);
+        // Installed, and the newer version is not offered as an update.
+        assert_eq!(list[2].action, Action::Installed);
+        assert_eq!(list[2].blocked, None);
+        assert_eq!(list[0].blocked, None);
     }
 
     #[test]

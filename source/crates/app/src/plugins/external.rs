@@ -1871,6 +1871,7 @@ mod tests {
                 .iter()
                 .map(|(id, versions, reason)| Revoked { id: id.to_string(), versions: versions.iter().map(|v| v.to_string()).collect(), reason: reason.to_string() })
                 .collect(),
+            needs_newer: Vec::new(),
         }
     }
 

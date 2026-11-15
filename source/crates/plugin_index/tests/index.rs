@@ -233,7 +233,8 @@ fn unknown_field_refused() {
 
 #[test]
 fn bad_permission_refused() {
-    for bad in [json!(["teleport"]), json!(["sql:read:"]), json!(["tcp:localhost:0"]), json!(["ssh", "ssh"]), json!([1])] {
+    // Structural problems still refuse the whole index.
+    for bad in [json!(["ssh", "ssh"]), json!([1]), json!(["a\u{202e}b"])] {
         let mut v = sample();
         v["plugins"][0]["permissions"] = bad.clone();
         assert!(Index::parse(&bytes(&v), PREFIX).is_err(), "{bad}");
@@ -241,6 +242,49 @@ fn bad_permission_refused() {
     let mut none = sample();
     none["plugins"][0]["permissions"] = json!([]);
     assert!(Index::parse(&bytes(&none), PREFIX).is_ok());
+}
+
+#[test]
+fn entries_for_a_newer_manager_are_kept_apart() {
+    // A permission this Manager does not know (a later API's, or one it cannot parse) and an api newer than it
+    // implements: those entries are not installable, but the rest of the index and its revocations still apply.
+    let mut unknown = entry("unknown-permission");
+    unknown["permissions"] = json!(["ssh", "teleport:anywhere"]);
+    let mut too_new = entry("too-new");
+    too_new["api"] = json!("1.99");
+    let mut next_major = entry("next-major");
+    next_major["api"] = json!("2.0");
+    let v = index_with(
+        vec![entry("hello"), unknown, too_new, next_major],
+        json!([{ "id": "old-plugin", "versions": ["*"], "reason": "Malware" }]),
+    );
+    let index = Index::parse(&bytes(&v), PREFIX).unwrap();
+    let ids: Vec<&str> = index.plugins.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(ids, ["hello"]);
+    let apart: Vec<&str> = index.needs_newer.iter().map(|e| e.id.as_str()).collect();
+    assert_eq!(apart, ["unknown-permission", "too-new", "next-major"]);
+    assert!(index.entry("too-new").is_none(), "not offered for install or update");
+    assert!(index.revocation_for("old-plugin", "1.0.0").is_some());
+    assert!(index.entry("hello").unwrap().permissions().is_ok());
+
+    // An id is still listed once, whichever list its entry lands in.
+    let mut twin = entry("hello");
+    twin["api"] = json!("1.99");
+    assert!(Index::parse(&bytes(&index_with(vec![entry("hello"), twin], json!([]))), PREFIX).is_err());
+    // A structurally bad entry still refuses everything, even one for a newer Manager.
+    let mut bad = entry("too-new");
+    bad["api"] = json!("1.99");
+    bad["sha256"] = json!("0123");
+    assert!(Index::parse(&bytes(&index_with(vec![entry("hello"), bad], json!([]))), PREFIX).is_err());
+    // The index tool still refuses such an entry: it is built by a Manager that knows every permission.
+    let e: aio_plugin_index::Entry = serde_json::from_value(entry("hello")).unwrap();
+    assert!(e.check(PREFIX).is_ok());
+    let mut odd = e.clone();
+    odd.permissions = vec!["teleport".into()];
+    assert!(odd.check(PREFIX).is_err());
+    let mut newer = e;
+    newer.api = "1.99".into();
+    assert!(newer.check(PREFIX).is_err());
 }
 
 #[test]

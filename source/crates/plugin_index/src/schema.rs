@@ -1,6 +1,6 @@
 //! `index.json` schema 1: parsing with every limit and field check, revocations and freshness.
 
-use aio_plugin_host::manifest::{spoofing, valid_id};
+use aio_plugin_host::manifest::{spoofing, valid_id, HOST_API_MINOR};
 use aio_plugin_host::Permission;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -87,8 +87,14 @@ pub struct Index {
     pub generated: DateTime<Utc>,
     #[serde(with = "rfc3339")]
     pub expires: DateTime<Utc>,
+    /// The entries this Manager can install (see [`Index::needs_newer`] for the others).
     pub plugins: Vec<Entry>,
     pub revoked: Vec<Revoked>,
+    /// Entries [`Index::parse`] kept out of `plugins` because they need a newer All-in-1 Manager: their `api` is newer
+    /// than this one implements, or they list a permission it does not know. Never installed or offered as an
+    /// update; shown as not installable. Not part of `index.json`.
+    #[serde(skip)]
+    pub needs_newer: Vec<Entry>,
 }
 
 /// Whether a verified index may be used to install and update.
@@ -172,7 +178,8 @@ fn check_entry(e: &Entry, url_prefix: &str) -> Result<()> {
         bail!("{id} lists more than {MAX_PERMISSIONS} permissions");
     }
     for (i, p) in e.permissions.iter().enumerate() {
-        Permission::parse(p).with_context(|| format!("Invalid permission of {id}"))?;
+        // Only the text here: a permission this Manager does not know is a newer Manager's (see `check_supported`).
+        check_text(&format!("A permission of {id}"), p)?;
         if e.permissions[..i].contains(p) {
             bail!("{id} lists a permission twice: {p}");
         }
@@ -190,6 +197,22 @@ fn check_entry(e: &Entry, url_prefix: &str) -> Result<()> {
     let expected = format!("{url_prefix}{id}-{}/{id}.aiop", e.version);
     if e.url != expected {
         bail!("The package url of {id} is not {expected}");
+    }
+    Ok(())
+}
+
+/// Whether this Manager can install entry `e` (already checked by [`check_entry`]): its `api` is 1.x with x at most
+/// [`HOST_API_MINOR`] and every permission parses. An entry that fails this needs a newer Manager; it does not make
+/// the index invalid, so a later API's entries cannot stop revocations from reaching older Managers.
+fn check_supported(e: &Entry) -> Result<()> {
+    let id = &e.id;
+    let mut parts = e.api.split('.').map(|p| p.parse::<u32>().ok());
+    match (parts.next().flatten(), parts.next().flatten()) {
+        (Some(1), Some(minor)) if minor <= HOST_API_MINOR => {}
+        _ => bail!("{id} needs plugin API {}, newer than this All-in-1 Manager supports", e.api),
+    }
+    for p in &e.permissions {
+        Permission::parse(p).with_context(|| format!("{id} asks for a permission this All-in-1 Manager does not know"))?;
     }
     Ok(())
 }
@@ -214,14 +237,15 @@ fn check_revoked(r: &Revoked) -> Result<()> {
 impl Index {
     /// Parses and checks `index.json`. Every entry `url` must be exactly `<url_prefix><id>-<version>/<id>.aiop`, where
     /// `url_prefix` ends in `/` (the official
-    /// `https://github.com/all-in-1-plugins/index/releases/download/`, or a test prefix). Any problem refuses the
-    /// whole index.
+    /// `https://github.com/all-in-1-plugins/index/releases/download/`, or a test prefix). Any structural problem
+    /// refuses the whole index; an entry that needs a newer Manager (a newer `api`, a permission this one does not
+    /// know) is moved to [`Index::needs_newer`] instead, so the other entries and the revocations still apply.
     pub fn parse(bytes: &[u8], url_prefix: &str) -> Result<Index> {
         if bytes.len() > MAX_INDEX_BYTES {
             bail!("The plugin index is larger than 4 MiB");
         }
         check_prefix(url_prefix)?;
-        let index: Index = serde_json::from_slice(bytes).context("The plugin index is not valid")?;
+        let mut index: Index = serde_json::from_slice(bytes).context("The plugin index is not valid")?;
         if index.schema != SCHEMA {
             bail!("Unsupported plugin index schema: {}", index.schema);
         }
@@ -243,6 +267,9 @@ impl Index {
         for r in &index.revoked {
             check_revoked(r)?;
         }
+        let (plugins, needs_newer) = std::mem::take(&mut index.plugins).into_iter().partition(|e| check_supported(e).is_ok());
+        index.plugins = plugins;
+        index.needs_newer = needs_newer;
         Ok(index)
     }
 
@@ -258,13 +285,15 @@ impl Index {
 }
 
 impl Entry {
-    /// Checks one entry the way [`Index::parse`] checks each of its entries (for tools that build an index).
+    /// Checks one entry the way [`Index::parse`] checks each of its entries, and also refuses one this Manager could
+    /// not install (for tools that build an index: they know every permission and API of their version).
     pub fn check(&self, url_prefix: &str) -> Result<()> {
         check_prefix(url_prefix)?;
-        check_entry(self, url_prefix)
+        check_entry(self, url_prefix)?;
+        check_supported(self)
     }
 
-    /// The permissions as parsed values ([`Index::parse`] already refused any that do not parse).
+    /// The permissions as parsed values (every entry of [`Index::plugins`] has only permissions that parse).
     pub fn permissions(&self) -> Result<Vec<Permission>> {
         self.permissions.iter().map(|p| Permission::parse(p)).collect()
     }

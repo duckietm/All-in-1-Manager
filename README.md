@@ -1720,6 +1720,8 @@ Besides the built-in plugins above, the Manager can run **external plugins**: sm
 packed in a `.aiop` file. They are not part of the program. You install, update and remove them while the Manager
 runs, and they run in a sandbox: a plugin can only do what its manifest asks for and you allowed.
 
+To write a plugin, read the [plugin developer guide](docs/plugins/README.md).
+
 ### For admins
 
 On the **Plugins** page, **Install from file …** opens a file picker for a `.aiop` package. Before anything is

@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 exclude = ["source/plugins"]
-members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/plugin_host", "source/crates/plugin_index", "source/crates/app"]
+members = ["source/crates/core", "source/crates/assets", "source/crates/remote", "source/crates/terminal", "source/crates/plugin_host", "source/crates/plugin_index", "source/crates/plugin_cli", "source/crates/app"]
 
 [workspace.package]
 version = "2.0.20"
@@ -41,6 +41,8 @@ aes-gcm = "0.10"
 pbkdf2 = "0.12"
 bcrypt-pbkdf = "0.10"
 flate2 = "1"
+# Static stock zlib: the same deflate bytes on every system (aio-plugin pack matches pack_plugin.py).
+libz-sys = { version = "1.1", features = ["static"] }
 tar = "0.4"
 zip = { version = "2.6.1", default-features = false, features = ["deflate"] }
 russh = { version = "0.65", default-features = false, features = ["ring", "flate2", "rsa"] }

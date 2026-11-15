@@ -22,7 +22,7 @@ use sha2::{Digest, Sha256};
 
 use super::index::{IndexSource, SignedIndex, OFFICIAL_PACKAGE_PREFIX};
 use super::{packs, PLUGINS};
-use crate::i18n::{t, tf};
+use crate::i18n::{n, t};
 
 /// An installed external plugin, as the Plugins page lists it.
 #[derive(Debug, Clone)]
@@ -948,35 +948,27 @@ pub fn is_sensitive(p: &Permission) -> bool {
     matches!(p, Permission::SqlReadPrivate(..) | Permission::SshRoot)
 }
 
-/// One plain sentence for a permission. Every kind is matched, so a new permission cannot be forgotten.
+/// One plain sentence for a permission, translated. The wording is the host's ([`Permission::plain_words`], shared
+/// with the `aio-plugin` tool); the app only translates it.
 pub fn permission_text(p: &Permission) -> String {
-    match p {
-        Permission::Ssh => t("Run commands on the hotel's server (you approve each script)").to_string(),
-        Permission::SshRoot => t("Run commands as root on the hotel's server (you approve each script)").to_string(),
-        Permission::SqlRead(tables) => {
-            let list = tables.join(", ");
-            if tables.len() == 1 {
-                tf("Read the table {tables} of the hotel database", &[("tables", &list)])
-            } else {
-                tf("Read the tables {tables} of the hotel database", &[("tables", &list)])
-            }
-        }
-        Permission::SqlWrite(tables) => {
-            let list = tables.join(", ");
-            if tables.len() == 1 {
-                tf("Change the table {tables} of the hotel database (you approve each change)", &[("tables", &list)])
-            } else {
-                tf("Change the tables {tables} of the hotel database (you approve each change)", &[("tables", &list)])
-            }
-        }
-        Permission::SqlReadPrivate(table, column) => {
-            tf("Read the private column {column} of the table {table} (it can hold passwords, addresses or tokens)", &[("table", table), ("column", column)])
-        }
-        Permission::Http(host) => tf("Fetch pages from {host} on the internet", &[("host", host)]),
-        Permission::TcpLocal(port) => tf("Connect to a program on this computer, port {port} (for example G-Earth)", &[("port", &port.to_string())]),
-        Permission::Files => t("Keep its own files in a private folder (always allowed)").to_string(),
-    }
+    let words = p.plain_words();
+    words.fill(t(words.english))
 }
+
+/// The sentences of [`Permission::plain_words`], marked for source/tools/i18n_keys.py (a test checks they match).
+#[allow(dead_code)]
+const PERMISSION_TEXTS: &[&str] = &[
+    n("Run commands on the hotel's server (you approve each script)"),
+    n("Run commands as root on the hotel's server (you approve each script)"),
+    n("Read the table {tables} of the hotel database"),
+    n("Read the tables {tables} of the hotel database"),
+    n("Change the table {tables} of the hotel database (you approve each change)"),
+    n("Change the tables {tables} of the hotel database (you approve each change)"),
+    n("Read the private column {column} of the table {table} (it can hold passwords, addresses or tokens)"),
+    n("Fetch pages from {host} on the internet"),
+    n("Connect to a program on this computer, port {port} (for example G-Earth)"),
+    n("Keep its own files in a private folder (always allowed)"),
+];
 
 #[cfg(test)]
 mod tests {
@@ -1025,6 +1017,14 @@ mod tests {
         }
         let write = permission_text(&Permission::parse("sql:write:rooms").unwrap());
         assert_eq!(write, "Change the table rooms of the hotel database (you approve each change)");
+    }
+
+    #[test]
+    fn permission_texts_are_the_hosts_sentences() {
+        // Every sentence the host can give is marked for translation, and every marked one is still used.
+        let used: std::collections::BTreeSet<&str> = PERMISSIONS.iter().map(|s| Permission::parse(s).unwrap().plain_words().english).collect();
+        let marked: std::collections::BTreeSet<&str> = PERMISSION_TEXTS.iter().copied().collect();
+        assert_eq!(used, marked);
     }
 
     #[test]

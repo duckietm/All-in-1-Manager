@@ -11,6 +11,11 @@ Default output: dist/<id>.aiop in the current folder. Prints the output path.
 --locked builds with exactly the versions of the workspace's Cargo.lock (it must exist);
 --offline never touches the network. The zip is deterministic: the same files always give
 the same bytes (fixed order, time 1980-01-01 00:00:00, mode 0644, deflate level 9).
+
+Plugin authors: use the `aio-plugin` tool (source/crates/plugin_cli: `aio-plugin pack`), which builds and
+writes the same bytes without Python. This script stays for the index repository and the tests. The bytes
+are those of stock zlib; a Python built on zlib-ng (python.org 3.14+ on Windows) gives a valid package with
+other bytes, and a warning.
 """
 import argparse
 import json
@@ -18,6 +23,7 @@ import re
 import subprocess
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 
 TARGET = "wasm32-wasip2"
@@ -54,6 +60,11 @@ def entry_order(name):
     """manifest.json, plugin.wasm, icon.png, then i18n/*.json by name."""
     first = {"manifest.json": 0, "plugin.wasm": 1, "icon.png": 2}
     return (first.get(name, 3), name)
+
+
+def zlib_ng():
+    """Whether this Python's zlib is zlib-ng, whose deflate gives other bytes than stock zlib."""
+    return hasattr(zlib, "ZLIBNG_VERSION") or "ng" in zlib.ZLIB_RUNTIME_VERSION
 
 
 def write_package(out, files):
@@ -134,6 +145,8 @@ def main():
         for f in i18n.glob("*.json"):
             files[f"i18n/{f.name}"] = f.read_bytes()
     write_package(out, files)
+    if zlib_ng():
+        print(f"warning: this Python's zlib is zlib-ng ({zlib.ZLIB_RUNTIME_VERSION}): the package is valid, but its bytes and sha256 differ from stock zlib (aio-plugin pack, the index CI)", file=sys.stderr)
     print(out.resolve())
 
 

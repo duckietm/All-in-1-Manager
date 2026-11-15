@@ -205,6 +205,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "aio-plugin-cli"
+version = "2.0.20"
+dependencies = [
+ "aio-plugin-host",
+ "anyhow",
+ "flate2",
+ "libz-sys",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
 name = "aio-plugin-host"
 version = "2.0.20"
 dependencies = [
@@ -3268,6 +3281,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
+ "libc",
  "pkg-config",
  "vcpkg",
 ]

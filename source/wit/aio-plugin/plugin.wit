@@ -206,8 +206,9 @@ interface host {
     sql-write: func(ops: list<write-op>) -> result<u64, string>;
 
     /// HTTP(S) GET, only to hosts listed in the manifest (permission `http:<hosts>`). With the permission `http:ask`
-    /// (API 1.1), a request to another host asks the user first; a host the user allowed is remembered for the
-    /// plugin, a refused one gets `permission denied: host <host> was refused` for the rest of the session.
+    /// (API 1.1), a request to another public host name asks the user first (IP addresses, `localhost` and local
+    /// network names are refused without asking); a host the user allowed is remembered for the plugin, a refused
+    /// one gets `permission denied: host <host> was refused` for the rest of the session.
     http-get: func(url: string) -> result<list<u8>, string>;
 
     /// A local TCP connection (permission `tcp:localhost:<port>`, or `tcp:localhost:<a>-<b>` for a range of at most

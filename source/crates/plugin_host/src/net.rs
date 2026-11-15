@@ -103,6 +103,25 @@ pub fn undeclared(host: &str) -> String {
     deny(format!("host '{host}' is not declared with http:{host}"))
 }
 
+/// Names that are never public: asked for under `http:ask`, they would reach this computer or the local network.
+const LOCAL_SUFFIXES: &[&str] = &[".localhost", ".local", ".lan", ".internal", ".home.arpa"];
+
+/// A host `http:ask` may ask the user about: a valid `http:<host>` name that is public, so a plugin cannot reach this
+/// computer or the local network by asking. Refused: IP literals (any name whose last label is all digits, and IPv6,
+/// which the URL grammar already refuses), `localhost` and `*.localhost`, single-label names, and names ending in
+/// `.local`, `.lan`, `.internal` or `.home.arpa` (a trailing dot ignored, any case). Declared `http:<host>`
+/// permissions keep their own rules.
+pub fn askable_host(host: &str) -> bool {
+    if !valid_host(host) || host.contains(':') {
+        return false;
+    }
+    let name = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+    let Some((_, last)) = name.rsplit_once('.') else { return false };
+    let numeric = last.bytes().all(|b| b.is_ascii_digit());
+    let local = name == "localhost" || LOCAL_SUFFIXES.iter().any(|s| name.ends_with(s));
+    !last.is_empty() && !numeric && !local && name.parse::<std::net::IpAddr>().is_err()
+}
+
 /// Checks `url` against the plugin's `http:<host>` permissions; returns the URL to fetch. (`http:ask` is the
 /// runtime's: it asks the user about a host this refuses as not declared.)
 pub fn check_http(url: &str, granted: &[Permission]) -> Result<String, String> {
@@ -130,7 +149,7 @@ pub fn check_tcp(port: u16, granted: &[Permission]) -> Result<(), String> {
 
 /// What the user answered for one plugin under `http:ask`: the hosts allowed (at most [`MAX_ASKED_HOSTS`],
 /// remembered in a file of the Manager's, or in memory only) and the hosts refused (in memory: for this session).
-/// Hosts are kept lower case and must pass [`valid_host`]. One per plugin and session, shared by its instances.
+/// Hosts are kept lower case and must pass [`askable_host`]. One per plugin and session, shared by its instances.
 #[derive(Debug)]
 pub struct AskedHosts {
     /// The remembered-hosts file; `None` remembers in memory only (a developer plugin).
@@ -177,7 +196,7 @@ impl AskedHosts {
         let mut hosts: Vec<String> = Vec::new();
         for h in list.hosts {
             let h = h.to_ascii_lowercase();
-            if valid_host(&h) && !hosts.contains(&h) && hosts.len() < MAX_ASKED_HOSTS {
+            if askable_host(&h) && !hosts.contains(&h) && hosts.len() < MAX_ASKED_HOSTS {
                 hosts.push(h);
             }
         }
@@ -234,8 +253,8 @@ impl AskedHosts {
     /// Remembers `host` as allowed (and no longer refused).
     pub fn allow(&self, host: &str) -> Result<(), String> {
         let host = host.to_ascii_lowercase();
-        if !valid_host(&host) {
-            return Err(format!("'{}' is not a valid host", sanitise(&host)));
+        if !askable_host(&host) {
+            return Err(format!("'{}' is not a public host name", sanitise(&host)));
         }
         let mut asked = self.lock();
         asked.refused.retain(|h| *h != host);

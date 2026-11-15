@@ -11,7 +11,7 @@ use aio_plugin_host::bindings::aio::plugin::types::{
     CompareOp, Condition, DeleteOp, InsertOp, Select, SqlValue as WitValue, UpdateOp, WriteOp,
 };
 use aio_plugin_host::approvals::Approvals;
-use aio_plugin_host::net::{check_http, check_tcp, AskedHosts, MAX_ASKED_HOSTS, MAX_RECV_TIMEOUT_MS, MAX_TCP_CONNECTIONS};
+use aio_plugin_host::net::{askable_host, check_http, check_tcp, AskedHosts, MAX_ASKED_HOSTS, MAX_RECV_TIMEOUT_MS, MAX_TCP_CONNECTIONS};
 use aio_plugin_host::runtime::{engine, PluginInstance};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::sql::{build_select, build_writes, DEFAULT_LIMIT, MAX_LIMIT, MAX_WRITE_BYTES, MAX_WRITE_OPS};
@@ -860,4 +860,42 @@ async fn undeclared_host_without_ask_denied() {
     assert_eq!(e, "permission denied: host 'other.example.org' is not declared with http:other.example.org");
     assert!(fake.asks.lock().unwrap().is_empty(), "no question without http:ask");
     assert!(fake.gets.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_ask_refuses_local_and_ip_hosts() {
+    let root = tempfile::tempdir().unwrap();
+    let hosts = Arc::new(AskedHosts::in_memory());
+    let fake = Arc::new(Fake { body: 1, hosts: Some(hosts.clone()), ..Fake::default() });
+    let mut inst = hello_with(root.path(), &["http:ask", "http:localhost", "http:printer.lan"], fake.clone()).await;
+    let host = inst.host_for_tests();
+    for local in [
+        "127.0.0.1", "10.0.0.8", "192.168.1.1", "127.1", "0x7f000001", "app.localhost", "Localhost.",
+        "router", "nas.local", "printer2.lan", "db.internal", "box.home.arpa", "BOX.Home.Arpa.",
+    ] {
+        let e = denied(host.http_get(format!("http://{local}/x")).await);
+        let shown = local.to_ascii_lowercase();
+        assert_eq!(e, format!("permission denied: host {shown} cannot be asked for"), "{local}");
+    }
+    // IPv6 literals never pass the URL grammar.
+    for v6 in ["http://[::1]/", "http://[fe80::1]:80/", "http://::1/"] {
+        denied(host.http_get(v6.into()).await);
+    }
+    assert!(fake.asks.lock().unwrap().is_empty(), "never asked");
+    assert!(fake.gets.lock().unwrap().is_empty());
+    // Plain `localhost` (declared here, so fetched below) is never askable either.
+    for local in ["localhost", "LOCALHOST", "::1", "[::1]", "fe80::1"] {
+        assert!(!askable_host(local), "{local}");
+    }
+    for public in ["api.example.org", "Example.COM", "a-b.co.uk", "example.org."] {
+        assert!(askable_host(public), "{public}");
+    }
+    // The store refuses them too, so a crafted file cannot allow them.
+    assert!(hosts.allow("localhost").is_err());
+    assert!(hosts.allow("192.168.1.1").is_err());
+    // Declared hosts keep today's rules, and a public name is still asked for.
+    host.http_get("http://localhost/".into()).await.unwrap();
+    host.http_get("http://printer.lan/".into()).await.unwrap();
+    host.http_get("https://api.example.org/".into()).await.unwrap();
+    assert_eq!(fake.asks.lock().unwrap().len(), 1);
 }

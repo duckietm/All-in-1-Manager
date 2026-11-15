@@ -91,10 +91,10 @@ use crate::bindings::aio::plugin::types::{
 use crate::bindings::Plugin;
 use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
 use crate::net::{
-    check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
+    askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
     MAX_TCP_CONNECTIONS, MAX_TCP_RECV,
 };
-use crate::permissions::{valid_host, Permission};
+use crate::permissions::Permission;
 use crate::services::{HostServices, Level, ScriptRequest, SqlValue};
 use crate::sql::{build_select, build_writes};
 
@@ -478,8 +478,9 @@ impl HostState {
         if !self.granted.contains(&Permission::HttpAsk) {
             return Err(undeclared(host));
         }
-        if !valid_host(host) {
-            return Err(deny(format!("'{}' is not a host that can be asked for", sanitise(host))));
+        // Only public names: never this computer or the local network.
+        if !askable_host(host) {
+            return Err(deny(format!("host {} cannot be asked for", sanitise(host))));
         }
         let refused = || deny(format!("host {host} was refused"));
         match self.hosts.answer(host) {

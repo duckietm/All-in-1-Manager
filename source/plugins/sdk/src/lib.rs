@@ -49,6 +49,12 @@
 mod error;
 #[doc(hidden)]
 pub mod export;
+pub mod files;
+pub mod host;
+pub mod http;
+pub mod script;
+pub mod sql;
+pub mod tcp;
 pub mod ui;
 
 pub use error::{Error, ErrorKind, Result};
@@ -164,7 +170,11 @@ macro_rules! export_plugin {
 pub(crate) fn render_page<P: Plugin>(plugin: &mut P) -> ui::UiTree {
     let mut ui = Ui::new();
     plugin.render(&mut ui);
-    ui.finish().unwrap_or_else(|error| ui::UiTree::banner_page(ui::BannerKind::Error, error.message()))
+    ui.finish().unwrap_or_else(|error| {
+        // Logged too, so that the reason is in the plugin log during development.
+        host::log(host::Level::Warn, &format!("the page was refused: {}", error.message()));
+        ui::UiTree::banner_page(ui::BannerKind::Error, error.message())
+    })
 }
 
 #[cfg(test)]

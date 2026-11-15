@@ -100,11 +100,12 @@ package's manifest (id, version, author, API version, permissions) equals the in
 - Maintainers read the code at the pinned commit, including everything that runs at build time: `build.rs`, proc
   macros, and every change to `Cargo.lock` (each new or updated dependency is code that runs during the build).
 - No network access beyond the hosts declared in the manifest.
-- A plugin that uses `http:ask` (API 1.1: it asks the user before fetching from any other host) is listed with a
-  "contacts hosts you approve" badge, and the consent window shows that permission in the warning colour. The Manager
-  only asks about public host names: IP addresses, `localhost`, single-label names and `.local`, `.lan`, `.internal`
-  or `.home.arpa` names are refused without asking (see [Asking for hosts](permissions.md#asking-for-hosts-httpask)).
-  Explain in the pull request why the plugin cannot name its hosts with `http:<host>`.
+- A plugin that uses `http:ask` (API 1.1: it asks the user before fetching from any other host) must explain, in the
+  pull request and in its description, which hosts it contacts and why it cannot name them with `http:<host>`;
+  reviewers check that explanation against the code. The Available tab and the consent window show that permission in
+  the warning colour. The Manager only asks about public host names: IP addresses, `localhost`, single-label names and
+  `.local`, `.lan`, `.internal` or `.home.arpa` names are refused without asking (see
+  [Asking for hosts](permissions.md#asking-for-hosts-httpask)).
 - Every permission must be justified in the pull request.
 - Maintainers can reject or remove a plugin, or revoke a version, without giving a reason.
 

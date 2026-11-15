@@ -158,6 +158,12 @@ impl Dialogs {
         receiver.await.unwrap_or(InputReply::Cancel)
     }
 
+    /// Test hook: the heading and message of the newest question, if one is open.
+    #[cfg(test)]
+    pub fn newest_text_for_tests(&self) -> Option<(String, String)> {
+        self.queue.lock().last().map(|d| (d.heading.clone(), d.message.clone()))
+    }
+
     /// Test hook: answers the newest question as if the user clicked choice `index` (a choice dialog) or, for a text
     /// field, OK with its text (`index` 0), Cancel (1) or the extra button (2). False when no question is open.
     #[cfg(test)]

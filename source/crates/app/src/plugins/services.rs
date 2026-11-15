@@ -567,7 +567,8 @@ impl HostServices for AppServices {
     async fn ask_host(&self, plugin: &str, host: &str) -> Option<bool> {
         // The same dialog as `ask` (Yes / No / Stop this plugin), worded by the Manager; both names display-safe.
         let question = tf("{plugin} wants to fetch from {host}. Allow?", &[("plugin", &display_safe(plugin, 80)), ("host", &display_safe(host, 253))]);
-        self.answer(&question, "", t("Yes")).await
+        // Yes is kept (see `asked_hosts`): say how to take it back.
+        self.answer(&question, t("Yes is remembered until you choose Forget for this host on the Plugins page."), t("Yes")).await
     }
 
     fn asked_hosts(&self) -> Arc<AskedHosts> {
@@ -1025,6 +1026,14 @@ mod tests {
         for (index, expected) in [(0, Some(true)), (1, Some(false)), (2, None)] {
             let asking = app.clone();
             let task = tokio::spawn(async move { asking.ask_host("Demo", "api.example.org").await });
+            let start = std::time::Instant::now();
+            while !shared.dialogs.is_open() {
+                assert!(start.elapsed() < std::time::Duration::from_secs(10), "no dialog opened");
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            let (heading, message) = shared.dialogs.newest_text_for_tests().unwrap();
+            assert!(heading.contains("api.example.org"), "{heading}");
+            assert!(message.contains("Forget") && message.contains("Plugins page"), "{message}");
             answer(&shared, index).await;
             assert_eq!(task.await.unwrap(), expected, "choice {index}");
         }

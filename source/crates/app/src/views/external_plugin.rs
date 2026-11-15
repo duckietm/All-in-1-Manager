@@ -350,16 +350,17 @@ impl ExternalPluginView {
     /// always in view.
     pub fn show_pinned(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         self.poll_reload(shared);
-        let (busy, stopped) = {
+        let (busy, stopped, ticking) = {
             let s = self.running.state.lock();
-            (s.busy, s.stopped.is_some())
+            (s.busy, s.stopped.is_some(), s.ticking)
         };
         let executing = self.executing();
         ui.horizontal(|ui| {
             ui.label(widgets::title_text(&self.name, 16.0));
             ui.label(RichText::new(display_safe(&self.info.manifest.version, 40)).size(12.5).color(palette.muted));
             plugin_approval::badges(ui, palette, &self.info);
-            if (busy && !stopped) || executing {
+            // While a long job ticks, the "Working…" line above the page has the one spinner.
+            if (busy && !stopped && !ticking) || executing {
                 ui.spinner();
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

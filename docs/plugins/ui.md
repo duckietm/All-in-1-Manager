@@ -32,12 +32,14 @@ in many parts, waiting for a local program) runs in steps instead, with API 1.1 
 4. A tick (or an event) that does not call `keep_working` ends the job: no more ticks.
 
 Each tick is a call of its own, with its own 5 s and its own 20 dialogs. Keep a step well below that: a few hundred
-milliseconds of work, or one wait with `tcp::Conn::recv_timeout`.
+milliseconds of work, or one short wait with `tcp::Conn::recv_timeout` (a few hundred milliseconds too, not seconds:
+a **Cancel** click is handled only after the tick in progress returns, so a long wait makes Cancel feel stuck).
 
 **Events go first.** The user can still use the page while the job runs. When an event waits, the Manager handles it
 before the next tick, so a **Cancel** button works: its event simply does not call `keep_working`. That also means
 **every event stops the job unless its handler asks again**: `keep_working` holds only for the call that makes it,
-and each event or tick starts without it. A render does not change it. So end `on_event` with
+and each event or tick starts without it. A render keeps a pending `keep_working` request (and may call
+`keep_working` itself). So end `on_event` with
 `if self.running { host::keep_working() }`, as below.
 
 **What ends a job:** a tick or an event without `keep_working`; leaving the page; **Reload**; **Stop this plugin** (in

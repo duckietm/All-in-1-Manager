@@ -96,7 +96,8 @@ pub trait Plugin: 'static {
 
 /// What the user did on the plugin page.
 ///
-/// New events may be added in a later 1.x version: match with a `_` arm.
+/// New events may be added in a later 1.x version: match with a `_` arm. New data for an event arrives as new
+/// variants, never as new fields on `Clicked` or `Changed` (plugin tests construct those two).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {

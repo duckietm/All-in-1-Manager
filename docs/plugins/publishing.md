@@ -26,6 +26,10 @@ builds `--locked --offline` in a sandbox with no network and a read-only filesys
 - **Commit `Cargo.lock`**, next to the workspace's `Cargo.toml` (for a project from `aio-plugin new`, next to its own
   `Cargo.toml`). A missing or stale lock file fails the build. The lock file also pins the SDK's git dependency to
   one commit.
+- **Depend on the SDK through the git tag**, as the template writes it:
+  `aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }`. The index's sealed
+  offline build cannot see a local `--sdk-path` (which writes an absolute path on your machine), so a submission
+  with a `path` dependency fails.
 - **Nothing may download during the build**: no `build.rs` that fetches files, no tool that needs the network.
 - **No symlinks and no submodules** anywhere in the repository, not only in the plugin's folder.
 - **No Git LFS** and no other filter: every file must check out exactly as committed. A `.gitattributes` end-of-line

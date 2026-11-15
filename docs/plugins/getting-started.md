@@ -91,6 +91,10 @@ The project holds:
 | `.gitignore` | Ignores `/target` and `/dist`. |
 | `README.md` | The commands of this page, in short. |
 
+> **`--sdk-path` is for local work only.** A plugin submitted to the official index must depend on the SDK through the
+> git tag dependency (`aio-plugin-sdk = { git = "https://github.com/duckietm/All-in-1-Manager", tag = "sdk-v1.0.0" }`):
+> the index's sealed offline build cannot see a local path.
+
 With `--sdk-path`, the SDK dependency in `Cargo.toml` is a path to your clone (absolute, with `/`), and the released
 form stays there as a comment:
 

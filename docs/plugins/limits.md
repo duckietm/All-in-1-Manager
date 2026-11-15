@@ -114,6 +114,10 @@ When the exports folder is full, the status line says so and the file is not sav
 | Text lines plus log entries | 5,000 over the page |
 | Characters in an input | 4,000 |
 
+The Manager also cuts long page text for display, without an error: headings at 200 characters, button labels at
+80, table headers at 80 and cells at 200, banners at 500, each text line at 2,000, log entries at 1,000, card titles,
+input labels and select options at 120, checkbox labels at 200.
+
 These four page limits are `aio_plugin_sdk::ui::limits::{MAX_ELEMENTS, MAX_DEPTH, MAX_CELLS, MAX_LINES}`. See
 [The page](ui.md#rules-and-limits).
 

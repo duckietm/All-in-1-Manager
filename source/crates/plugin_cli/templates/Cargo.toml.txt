@@ -17,5 +17,6 @@ opt-level = "s"
 lto = true
 strip = true
 
-# The plugin is its own workspace. Remove this table to make it a member of an existing workspace.
+# The plugin is its own workspace. Remove this table to make it a member of an existing workspace;
+# the wasm then builds into that workspace's target/, so set dev_wasm in manifest.json to match (`aio-plugin dev` warns).
 [workspace]

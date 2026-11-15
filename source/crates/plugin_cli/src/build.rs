@@ -137,6 +137,21 @@ pub fn dev_text(dir: &Path) -> Result<String> {
     if !dir.join(wasm).is_file() {
         text.push_str("It is not built yet: run `aio-plugin build` first.\n");
     }
+    // Where the build really puts the wasm: if that is not dev_wasm, the Manager will not find it.
+    if let Ok(built) = wasm_path(dir, &Options::default()) {
+        let wanted = dir.join(wasm);
+        let same = |a: &Path, b: &Path| a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b);
+        let parent_same = match (built.parent().and_then(|p| p.canonicalize().ok()), wanted.parent().and_then(|p| p.canonicalize().ok())) {
+            (Some(a), Some(b)) => a == b && built.file_name() == wanted.file_name(),
+            _ => false,
+        };
+        if !same(&built, &wanted) && !parent_same {
+            text.push_str(&format!(
+                "\nWarning: `aio-plugin build` puts the wasm at {}, but dev_wasm names {wasm}. Add a .cargo/config.toml with\n  [build]\n  target-dir = \"target\"\nnext to Cargo.toml (or change dev_wasm), or the Manager will not find the plugin.\n",
+                built.display()
+            ));
+        }
+    }
     Ok(text)
 }
 

@@ -16,7 +16,10 @@ const README: &str = include_str!("../templates/README.md.txt");
 
 /// The Cargo package name for `id`: the id itself, unless Cargo refuses it as a package name.
 fn crate_name(id: &str) -> String {
-    let refused = id.starts_with(|c: char| c.is_ascii_digit()) || matches!(id, "std" | "core" | "alloc" | "test" | "proc-macro");
+    let refused = id.starts_with(|c: char| c.is_ascii_digit()) || matches!(
+            id,
+            "std" | "core" | "alloc" | "test" | "proc-macro" | "build" | "deps" | "examples" | "incremental" | "as" | "async" | "await" | "break" | "const" | "continue" | "crate" | "dyn" | "else" | "enum" | "extern" | "false" | "fn" | "for" | "if" | "impl" | "in" | "let" | "loop" | "match" | "mod" | "move" | "mut" | "pub" | "ref" | "return" | "self" | "static" | "struct" | "super" | "trait" | "true" | "type" | "unsafe" | "use" | "where" | "while" | "abstract" | "become" | "box" | "do" | "final" | "macro" | "override" | "priv" | "try" | "typeof" | "unsized" | "virtual" | "yield"
+        );
     if refused { format!("plugin-{id}") } else { id.to_string() }
 }
 

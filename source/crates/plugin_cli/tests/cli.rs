@@ -91,3 +91,20 @@ fn new_project_builds_and_checks() {
     assert!(dev.contains("turn on Developer mode") && dev.contains("demo-counter"), "{dev}");
     assert!(!dev.contains("not built yet"), "{dev}");
 }
+
+/// Each example loads in developer mode: after a build, the wasm lies where its manifest's `dev_wasm` says.
+#[test]
+fn examples_dev_wasm_is_where_the_build_puts_it() {
+    for example in ["hello", "notes"] {
+        let dir = repo().join("source/plugins").join(example);
+        let offline = aio_plugin(&dir, &["build", "--offline"]);
+        if !offline.status.success() {
+            ok(aio_plugin(&dir, &["build"]), "build");
+        }
+        let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
+        let dev_wasm = manifest["dev_wasm"].as_str().unwrap();
+        assert!(dir.join(dev_wasm).is_file(), "{example}: dev_wasm {dev_wasm} does not exist after a build");
+        let dev = ok(aio_plugin(&dir, &["dev"]), "dev");
+        assert!(!dev.contains("not built yet") && !dev.contains("Warning"), "{example}: {dev}");
+    }
+}

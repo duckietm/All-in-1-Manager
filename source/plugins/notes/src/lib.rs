@@ -66,7 +66,7 @@ fn load_users() -> Result<Vec<[String; 2]>, String> {
         .run()
         .map_err(|e| match e.kind() {
             ErrorKind::Denied => {
-                "The users table is not available: the plugin lacks the `sql:read:users` permission, or there is no database access (no server connected).".to_string()
+                "The users table is not available: the plugin lacks the `sql:read:users` permission.".to_string()
             }
             ErrorKind::Rejected => "The request was rejected, so the user list was not loaded.".to_string(),
             ErrorKind::Timeout => "The server did not answer in time. Try Refresh users again.".to_string(),

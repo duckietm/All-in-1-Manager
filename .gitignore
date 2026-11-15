@@ -72,3 +72,4 @@ Thumbs.db
 
 # Example plugin builds
 /source/plugins/**/target/
+/source/plugins/**/dist/

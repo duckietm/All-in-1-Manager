@@ -3,6 +3,10 @@
 //! CatalogFeaturedPage.serialize), plus the classic layout Habbo's own server uses.
 #![allow(dead_code)]
 
+pub mod fake;
+pub mod mem;
+pub mod sim;
+
 use catalog_rip_core::wire::{Packet, Writer};
 
 pub struct Node {

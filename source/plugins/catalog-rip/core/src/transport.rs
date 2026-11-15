@@ -11,3 +11,19 @@ pub trait Transport {
     /// closed the connection.
     fn recv(&mut self, max: usize, timeout_ms: u32) -> Result<Option<Vec<u8>>, String>;
 }
+
+/// A transport with nothing behind it: every call fails. For a caller that already closed the
+/// G-Earth connection but must still pass a transport (a job that is done with G-Earth never
+/// touches it).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Closed;
+
+impl Transport for Closed {
+    fn send(&mut self, _data: &[u8]) -> Result<(), String> {
+        Err("the connection to G-Earth is closed".into())
+    }
+
+    fn recv(&mut self, _max: usize, _timeout_ms: u32) -> Result<Option<Vec<u8>>, String> {
+        Err("the connection to G-Earth is closed".into())
+    }
+}

@@ -24,6 +24,12 @@ impl Timestamp {
         let (y, mo, d, h, mi, s) = self.civil();
         format!("{y:04}-{mo:02}-{d:02}_{h:02}-{mi:02}-{s:02}")
     }
+
+    /// `YYYY-mm-dd HH:MM:SS` in UTC, the "ripped at" time in the output files.
+    pub fn date_time(self) -> String {
+        let (y, mo, d, h, mi, s) = self.civil();
+        format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}")
+    }
 }
 
 /// Days since 1970-01-01 -> (year, month, day), proleptic Gregorian (Howard Hinnant's algorithm).
@@ -56,5 +62,9 @@ mod tests {
         assert_eq!(f(4_102_444_799), "2099-12-31_23-59-59");
         assert_eq!(f(-1), "1969-12-31_23-59-59", "before the epoch");
         assert_eq!(f(-86_400 * 365), "1969-01-01_00-00-00");
+        assert_eq!(
+            Timestamp::new(1_709_210_096).date_time(),
+            "2024-02-29 12:34:56"
+        );
     }
 }

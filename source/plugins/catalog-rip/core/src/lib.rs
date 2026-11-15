@@ -6,18 +6,25 @@
 //! folders) and the current time (a [`Timestamp`]); [`gearth::GEarth`] speaks G-Earth's
 //! extension protocol over that transport, synchronously.
 //!
-//! Not in the core (later tasks): `rip`, `images` (download), `recording`,
-//! `gearth_log`, `diff`, `gearth_install`, `translations`, `http`.
+//! [`job::Job`] is the rip itself, stepped by the plugin: the built-in's `rip` as a state
+//! machine over the plugin's I/O ([`job::JobIo`]); [`output`] and [`images`] are what it
+//! writes and downloads.
+//!
+//! Not in the core: `recording` (packets/), `diff` (catalog_changes), `gearth_log`,
+//! `gearth_install`, `translations`, `http`.
 
 pub mod conn;
 pub mod export;
 pub mod extras;
 pub mod furnidata;
 pub mod gearth;
+pub mod images;
+pub mod job;
 pub mod learn;
 pub mod manager;
 pub mod missing;
 pub mod names;
+pub mod output;
 pub mod packets;
 pub mod productdata;
 pub mod profiles;
@@ -30,6 +37,10 @@ use std::path::PathBuf;
 
 pub use conn::{ConnectionInfo, PacketInfo};
 pub use export::ItemsBase;
+pub use job::{
+    Clock, Failure, Fetch, FetchError, Job, JobIo, Phase, ProfileChoice, Progress, RipOptions, Sink,
+    Step, Summary,
+};
 pub use manager::{ExistingCatalogue, ManagerMode};
 pub use missing::MissingFurni;
 pub use packets::Headers;

@@ -332,12 +332,20 @@ impl GEarth {
     }
 
     /// Sends a game packet to the hotel server through G-Earth (as the user's client).
-    pub fn send_to_server(&mut self, t: &mut (impl Transport + ?Sized), packet: &Packet) -> Result<(), Error> {
+    pub fn send_to_server(
+        &mut self,
+        t: &mut (impl Transport + ?Sized),
+        packet: &Packet,
+    ) -> Result<(), Error> {
         self.send(t, &send_to_server_message(packet))
     }
 
     /// A line in G-Earth's extension console.
-    pub fn console_log(&mut self, t: &mut (impl Transport + ?Sized), text: &str) -> Result<(), Error> {
+    pub fn console_log(
+        &mut self,
+        t: &mut (impl Transport + ?Sized),
+        text: &str,
+    ) -> Result<(), Error> {
         let message = Writer::new(ids::EXTENSION_CONSOLE_LOG)
             .string_latin1(text)
             .to_bytes();

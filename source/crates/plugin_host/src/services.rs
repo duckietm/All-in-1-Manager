@@ -100,10 +100,11 @@ pub trait HostServices: Send + Sync {
     /// [`HostServices::http_get`] for a host reached only through `http:ask` (`host`: lower case, it passed
     /// `crate::net::askable_host`). The implementation must also refuse, when connecting, every address
     /// `crate::net::is_local_address` names (`permission denied: host <host> resolves to a local address`), for the
-    /// first request and every redirect. The default is `http_get` (for test doubles; the Manager overrides it).
+    /// first request and every redirect. The default fails closed (an implementation that cannot refuse local
+    /// addresses must not fetch from asked hosts); the Manager overrides it.
     async fn http_get_asked(&self, url: &str, host: &str) -> Result<Vec<u8>, String> {
-        let _ = host;
-        self.http_get(url).await
+        let _ = (url, host);
+        Err("permission denied: this host cannot fetch from asked hosts".into())
     }
     /// A line of text from the user; `None` when cancelled.
     async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String>;
@@ -114,4 +115,51 @@ pub trait HostServices: Send + Sync {
     async fn pick_save_file(&self, title: String, suggested: String, extensions: Vec<String>) -> Option<PathBuf>;
     /// Opens the Manager's import preview on a copy of a file the user picked (`name` without folders).
     fn open_import_preview(&self, name: String, bytes: Vec<u8>);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host that does not override `http_get_asked`.
+    struct Plain;
+
+    #[async_trait]
+    impl HostServices for Plain {
+        async fn ask(&self, _q: String) -> bool {
+            false
+        }
+        fn log(&self, _level: Level, _text: &str) {}
+        fn status(&self, _text: &str) {}
+        async fn run_script(&self, _req: ScriptRequest) -> Result<ScriptResult, String> {
+            Err("no".into())
+        }
+        async fn sql_select(&self, _sql: String, _params: Vec<SqlValue>) -> Result<Rows, String> {
+            Err("no".into())
+        }
+        async fn sql_write(&self, _batch: WriteBatch) -> Result<u64, String> {
+            Err("no".into())
+        }
+        async fn http_get(&self, _url: &str) -> Result<Vec<u8>, String> {
+            Ok(b"unfiltered".to_vec())
+        }
+        async fn prompt_text(&self, _t: String, _l: String, _d: String) -> Option<String> {
+            None
+        }
+        async fn pick_open_file(&self, _t: String, _e: Vec<String>) -> Option<PathBuf> {
+            None
+        }
+        async fn pick_save_file(&self, _t: String, _s: String, _e: Vec<String>) -> Option<PathBuf> {
+            None
+        }
+        fn open_import_preview(&self, _name: String, _bytes: Vec<u8>) {}
+    }
+
+    /// Without an override that refuses local addresses, an asked host is never fetched (the unfiltered `http_get`
+    /// would reach this computer and the local network).
+    #[tokio::test]
+    async fn asked_fetch_fails_closed_by_default() {
+        let error = Plain.http_get_asked("https://example.com/", "example.com").await.unwrap_err();
+        assert_eq!(error, "permission denied: this host cannot fetch from asked hosts");
+    }
 }

@@ -3849,6 +3849,7 @@
   "Saved {name}: open it with Catalogue → Import a file": "{name} kaydedildi: Katalog → Dosya içe aktar ile aç",
   "Start the plugin again": "Eklentiyi yeniden başlat",
   "Starting the plugin …": "Eklenti başlatılıyor …",
+  "Working… leaving this page stops it": "Çalışıyor… bu sayfadan ayrılmak işi durdurur",
   "Take the folder off the list; its files and the plugin's data stay": "Klasörü listeden çıkarır; dosyaları ve eklentinin verileri kalır",
   "The developer folder cannot be read: {error}": "Geliştirici klasörü okunamıyor: {error}",
   "The folder is taken off the list. Its files are not touched.": "Klasör listeden çıkarıldı. Dosyalarına dokunulmadı.",

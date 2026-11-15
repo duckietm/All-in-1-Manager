@@ -45,6 +45,16 @@
 //!
 //! The watchdog uses `tokio::time`: calls must run inside a tokio runtime (the app's).
 //!
+//! API versions: the imports are linked through the 1.1 bindings, and wasmtime's semver matching resolves a
+//! component's `aio:plugin/*@1.0.0` imports against them, so a component built for 1.0 runs unchanged. A component
+//! that imports `aio:plugin/*@1.1.0` needs `"api": "1.1"` in its manifest (checked at load). The exports are looked
+//! up by name: `render` and `on-event` must exist, `tick` (1.1) is optional.
+//!
+//! Ticks (1.1): `keep-working` during a call asks for one [`PluginInstance::tick`] after the next render
+//! ([`PluginInstance::wants_tick`]); each event or tick starts without that request. A tick is a call like any other
+//! (the same time limit, log budget and dialog limit, each tick its own). The app runs ticks only while the page is
+//! open and hands queued events to the plugin first.
+//!
 //! A call that traps, times out or is cancelled (its future dropped) poisons the instance: every later
 //! call returns the same error without running guest code. The app reloads the plugin with a fresh
 //! [`PluginInstance::load`].
@@ -66,7 +76,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context as _, Result};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use wasmtime::component::{Component, HasSelf, Linker, Resource, ResourceTable};
+use wasmtime::component::{Component, HasSelf, Instance, Linker, Resource, ResourceTable, TypedFunc};
 use wasmtime::{Config, Engine, ResourceLimiter, Store, Trap, UpdateDeadline};
 use wasmtime_wasi::cli::{IsTerminal, StdoutStream};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -77,7 +87,7 @@ use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
 };
 use crate::bindings::Plugin;
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, HOST_API_MINOR};
 use crate::net::{check_http, check_tcp, MAX_HTTP_BODY, MAX_TCP_CONNECTIONS, MAX_TCP_RECV};
 use crate::permissions::Permission;
 use crate::services::{HostServices, Level, ScriptRequest, SqlValue};
@@ -401,6 +411,10 @@ pub struct HostState {
     approvals: Arc<Approvals>,
     /// Dialogs opened by the current call (reset by each call; see [`MAX_DIALOGS`]).
     dialogs: usize,
+    /// The component exports `tick` (API 1.1).
+    has_tick: bool,
+    /// `keep-working` was called since the last event or tick started.
+    keep_working: bool,
 }
 
 impl WasiView for HostState {
@@ -774,6 +788,14 @@ impl Host for HostState {
         self.services.open_import_preview(name, bytes);
         Ok(())
     }
+
+    async fn keep_working(&mut self) -> wasmtime::Result<()> {
+        if !self.has_tick {
+            return Err(wasmtime::format_err!("tick is not exported"));
+        }
+        self.keep_working = true;
+        Ok(())
+    }
 }
 
 /// Size of the files and number of files and folders under `root` (links are counted, never followed).
@@ -876,10 +898,45 @@ impl HostTcpConnection for HostState {
     }
 }
 
+/// The guest's exports, looked up by name (`tick` is optional, so the generated world type cannot hold them).
+struct Exports {
+    render: TypedFunc<(), (UiTree,)>,
+    on_event: TypedFunc<(UiEvent,), (Result<(), String>,)>,
+    tick: Option<TypedFunc<(), (Result<(), String>,)>>,
+}
+
+impl Exports {
+    fn find(store: &mut Store<HostState>, instance: &Instance, has_tick: bool) -> Result<Exports> {
+        let wrong = |name: &'static str| move |e: wasmtime::Error| anyhow::anyhow!("the plugin's `{name}` export is missing or of the wrong type: {e:#}");
+        let render = instance.get_typed_func(&mut *store, "render").map_err(wrong("render"))?;
+        let on_event = instance.get_typed_func(&mut *store, "on-event").map_err(wrong("on-event"))?;
+        let tick = if has_tick { Some(instance.get_typed_func(&mut *store, "tick").map_err(wrong("tick"))?) } else { None };
+        Ok(Exports { render, on_event, tick })
+    }
+}
+
+/// The API minor version a component needs: the highest `aio:plugin/<interface>@1.<minor>.<patch>` it imports, 0 if
+/// it imports none.
+fn needed_api_minor(component: &Component, engine: &Engine) -> u32 {
+    component
+        .component_type()
+        .imports(engine)
+        .filter_map(|(name, _)| {
+            let version = name.strip_prefix("aio:plugin/")?.split_once('@')?.1;
+            let mut parts = version.split('.');
+            if parts.next()? != "1" {
+                return None;
+            }
+            parts.next()?.parse().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
 /// One loaded plugin. `Send`: run its calls on a tokio worker thread, never on the egui thread.
 pub struct PluginInstance {
     store: Store<HostState>,
-    plugin: Plugin,
+    exports: Exports,
     manifest: Manifest,
     /// The same clock as the store's `HostState::clock`, reachable while the store is borrowed by a call.
     clock: Arc<CallClock>,
@@ -940,6 +997,12 @@ impl PluginInstance {
             .await
             .context("compiling the plugin stopped")?
             .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        // The manifest promises the API the component is built for (`HOST_API_MINOR` caps what it may say).
+        let needed = needed_api_minor(&component, engine);
+        if needed > manifest.api_minor().min(HOST_API_MINOR) {
+            bail!("Plugin needs API 1.{needed} but its manifest says {}", manifest.api);
+        }
+        let has_tick = component.component_type().get_export(engine, "tick").is_some();
         let mut linker: Linker<HostState> = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| anyhow::anyhow!("{e:#}"))?;
         Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| anyhow::anyhow!("{e:#}"))?;
@@ -967,6 +1030,8 @@ impl PluginInstance {
             plugin: manifest.id.clone(),
             approvals,
             dialogs: 0,
+            has_tick,
+            keep_working: false,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -983,28 +1048,51 @@ impl PluginInstance {
 
         // Instantiation can run guest code (start functions): it is a call like any other.
         arm(&mut store);
-        let plugin = watchdog(&clock, Plugin::instantiate_async(&mut store, &component, &linker)).await;
+        let instance = watchdog(&clock, linker.instantiate_async(&mut store, &component)).await;
         disarm(&mut store);
-        let plugin = plugin.map_err(|e| anyhow::anyhow!("{e}"))?;
-        Ok(PluginInstance { store, plugin, manifest, clock, poisoned: None, in_call: false })
+        let instance = instance.map_err(|e| anyhow::anyhow!("{e}"))?;
+        let exports = Exports::find(&mut store, &instance, has_tick)?;
+        Ok(PluginInstance { store, exports, manifest, clock, poisoned: None, in_call: false })
     }
 
     pub fn manifest(&self) -> &Manifest {
         &self.manifest
     }
 
-    /// The plugin's page.
+    /// The plugin's page. A render keeps a pending tick request (and may make one).
     pub async fn render(&mut self) -> Result<UiTree, PluginError> {
         self.enter()?;
-        let result = watchdog(&self.clock, self.plugin.call_render(&mut self.store)).await;
-        self.leave(result)
+        let result = watchdog(&self.clock, self.exports.render.call_async(&mut self.store, ())).await;
+        self.leave(result).map(|(tree,)| tree)
     }
 
     /// Hands a user action to the plugin. The app renders again afterwards.
     pub async fn event(&mut self, e: UiEvent) -> Result<(), PluginError> {
         self.enter()?;
-        let result = watchdog(&self.clock, self.plugin.call_on_event(&mut self.store, &e)).await;
-        self.leave(result)?.map_err(PluginError::Failed)
+        self.store.data_mut().keep_working = false;
+        let result = watchdog(&self.clock, self.exports.on_event.call_async(&mut self.store, (e,))).await;
+        self.leave(result)?.0.map_err(PluginError::Failed)
+    }
+
+    /// One step of the plugin's long job (API 1.1), run by the app after a render while [`wants_tick`] holds and no
+    /// event waits. A call like [`event`](Self::event): its own time limit, and the app renders again afterwards.
+    /// Does nothing for a component without a `tick` export.
+    ///
+    /// [`wants_tick`]: Self::wants_tick
+    pub async fn tick(&mut self) -> Result<(), PluginError> {
+        self.enter()?;
+        self.store.data_mut().keep_working = false;
+        let Some(tick) = self.exports.tick else {
+            return self.leave(Ok(()));
+        };
+        let result = watchdog(&self.clock, tick.call_async(&mut self.store, ())).await;
+        self.leave(result)?.0.map_err(PluginError::Failed)
+    }
+
+    /// The plugin called `keep-working` since its last event or tick started (and is not poisoned): run
+    /// [`tick`](Self::tick) after the next render.
+    pub fn wants_tick(&self) -> bool {
+        self.poisoned.is_none() && self.store.data().keep_working
     }
 
     /// Test hook: the host side of the imports, to call them as a guest would.

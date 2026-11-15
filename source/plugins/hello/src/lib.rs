@@ -5,7 +5,7 @@
 //! `render` again afterwards. This plugin only uses `host::log` and the private data folder
 //! (`files`, permission `files`).
 //!
-//! The Cargo features `runaway`, `hog`, `sleeper`, `asker` and `scripter` are test-only variants
+//! The Cargo features `runaway`, `hog`, `sleeper`, `asker`, `scripter` and `ticker` are test-only variants
 //! used by the host's sandbox tests; the default build has none of them.
 
 use aio_plugin_sdk::{export_plugin, files, host, Event, Plugin, Ui};
@@ -25,11 +25,86 @@ fn read_count() -> u64 {
 struct Hello {
     /// What the user typed into the `name` input.
     name: String,
+    /// The `ticker` test variant's job.
+    #[cfg(feature = "ticker")]
+    job: ticker::Job,
+}
+
+/// The `ticker` test variant: a job that runs in ticks (see Cargo.toml).
+#[cfg(feature = "ticker")]
+mod ticker {
+    use aio_plugin_sdk::{host, Event, Ui};
+
+    #[derive(Default)]
+    pub struct Job {
+        /// Ticks still to run.
+        left: u32,
+        /// How long each tick takes.
+        pace: std::time::Duration,
+        /// The next tick never returns.
+        spin: bool,
+        /// Ticks run so far.
+        ticked: u32,
+        /// Ticks run when "cancel" arrived.
+        cancelled: Option<u32>,
+    }
+
+    impl Job {
+        pub fn render(&self, ui: &mut Ui) {
+            ui.button("start", "Start");
+            ui.button("slow", "Slow");
+            ui.button("spin", "Spin");
+            ui.button("cancel", "Cancel");
+            ui.text(format!("Ticked {} times", self.ticked));
+            if let Some(n) = self.cancelled {
+                ui.text(format!("Cancelled after {n} ticks"));
+            }
+        }
+
+        pub fn on_event(&mut self, event: &Event) {
+            let Event::Clicked { id } = event else { return };
+            match id.as_str() {
+                "start" | "slow" => {
+                    self.left = 3;
+                    self.pace = std::time::Duration::from_millis(if id == "slow" { 2000 } else { 0 });
+                    host::keep_working();
+                }
+                "spin" => {
+                    self.spin = true;
+                    host::keep_working();
+                }
+                "cancel" => {
+                    self.left = 0;
+                    self.cancelled = Some(self.ticked);
+                }
+                _ => {}
+            }
+        }
+
+        pub fn tick(&mut self) {
+            if self.spin {
+                loop {
+                    std::hint::black_box(());
+                }
+            }
+            std::thread::sleep(self.pace);
+            self.ticked += 1;
+            self.left = self.left.saturating_sub(1);
+            host::log(host::Level::Info, &format!("tick {}", self.ticked));
+            if self.left > 0 {
+                host::keep_working();
+            }
+        }
+    }
 }
 
 impl Plugin for Hello {
     fn new() -> Self {
-        Hello { name: String::new() }
+        Hello {
+            name: String::new(),
+            #[cfg(feature = "ticker")]
+            job: ticker::Job::default(),
+        }
     }
 
     // With the `runaway` feature everything after the loop is unreachable on purpose.
@@ -63,9 +138,13 @@ impl Plugin for Hello {
         ui.input("name", "Name", self.name.clone());
         ui.primary_button("greet", "Greet");
         ui.text(format!("Greeted {} times", read_count()));
+        #[cfg(feature = "ticker")]
+        self.job.render(ui);
     }
 
     fn on_event(&mut self, event: Event) -> Result<(), String> {
+        #[cfg(feature = "ticker")]
+        self.job.on_event(&event);
         match event {
             Event::Changed { id, value } if id == "name" => self.name = value,
             Event::Clicked { id } if id == "greet" => {
@@ -76,6 +155,12 @@ impl Plugin for Hello {
             // Other events do not concern this plugin.
             _ => {}
         }
+        Ok(())
+    }
+
+    #[cfg(feature = "ticker")]
+    fn tick(&mut self) -> Result<(), String> {
+        self.job.tick();
         Ok(())
     }
 }

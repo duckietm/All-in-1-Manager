@@ -3849,6 +3849,7 @@
   "Saved {name}: open it with Catalogue → Import a file": "{name} opgeslagen: open het met Catalogus → Een bestand importeren",
   "Start the plugin again": "De plugin opnieuw starten",
   "Starting the plugin …": "De plugin wordt gestart …",
+  "Working… leaving this page stops it": "Bezig… deze pagina verlaten stopt het",
   "Take the folder off the list; its files and the plugin's data stay": "Haalt de map van de lijst; de bestanden en de gegevens van de plugin blijven",
   "The developer folder cannot be read: {error}": "De ontwikkelaarsmap kan niet worden gelezen: {error}",
   "The folder is taken off the list. Its files are not touched.": "De map is van de lijst gehaald. De bestanden worden niet aangeraakt.",

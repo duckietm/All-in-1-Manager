@@ -1,11 +1,17 @@
-//! Host side of the external plugin API `aio:plugin@1.0.0`.
+//! Host side of the external plugin API `aio:plugin@1.1.0` (components built for `1.0.0` run unchanged).
 
-/// Generated bindings for the WIT world `plugin` (see `source/wit/aio-plugin/plugin.wit`).
+/// Generated bindings for the WIT world `plugin` (see `source/wit/aio-plugin/plugin.wit`). The imports are linked
+/// through these 1.1 bindings; wasmtime's semver matching resolves a component's `@1.0.0` imports against them. The
+/// exports are looked up by name in [`runtime`], since `tick` is optional.
 pub mod bindings {
     wasmtime::component::bindgen!({
         world: "plugin",
         path: "../../wit/aio-plugin",
-        imports: { default: async },
+        imports: {
+            // An error stops the guest's call (a component without `tick` asked for one).
+            "aio:plugin/host.keep-working": async | trappable,
+            default: async,
+        },
         exports: { default: async },
         // The resources are host structs in `runtime`, kept in the store's `ResourceTable`.
         with: {

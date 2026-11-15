@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "aio-plugin-sdk"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "wit-bindgen",
 ]

@@ -496,3 +496,131 @@ async fn private_folder_quota() {
     assert!(host.file_write("a".into(), vec![2; 31 * MIB]).await.is_err());
     assert_eq!(std::fs::metadata(dir.join("data/a")).unwrap().len(), 30 * MIB as u64);
 }
+
+// ---- API 1.1: ticks ----
+
+/// The release build of `hello` from API 1.0 (committed under tests/fixtures): it imports `aio:plugin/*@1.0.0` and
+/// exports no `tick`. Installed into `root` with its own manifest, whose `api` is replaced by `api`.
+fn install_hello_1_0(root: &Path, api: &str) -> (PathBuf, aio_plugin_host::Manifest) {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    let dir = root.join("hello");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(fixtures.join("hello-1.0.wasm"), dir.join("plugin.wasm")).unwrap();
+    let mut manifest = aio_plugin_host::Manifest::parse(&std::fs::read(fixtures.join("hello-1.0.manifest.json")).unwrap()).unwrap();
+    assert_eq!(manifest.api, "1.0", "the fixture is a 1.0 plugin");
+    manifest.api = api.to_string();
+    (dir, manifest)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn component_built_for_1_0_still_runs() {
+    for api in ["1.0", "1.1"] {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, manifest) = install_hello_1_0(root.path(), api);
+        let fake = Arc::new(Fake::default());
+        let mut inst = PluginInstance::load(&engine(), &dir, manifest, fake.clone(), Arc::new(Approvals::new()))
+            .await
+            .unwrap_or_else(|e| panic!("manifest api {api}: {e:#}"));
+        assert_eq!(texts(&inst.render().await.unwrap()), ["Greeted 0 times"]);
+        inst.event(UiEvent::Changed(aio_plugin_host::runtime::ChangedData { id: "name".into(), value: "Ann".into() })).await.unwrap();
+        inst.event(UiEvent::Clicked("greet".into())).await.unwrap();
+        assert_eq!(texts(&inst.render().await.unwrap()), ["Greeted 1 times"]);
+        assert!(fake.logs().iter().any(|(l, t)| *l == Level::Info && t == "Hello Ann"));
+        // No `tick` export: it never asks for ticks, and a tick does nothing.
+        assert!(!inst.wants_tick());
+        inst.tick().await.unwrap();
+        assert_eq!(texts(&inst.render().await.unwrap()), ["Greeted 1 times"]);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manifest_1_0_with_1_1_imports_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop());
+    let mut manifest = aio_plugin_host::installed(root.path()).into_iter().next().unwrap();
+    assert_eq!(manifest.api, "1.1", "hello is built for API 1.1");
+    manifest.api = "1.0".into();
+    let refused = PluginInstance::load(&engine(), &dir, manifest, Arc::new(Fake::default()), Arc::new(Approvals::new())).await;
+    match refused {
+        Ok(_) => panic!("a 1.1 component under a 1.0 manifest must be refused"),
+        Err(e) => assert_eq!(format!("{e:#}"), "Plugin needs API 1.1 but its manifest says 1.0"),
+    }
+}
+
+/// Runs the ticks the plugin asks for (at most `max`), as the app does; returns how many ran.
+async fn run_ticks(inst: &mut PluginInstance, max: usize) -> usize {
+    let mut ran = 0;
+    while inst.wants_tick() {
+        assert!(ran < max, "more than {max} ticks");
+        inst.tick().await.unwrap();
+        ran += 1;
+    }
+    ran
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tick_runs_only_when_requested() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop_with("ticker"));
+    let fake = Arc::new(Fake::default());
+    let mut inst = load(&dir, fake.clone()).await;
+    let tree = inst.render().await.unwrap();
+    assert!(texts(&tree).contains(&"Ticked 0 times".to_string()), "{:?}", texts(&tree));
+    assert!(!inst.wants_tick(), "nothing asked for a tick yet");
+    inst.event(UiEvent::Clicked("greet".into())).await.unwrap();
+    assert!(!inst.wants_tick(), "an event that does not call keep-working asks for no tick");
+
+    inst.event(UiEvent::Clicked("start".into())).await.unwrap();
+    assert!(inst.wants_tick(), "keep-working during the event asks for a tick");
+    // A render in between keeps the request (the app renders after every call).
+    inst.render().await.unwrap();
+    assert!(inst.wants_tick());
+    assert_eq!(run_ticks(&mut inst, 10).await, 3);
+    let tree = inst.render().await.unwrap();
+    assert!(texts(&tree).contains(&"Ticked 3 times".to_string()), "{:?}", texts(&tree));
+    assert!(!inst.wants_tick(), "idle after the last tick");
+    let ticks: Vec<_> = fake.logs().into_iter().filter(|(_, t)| t.starts_with("tick ")).map(|(_, t)| t).collect();
+    assert_eq!(ticks, ["tick 1", "tick 2", "tick 3"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn keep_working_without_tick_export_errors() {
+    let root = tempfile::tempdir().unwrap();
+    let (dir, manifest) = install_hello_1_0(root.path(), "1.1");
+    let mut inst = PluginInstance::load(&engine(), &dir, manifest, Arc::new(Fake::default()), Arc::new(Approvals::new())).await.unwrap();
+    // What the import does when a component without `tick` calls it: an error that stops the call.
+    let error = inst.host_for_tests().keep_working().await.unwrap_err();
+    assert!(format!("{error:#}").contains("tick is not exported"), "{error:#}");
+    assert!(!inst.wants_tick());
+
+    // With a `tick` export the same call asks for a tick.
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop_with("ticker"));
+    let mut inst = load(&dir, Arc::new(Fake::default())).await;
+    inst.host_for_tests().keep_working().await.unwrap();
+    assert!(inst.wants_tick());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_tick_has_its_own_budget() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = install_hello(root.path(), &support::hello_aiop_with("ticker"));
+    let mut inst = load(&dir, Arc::new(Fake::default())).await;
+    // Three ticks of 2 s each: 6 s together, more than one call may take, yet each tick is a call of its own.
+    inst.event(UiEvent::Clicked("slow".into())).await.unwrap();
+    let start = Instant::now();
+    assert_eq!(run_ticks(&mut inst, 10).await, 3);
+    assert!(start.elapsed() >= Duration::from_secs(6), "took {:?}", start.elapsed());
+
+    // A tick that spins is stopped after 5 s and poisons the instance, as any call.
+    inst.event(UiEvent::Clicked("spin".into())).await.unwrap();
+    assert!(inst.wants_tick());
+    let start = Instant::now();
+    let err = inst.tick().await.unwrap_err();
+    let took = start.elapsed();
+    assert!(matches!(err, PluginError::TimedOut), "{err:?}");
+    assert!(took >= Duration::from_millis(4500) && took < Duration::from_secs(6), "took {took:?}");
+    assert!(!inst.wants_tick(), "a poisoned instance asks for nothing");
+    assert!(matches!(inst.render().await.unwrap_err(), PluginError::TimedOut));
+    assert!(matches!(inst.tick().await.unwrap_err(), PluginError::TimedOut));
+}

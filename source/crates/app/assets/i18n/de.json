@@ -3849,6 +3849,7 @@
   "Saved {name}: open it with Catalogue → Import a file": "{name} gespeichert: öffne es mit Katalog → Datei importieren",
   "Start the plugin again": "Das Plugin erneut starten",
   "Starting the plugin …": "Plugin wird gestartet …",
+  "Working… leaving this page stops it": "Läuft… wenn du diese Seite verlässt, wird es beendet",
   "Take the folder off the list; its files and the plugin's data stay": "Nimmt den Ordner aus der Liste; seine Dateien und die Daten des Plugins bleiben",
   "The developer folder cannot be read: {error}": "Der Entwicklerordner kann nicht gelesen werden: {error}",
   "The folder is taken off the list. Its files are not touched.": "Der Ordner ist aus der Liste genommen. Seine Dateien werden nicht angefasst.",

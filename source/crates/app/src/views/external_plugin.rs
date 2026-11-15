@@ -8,6 +8,10 @@
 //! the view and with it the `Running`: the task stops, the instance is dropped and its waiting approvals are rejected.
 //! A plugin that traps or runs too long shows "The plugin stopped: …" with Reload. While an approved script or write
 //! batch executes, the window counts as busy ([`ExternalPluginView::executing`]), so nothing cuts it off half-way.
+//!
+//! Ticks (API 1.1): after each render, if the plugin asked for one (`keep-working`) and no event waits, the task runs
+//! `tick` and renders again. Queued events always go first, so a Cancel click reaches the plugin before the next tick.
+//! While ticks run the page stays drawn with a line saying that leaving it stops the work.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -55,6 +59,8 @@ struct State {
     failed: Option<String>,
     /// Events sent and not yet handled.
     queued: usize,
+    /// The plugin asked for ticks: its long job runs between renders.
+    ticking: bool,
 }
 
 /// Loads the plugin, renders, then handles events until the page closes (the sender is dropped) or the plugin stops.
@@ -100,8 +106,10 @@ async fn run(
             Ok(tree) => {
                 // Checked and made safe here, once, not on the window's thread every frame.
                 let page = Arc::new(plugin_tree::prepare(&tree));
+                let ticking = instance.wants_tick();
                 update(&|s| {
-                    s.busy = !events.is_empty();
+                    s.busy = !events.is_empty() || ticking;
+                    s.ticking = ticking;
                     s.page = Some(page.clone());
                     s.generation += 1;
                 });
@@ -110,10 +118,32 @@ async fn run(
                 let message = error.to_string();
                 update(&|s| {
                     s.busy = false;
+                    s.ticking = false;
                     s.stopped = Some(message.clone());
                 });
                 return;
             }
+        }
+        // The page closed: no more work, not even the ticks the plugin asked for.
+        if events.is_closed() && events.is_empty() {
+            return;
+        }
+        // A tick only when no event waits, then one render.
+        if events.is_empty() && instance.wants_tick() {
+            match instance.tick().await {
+                Ok(()) => update(&|s| s.failed = None),
+                Err(PluginError::Failed(message)) => update(&|s| s.failed = Some(message.clone())),
+                Err(error) => {
+                    let message = error.to_string();
+                    update(&|s| {
+                        s.busy = false;
+                        s.ticking = false;
+                        s.stopped = Some(message.clone());
+                    });
+                    return;
+                }
+            }
+            continue;
         }
         // Every queued event first, then one render.
         loop {
@@ -129,6 +159,7 @@ async fn run(
                     let message = error.to_string();
                     update(&|s| {
                         s.busy = false;
+                        s.ticking = false;
                         s.stopped = Some(message.clone());
                     });
                     return;
@@ -172,6 +203,7 @@ impl Running {
             {
                 let mut s = stop_state.lock();
                 s.busy = false;
+                s.ticking = false;
                 s.stopped = Some(t("you stopped it").to_string());
             }
             ctx.request_repaint();
@@ -352,7 +384,9 @@ impl ExternalPluginView {
             }
             Outcome::Stop => {
                 self.running.halt();
-                self.running.state.lock().stopped = Some(t("you stopped it").to_string());
+                let mut s = self.running.state.lock();
+                s.ticking = false;
+                s.stopped = Some(t("you stopped it").to_string());
             }
             Outcome::Nothing => {}
         }
@@ -361,9 +395,9 @@ impl ExternalPluginView {
     /// The scrolling part: the plugin's own content, framed and labelled as the plugin's, the stopped card, the
     /// exported file and the plugin log.
     pub fn show_content(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
-        let (page, generation, stopped, failed) = {
+        let (page, generation, stopped, failed, ticking) = {
             let s = self.running.state.lock();
-            (s.page.clone(), s.generation, s.stopped.clone(), s.failed.clone())
+            (s.page.clone(), s.generation, s.stopped.clone(), s.failed.clone(), s.ticking)
         };
         if generation != self.generation {
             self.generation = generation;
@@ -388,6 +422,14 @@ impl ExternalPluginView {
             if let Some(message) = failed {
                 widgets::result_banner(ui, palette, ResultKind::Warning, t("The plugin reported an error"), &display_safe(&message, 500));
                 ui.add_space(8.0);
+            }
+            if ticking {
+                // The plugin's long job runs between renders; its page stays drawn (with its own Cancel, if any).
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    widgets::muted(ui, palette, t("Working… leaving this page stops it"), 12.5);
+                });
+                ui.add_space(6.0);
             }
             // Everything the plugin draws sits in this frame, under its name: it cannot pass for the Manager's own UI.
             let mut events = Vec::new();

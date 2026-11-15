@@ -24,3 +24,6 @@ sleeper = []
 asker = []
 # `render` first runs a script on the server (permission `ssh`; waits for the user's approval).
 scripter = []
+# A job in ticks (API 1.1): "start" runs 3 quick ticks, "slow" 3 ticks of 2 s each, "spin" one tick that never
+# returns; "cancel" ends the job. The page counts the ticks.
+ticker = []

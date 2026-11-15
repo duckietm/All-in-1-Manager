@@ -4,8 +4,8 @@ use crate::permissions::Permission;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-/// The highest minor version of API major 1 this host implements.
-pub const HOST_API_MINOR: u32 = 0;
+/// The highest minor version of API major 1 this host implements (`"api"` may be `"1.0"` or `"1.1"`).
+pub const HOST_API_MINOR: u32 = 1;
 
 /// Invisible, direction-changing and separator characters that can make text lie about what it says. One list,
 /// shared by the manifest check, [`display_safe`] and the runtime's log sanitiser.
@@ -161,6 +161,14 @@ fn check_duplicates(permissions: &[Permission]) -> Result<()> {
 }
 
 impl Manifest {
+    /// The minor version of the API the manifest asks for (`"1.1"` gives 1); 0 if `api` does not parse.
+    pub fn api_minor(&self) -> u32 {
+        match numbers(&self.api, 2, 3).as_deref() {
+            Some([1, minor, ..]) => *minor,
+            _ => 0,
+        }
+    }
+
     pub fn parse(json: &[u8]) -> Result<Manifest> {
         let raw: Raw = serde_json::from_slice(json).context("manifest.json is not valid")?;
         if !valid_id(&raw.id) {

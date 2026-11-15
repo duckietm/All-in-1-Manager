@@ -56,6 +56,16 @@ pub fn status(text: &str) {
     eprintln!("[status] {text}");
 }
 
+/// Asks the Manager to call [`Plugin::tick`](crate::Plugin::tick) once more after the next render: the next step of
+/// a long job. Call it in [`on_event`](crate::Plugin::on_event) to start the job and in each `tick` that leaves work
+/// to do; the request holds only for the call that makes it. Steps run only while the plugin's page is open
+/// (leaving the page, Stop or Reload ends the job), and events the user sends meanwhile come first.
+///
+/// Needs `"api": "1.1"` in the manifest.
+pub fn keep_working() {
+    host::keep_working();
+}
+
 /// Asks the user a yes/no question and waits for the answer: `true` for yes. `false` past the dialog limit.
 pub fn ask(question: &str) -> bool {
     host::ask(question)

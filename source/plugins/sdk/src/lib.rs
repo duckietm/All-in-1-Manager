@@ -1,8 +1,9 @@
 //! The SDK for All-in-1 Manager plugins.
 //!
-//! A plugin is a WebAssembly component (`wasm32-wasip2`) for the Manager's plugin API `aio:plugin@1.0.0`. It
+//! A plugin is a WebAssembly component (`wasm32-wasip2`) for the Manager's plugin API `aio:plugin@1.1.0`. It
 //! never draws anything itself: the Manager asks it to describe its page ([`Plugin::render`]), shows that page,
-//! and hands back what the user did ([`Plugin::on_event`]), after which it asks for the page again.
+//! and hands back what the user did ([`Plugin::on_event`]), after which it asks for the page again. A long job
+//! runs in steps between pages: [`host::keep_working`] asks for one more [`Plugin::tick`].
 //!
 //! A plugin is a type implementing [`Plugin`], exported with [`export_plugin!`]:
 //!
@@ -92,6 +93,16 @@ pub trait Plugin: 'static {
     /// Handles what the user did on the page. An `Err` is shown to the user and written to the plugin log; the
     /// page is rendered again either way. SDK [`Error`]s convert with `?`.
     fn on_event(&mut self, event: Event) -> std::result::Result<(), String>;
+
+    /// One step of a long job: called after a render when the last [`on_event`](Plugin::on_event) or `tick` called
+    /// [`host::keep_working`]. Call [`host::keep_working`] again for another step; without it the ticks stop. Events
+    /// the user sent meanwhile (a Cancel button) come first. Each tick is a call of its own, with its own time limit,
+    /// and the page is rendered again afterwards. Ticks run only while the page is open.
+    ///
+    /// An `Err` is shown like one from [`on_event`](Plugin::on_event). The default does nothing.
+    fn tick(&mut self) -> std::result::Result<(), String> {
+        Ok(())
+    }
 }
 
 /// What the user did on the plugin page.
@@ -126,8 +137,8 @@ impl Event {
     }
 }
 
-/// Exports `$plugin`, a type implementing [`Plugin`], as the component's plugin: the Manager's `render` and
-/// `on-event` calls go to one instance of it, made with [`Plugin::new`] on first use.
+/// Exports `$plugin`, a type implementing [`Plugin`], as the component's plugin: the Manager's `render`,
+/// `on-event` and `tick` calls go to one instance of it, made with [`Plugin::new`] on first use.
 ///
 /// Use it once, at the top level of the plugin crate. On targets other than `wasm32` it expands to nothing.
 ///
@@ -159,6 +170,10 @@ macro_rules! export_plugin {
 
                 fn on_event(event: $crate::export::WitEvent) -> ::std::result::Result<(), ::std::string::String> {
                     __AIO_PLUGIN.with(|slot| slot.on_event(event))
+                }
+
+                fn tick() -> ::std::result::Result<(), ::std::string::String> {
+                    __AIO_PLUGIN.with($crate::export::Slot::tick)
                 }
             }
 

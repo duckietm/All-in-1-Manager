@@ -4,7 +4,10 @@
 /// `render` returns a description of its page and `on-event` receives what the user did.
 /// Everything else (scripts, database, network, files) goes through the `host` imports,
 /// each one gated by a permission in the plugin manifest and by the user's approval.
-package aio:plugin@1.0.0;
+///
+/// 1.1 only adds items to 1.0 (kept verbatim in `../aio-plugin-1.0`): `host.keep-working` and the optional
+/// `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
+package aio:plugin@1.1.0;
 
 interface types {
     /// A flat description of a page. WIT has no recursive types, so the tree is stored as a
@@ -244,6 +247,13 @@ interface host {
     /// Hands a user-picked file to the Manager's import preview (used by the catalog ripper).
     /// The user reviews it there before anything is changed.
     open-import-preview: func(file: borrow<picked-file>) -> result<_, string>;
+
+    /// Asks the host to call `tick` once more after the next render, so that a long job runs in steps between
+    /// pages (each step is a call of its own, with its own time limit). The request holds for the call that makes
+    /// it; the next event or tick starts without one. Work runs only while the plugin's page is open. A component
+    /// that does not export `tick` gets an error (`tick is not exported`) that stops the call.
+    @since(version = 1.1.0)
+    keep-working: func();
 }
 
 world plugin {
@@ -256,4 +266,10 @@ world plugin {
 
     /// Handles what the user did on the page. The page is re-rendered afterwards.
     export on-event: func(event: ui-event) -> result<_, string>;
+
+    /// One step of a long job, called after a render when the last call asked for it with `keep-working`.
+    /// Events the user sent meanwhile are handled first. The page is re-rendered afterwards. Optional: the
+    /// host looks it up by name, and a component without it never gets ticks.
+    @since(version = 1.1.0)
+    export tick: func() -> result<_, string>;
 }

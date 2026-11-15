@@ -3849,6 +3849,7 @@
   "Saved {name}: open it with Catalogue → Import a file": "{name} tallennettu: avaa se kohdasta Luettelo → Tuo tiedosto",
   "Start the plugin again": "Käynnistä liitännäinen uudelleen",
   "Starting the plugin …": "Käynnistetään liitännäistä …",
+  "Working… leaving this page stops it": "Työ käynnissä… tältä sivulta poistuminen pysäyttää sen",
   "Take the folder off the list; its files and the plugin's data stay": "Poistaa kansion luettelosta; sen tiedostot ja liitännäisen tiedot säilyvät",
   "The developer folder cannot be read: {error}": "Kehittäjäkansiota ei voi lukea: {error}",
   "The folder is taken off the list. Its files are not touched.": "Kansio on poistettu luettelosta. Sen tiedostoihin ei kosketa.",

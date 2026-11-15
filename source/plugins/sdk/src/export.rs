@@ -56,6 +56,11 @@ impl<P: Plugin> Slot<P> {
         let event = from_wit(event);
         self.with(|plugin| plugin.on_event(event)).unwrap_or_else(|| Err("the plugin is busy".to_string()))
     }
+
+    /// The `tick` export.
+    pub fn tick(&self) -> Result<(), String> {
+        self.with(P::tick).unwrap_or_else(|| Err("the plugin is busy".to_string()))
+    }
 }
 
 /// Converts an event from the WIT types.
@@ -155,6 +160,10 @@ mod tests {
         let slot = Slot::<Counter>::new();
         slot.on_event(wit::UiEvent::Clicked("x".into())).unwrap();
         slot.on_event(wit::UiEvent::Clicked("x".into())).unwrap();
+        let tree = slot.render();
+        assert!(matches!(&tree.elements[1], wit::UiElement::Text(t) if t == "2"));
+        // A plugin that does not implement `tick` gets the default: nothing happens.
+        slot.tick().unwrap();
         let tree = slot.render();
         assert!(matches!(&tree.elements[1], wit::UiElement::Text(t) if t == "2"));
     }

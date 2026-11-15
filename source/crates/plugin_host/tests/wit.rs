@@ -8,11 +8,11 @@ fn wit_package_parses() {
     let mut resolve = Resolve::default();
     let (pkg, _) = resolve.push_dir(&dir).expect("the WIT package parses");
 
-    assert_eq!(resolve.packages[pkg].name.to_string(), "aio:plugin@1.0.0");
+    assert_eq!(resolve.packages[pkg].name.to_string(), "aio:plugin@1.1.0");
 
     let world_id = resolve.packages[pkg].worlds["plugin"];
     let world = &resolve.worlds[world_id];
-    for export in ["render", "on-event"] {
+    for export in ["render", "on-event", "tick"] {
         assert!(
             matches!(world.exports.get(&WorldKey::Name(export.into())), Some(WorldItem::Function(_))),
             "world plugin must export {export}"
@@ -36,8 +36,30 @@ fn wit_package_parses() {
         "[method]picked-file.name",
         "[method]picked-file.read",
         "[method]picked-file.write",
+        "keep-working",
     ] {
         assert!(host.functions.contains_key(func), "host must import {func}");
     }
     assert!(host.types.contains_key("picked-file"), "host must define resource picked-file");
+}
+
+/// The 1.0 text is kept verbatim for the backward-compatibility tests: 1.1 only adds items.
+#[test]
+fn wit_1_0_is_kept_and_1_1_only_adds() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../wit");
+    let mut old = Resolve::default();
+    let (old_pkg, _) = old.push_dir(root.join("aio-plugin-1.0")).expect("the 1.0 WIT package parses");
+    assert_eq!(old.packages[old_pkg].name.to_string(), "aio:plugin@1.0.0");
+    let mut new = Resolve::default();
+    let (new_pkg, _) = new.push_dir(root.join("aio-plugin")).unwrap();
+
+    let host = |r: &Resolve, pkg| r.interfaces[r.packages[pkg].interfaces["host"]].functions.keys().cloned().collect::<Vec<_>>();
+    let (old_host, new_host) = (host(&old, old_pkg), host(&new, new_pkg));
+    for f in &old_host {
+        assert!(new_host.contains(f), "1.1 keeps host.{f}");
+    }
+    let added: Vec<_> = new_host.iter().filter(|f| !old_host.contains(f)).collect();
+    assert_eq!(added, ["keep-working"]);
+    let types = |r: &Resolve, pkg| r.interfaces[r.packages[pkg].interfaces["types"]].types.keys().cloned().collect::<Vec<_>>();
+    assert_eq!(types(&old, old_pkg), types(&new, new_pkg), "the types are unchanged");
 }

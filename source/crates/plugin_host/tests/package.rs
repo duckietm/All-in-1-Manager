@@ -77,12 +77,14 @@ fn builtin_id_is_refused() {
 
 #[test]
 fn api_2_is_refused() {
-    for api in ["2.0", "1.1", "0.9", "1", "1.0.0.0", "x"] {
+    for api in ["2.0", "1.2", "0.9", "1", "1.0.0.0", "x"] {
         let z = zip_of(&[("manifest.json", manifest("hello", api, &[]).as_bytes()), ("plugin.wasm", b"x")]);
         assert!(inspect(&z, &RESERVED).is_err(), "{api}");
     }
-    let z = zip_of(&[("manifest.json", manifest("hello", "1.0.0", &[]).as_bytes()), ("plugin.wasm", b"x")]);
-    assert!(inspect(&z, &RESERVED).is_ok());
+    for api in ["1.0.0", "1.0", "1.1", "1.1.0"] {
+        let z = zip_of(&[("manifest.json", manifest("hello", api, &[]).as_bytes()), ("plugin.wasm", b"x")]);
+        assert!(inspect(&z, &RESERVED).is_ok(), "{api}");
+    }
 }
 
 #[test]

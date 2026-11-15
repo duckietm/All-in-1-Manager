@@ -188,3 +188,43 @@ async fn reload_isolates_old_instance() {
     let state = view.running.state.lock();
     assert!(state.stopped.is_none() && state.page.is_none(), "nothing of the old instance in the new state");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn events_queued_during_ticks_go_before_the_next_tick() {
+    let _serial = serial().await;
+    let page = open(support::hello_aiop_with("ticker"), &[], None);
+    until(&page, "the first page", |s| s.page.is_some() && !s.busy).await;
+    assert!(!page.state.lock().ticking);
+
+    // Three ticks of 2 s each; between them the page is drawn and the window shows that work runs.
+    page.events.send(UiEvent::Clicked("slow".into())).unwrap();
+    until(&page, "the page after the first tick", |s| s.page.as_ref().is_some_and(|p| texts(p).contains(&"Ticked 1 times".to_string()))).await;
+    assert!(page.state.lock().ticking, "the second tick runs now");
+    assert!(page.state.lock().busy);
+    // Sent while the second tick runs: it reaches the plugin right after that tick, before a third one.
+    page.events.send(UiEvent::Clicked("cancel".into())).unwrap();
+    until(&page, "the cancelled page", |s| s.page.as_ref().is_some_and(|p| texts(p).iter().any(|t| t.starts_with("Cancelled"))) && !s.busy).await;
+    let last = page.state.lock().page.clone().unwrap();
+    assert!(texts(&last).contains(&"Cancelled after 2 ticks".to_string()), "{:?}", texts(&last));
+    assert!(texts(&last).contains(&"Ticked 2 times".to_string()), "no tick after the cancel: {:?}", texts(&last));
+    assert!(!page.state.lock().ticking);
+
+    drop(page.events);
+    page.task.await.unwrap();
+    assert!(!external::is_live("hello"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn closing_the_page_stops_the_ticks() {
+    let _serial = serial().await;
+    let page = open(support::hello_aiop_with("ticker"), &[], None);
+    until(&page, "the first page", |s| s.page.is_some() && !s.busy).await;
+    page.events.send(UiEvent::Clicked("slow".into())).unwrap();
+    until(&page, "the ticks", |s| s.ticking).await;
+    // Closing the page drops the sender: the task ends after the tick that runs, without the ones still asked for.
+    drop(page.events);
+    page.task.await.unwrap();
+    let last = page.state.lock().page.clone().unwrap();
+    assert!(!texts(&last).contains(&"Ticked 3 times".to_string()), "{:?}", texts(&last));
+    assert!(!external::is_live("hello"));
+}

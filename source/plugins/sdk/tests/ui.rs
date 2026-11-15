@@ -31,11 +31,11 @@ fn nested_containers_produce_flat_tree_with_child_indices() {
     // The page itself is a column holding the top-level elements, in order.
     assert_eq!(e[0], Element::Column(vec![1, 2, 7]));
     assert_eq!(e[1], Element::Heading("Title".into()));
-    assert_eq!(e[2], Element::Card { title: "Settings".into(), children: vec![3, 6] });
+    assert!(matches!(&e[2], Element::Card { title, children, .. } if title == "Settings" && *children == [3, 6]));
     assert_eq!(e[3], Element::Row(vec![4, 5]));
-    assert_eq!(e[4], Element::Input { id: "name".into(), label: "Name".into(), value: "Ann".into() });
-    assert_eq!(e[5], Element::Button { id: "save".into(), label: "Save".into(), primary: true });
-    assert_eq!(e[6], Element::Checkbox { id: "dry".into(), label: "Dry run".into(), checked: true });
+    assert!(matches!(&e[4], Element::Input { id, label, value, .. } if id == "name" && label == "Name" && value == "Ann"));
+    assert!(matches!(&e[5], Element::Button { id, label, primary: true, .. } if id == "save" && label == "Save"));
+    assert!(matches!(&e[6], Element::Checkbox { id, label, checked: true, .. } if id == "dry" && label == "Dry run"));
     assert_eq!(e[7], Element::Column(vec![8]));
     assert_eq!(e[8], Element::Text("a\nb".into()));
     // Every element but the root is the child of exactly one container, after it.
@@ -61,18 +61,15 @@ fn every_leaf_element_is_emitted() {
     ui.banner(BannerKind::Warning, "careful");
     let tree = ui.finish().unwrap();
     let e = tree.elements();
-    assert_eq!(e[1], Element::Button { id: "b".into(), label: "B".into(), primary: false });
-    assert_eq!(e[2], Element::Select { id: "s".into(), options: vec!["x".into(), "y".into()], selected: 1 });
-    assert_eq!(
-        e[3],
-        Element::Table {
-            columns: vec!["k".into(), "v".into()],
-            rows: vec![vec!["1".into(), "one".into()], vec!["2".into(), "two".into()]],
-        }
-    );
-    assert_eq!(e[4], Element::Progress { done: 3, total: 10 });
+    assert!(matches!(&e[1], Element::Button { id, label, primary: false, .. } if id == "b" && label == "B"));
+    assert!(matches!(&e[2], Element::Select { id, options, selected: 1, .. } if id == "s" && *options == ["x", "y"]));
+    assert!(matches!(
+        &e[3],
+        Element::Table { columns, rows, .. } if *columns == ["k", "v"] && *rows == [["1", "one"], ["2", "two"]]
+    ));
+    assert!(matches!(&e[4], Element::Progress { done: 3, total: 10, .. }));
     assert_eq!(e[5], Element::Log(vec!["l1".into(), "l2".into()]));
-    assert_eq!(e[6], Element::Banner { kind: BannerKind::Warning, text: "careful".into() });
+    assert!(matches!(&e[6], Element::Banner { kind: BannerKind::Warning, text, .. } if text == "careful"));
 }
 
 /// `finish` fails with a message naming the limit.

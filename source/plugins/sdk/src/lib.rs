@@ -99,7 +99,8 @@ pub enum Event {
         /// The button's id.
         id: String,
     },
-    /// An [input](Ui::input), [checkbox](Ui::checkbox) or [select](Ui::select) changed.
+    /// An [input](Ui::input) (when it loses the keyboard focus with a changed text), [checkbox](Ui::checkbox) or
+    /// [select](Ui::select) changed.
     Changed {
         /// The control's id.
         id: String,

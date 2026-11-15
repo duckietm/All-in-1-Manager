@@ -74,11 +74,13 @@ pub enum BannerKind {
 /// [`UiTree::elements`].
 ///
 /// Plugins build pages with [`Ui`]; this type is what a finished page holds, for tests that check what a plugin
-/// renders. New elements may be added in a later 1.x version: match with a `_` arm.
+/// renders. New elements may be added in a later 1.x version: match with a `_` arm. Struct-like variants may gain
+/// fields too: match them with `..` (for example `Element::Button { id, .. }`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Element {
     /// A framed group with an optional title (empty for none).
+    #[non_exhaustive]
     Card {
         /// The title, shown above the children; empty for none.
         title: String,
@@ -90,6 +92,7 @@ pub enum Element {
     /// Plain text; line breaks are kept.
     Text(String),
     /// A button. Pressing it sends [`Event::Clicked`](crate::Event::Clicked).
+    #[non_exhaustive]
     Button {
         /// The control id.
         id: String,
@@ -98,7 +101,9 @@ pub enum Element {
         /// Whether it is drawn as the page's main action.
         primary: bool,
     },
-    /// A one-line text field. Editing it sends [`Event::Changed`](crate::Event::Changed) with the text.
+    /// A one-line text field. When it loses the keyboard focus with a changed text, the Manager sends
+    /// [`Event::Changed`](crate::Event::Changed) with the text.
+    #[non_exhaustive]
     Input {
         /// The control id.
         id: String,
@@ -108,6 +113,7 @@ pub enum Element {
         value: String,
     },
     /// A checkbox. Toggling it sends [`Event::Changed`](crate::Event::Changed) with `"true"` or `"false"`.
+    #[non_exhaustive]
     Checkbox {
         /// The control id.
         id: String,
@@ -117,6 +123,7 @@ pub enum Element {
         checked: bool,
     },
     /// A drop-down list. Choosing an option sends [`Event::Changed`](crate::Event::Changed) with its index.
+    #[non_exhaustive]
     Select {
         /// The control id.
         id: String,
@@ -126,6 +133,7 @@ pub enum Element {
         selected: usize,
     },
     /// A table of text cells.
+    #[non_exhaustive]
     Table {
         /// The column headers.
         columns: Vec<String>,
@@ -133,6 +141,7 @@ pub enum Element {
         rows: Vec<Vec<String>>,
     },
     /// A progress bar at `done` out of `total` (empty when `total` is 0).
+    #[non_exhaustive]
     Progress {
         /// The work done so far.
         done: u64,
@@ -142,6 +151,7 @@ pub enum Element {
     /// A scrolling list of log lines.
     Log(Vec<String>),
     /// A coloured message line.
+    #[non_exhaustive]
     Banner {
         /// The colour and icon.
         kind: BannerKind,
@@ -252,8 +262,13 @@ impl Ui {
         self.add_button(id.into(), label.into(), true);
     }
 
-    /// A one-line text field showing `value`. Each edit sends [`Event::Changed`](crate::Event::Changed) with `id`
-    /// and the whole text; keep it in the plugin's state and pass it back as `value` on the next render.
+    /// A one-line text field showing `value`.
+    ///
+    /// The Manager keeps what the user types on its side and sends [`Event::Changed`](crate::Event::Changed) with
+    /// `id` and the whole text only when the field loses the keyboard focus (the user presses Enter or clicks
+    /// elsewhere, a button included) and the text differs from `value`; not on every keystroke. Keep the text in
+    /// the plugin's state and pass it back as `value` on the next render. The Manager accepts at most 4,000
+    /// characters.
     pub fn input(&mut self, id: impl Into<String>, label: impl Into<String>, value: impl Into<String>) {
         let id = id.into();
         if self.claim(&id) {
@@ -291,11 +306,11 @@ impl Ui {
 
     /// A table with `columns` headers and `rows` of cells. Every header and cell counts towards
     /// [`limits::MAX_CELLS`]. Rows should have one cell per column.
-    pub fn table<R>(&mut self, columns: impl IntoIterator<Item = impl Into<String>>, rows: impl IntoIterator<Item = R>)
-    where
-        R: IntoIterator,
-        R::Item: Into<String>,
-    {
+    pub fn table(
+        &mut self,
+        columns: impl IntoIterator<Item = impl Into<String>>,
+        rows: impl IntoIterator<Item = impl IntoIterator<Item = impl Into<String>>>,
+    ) {
         if self.error.is_some() {
             return;
         }

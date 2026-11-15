@@ -1,0 +1,259 @@
+/// The All-in-1 Manager plugin API.
+///
+/// A plugin is a WebAssembly component targeting the `plugin` world. It never draws:
+/// `render` returns a description of its page and `on-event` receives what the user did.
+/// Everything else (scripts, database, network, files) goes through the `host` imports,
+/// each one gated by a permission in the plugin manifest and by the user's approval.
+package aio:plugin@1.0.0;
+
+interface types {
+    /// A flat description of a page. WIT has no recursive types, so the tree is stored as a
+    /// list of elements; containers refer to their children by index into `elements`.
+    record ui-tree {
+        /// Index into `elements` of the top element.
+        root: u32,
+        elements: list<ui-element>,
+    }
+
+    record card-data {
+        title: string,
+        children: list<u32>,
+    }
+
+    record button-data {
+        id: string,
+        label: string,
+        primary: bool,
+    }
+
+    record input-data {
+        id: string,
+        label: string,
+        value: string,
+    }
+
+    record checkbox-data {
+        id: string,
+        label: string,
+        checked: bool,
+    }
+
+    record select-data {
+        id: string,
+        options: list<string>,
+        /// Index into `options` of the chosen option.
+        selected: u32,
+    }
+
+    record table-data {
+        columns: list<string>,
+        rows: list<list<string>>,
+    }
+
+    record progress-data {
+        done: u64,
+        total: u64,
+    }
+
+    enum banner-kind {
+        info,
+        success,
+        warning,
+        error,
+    }
+
+    record banner-data {
+        kind: banner-kind,
+        text: string,
+    }
+
+    /// One widget of a page.
+    variant ui-element {
+        card(card-data),
+        heading(string),
+        text(string),
+        button(button-data),
+        input(input-data),
+        checkbox(checkbox-data),
+        select(select-data),
+        table(table-data),
+        progress(progress-data),
+        log(list<string>),
+        banner(banner-data),
+        /// Children laid out left to right (indices into `elements`).
+        row(list<u32>),
+        /// Children laid out top to bottom (indices into `elements`).
+        column(list<u32>),
+    }
+
+    record changed-data {
+        id: string,
+        value: string,
+    }
+
+    /// What the user did on the page.
+    variant ui-event {
+        /// A button was pressed (its id).
+        clicked(string),
+        /// An input, checkbox or select changed. `value` is the text, "true" or "false" for a
+        /// checkbox, or the index of the chosen option for a select.
+        changed(changed-data),
+    }
+
+    enum log-level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    record script-result {
+        exit-code: s32,
+        output: string,
+        error: string,
+    }
+
+    /// A database value.
+    variant sql-value {
+        null,
+        int(s64),
+        float(f64),
+        text(string),
+        bytes(list<u8>),
+    }
+
+    enum compare-op {
+        eq,
+        ne,
+        lt,
+        le,
+        gt,
+        ge,
+        like,
+        is-null,
+        not-null,
+    }
+
+    /// `column <op> value`; `value` is ignored for `is-null` and `not-null`.
+    record condition {
+        column: string,
+        op: compare-op,
+        value: sql-value,
+    }
+
+    /// A read query. All conditions are combined with AND.
+    record select {
+        table: string,
+        columns: list<string>,
+        conditions: list<condition>,
+        limit: option<u32>,
+    }
+
+    record rows {
+        columns: list<string>,
+        rows: list<list<sql-value>>,
+    }
+
+    record insert-op {
+        table: string,
+        values: list<tuple<string, sql-value>>,
+    }
+
+    record update-op {
+        table: string,
+        set: list<tuple<string, sql-value>>,
+        conditions: list<condition>,
+    }
+
+    record delete-op {
+        table: string,
+        conditions: list<condition>,
+    }
+
+    /// A change to the database. Writes are collected, shown to the user in a preview and
+    /// applied in one transaction after approval.
+    variant write-op {
+        insert(insert-op),
+        update(update-op),
+        delete(delete-op),
+    }
+}
+
+interface host {
+    use types.{log-level, script-result, select, rows, write-op};
+
+    /// Appends a line to the plugin log.
+    log: func(level: log-level, text: string);
+
+    /// Asks the user a yes/no question and waits for the answer.
+    ask: func(question: string) -> bool;
+
+    /// Sets the status line text.
+    status: func(text: string);
+
+    /// Runs a script on the logged-in server (permission `ssh`). The user sees the full
+    /// script and approves it first. `as-root` runs it with root rights.
+    run-script: func(script: string, as-root: bool) -> result<script-result, string>;
+
+    /// Reads from the hotel database (permission `sql:read`).
+    sql-select: func(query: select) -> result<rows, string>;
+
+    /// Applies changes to the hotel database after a preview (permission
+    /// `sql:write:<tables>`). Returns the number of affected rows.
+    sql-write: func(ops: list<write-op>) -> result<u64, string>;
+
+    /// HTTP(S) GET, only to hosts listed in the manifest (permission `http:<hosts>`).
+    http-get: func(url: string) -> result<list<u8>, string>;
+
+    /// A local TCP connection (permission `tcp:localhost:<ports>`).
+    resource tcp-connection {
+        send: func(data: list<u8>) -> result<_, string>;
+        /// Reads up to `max` bytes; an empty list means the peer closed the connection.
+        recv: func(max: u32) -> result<list<u8>, string>;
+        close: func();
+    }
+
+    /// Connects to `localhost:<port>`; the port must be listed in the manifest.
+    tcp-connect: func(port: u16) -> result<tcp-connection, string>;
+
+    /// Reads a file of the plugin's private data folder.
+    file-read: func(path: string) -> result<list<u8>, string>;
+
+    /// Writes a file of the plugin's private data folder.
+    file-write: func(path: string, data: list<u8>) -> result<_, string>;
+
+    /// Asks the user for a line of text. `none` means the user cancelled.
+    prompt-text: func(title: string, label: string, default-value: string) -> option<string>;
+
+    /// A file the user picked in a dialog. The plugin never sees its path, only its name and
+    /// its content.
+    resource picked-file {
+        /// The file name without folders.
+        name: func() -> string;
+        read: func() -> result<list<u8>, string>;
+        write: func(data: list<u8>) -> result<_, string>;
+    }
+
+    /// Shows an open-file dialog. `extensions` has no dots (for example "sql"); an empty list
+    /// allows every file. `none` means the user cancelled.
+    pick-open-file: func(title: string, extensions: list<string>) -> option<picked-file>;
+
+    /// Shows a save-file dialog. `none` means the user cancelled.
+    pick-save-file: func(title: string, suggested-name: string, extensions: list<string>) -> option<picked-file>;
+
+    /// Hands a user-picked file to the Manager's import preview (used by the catalog ripper).
+    /// The user reviews it there before anything is changed.
+    open-import-preview: func(file: borrow<picked-file>) -> result<_, string>;
+}
+
+world plugin {
+    import host;
+
+    use types.{ui-tree, ui-event};
+
+    /// Describes the plugin page.
+    export render: func() -> ui-tree;
+
+    /// Handles what the user did on the page. The page is re-rendered afterwards.
+    export on-event: func(event: ui-event) -> result<_, string>;
+}

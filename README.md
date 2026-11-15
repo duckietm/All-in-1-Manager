@@ -1734,8 +1734,8 @@ aside for it, and the private data of a developer version with the same id; a wi
 at most 64 permissions, each one once.
 
 The plugin is stored in `configuration/plugins/ext/<id>/`. A plugin installed from a file always shows a red
-**Not verified** badge: nobody has checked its code. There is no official index yet, so every plugin is "not verified"
-for now. Install only plugins whose source you trust or have read.
+**Not verified** badge: nobody has checked its code. Install such a plugin only when you trust its source or have read
+it. Plugins installed from the official index can be **Verified** instead: see the next section.
 
 **Permissions** are listed in the plugin's manifest. The window shows them as sentences; these are the strings:
 
@@ -1768,6 +1768,72 @@ it hands the Manager a description of its page (headings, text, buttons, inputs,
 it with its own widgets, in a frame labelled with the plugin's name, so it cannot pass for a Manager screen. Scripts
 run on the hotel's server, over the Manager's SSH login, after you approved them. Database calls go through the
 Manager's SSH tunnel to the hotel database, with the saved MariaDB account.
+
+### The official index
+
+The official plugin index is a list of reviewed plugins, kept in the GitHub repository `all-in-1-plugins/index`. Each
+plugin there is built by that repository's CI from a pinned commit of its public source, and the list (`index.json`)
+is signed with the index's Ed25519 key. The Manager carries the public key (at most two at once, for a key change)
+and checks the signature of every index it reads: an index that is changed in any way, or signed by another key, is
+refused.
+
+**The Available tab.** The Plugins page has two tabs: **Installed** and **Available**. Available lists the plugins of
+the index with their name, author, version, description, permissions and source (repository and commit), with a
+search box. Each row has **Install**, **Update available (x.y.z)**, **Installed** or **Revoked**. The top of the tab
+says which index it shows ("Index 12, published 3 days ago · checked just now") and has **Check again**. The index is
+fetched once when the Manager starts, in the background, and when you press **Check again**; it never blocks the
+window. Each download of `index.json` is at most 4 MiB, its signature at most 4 KiB, and both together time out after
+30 seconds. An index lists at most 2,000 plugins. The last accepted index is kept in `configuration/plugins/index/`
+(`index.json`, `index.json.sig`, `state.json`) and checked again every time it is read, so the tab works offline.
+
+**Verified, not verified, test index.** **Install** downloads the package (at most 32 MiB), checks that its size and
+SHA-256 are the ones the signed index lists, then checks the package itself and that its manifest says the same id,
+version, author, API and permissions as the index. Anything else refuses the install. Then the usual consent window
+opens, with a green line "Verified by the official index (signed <key id>)" instead of the red "Not verified". After
+the install the plugin's card shows a green **Verified** badge, as long as its files are the ones that were checked
+(`verified.json` in its folder). A plugin installed from a file, a developer folder, or a plugin from a test index
+(below) is never Verified: the last one says "Verified by a test index (developer mode)" in the consent window and is
+shown as **Not verified** once installed.
+
+**Updates are always manual.** When the index has a newer version of an installed plugin (same id, same author, a
+higher version number, not revoked), its card and its Available row show **Update available (x.y.z)**. Nothing is
+downloaded or installed until you press it, and the consent window opens again, with new permissions marked "new in
+this version".
+
+**Revocation.** The index can revoke versions of a plugin (or all of them), with a reason. An installed plugin whose
+version is revoked is switched off at once (its page closes and it stops), its card shows "Revoked by the official
+index: it is switched off" with the reason, and it cannot be switched on again while it is revoked. A revoked version
+cannot be installed. If a later index no longer revokes it, the switch unlocks, but the plugin stays off until you
+switch it on. The revocations of the newest verified official index are also saved on their own, in
+`configuration/plugins/index/revoked.json`, and applied when the Manager starts, before any plugin page can open. So
+they hold offline, and also when the saved index can no longer be read or no longer verifies. Only a verified official
+index with a higher sequence number replaces that list.
+
+**An out-of-date index.** Every index has an expiry date (the index repository publishes a fresh one on the 1st and
+the 15th of each month, valid for 30 days). The Manager also remembers the highest index number (`sequence`) it has
+accepted and refuses an older index ("The index is older than one already seen"), so nobody can serve you an old
+list that still offers a revoked plugin. An index past its expiry date shows "The index is out of date": nothing can
+be installed or updated from it until a newer index is fetched, but what it revokes stays revoked.
+
+**"Not set up yet".** Until the owner of the index generates its signing key and puts the public key in the Manager
+(`OFFICIAL_INDEX_KEYS` in `source/crates/app/src/plugins/index.rs`), the Available tab says "The official plugin
+index is not set up yet" and nothing is fetched. Plugins can still be installed from a file on the Installed tab.
+
+**Testing with a local index (developer mode).** With **Developer mode** on, Settings has **Index URL (testing)**, **Test
+keys** (one per line, `key-id:base64`) and **Save the test index**. The URL must be `https`, or `http` on `127.0.0.1` or
+`localhost`; the packages must be in a `packages/` folder next to the index
+(`<folder of index.json>/packages/<id>-<version>/<id>.aiop`). The Available tab then shows "Test index (developer
+mode)" and reads that index instead of the official one. It is cached apart (`configuration/plugins/index/test/`),
+never raises the official index number, and is ignored as soon as developer mode is off. The official revocations keep
+applying while a test index is used; the test index's own revocations only add to them. The index repository's
+`tools/local-test.md` shows the whole round trip: a throw-away key, packing `hello`, building and signing an index with
+the `aio-index` tool (`source/crates/plugin_index`), and serving it on `127.0.0.1`.
+
+**Key rotation.** The Manager trusts at most two index keys at once. To change the key, a Manager release first
+carries both the old and the new public key; the index is then signed with the new key, and a later release drops the
+old one. The new key does not start the numbering again: `aio-index build --previous index.json --pubkey "<keys>"`
+verifies the previous index (with either key) and continues from its sequence number, so the highest number each
+Manager has stored stays valid and nothing is refused as a rollback.
 
 ### Limits and safety
 
@@ -1831,7 +1897,10 @@ python source/tools/pack_plugin.py source/plugins/hello
 This builds the crate into `source/plugins/hello/target/` (its `.cargo/config.toml` sets that) and writes
 `dist/hello.aiop`: a zip with `manifest.json`, `plugin.wasm` and, when present, `icon.png` and `i18n/<lang>.json`.
 Install the `.aiop` from the Plugins page, or load the folder `source/plugins/hello` in developer mode: its
-`dev_wasm` points at the built file. The `i18n/` files are accepted in a package but not used yet: in API 1.0 a
+`dev_wasm` points at the built file. Packing is reproducible: the same files always give the same `.aiop` bytes (a
+fixed entry order, time 1980-01-01 00:00:00, mode 0644 and compression). `--locked` builds with exactly the
+versions in the workspace's `Cargo.lock` (and fails when there is none) and `--offline` never touches the network:
+both are for reproducible builds, as in the index repository's CI. The `i18n/` files are accepted in a package but not used yet: in API 1.0 a
 plugin's texts are shown as it writes them, and translating them comes in a later milestone.
 
 A plugin crate outside this repository needs the WIT file: copy the folder `source/wit/aio-plugin` (it holds
@@ -1844,8 +1913,8 @@ wit_bindgen::generate!({ world: "plugin", path: "wit/aio-plugin" });
 `source/plugins/hello/src/lib.rs` shows the rest: implement the generated `Guest` trait (`render` and `on-event`) and
 `export!` it.
 
-The official plugin index (reviewed sources, signed releases, revocation, an Available tab) comes in a later
-milestone. Until then plugins come from files and none of them is verified.
+To have a plugin listed in the official index, see the index repository (`all-in-1-plugins/index`): its README
+says how to submit one.
 
 ## Settings
 

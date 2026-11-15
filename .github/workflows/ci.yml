@@ -61,3 +61,41 @@ jobs:
         with:
           name: all-in-1-manager-linux-x64
           path: target/release/all-in-1-manager
+
+  # The plugin guest workspace (source/plugins: the SDK and the example plugins) is excluded from the main
+  # workspace, so the jobs above do not build it. It is built for wasm32-wasip2; the SDK's native tests
+  # (out_of_tree.rs, guide_samples.rs) build throwaway plugins for that target and need the network or a warm cache.
+  plugins:
+    name: Plugin SDK and examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            source/plugins
+      - name: Fetch guest dependencies
+        working-directory: source/plugins
+        run: cargo fetch --locked
+      - name: Build the SDK and examples (wasm32-wasip2)
+        working-directory: source/plugins
+        run: cargo build --target wasm32-wasip2 --release --locked
+      - name: Clippy (wasm32-wasip2)
+        working-directory: source/plugins
+        run: cargo clippy --target wasm32-wasip2 --all-targets -- -D warnings
+      - name: SDK tests
+        working-directory: source/plugins
+        run: cargo test -p aio-plugin-sdk
+      - name: Build the aio-plugin tool
+        run: cargo build --release -p aio-plugin-cli
+      - name: Pack and check the examples
+        run: |
+          tool="$GITHUB_WORKSPACE/target/release/aio-plugin"
+          for example in hello notes; do
+            (cd "source/plugins/$example" && "$tool" pack --locked && "$tool" check dist/*.aiop)
+          done

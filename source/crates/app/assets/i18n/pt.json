@@ -3941,5 +3941,7 @@
   "{count} h ago": "há {count} h",
   "{count} min ago": "há {count} min",
   "{plugin} could not be installed.": "Não foi possível instalar {plugin}.",
-  "· checked {age}": "· verificado {age}"
+  "· checked {age}": "· verificado {age}",
+  "Choose a folder …": "Escolher uma pasta …",
+  "The plugin wants you to choose a folder. It can create new files in it, nothing else: files already there stay as they are.": "O plugin pede-lhe que escolha uma pasta. Só poderá criar ficheiros novos nela, mais nada: os ficheiros que já lá estão ficam como estão."
 }

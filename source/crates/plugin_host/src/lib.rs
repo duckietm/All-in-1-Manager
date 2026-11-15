@@ -16,12 +16,14 @@ pub mod bindings {
         // The resources are host structs in `runtime`, kept in the store's `ResourceTable`.
         with: {
             "aio:plugin/host.picked-file": crate::runtime::PickedFile,
+            "aio:plugin/host.picked-folder": crate::folders::PickedFolder,
             "aio:plugin/host.tcp-connection": crate::runtime::TcpConnection,
         },
     });
 }
 
 pub mod approvals;
+pub mod folders;
 pub mod manifest;
 pub mod net;
 pub mod package;

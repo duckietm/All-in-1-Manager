@@ -28,6 +28,8 @@
 //!   [`resolve_private`]), with a quota of [`MAX_DATA_BYTES`] / [`MAX_DATA_ENTRIES`] and files of at most
 //!   [`MAX_FILE_READ`]; a `picked-file` wraps the path the user picked (the guest sees only the file
 //!   name); `open-import-preview` hands the picked file's bytes (at most [`MAX_FILE_READ`]) to the Manager;
+//!   `pick-folder` (1.1, a dialog of the call) wraps a folder the user picked, where the plugin may only create new
+//!   files and rewrite its own, never through a link and never into a folder of the Manager (see [`crate::folders`]);
 //! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
 //!   `Err("permission denied...")` to the guest and a sanitised `Warn` line in the plugin log):
 //!   `sql-select` through [`crate::sql::build_select`], then [`HostServices::sql_select`];
@@ -84,11 +86,12 @@ use wasmtime_wasi::cli::{IsTerminal, StdoutStream};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::approvals::{check_script, Approvals, Decision, Pending};
-use crate::bindings::aio::plugin::host::{Host, HostPickedFile, HostTcpConnection};
+use crate::bindings::aio::plugin::host::{Host, HostPickedFile, HostPickedFolder, HostTcpConnection};
 use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
 };
 use crate::bindings::Plugin;
+use crate::folders::{FolderLimits, PickedFolder};
 use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
 use crate::net::{
     askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
@@ -424,6 +427,8 @@ pub struct HostState {
     has_tick: bool,
     /// `keep-working` was called since the last event or tick started.
     keep_working: bool,
+    /// What each picked folder may write (see [`crate::folders`]).
+    folder_limits: FolderLimits,
 }
 
 impl WasiView for HostState {
@@ -437,6 +442,12 @@ impl HostState {
     async fn waiting<F: std::future::Future>(&mut self, fut: F) -> F::Output {
         let _paused = Paused::begin(&self.clock);
         fut.await
+    }
+
+    /// Test hook: the limits of the folders picked from now on.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_folder_limits(&mut self, limits: FolderLimits) {
+        self.folder_limits = limits;
     }
 
     /// Counts a dialog of the current call; false past [`MAX_DIALOGS`] (the first refusal is logged).
@@ -532,7 +543,7 @@ fn to_wit(v: SqlValue) -> WitValue {
 }
 
 /// An I/O error as the guest sees it: the kind only, never a host path.
-fn io_text(e: &io::Error) -> String {
+pub(crate) fn io_text(e: &io::Error) -> String {
     match e.kind() {
         io::ErrorKind::NotFound => "file not found".into(),
         io::ErrorKind::PermissionDenied => "access denied".into(),
@@ -541,7 +552,7 @@ fn io_text(e: &io::Error) -> String {
 }
 
 /// Reads a whole file, refusing anything but a regular file of at most [`MAX_FILE_READ`] bytes.
-fn read_limited(path: &Path) -> Result<Vec<u8>, String> {
+pub(crate) fn read_limited(path: &Path) -> Result<Vec<u8>, String> {
     let meta = std::fs::metadata(path).map_err(|e| io_text(&e))?;
     if !meta.is_file() {
         return Err("not a file".into());
@@ -561,13 +572,14 @@ fn windows_device(segment: &str) -> bool {
             && stem.as_bytes()[3].is_ascii_digit())
 }
 
-/// Maps a plugin's relative path (`/` separated) to a path inside the private folder `data` (which must
-/// exist). Refused: empty, too long or too deep paths; absolute paths, drive letters and UNC prefixes;
-/// `\`, `:` (alternate streams), NUL and any character outside `A-Z a-z 0-9 . _ -`; empty, `.` and `..`
-/// segments; segments ending in `.`; Windows device names. Then every part of the path that exists is
-/// canonicalised and must still lie inside `data`, so a symlink or junction cannot lead out.
-pub fn resolve_private(data: &Path, path: &str) -> Result<PathBuf, String> {
-    const INVALID: &str = "invalid path: use a relative path with / and the characters A-Z a-z 0-9 . _ -";
+/// The refusal of a path [`check_relative`] does not accept.
+const INVALID: &str = "invalid path: use a relative path with / and the characters A-Z a-z 0-9 . _ -";
+
+/// The segments of a plugin's relative path (`/` separated), for the private folder and picked folders. Refused:
+/// empty, too long ([`MAX_PATH`]) or too deep ([`MAX_DEPTH`]) paths; absolute paths, drive letters and UNC prefixes;
+/// `\`, `:` (alternate streams), NUL and any character outside `A-Z a-z 0-9 . _ -`; empty, `.` and `..` segments;
+/// segments ending in `.`; Windows device names.
+pub(crate) fn check_relative(path: &str) -> Result<Vec<&str>, String> {
     if path.is_empty() || path.len() > MAX_PATH {
         return Err(INVALID.into());
     }
@@ -586,6 +598,14 @@ pub fn resolve_private(data: &Path, path: &str) -> Result<PathBuf, String> {
             return Err(INVALID.into());
         }
     }
+    Ok(segments)
+}
+
+/// Maps a plugin's relative path ([`check_relative`]) to a path inside the private folder `data` (which must exist).
+/// Every part of the path that exists is canonicalised and must still lie inside `data`, so a symlink or junction
+/// cannot lead out.
+pub fn resolve_private(data: &Path, path: &str) -> Result<PathBuf, String> {
+    let segments = check_relative(path)?;
     let root = std::fs::canonicalize(data).map_err(|_| "the private folder is missing".to_string())?;
     let mut target = root.clone();
     for s in &segments {
@@ -854,6 +874,24 @@ impl Host for HostState {
         Ok(())
     }
 
+    async fn pick_folder(&mut self, title: String) -> Option<Resource<PickedFolder>> {
+        if !self.dialog_allowed() {
+            return None;
+        }
+        let services = self.services.clone();
+        let path = self.waiting(services.pick_folder(title)).await?;
+        // The Manager's folders, and always this plugin's own (its code and its private data).
+        let mut manager = services.manager_folders();
+        manager.extend(self.data.parent().map(Path::to_path_buf));
+        match PickedFolder::open(&path, &manager, self.folder_limits) {
+            Ok(folder) => self.table.push(folder).ok(),
+            Err(e) => {
+                self.log.log(Level::Warn, &format!("the picked folder was refused: {e}"));
+                None
+            }
+        }
+    }
+
     async fn keep_working(&mut self) -> wasmtime::Result<()> {
         if !self.has_tick {
             return Err(wasmtime::format_err!("tick is not exported"));
@@ -925,6 +963,48 @@ impl HostPickedFile for HostState {
 
     async fn drop(&mut self, file: Resource<PickedFile>) -> wasmtime::Result<()> {
         self.table.delete(file)?;
+        Ok(())
+    }
+}
+
+impl HostState {
+    fn folder(&mut self, folder: &Resource<PickedFolder>) -> Result<&mut PickedFolder, String> {
+        self.table.get_mut(folder).map_err(|_| "invalid folder handle".to_string())
+    }
+}
+
+impl HostPickedFolder for HostState {
+    async fn name(&mut self, folder: Resource<PickedFolder>) -> String {
+        self.folder(&folder).map(|f| f.name()).unwrap_or_default()
+    }
+
+    /// The checks against the handle first, then the file I/O off the async workers, with the call's clock paused
+    /// (a 256 MiB file on a slow disk is host I/O, not plugin time).
+    async fn write(&mut self, folder: Resource<PickedFolder>, path: String, data: Vec<u8>) -> Result<(), String> {
+        let job = self.folder(&folder)?.check_write(&path, data.len() as u64)?;
+        let len = data.len() as u64;
+        let _paused = Paused::begin(&self.clock);
+        tokio::task::spawn_blocking(move || job.run(&data)).await.map_err(|_| "the write stopped".to_string())??;
+        self.folder(&folder)?.record(&path, len);
+        Ok(())
+    }
+
+    async fn reveal(&mut self, folder: Resource<PickedFolder>) -> Result<(), String> {
+        let root = self.folder(&folder)?.reveal_path()?;
+        self.services.reveal_folder(&root)
+    }
+
+    async fn open_import_preview(&mut self, folder: Resource<PickedFolder>, path: String) -> Result<(), String> {
+        let (name, bytes) = {
+            let _paused = Paused::begin(&self.clock);
+            self.folder(&folder)?.read_own(&path)?
+        };
+        self.services.open_import_preview(name, bytes);
+        Ok(())
+    }
+
+    async fn drop(&mut self, folder: Resource<PickedFolder>) -> wasmtime::Result<()> {
+        self.table.delete(folder)?;
         Ok(())
     }
 }
@@ -1121,6 +1201,7 @@ impl PluginInstance {
             dialogs: 0,
             has_tick,
             keep_working: false,
+            folder_limits: FolderLimits::default(),
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);

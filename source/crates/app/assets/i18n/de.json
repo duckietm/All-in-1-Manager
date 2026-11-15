@@ -3941,5 +3941,7 @@
   "{count} h ago": "vor {count} Std.",
   "{count} min ago": "vor {count} Min.",
   "{plugin} could not be installed.": "{plugin} konnte nicht installiert werden.",
-  "· checked {age}": "· geprüft {age}"
+  "· checked {age}": "· geprüft {age}",
+  "Choose a folder …": "Ordner wählen …",
+  "The plugin wants you to choose a folder. It can create new files in it, nothing else: files already there stay as they are.": "Das Plugin möchte, dass du einen Ordner wählst. Es kann darin nur neue Dateien anlegen, sonst nichts: Dateien, die schon dort sind, bleiben unverändert."
 }

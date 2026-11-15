@@ -206,12 +206,12 @@ impl AppServices {
     }
 
     /// Before a native file dialog (which cannot carry a button of ours): the plugin's request in a Manager dialog with
-    /// "Choose a file …", Cancel and "Stop this plugin". True to open the file dialog.
-    async fn before_picking(&self, title: &str, message: &str) -> bool {
+    /// `choose` ("Choose a file …"), Cancel and "Stop this plugin". True to open the file dialog.
+    async fn before_picking(&self, title: &str, message: &str, choose: &str) -> bool {
         if self.is_stopped() {
             return false;
         }
-        let options = vec![Choice::new(t("Choose a file …"), "", Answer::Yes).primary(), Choice::new(t("Cancel"), "", Answer::No), stop_choice()];
+        let options = vec![Choice::new(choose, "", Answer::Yes).primary(), Choice::new(t("Cancel"), "", Answer::No), stop_choice()];
         match self.shared.dialogs.choose(&self.asks(), &display_safe(title, 120), message, Answer::No, options).await {
             Answer::Yes => true,
             Answer::No => false,
@@ -544,6 +544,19 @@ pub fn save_export(folder: &Path, name: &str, bytes: &[u8]) -> std::io::Result<P
     Err(std::io::Error::other("too many files with that name"))
 }
 
+/// `path` without Windows' verbatim prefix (`\\?\C:\…`, `\\?\UNC\server\…`, what canonicalising gives), which the file
+/// manager does not open.
+fn plain_path(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{unc}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if rest.as_bytes().get(1) == Some(&b':') => PathBuf::from(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 #[async_trait]
 impl HostServices for AppServices {
     async fn ask(&self, question: String) -> bool {
@@ -640,14 +653,14 @@ impl HostServices for AppServices {
     }
 
     async fn pick_open_file(&self, title: String, extensions: Vec<String>) -> Option<PathBuf> {
-        if !self.before_picking(&title, t("The plugin wants you to choose a file to open. It can read that one file, nothing else.")).await {
+        if !self.before_picking(&title, t("The plugin wants you to choose a file to open. It can read that one file, nothing else."), t("Choose a file …")).await {
             return None;
         }
         file_dialog(&self.asks(), &title, &extensions).pick_file().await.map(|f| f.path().to_path_buf())
     }
 
     async fn pick_save_file(&self, title: String, suggested: String, extensions: Vec<String>) -> Option<PathBuf> {
-        if !self.before_picking(&title, t("The plugin wants you to choose where to save a file. It can write that one file, nothing else.")).await {
+        if !self.before_picking(&title, t("The plugin wants you to choose where to save a file. It can write that one file, nothing else."), t("Choose a file …")).await {
             return None;
         }
         let dialog = file_dialog(&self.asks(), &title, &extensions).set_file_name(export_name(&suggested));
@@ -668,6 +681,33 @@ impl HostServices for AppServices {
             }
             shared.ctx.request_repaint();
         });
+    }
+
+    async fn pick_folder(&self, title: String) -> Option<PathBuf> {
+        let message = t("The plugin wants you to choose a folder. It can create new files in it, nothing else: files already there stay as they are.");
+        if !self.before_picking(&title, message, t("Choose a folder …")).await {
+            return None;
+        }
+        let dialog = rfd::AsyncFileDialog::new().set_title(format!("{}: {}", self.asks(), display_safe(&title, 120)));
+        dialog.pick_folder().await.map(|f| f.path().to_path_buf())
+    }
+
+    fn reveal_folder(&self, folder: &Path) -> Result<(), String> {
+        let folder = plain_path(folder);
+        // Straight to the file manager, never through a shell (which would read characters of the name).
+        #[cfg(windows)]
+        let opened = std::process::Command::new("explorer.exe").arg(&folder).spawn();
+        #[cfg(target_os = "macos")]
+        let opened = std::process::Command::new("open").arg(&folder).spawn();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let opened = std::process::Command::new("xdg-open").arg(&folder).spawn();
+        opened.map(|_| ()).map_err(|e| format!("the file manager could not be opened ({:?})", e.kind()))
+    }
+
+    fn manager_folders(&self) -> Vec<PathBuf> {
+        // The whole configuration (plugins with their http-hosts.json and verified.json, logins, settings), not only
+        // configuration/plugins: a new file anywhere in it could be read by the Manager.
+        vec![aio_core::config_dir::directory()]
     }
 }
 
@@ -1021,6 +1061,51 @@ mod tests {
         answer(&shared, 2).await;
         assert_eq!(task.await.unwrap(), None);
         assert_eq!(stops.load(Ordering::Acquire), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn folder_dialog_offers_stop_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = Arc::new(services(&shared, dir.path()));
+        let stops = Arc::new(AtomicUsize::new(0));
+        let counted = stops.clone();
+        app.on_stop(move || {
+            counted.fetch_add(1, Ordering::AcqRel);
+        });
+        // The request first, in a Manager dialog: Cancel gives none.
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.pick_folder("Where to save".into()).await });
+        answer(&shared, 1).await;
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(stops.load(Ordering::Acquire), 0);
+        let asking = app.clone();
+        let task = tokio::spawn(async move { asking.pick_folder("Where to save".into()).await });
+        answer(&shared, 2).await;
+        assert_eq!(task.await.unwrap(), None);
+        assert_eq!(stops.load(Ordering::Acquire), 1);
+        // Stopped: nothing is shown any more.
+        assert_eq!(app.pick_folder("Again".into()).await, None);
+        assert!(!shared.dialogs.is_open());
+    }
+
+    /// A plugin can never get the user to pick the Manager's configuration (plugin code, `http-hosts.json`,
+    /// `verified.json`) or anything in it: the runtime refuses folders inside these.
+    #[tokio::test]
+    async fn the_configuration_belongs_to_the_manager() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = services(&shared, dir.path());
+        let folders = app.manager_folders();
+        assert!(folders.contains(&aio_core::config_dir::directory()), "{folders:?}");
+        assert!(folders.iter().any(|f| super::super::packs::root().starts_with(f)), "plugins live in a Manager folder");
+    }
+
+    #[test]
+    fn revealed_paths_lose_the_verbatim_prefix() {
+        assert_eq!(plain_path(Path::new(r"\\?\C:\Users\Ann\Out")), PathBuf::from(r"C:\Users\Ann\Out"));
+        assert_eq!(plain_path(Path::new(r"\\?\UNC\server\share\out")), PathBuf::from(r"\\server\share\out"));
+        assert_eq!(plain_path(Path::new(r"D:\out")), PathBuf::from(r"D:\out"));
     }
 
     #[tokio::test]

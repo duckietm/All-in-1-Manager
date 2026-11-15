@@ -3941,5 +3941,7 @@
   "{count} h ago": "{count} sa önce",
   "{count} min ago": "{count} dk önce",
   "{plugin} could not be installed.": "{plugin} kurulamadı.",
-  "· checked {age}": "· denetlendi: {age}"
+  "· checked {age}": "· denetlendi: {age}",
+  "Choose a folder …": "Klasör seç …",
+  "The plugin wants you to choose a folder. It can create new files in it, nothing else: files already there stay as they are.": "Eklenti bir klasör seçmenizi istiyor. İçinde yalnızca yeni dosyalar oluşturabilir, başka hiçbir şey yapamaz: orada zaten bulunan dosyalar olduğu gibi kalır."
 }

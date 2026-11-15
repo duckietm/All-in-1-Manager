@@ -6,7 +6,7 @@
 /// each one gated by a permission in the plugin manifest and by the user's approval.
 ///
 /// 1.1 only adds items to 1.0 (kept verbatim in `../aio-plugin-1.0`): `host.keep-working`,
-/// `tcp-connection.recv-timeout` and the optional `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
+/// `tcp-connection.recv-timeout`, `host.pick-folder` with the `picked-folder` resource, and the optional `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
 package aio:plugin@1.1.0;
 
 interface types {
@@ -256,6 +256,35 @@ interface host {
     /// Hands a user-picked file to the Manager's import preview (used by the catalog ripper).
     /// The user reviews it there before anything is changed.
     open-import-preview: func(file: borrow<picked-file>) -> result<_, string>;
+
+    /// A folder the user picked in a dialog (API 1.1). The plugin never sees its path, only its name; it may create
+    /// new files in it (and subfolders as needed) and rewrite the files it created through this handle, nothing else.
+    /// Paths follow the private-file rules: relative with `/`, at most 255 characters and 8 levels, the characters
+    /// A-Z a-z 0-9 . _ - only, no `..`, no drive, no reserved names. A path that already exists and was not written
+    /// through this handle gets `denied: <path> already exists`; a path leading through a link (symlink or junction)
+    /// is refused. One handle may write at most 100,000 files and 2 GiB in total, each file at most 256 MiB
+    /// (`denied: folder limit reached`).
+    @since(version = 1.1.0)
+    resource picked-folder {
+        /// The folder's name (its last path component).
+        @since(version = 1.1.0)
+        name: func() -> string;
+        /// Creates the file `path` (or rewrites one this handle created) with `data`.
+        @since(version = 1.1.0)
+        write: func(path: string, data: list<u8>) -> result<_, string>;
+        /// Opens the folder in the file manager.
+        @since(version = 1.1.0)
+        reveal: func() -> result<_, string>;
+        /// Hands the file `path`, written through this handle and at most 32 MiB, to the Manager's import preview
+        /// (like `open-import-preview`). The user reviews it there before anything is changed.
+        @since(version = 1.1.0)
+        open-import-preview: func(path: string) -> result<_, string>;
+    }
+
+    /// Shows a folder dialog (API 1.1); no permission is needed, the user picks the folder each time. `none` means the
+    /// user cancelled (or picked a folder of the Manager itself, which is refused).
+    @since(version = 1.1.0)
+    pick-folder: func(title: string) -> option<picked-folder>;
 
     /// Asks the host to call `tick` once more after the next render, so that a long job runs in steps between
     /// pages (each step is a call of its own, with its own time limit). The request holds for the call that makes

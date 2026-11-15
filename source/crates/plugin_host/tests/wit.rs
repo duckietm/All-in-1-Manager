@@ -38,10 +38,16 @@ fn wit_package_parses() {
         "[method]picked-file.write",
         "keep-working",
         "[method]tcp-connection.recv-timeout",
+        "pick-folder",
+        "[method]picked-folder.name",
+        "[method]picked-folder.write",
+        "[method]picked-folder.reveal",
+        "[method]picked-folder.open-import-preview",
     ] {
         assert!(host.functions.contains_key(func), "host must import {func}");
     }
     assert!(host.types.contains_key("picked-file"), "host must define resource picked-file");
+    assert!(host.types.contains_key("picked-folder"), "host must define resource picked-folder");
 }
 
 /// The 1.0 text is kept verbatim for the backward-compatibility tests: 1.1 only adds items.
@@ -60,7 +66,26 @@ fn wit_1_0_is_kept_and_1_1_only_adds() {
         assert!(new_host.contains(f), "1.1 keeps host.{f}");
     }
     let added: Vec<_> = new_host.iter().filter(|f| !old_host.contains(f)).collect();
-    assert_eq!(added, ["[method]tcp-connection.recv-timeout", "keep-working"]);
+    assert_eq!(
+        added,
+        [
+            "[method]tcp-connection.recv-timeout",
+            "[method]picked-folder.name",
+            "[method]picked-folder.write",
+            "[method]picked-folder.reveal",
+            "[method]picked-folder.open-import-preview",
+            "pick-folder",
+            "keep-working",
+        ]
+    );
+    // Every added item says since when it exists.
+    let host_id = new.packages[new_pkg].interfaces["host"];
+    for f in &added {
+        let stability = &new.interfaces[host_id].functions[f.as_str()].stability;
+        assert!(matches!(stability, wit_parser::Stability::Stable { .. }), "host.{f} needs @since: {stability:?}");
+    }
+    let folder = new.interfaces[host_id].types["picked-folder"];
+    assert!(matches!(new.types[folder].stability, wit_parser::Stability::Stable { .. }), "picked-folder needs @since");
     let types = |r: &Resolve, pkg| r.interfaces[r.packages[pkg].interfaces["types"]].types.keys().cloned().collect::<Vec<_>>();
     assert_eq!(types(&old, old_pkg), types(&new, new_pkg), "the types are unchanged");
 }

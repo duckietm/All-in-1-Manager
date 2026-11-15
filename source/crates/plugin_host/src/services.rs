@@ -7,7 +7,7 @@
 //! The data types here are plain Rust types (no WIT bindgen types), so the app can implement the
 //! trait without depending on the generated bindings.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -115,6 +115,23 @@ pub trait HostServices: Send + Sync {
     async fn pick_save_file(&self, title: String, suggested: String, extensions: Vec<String>) -> Option<PathBuf>;
     /// Opens the Manager's import preview on a copy of a file the user picked (`name` without folders).
     fn open_import_preview(&self, name: String, bytes: Vec<u8>);
+    /// A folder dialog (API 1.1); `None` when cancelled (the default: no dialog). The runtime never shows the path to
+    /// the plugin and refuses a folder inside [`HostServices::manager_folders`].
+    async fn pick_folder(&self, title: String) -> Option<PathBuf> {
+        let _ = title;
+        None
+    }
+    /// Opens `folder` (a picked folder, canonical) in the file manager.
+    fn reveal_folder(&self, folder: &Path) -> Result<(), String> {
+        let _ = folder;
+        Err("this host cannot show folders".into())
+    }
+    /// The Manager's own folders (its configuration: plugin code, `http-hosts.json`, `verified.json`): a picked folder
+    /// may not lie inside one, and nothing is written into one through a folder above it. The runtime adds the
+    /// plugin's own folder.
+    fn manager_folders(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]

@@ -100,6 +100,8 @@ package's manifest (id, version, author, API version, permissions) equals the in
 - Maintainers read the code at the pinned commit, including everything that runs at build time: `build.rs`, proc
   macros, and every change to `Cargo.lock` (each new or updated dependency is code that runs during the build).
 - No network access beyond the hosts declared in the manifest.
+- A plugin that uses `http:ask` (API 1.1: it asks the user before fetching from any other host) is listed with a
+  "contacts hosts you approve" badge.
 - Every permission must be justified in the pull request.
 - Maintainers can reject or remove a plugin, or revoke a version, without giving a reason.
 

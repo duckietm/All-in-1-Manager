@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
-use aio_plugin_host::net::MAX_HTTP_BODY;
+use aio_plugin_host::net::{AskedHosts, MAX_HTTP_BODY};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::{async_trait, display_safe};
 use aio_remote::sql_session::{SqlSession, SqlValue as DbValue};
@@ -132,6 +132,8 @@ pub struct AppServices {
     stopper: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
     /// Set by "Stop this plugin": from then on every dialog gets the cancel answer without being shown.
     stopped: AtomicBool,
+    /// What the user answered under `http:ask` (the plugin's memory for the session; see [`AppServices::with_hosts`]).
+    hosts: Arc<AskedHosts>,
 }
 
 impl AppServices {
@@ -148,7 +150,15 @@ impl AppServices {
             database: tokio::sync::Mutex::new(None),
             stopper: Mutex::new(None),
             stopped: AtomicBool::new(false),
+            hosts: Arc::new(AskedHosts::in_memory()),
         }
+    }
+
+    /// The plugin's `http:ask` memory ([`super::external::ExternalPlugins::asked_hosts`]); without it the answers are
+    /// kept for this instance only.
+    pub fn with_hosts(mut self, hosts: Arc<AskedHosts>) -> Self {
+        self.hosts = hosts;
+        self
     }
 
     /// Sets what "Stop this plugin" in one of its dialogs does.
@@ -171,16 +181,22 @@ impl AppServices {
 
     /// A question with Yes / No / Stop this plugin; closing it answers No.
     async fn choose(&self, heading: &str, message: &str, yes: &str) -> bool {
+        self.answer(heading, message, yes).await == Some(true)
+    }
+
+    /// [`AppServices::choose`], telling No (`Some(false)`) from no answer at all (`None`: the plugin is stopped, or
+    /// the user chose "Stop this plugin").
+    async fn answer(&self, heading: &str, message: &str, yes: &str) -> Option<bool> {
         if self.is_stopped() {
-            return false;
+            return None;
         }
         let options = vec![Choice::new(yes, "", Answer::Yes).primary(), Choice::new(t("No"), "", Answer::No), stop_choice()];
         match self.shared.dialogs.choose(&self.asks(), heading, message, Answer::No, options).await {
-            Answer::Yes => true,
-            Answer::No => false,
+            Answer::Yes => Some(true),
+            Answer::No => Some(false),
             Answer::Stop => {
                 self.stop_plugin();
-                false
+                None
             }
         }
     }
@@ -463,6 +479,16 @@ impl HostServices for AppServices {
     async fn ask(&self, question: String) -> bool {
         // Closing the question (Escape, a click outside) answers No.
         self.choose(&display_safe(&question, DIALOG_TEXT), "", t("Yes")).await
+    }
+
+    async fn ask_host(&self, plugin: &str, host: &str) -> Option<bool> {
+        // The same dialog as `ask` (Yes / No / Stop this plugin), worded by the Manager; both names display-safe.
+        let question = tf("{plugin} wants to fetch from {host}. Allow?", &[("plugin", &display_safe(plugin, 80)), ("host", &display_safe(host, 253))]);
+        self.answer(&question, "", t("Yes")).await
+    }
+
+    fn asked_hosts(&self) -> Arc<AskedHosts> {
+        self.hosts.clone()
     }
 
     fn log(&self, level: Level, text: &str) {
@@ -833,6 +859,22 @@ mod tests {
         assert_eq!(app.pick_save_file("t".into(), "x.sql".into(), vec![]).await, None);
         assert!(!shared.dialogs.is_open());
         assert_eq!(stops.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn host_question_tells_no_from_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = Arc::new(services(&shared, dir.path()));
+        for (index, expected) in [(0, Some(true)), (1, Some(false)), (2, None)] {
+            let asking = app.clone();
+            let task = tokio::spawn(async move { asking.ask_host("Demo", "api.example.org").await });
+            answer(&shared, index).await;
+            assert_eq!(task.await.unwrap(), expected, "choice {index}");
+        }
+        // Stopped: no answer, nothing shown.
+        assert_eq!(app.ask_host("Demo", "api.example.org").await, None);
+        assert!(!shared.dialogs.is_open());
     }
 
     #[tokio::test(flavor = "multi_thread")]

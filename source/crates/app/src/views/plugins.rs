@@ -573,6 +573,30 @@ fn external_card_with(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, inf
                 ui.label(RichText::new(format!("• {}", external::permission_text(permission))).size(12.5).color(color));
             }
         });
+        if manifest.permissions.contains(&aio_plugin_host::Permission::HttpAsk) {
+            allowed_hosts(ui, palette, shared, info);
+        }
+    });
+}
+
+/// The hosts the user allowed under `http:ask`, each with Forget (read only while the section is open).
+fn allowed_hosts(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, info: &ExternalInfo) {
+    let id = &info.manifest.id;
+    egui::CollapsingHeader::new(RichText::new(t("Hosts you allowed")).size(12.5)).id_salt(("ext-hosts", id)).show(ui, |ui| {
+        let hosts = external::plugins().remembered_hosts(id, info.dev);
+        if hosts.is_empty() {
+            widgets::muted(ui, palette, t("None yet: the plugin asks you before fetching from a host it does not name."), 12.5);
+        }
+        for host in hosts {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("• {}", display_safe(&host, 253))).size(12.5));
+                if ui.add(widgets::secondary_button(t("Forget"))).on_hover_text(t("The plugin asks you again before fetching from this host")).clicked() {
+                    if let Err(error) = external::plugins().forget_host(id, info.dev, &host) {
+                        shared.set_status(&tf("Could not forget the host: {error}", &[("error", &error)]));
+                    }
+                }
+            });
+        }
     });
 }
 

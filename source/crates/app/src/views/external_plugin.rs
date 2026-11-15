@@ -187,7 +187,8 @@ impl Running {
     fn start(info: &ExternalInfo, dir: PathBuf, exports: PathBuf, shared: &Shared) -> Self {
         let state = Arc::new(Mutex::new(State { busy: true, ..State::default() }));
         let output = Arc::new(Mutex::new(PluginOutput::new()));
-        let services = Arc::new(AppServices::new(shared.clone(), &info.manifest.name, exports, output.clone()));
+        let hosts = external::plugins().asked_hosts(&info.manifest.id, info.dev);
+        let services = Arc::new(AppServices::new(shared.clone(), &info.manifest.name, exports, output.clone()).with_hosts(hosts));
         let ctx = shared.ctx.clone();
         let approvals = Arc::new(Approvals::with_notifier(move || ctx.request_repaint()));
         // The card's text is built once per request, on the plugin's worker, never per frame.

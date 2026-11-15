@@ -11,7 +11,7 @@ use aio_plugin_host::bindings::aio::plugin::types::{
     CompareOp, Condition, DeleteOp, InsertOp, Select, SqlValue as WitValue, UpdateOp, WriteOp,
 };
 use aio_plugin_host::approvals::Approvals;
-use aio_plugin_host::net::{check_http, check_tcp, MAX_TCP_CONNECTIONS};
+use aio_plugin_host::net::{check_http, check_tcp, AskedHosts, MAX_ASKED_HOSTS, MAX_RECV_TIMEOUT_MS, MAX_TCP_CONNECTIONS};
 use aio_plugin_host::runtime::{engine, PluginInstance};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::sql::{build_select, build_writes, DEFAULT_LIMIT, MAX_LIMIT, MAX_WRITE_BYTES, MAX_WRITE_OPS};
@@ -394,6 +394,14 @@ fn tcp_only_declared_localhost_port() {
     denied(check_tcp(80, &granted));
     denied(check_tcp(0, &granted));
     denied(check_tcp(30001, &[]));
+    // A range covers its ends and what lies between, nothing else.
+    let granted = perms(&["tcp:localhost:9092-9101"]);
+    for port in [9092, 9095, 9101] {
+        assert!(check_tcp(port, &granted).is_ok(), "{port}");
+    }
+    for port in [9091, 9102, 0] {
+        denied(check_tcp(port, &granted));
+    }
 }
 
 // ---- Runtime wiring (the hello plugin with a chosen set of permissions) ------------------------
@@ -405,12 +413,22 @@ struct Fake {
     gets: Mutex<Vec<String>>,
     /// Size of the body `http_get` answers with.
     body: usize,
+    /// The questions `ask` was asked.
+    asks: Mutex<Vec<String>>,
+    /// `ask` answers No.
+    refuse: bool,
+    /// The `http:ask` memory handed to the runtime (a fresh in-memory one when `None`).
+    hosts: Option<Arc<AskedHosts>>,
 }
 
 #[aio_plugin_host::async_trait]
 impl HostServices for Fake {
-    async fn ask(&self, _q: String) -> bool {
-        true
+    async fn ask(&self, q: String) -> bool {
+        self.asks.lock().unwrap().push(q);
+        !self.refuse
+    }
+    fn asked_hosts(&self) -> Arc<AskedHosts> {
+        self.hosts.clone().unwrap_or_else(|| Arc::new(AskedHosts::in_memory()))
     }
     fn log(&self, level: Level, text: &str) {
         self.logs.lock().unwrap().push((level, text.to_string()));
@@ -716,4 +734,130 @@ async fn hung_host_io_times_out_without_poisoning() {
     assert_eq!(started.elapsed().as_secs(), 60);
     // The instance is still usable.
     assert!(inst.render().await.is_ok());
+}
+// ---- API 1.1: recv with a timeout --------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn recv_timeout_returns_none_then_data() {
+    use tokio::io::AsyncWriteExt;
+    use wasmtime::component::Resource;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let root = tempfile::tempdir().unwrap();
+    let mut inst = hello_with(root.path(), &[&format!("tcp:localhost:{port}")], Arc::new(Fake::default())).await;
+    let host = inst.host_for_tests();
+    let rep = host.tcp_connect(port).await.unwrap().rep();
+    let (mut peer, _) = listener.accept().await.unwrap();
+
+    // Nothing arrived: `none` after the wait, or at once with 0.
+    let started = std::time::Instant::now();
+    assert_eq!(host.recv_timeout(Resource::new_borrow(rep), 16, 50).await.unwrap(), None);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(50));
+    assert_eq!(host.recv_timeout(Resource::new_borrow(rep), 16, 0).await.unwrap(), None);
+
+    peer.write_all(b"data").await.unwrap();
+    let mut got = Vec::new();
+    while got.len() < 4 {
+        let part = host.recv_timeout(Resource::new_borrow(rep), 16, 5_000).await.unwrap().expect("data arrived in time");
+        assert!(!part.is_empty());
+        got.extend(part);
+    }
+    assert_eq!(got, b"data");
+    // The peer closed: `some([])`.
+    drop(peer);
+    assert_eq!(host.recv_timeout(Resource::new_borrow(rep), 16, 5_000).await.unwrap(), Some(vec![]));
+    assert_eq!(host.recv_timeout(Resource::new_borrow(rep), 0, 10).await.unwrap_err(), "max must be at least 1");
+}
+
+#[tokio::test]
+async fn recv_timeout_is_clamped() {
+    assert_eq!(MAX_RECV_TIMEOUT_MS, 30_000);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let root = tempfile::tempdir().unwrap();
+    let mut inst = hello_with(root.path(), &[&format!("tcp:localhost:{port}")], Arc::new(Fake::default())).await;
+    let host = inst.host_for_tests();
+    let rep = host.tcp_connect(port).await.unwrap().rep();
+    let (_peer, _) = listener.accept().await.unwrap();
+    tokio::time::pause();
+    let started = tokio::time::Instant::now();
+    let got = host.recv_timeout(wasmtime::component::Resource::new_borrow(rep), 16, u32::MAX).await.unwrap();
+    assert_eq!(got, None);
+    let waited = started.elapsed();
+    assert!(waited >= std::time::Duration::from_secs(30) && waited < std::time::Duration::from_secs(31), "{waited:?}");
+}
+
+// ---- API 1.1: http:ask -------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn http_ask_asks_once_and_remembers() {
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("http-hosts.json");
+    let hosts = Arc::new(AskedHosts::persisted(file.clone()));
+    let fake = Arc::new(Fake { body: 1, hosts: Some(hosts.clone()), ..Fake::default() });
+    let mut inst = hello_with(root.path(), &["http:api.example.com", "http:ask"], fake.clone()).await;
+    let host = inst.host_for_tests();
+    // A declared host is never asked for.
+    host.http_get("https://api.example.com/".into()).await.unwrap();
+    assert!(fake.asks.lock().unwrap().is_empty());
+    // Another host: asked once (lower case), then remembered.
+    host.http_get("https://Other.Example.ORG/a".into()).await.unwrap();
+    host.http_get("https://other.example.org/b".into()).await.unwrap();
+    assert_eq!(*fake.asks.lock().unwrap(), vec!["Hello wants to fetch from other.example.org. Allow?".to_string()]);
+    assert_eq!(
+        *fake.gets.lock().unwrap(),
+        ["https://api.example.com/", "https://other.example.org/a", "https://other.example.org/b"].map(String::from)
+    );
+    assert_eq!(hosts.allowed(), vec!["other.example.org".to_string()]);
+    // Persisted: a new start of the Manager knows it.
+    assert_eq!(AskedHosts::persisted(file.clone()).allowed(), vec!["other.example.org".to_string()]);
+    // A host the permission grammar refuses is never asked for.
+    denied(host.http_get("https://-bad.example.org/".into()).await);
+    assert_eq!(fake.asks.lock().unwrap().len(), 1);
+
+    // At most 64 hosts are remembered: past that, no question, a refusal.
+    for i in 1..MAX_ASKED_HOSTS {
+        hosts.allow(&format!("h{i}.example.org")).unwrap();
+    }
+    assert_eq!(hosts.allowed().len(), MAX_ASKED_HOSTS);
+    let e = denied(host.http_get("https://one-more.example.org/".into()).await);
+    assert!(e.contains("64"), "{e}");
+    assert_eq!(fake.asks.lock().unwrap().len(), 1);
+    // Forgetting one makes room again.
+    hosts.forget("h1.example.org").unwrap();
+    host.http_get("https://one-more.example.org/".into()).await.unwrap();
+    assert_eq!(fake.asks.lock().unwrap().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn refused_host_not_asked_again_in_session() {
+    let root = tempfile::tempdir().unwrap();
+    let hosts = Arc::new(AskedHosts::persisted(root.path().join("http-hosts.json")));
+    let fake = Arc::new(Fake { body: 1, refuse: true, hosts: Some(hosts.clone()), ..Fake::default() });
+    let mut inst = hello_with(root.path(), &["http:ask"], fake.clone()).await;
+    let host = inst.host_for_tests();
+    for _ in 0..3 {
+        let e = denied(host.http_get("https://evil.example/".into()).await);
+        assert_eq!(e, "permission denied: host evil.example was refused");
+    }
+    assert_eq!(fake.asks.lock().unwrap().len(), 1);
+    assert!(fake.gets.lock().unwrap().is_empty());
+    assert!(warned(&fake, "evil.example"));
+    // Not remembered on disk, but for the session (the same memory, as after a reload of the page).
+    assert!(hosts.allowed().is_empty());
+    let root2 = tempfile::tempdir().unwrap();
+    let mut again = hello_with(root2.path(), &["http:ask"], fake.clone()).await;
+    denied(again.host_for_tests().http_get("https://EVIL.example/x".into()).await);
+    assert_eq!(fake.asks.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn undeclared_host_without_ask_denied() {
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake { body: 1, ..Fake::default() });
+    let mut inst = hello_with(root.path(), &["http:api.example.com"], fake.clone()).await;
+    let e = denied(inst.host_for_tests().http_get("https://other.example.org/".into()).await);
+    assert_eq!(e, "permission denied: host 'other.example.org' is not declared with http:other.example.org");
+    assert!(fake.asks.lock().unwrap().is_empty(), "no question without http:ask");
+    assert!(fake.gets.lock().unwrap().is_empty());
 }

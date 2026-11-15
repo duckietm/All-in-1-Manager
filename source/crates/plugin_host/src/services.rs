@@ -8,8 +8,11 @@
 //! trait without depending on the generated bindings.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use async_trait::async_trait;
+
+use crate::net::AskedHosts;
 
 /// Severity of a plugin log line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +71,17 @@ pub struct WriteBatch {
 pub trait HostServices: Send + Sync {
     /// A yes/no question to the user.
     async fn ask(&self, question: String) -> bool;
+    /// The `http:ask` question (API 1.1): may the plugin `plugin` (its name, already made display-safe) fetch from
+    /// `host` (lower case, a valid `http:<host>` host)? The runtime counts it as a dialog of the call. `Some` is the
+    /// user's Yes or No (remembered); `None` is no answer (the plugin is being stopped; nothing is remembered).
+    async fn ask_host(&self, plugin: &str, host: &str) -> Option<bool> {
+        Some(self.ask(format!("{plugin} wants to fetch from {host}. Allow?")).await)
+    }
+    /// What the user answered under `http:ask` for this plugin, taken once when an instance loads. The Manager hands
+    /// every instance of a plugin the same one for a session; the default remembers in memory, for this instance.
+    fn asked_hosts(&self) -> Arc<AskedHosts> {
+        Arc::new(AskedHosts::in_memory())
+    }
     /// A line of the plugin log (also the plugin's stdout (Info) and stderr (Error)).
     fn log(&self, level: Level, text: &str);
     /// The status line text.

@@ -198,6 +198,11 @@ impl Manifest {
         }
         let permissions = raw.permissions.iter().map(|p| Permission::parse(p)).collect::<Result<Vec<_>>>()?;
         check_duplicates(&permissions)?;
+        // `api` was checked above to be 1.<minor>.
+        let minor = numbers(&raw.api, 2, 3).map_or(0, |n| n[1]);
+        if let Some(p) = permissions.iter().find(|p| minor < 1 && p.needs_api_1_1()) {
+            bail!("The permission {p} needs API 1.1 (\"api\": \"1.1\" in the manifest)");
+        }
         Ok(Manifest {
             id: raw.id,
             name: raw.name,

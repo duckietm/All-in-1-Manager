@@ -37,6 +37,7 @@ fn wit_package_parses() {
         "[method]picked-file.read",
         "[method]picked-file.write",
         "keep-working",
+        "[method]tcp-connection.recv-timeout",
     ] {
         assert!(host.functions.contains_key(func), "host must import {func}");
     }
@@ -59,7 +60,7 @@ fn wit_1_0_is_kept_and_1_1_only_adds() {
         assert!(new_host.contains(f), "1.1 keeps host.{f}");
     }
     let added: Vec<_> = new_host.iter().filter(|f| !old_host.contains(f)).collect();
-    assert_eq!(added, ["keep-working"]);
+    assert_eq!(added, ["[method]tcp-connection.recv-timeout", "keep-working"]);
     let types = |r: &Resolve, pkg| r.interfaces[r.packages[pkg].interfaces["types"]].types.keys().cloned().collect::<Vec<_>>();
     assert_eq!(types(&old, old_pkg), types(&new, new_pkg), "the types are unchanged");
 }

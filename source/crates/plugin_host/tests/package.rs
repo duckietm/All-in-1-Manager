@@ -480,3 +480,39 @@ fn install_without_data_sets_the_old_data_aside() {
     assert!(names(&path.join("data")).is_empty());
     assert_eq!(std::fs::read(dir.path().join(".hello.data-from-previous-author-2/late.txt")).unwrap(), b"late");
 }
+
+#[test]
+fn port_range_parses_and_limits() {
+    assert_eq!(Permission::parse("tcp:localhost:9092-9101").unwrap(), Permission::TcpLocalRange(9092, 9101));
+    assert_eq!(Permission::parse("tcp:localhost:9092-9101").unwrap().to_string(), "tcp:localhost:9092-9101");
+    // At most 16 ports: 9092-9107 is 16 of them.
+    assert_eq!(Permission::parse("tcp:localhost:9092-9107").unwrap(), Permission::TcpLocalRange(9092, 9107));
+    for bad in [
+        "tcp:localhost:9092-9200",
+        "tcp:localhost:9092-9108",
+        "tcp:localhost:9101-9092",
+        "tcp:localhost:9092-9092",
+        "tcp:localhost:0-10",
+        "tcp:localhost:65530-65536",
+        "tcp:localhost:9092-",
+        "tcp:localhost:-9092",
+        "tcp:localhost:9092-+9093",
+        "tcp:localhost:9092-9093-9094",
+    ] {
+        assert!(Permission::parse(bad).is_err(), "{bad}");
+    }
+    // Single ports are unchanged.
+    assert_eq!(Permission::parse("tcp:localhost:9092").unwrap(), Permission::TcpLocal(9092));
+    let words = Permission::parse("tcp:localhost:9092-9101").unwrap().plain_words();
+    assert_eq!(words.english_text(), "Connect to programs on this computer, ports 9092\u{2013}9101 (for example G-Earth)");
+    // A 1.1 permission needs a 1.1 manifest.
+    let parse = |api: &str, perms: &[&str]| Manifest::parse(manifest("hello", api, perms).as_bytes());
+    assert!(parse("1.1", &["tcp:localhost:9092-9101", "http:ask"]).is_ok());
+    for p in ["tcp:localhost:9092-9101", "http:ask"] {
+        let e = parse("1.0", &[p]).unwrap_err().to_string();
+        assert!(e.contains("needs API 1.1"), "{e}");
+    }
+    assert_eq!(Permission::parse("http:ask").unwrap(), Permission::HttpAsk);
+    assert_eq!(Permission::HttpAsk.to_string(), "http:ask");
+    assert_eq!(Permission::HttpAsk.plain_words().english_text(), "Ask you before fetching from any other internet host");
+}

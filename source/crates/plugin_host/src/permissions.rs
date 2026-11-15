@@ -12,15 +12,38 @@ pub enum Permission {
     /// `(table, column)`
     SqlReadPrivate(String, String),
     Http(String),
+    /// `http:ask` (API 1.1): a request to another host asks the user first.
+    HttpAsk,
     TcpLocal(u16),
+    /// `tcp:localhost:<a>-<b>` (API 1.1): `a < b`, at most [`MAX_PORT_RANGE`] ports.
+    TcpLocalRange(u16, u16),
     Files,
+}
+
+/// Most ports one `tcp:localhost:<a>-<b>` range may span.
+pub const MAX_PORT_RANGE: u16 = 16;
+
+impl Permission {
+    /// Needs `"api": "1.1"` in the manifest (an older Manager does not know it).
+    pub fn needs_api_1_1(&self) -> bool {
+        matches!(self, Permission::HttpAsk | Permission::TcpLocalRange(..))
+    }
+}
+
+/// A port number of a `tcp:localhost:` permission: plain digits, 1 to 65535.
+fn port(s: &str) -> Option<u16> {
+    if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    s.parse::<u16>().ok().filter(|p| *p > 0)
 }
 
 fn ident(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 
-fn host(s: &str) -> bool {
+/// A host name as `http:<host>` accepts it (the same rule holds for a host asked for under `http:ask`).
+pub fn valid_host(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 253
         && !s.starts_with(['.', '-'])
@@ -52,18 +75,23 @@ impl Permission {
                     Permission::SqlRead(tables(list)?)
                 } else if let Some(list) = s.strip_prefix("sql:write:") {
                     Permission::SqlWrite(tables(list)?)
+                } else if s == "http:ask" {
+                    Permission::HttpAsk
                 } else if let Some(h) = s.strip_prefix("http:") {
-                    if !host(h) {
+                    if !valid_host(h) {
                         bail!("Invalid host in permission: {s}");
                     }
                     Permission::Http(h.into())
-                } else if let Some(port) = s.strip_prefix("tcp:localhost:") {
-                    if port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
-                        bail!("Invalid port in permission: {s}");
-                    }
-                    match port.parse::<u16>() {
-                        Ok(p) if p > 0 => Permission::TcpLocal(p),
-                        _ => bail!("Invalid port in permission: {s}"),
+                } else if let Some(ports) = s.strip_prefix("tcp:localhost:") {
+                    match ports.split_once('-') {
+                        None => match port(ports) {
+                            Some(p) => Permission::TcpLocal(p),
+                            None => bail!("Invalid port in permission: {s}"),
+                        },
+                        Some((a, b)) => match (port(a), port(b)) {
+                            (Some(a), Some(b)) if a < b && b - a < MAX_PORT_RANGE => Permission::TcpLocalRange(a, b),
+                            _ => bail!("Invalid port range in permission (the smaller port first, at most {MAX_PORT_RANGE} ports): {s}"),
+                        },
                     }
                 } else {
                     bail!("Unknown permission: {s}");
@@ -117,7 +145,12 @@ impl Permission {
                 vec![("table", table.clone()), ("column", column.clone())],
             ),
             Permission::Http(host) => words("Fetch pages from {host} on the internet", vec![("host", host.clone())]),
+            Permission::HttpAsk => words("Ask you before fetching from any other internet host", vec![]),
             Permission::TcpLocal(port) => words("Connect to a program on this computer, port {port} (for example G-Earth)", vec![("port", port.to_string())]),
+            Permission::TcpLocalRange(a, b) => words(
+                "Connect to programs on this computer, ports {a}\u{2013}{b} (for example G-Earth)",
+                vec![("a", a.to_string()), ("b", b.to_string())],
+            ),
             Permission::Files => words("Keep its own files in a private folder (always allowed)", vec![]),
         }
     }
@@ -132,7 +165,9 @@ impl fmt::Display for Permission {
             Permission::SqlWrite(t) => write!(f, "sql:write:{}", t.join(",")),
             Permission::SqlReadPrivate(t, c) => write!(f, "sql:read-private:{t}.{c}"),
             Permission::Http(h) => write!(f, "http:{h}"),
+            Permission::HttpAsk => write!(f, "http:ask"),
             Permission::TcpLocal(p) => write!(f, "tcp:localhost:{p}"),
+            Permission::TcpLocalRange(a, b) => write!(f, "tcp:localhost:{a}-{b}"),
             Permission::Files => write!(f, "files"),
         }
     }

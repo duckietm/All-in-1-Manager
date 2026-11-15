@@ -8,12 +8,13 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use aio_plugin_host::package::{self, Package, MAX_PACKAGE, MAX_WASM};
 use aio_plugin_host::manifest::valid_id;
+use aio_plugin_host::net::AskedHosts;
 use aio_plugin_host::{display_safe, Manifest, Permission};
 use aio_plugin_index::{Entry, Index, Revoked};
 use parking_lot::Mutex;
@@ -186,6 +187,9 @@ pub struct ExternalPlugins {
     revoked: Mutex<Revocations>,
     /// The ids of the official index keys: a verified install signed with another key is not shown as verified.
     trusted_keys: Vec<String>,
+    /// What the user answered under `http:ask`, per plugin id and "developer plugin" (see
+    /// [`ExternalPlugins::asked_hosts`]).
+    hosts: Mutex<HashMap<(String, bool), Arc<AskedHosts>>>,
 }
 
 /// The revocations applied last ([`ExternalPlugins::set_revocations`]): they lock the switch of every installed
@@ -317,6 +321,10 @@ const MAX_REDIRECTS: usize = 5;
 const VERIFIED_FILE: &str = "verified.json";
 /// `verified.json` is a few short fields.
 const MAX_VERIFIED_BYTES: u64 = 4 * 1024;
+/// `configuration/plugins/ext/<id>/http-hosts.json`: the hosts the user allowed under `http:ask`. The Manager's file:
+/// next to the plugin's code, outside its `data/` (which is all the plugin can write), and dropped with the folder by
+/// an install or a removal.
+const HOSTS_FILE: &str = "http-hosts.json";
 
 /// Whether a package download that started at `first` may follow a redirect to `next`. The official index: only to
 /// GitHub's asset CDN ([`PACKAGE_CDN_HOSTS`]), https on the default port, no login in the url. A test index: only the
@@ -541,6 +549,7 @@ impl ExternalPlugins {
             dev: Mutex::new(Dev::default()),
             revoked: Mutex::new(Revocations::default()),
             trusted_keys,
+            hosts: Mutex::new(HashMap::new()),
         };
         this.reload();
         this
@@ -722,6 +731,35 @@ impl ExternalPlugins {
         self.root.join(id)
     }
 
+    /// What the user answered under `http:ask` for the plugin `id` (`dev`: the developer plugin), one memory per plugin
+    /// for the whole session, so a host refused once is not asked for again after a Reload. An installed plugin keeps
+    /// the allowed hosts in its folder's `http-hosts.json`; a developer plugin only in memory.
+    pub fn asked_hosts(&self, id: &str, dev: bool) -> Arc<AskedHosts> {
+        let mut hosts = self.hosts.lock();
+        let entry = hosts.entry((id.to_string(), dev)).or_insert_with(|| {
+            Arc::new(if dev || !valid_id(id) { AskedHosts::in_memory() } else { AskedHosts::persisted(self.dir(id).join(HOSTS_FILE)) })
+        });
+        entry.clone()
+    }
+
+    /// The hosts the user allowed for the plugin `id` (the Plugins page lists them). Blocking (a small file).
+    pub fn remembered_hosts(&self, id: &str, dev: bool) -> Vec<String> {
+        self.asked_hosts(id, dev).allowed()
+    }
+
+    /// The Plugins page's Forget: the plugin asks again before fetching from `host`.
+    pub fn forget_host(&self, id: &str, dev: bool, host: &str) -> Result<(), String> {
+        self.asked_hosts(id, dev).forget(host)
+    }
+
+    /// Forgets every `http:ask` answer for the plugin `id`, installed and developer (an install, a revocation, a
+    /// removal). Not fatal: an install or removal drops the file with the folder anyway.
+    fn forget_all_hosts(&self, id: &str) {
+        for dev in [false, true] {
+            let _ = self.asked_hosts(id, dev).clear();
+        }
+    }
+
     /// Reads and checks a package file. Blocking: run it off the window's thread.
     pub fn prepare(&self, path: &Path) -> Result<Pending> {
         let bytes = read_capped(path)?;
@@ -771,6 +809,15 @@ impl ExternalPlugins {
     /// An expired index revokes too. A plugin no longer covered is unlocked but not switched on again: that stays the
     /// user's choice.
     pub fn set_revocations(&self, official: &[Revoked], test: &[Revoked], developer_mode: bool) -> Vec<String> {
+        let revoked = self.set_revocations_only(official, test, developer_mode);
+        // A revoked plugin loses the hosts it was allowed under `http:ask`.
+        for id in &revoked {
+            self.forget_all_hosts(id);
+        }
+        revoked
+    }
+
+    fn set_revocations_only(&self, official: &[Revoked], test: &[Revoked], developer_mode: bool) -> Vec<String> {
         let test = if developer_mode { test.to_vec() } else { Vec::new() };
         *self.revoked.lock() = Revocations { official: official.to_vec(), test };
         self.revoked_installed()
@@ -855,6 +902,8 @@ impl ExternalPlugins {
             false => package::install(&pending.package, &self.root).map(|_| ()),
         };
         if result.is_ok() {
+            // A new install starts without hosts allowed or refused under `http:ask`.
+            self.forget_all_hosts(&pending.package.manifest.id);
             let dir = self.dir(&pending.package.manifest.id);
             match &pending.verified {
                 // Not fatal: the plugin is installed, it is only shown as not verified.
@@ -885,6 +934,9 @@ impl ExternalPlugins {
     pub fn remove(&self, id: &str) -> Result<()> {
         wait_until_stopped(id)?;
         let mut result = package::remove(id, &self.root);
+        if result.is_ok() {
+            self.forget_all_hosts(id);
+        }
         if result.is_ok() && valid_id(id) {
             let dev = self.dev_dir(id);
             if std::fs::symlink_metadata(&dev).is_ok() {
@@ -944,9 +996,9 @@ pub fn save_dev_folders() {
     let _ = settings.save();
 }
 
-/// Permissions shown in a warning tone: private columns, and running as root.
+/// Permissions shown in a warning tone: private columns, running as root, and asking for any internet host.
 pub fn is_sensitive(p: &Permission) -> bool {
-    matches!(p, Permission::SqlReadPrivate(..) | Permission::SshRoot)
+    matches!(p, Permission::SqlReadPrivate(..) | Permission::SshRoot | Permission::HttpAsk)
 }
 
 /// One plain sentence for a permission, translated. The wording is the host's ([`Permission::plain_words`], shared
@@ -967,7 +1019,9 @@ const PERMISSION_TEXTS: &[&str] = &[
     n("Change the tables {tables} of the hotel database (you approve each change)"),
     n("Read the private column {column} of the table {table} (it can hold passwords, addresses or tokens)"),
     n("Fetch pages from {host} on the internet"),
+    n("Ask you before fetching from any other internet host"),
     n("Connect to a program on this computer, port {port} (for example G-Earth)"),
+    n("Connect to programs on this computer, ports {a}–{b} (for example G-Earth)"),
     n("Keep its own files in a private folder (always allowed)"),
 ];
 
@@ -987,6 +1041,8 @@ mod tests {
         "sql:read-private:users.mail",
         "http:example.com",
         "tcp:localhost:9092",
+        "tcp:localhost:9092-9101",
+        "http:ask",
         "files",
     ];
 
@@ -995,9 +1051,10 @@ mod tests {
     }
 
     fn aiop_by(author: &str, id: &str, version: &str, permissions: &[&str]) -> Vec<u8> {
+        let api = if permissions.iter().any(|p| Permission::parse(p).is_ok_and(|p| p.needs_api_1_1())) { "1.1" } else { "1.0" };
         let manifest = serde_json::json!({
             "id": id, "name": "Demo", "version": version, "author": author, "description": "A demo",
-            "api": "1.0", "permissions": permissions, "page_title": "Demo",
+            "api": api, "permissions": permissions, "page_title": "Demo",
         });
         let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
         let options = zip::write::SimpleFileOptions::default();
@@ -1115,6 +1172,53 @@ mod tests {
 
         ext.install_file(&file).unwrap();
         assert!(entries(&root.join("demo/data")).is_empty(), "a reinstall starts with empty data");
+    }
+
+    #[test]
+    fn http_ask_list_cleared_on_reinstall() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("ext");
+        let ext = ExternalPlugins::new(root.clone());
+        let file = dir.path().join("demo.aiop");
+        std::fs::write(&file, aiop("demo", "1.0.0", &["http:ask"])).unwrap();
+        ext.install_file(&file).unwrap();
+        let hosts = ext.asked_hosts("demo", false);
+        hosts.allow("API.example.org").unwrap();
+        hosts.allow("b.example.org").unwrap();
+        hosts.refuse("evil.example");
+        // One memory per plugin and session; the allowed hosts in the Manager's file, outside the plugin's data.
+        assert!(Arc::ptr_eq(&hosts, &ext.asked_hosts("demo", false)));
+        assert_eq!(ext.remembered_hosts("demo", false), ["api.example.org", "b.example.org"]);
+        assert!(root.join("demo").join(HOSTS_FILE).is_file());
+        assert!(entries(&root.join("demo/data")).is_empty());
+        // The Plugins page's Forget.
+        ext.forget_host("demo", false, "B.example.org").unwrap();
+        assert_eq!(ext.remembered_hosts("demo", false), ["api.example.org"]);
+
+        // A reinstall clears both lists.
+        ext.install_file(&file).unwrap();
+        assert!(ext.remembered_hosts("demo", false).is_empty());
+        assert_eq!(hosts.answer("evil.example"), None, "a refused host is asked for again");
+
+        // So does a revocation...
+        hosts.allow("api.example.org").unwrap();
+        let revoked = Revoked { id: "demo".into(), versions: vec!["*".into()], reason: "bad".into() };
+        ext.apply_revocations_with(std::slice::from_ref(&revoked), &[], false, |_| {});
+        assert!(ext.remembered_hosts("demo", false).is_empty());
+        // ...and a removal.
+        ext.apply_revocations_with(&[], &[], false, |_| {});
+        hosts.allow("api.example.org").unwrap();
+        ext.remove("demo").unwrap();
+        assert!(ext.remembered_hosts("demo", false).is_empty());
+        ext.install_file(&file).unwrap();
+        assert!(ext.remembered_hosts("demo", false).is_empty());
+
+        // A developer plugin remembers in memory only.
+        let dev = ext.asked_hosts("devdemo", true);
+        dev.allow("x.example.org").unwrap();
+        assert_eq!(ext.remembered_hosts("devdemo", true), ["x.example.org"]);
+        assert!(!ext.dev_dir("devdemo").join(HOSTS_FILE).exists());
+        assert!(!ext.dir("devdemo").join(HOSTS_FILE).exists());
     }
 
     #[test]

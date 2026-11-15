@@ -5,8 +5,8 @@
 /// Everything else (scripts, database, network, files) goes through the `host` imports,
 /// each one gated by a permission in the plugin manifest and by the user's approval.
 ///
-/// 1.1 only adds items to 1.0 (kept verbatim in `../aio-plugin-1.0`): `host.keep-working` and the optional
-/// `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
+/// 1.1 only adds items to 1.0 (kept verbatim in `../aio-plugin-1.0`): `host.keep-working`,
+/// `tcp-connection.recv-timeout` and the optional `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
 package aio:plugin@1.1.0;
 
 interface types {
@@ -205,14 +205,22 @@ interface host {
     /// `sql:write:<tables>`). Returns the number of affected rows.
     sql-write: func(ops: list<write-op>) -> result<u64, string>;
 
-    /// HTTP(S) GET, only to hosts listed in the manifest (permission `http:<hosts>`).
+    /// HTTP(S) GET, only to hosts listed in the manifest (permission `http:<hosts>`). With the permission `http:ask`
+    /// (API 1.1), a request to another host asks the user first; a host the user allowed is remembered for the
+    /// plugin, a refused one gets `permission denied: host <host> was refused` for the rest of the session.
     http-get: func(url: string) -> result<list<u8>, string>;
 
-    /// A local TCP connection (permission `tcp:localhost:<ports>`).
+    /// A local TCP connection (permission `tcp:localhost:<port>`, or `tcp:localhost:<a>-<b>` for a range of at most
+    /// 16 ports since API 1.1).
     resource tcp-connection {
         send: func(data: list<u8>) -> result<_, string>;
         /// Reads up to `max` bytes; an empty list means the peer closed the connection.
         recv: func(max: u32) -> result<list<u8>, string>;
+        /// Like `recv`, but waits at most `timeout-ms` milliseconds (0 to 30000; larger values are clamped to
+        /// 30000; 0 only takes what has already arrived). `none` means nothing arrived in time; `some` with an empty
+        /// list means the peer closed the connection.
+        @since(version = 1.1.0)
+        recv-timeout: func(max: u32, timeout-ms: u32) -> result<option<list<u8>>, string>;
         close: func();
     }
 

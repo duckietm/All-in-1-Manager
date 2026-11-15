@@ -6,7 +6,7 @@
 //!   refuses to grow past it, so the guest's allocator fails and the guest traps; the host never aborts);
 //! * time: each call into the guest (and the instantiation) may take [`CALL_LIMIT`], not counting the time
 //!   spent waiting for the user in a host dialog or on host I/O (`sql-select`, `http-get`, `tcp-connect`,
-//!   `recv`; each has its own limit: [`SQL_TIMEOUT`], [`HTTP_TIMEOUT`], [`TCP_CONNECT_TIMEOUT`],
+//!   `recv`, `recv-timeout`; each has its own limit: [`SQL_TIMEOUT`], [`HTTP_TIMEOUT`], [`TCP_CONNECT_TIMEOUT`],
 //!   [`TCP_RECV_TIMEOUT`], and a timeout there is an error for the guest, not a poisoned instance). Two
 //!   mechanisms enforce it: epoch interruption stops wasm
 //!   code (a ticker thread advances the engine's epoch every [`TICK`]; a call gets [`CALL_TICKS`] ticks and
@@ -36,12 +36,14 @@
 //!   `run-script` (`ssh`, or `ssh:root` for root) through [`crate::approvals::check_script`] (at most
 //!   [`crate::approvals::MAX_SCRIPT`], nothing the preview would alter), then the user's approval, then
 //!   [`HostServices::run_script`] under [`SCRIPT_TIMEOUT`]; neither the approval wait nor the run
-//!   counts against [`CALL_LIMIT`]; `http-get` through [`crate::net::check_http`], then
-//!   [`HostServices::http_get`], bodies over [`crate::net::MAX_HTTP_BODY`] refused; `tcp-connect` through
-//!   [`crate::net::check_tcp`], then a tokio `TcpStream` to `127.0.0.1:<port>` owned by the runtime: at
-//!   most [`crate::net::MAX_TCP_CONNECTIONS`] open at once, `recv` returns at most
-//!   [`crate::net::MAX_TCP_RECV`] bytes, and every connection is closed when the instance is dropped or
-//!   poisoned.
+//!   counts against [`CALL_LIMIT`]; `http-get` through [`crate::net::check_http`]'s grammar and a declared
+//!   host, or with `http:ask` (1.1) a host the user allowed ([`crate::net::AskedHosts`]; an unanswered one is
+//!   asked for with [`HostServices::ask_host`], a dialog of the call), then [`HostServices::http_get`], bodies over
+//!   [`crate::net::MAX_HTTP_BODY`] refused; `tcp-connect` through [`crate::net::check_tcp`] (single ports and,
+//!   since 1.1, ranges), then a tokio `TcpStream` to `127.0.0.1:<port>` owned by the runtime: at most
+//!   [`crate::net::MAX_TCP_CONNECTIONS`] open at once, `recv` and `recv-timeout` (1.1, waiting at most
+//!   [`crate::net::MAX_RECV_TIMEOUT_MS`]) return at most [`crate::net::MAX_TCP_RECV`] bytes, and every
+//!   connection is closed when the instance is dropped or poisoned.
 //!
 //! The watchdog uses `tokio::time`: calls must run inside a tokio runtime (the app's).
 //!
@@ -87,9 +89,12 @@ use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
 };
 use crate::bindings::Plugin;
-use crate::manifest::{Manifest, HOST_API_MINOR};
-use crate::net::{check_http, check_tcp, MAX_HTTP_BODY, MAX_TCP_CONNECTIONS, MAX_TCP_RECV};
-use crate::permissions::Permission;
+use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
+use crate::net::{
+    check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
+    MAX_TCP_CONNECTIONS, MAX_TCP_RECV,
+};
+use crate::permissions::{valid_host, Permission};
 use crate::services::{HostServices, Level, ScriptRequest, SqlValue};
 use crate::sql::{build_select, build_writes};
 
@@ -408,6 +413,10 @@ pub struct HostState {
     next_tcp: u64,
     /// The manifest id (scripts and write batches are queued in its name).
     plugin: String,
+    /// The manifest name, display-safe (the `http:ask` question names it).
+    plugin_name: String,
+    /// What the user answered under `http:ask` (the app's, shared by the plugin's instances in a session).
+    hosts: Arc<AskedHosts>,
     approvals: Arc<Approvals>,
     /// Dialogs opened by the current call (reset by each call; see [`MAX_DIALOGS`]).
     dialogs: usize,
@@ -461,6 +470,44 @@ impl HostState {
         debug_assert!(!self.approvals.has_pending_for(&self.plugin), "one pending request per instance");
         let approvals = self.approvals.clone();
         async move { approvals.request(p).await }
+    }
+
+    /// `http:ask`: a host that is not declared may be fetched from if the user allows it. Asks once (a dialog of the
+    /// call); Yes is remembered in [`AskedHosts`], No for the session. Every refusal is a `permission denied` text.
+    async fn ask_for_host(&mut self, host: &str) -> Result<(), String> {
+        if !self.granted.contains(&Permission::HttpAsk) {
+            return Err(undeclared(host));
+        }
+        if !valid_host(host) {
+            return Err(deny(format!("'{}' is not a host that can be asked for", sanitise(host))));
+        }
+        let refused = || deny(format!("host {host} was refused"));
+        match self.hosts.answer(host) {
+            Some(true) => return Ok(()),
+            Some(false) => return Err(refused()),
+            None => {}
+        }
+        if self.hosts.is_full() {
+            return Err(deny(format!("at most {MAX_ASKED_HOSTS} hosts can be allowed; forget one on the Plugins page")));
+        }
+        // Past the dialog limit the question gets the cancel answer, not shown and not remembered.
+        if !self.dialog_allowed() {
+            return Err(refused());
+        }
+        let (services, name) = (self.services.clone(), self.plugin_name.clone());
+        match self.waiting(services.ask_host(&name, host)).await {
+            Some(true) => {}
+            Some(false) => {
+                self.hosts.refuse(host);
+                return Err(refused());
+            }
+            // No answer (the plugin is being stopped): refused now, asked again next time.
+            None => return Err(refused()),
+        }
+        if let Err(e) = self.hosts.allow(host) {
+            self.log.log(Level::Warn, &format!("{host} is allowed this time but not remembered: {e}"));
+        }
+        Ok(())
     }
 
     /// The open stream behind a connection handle.
@@ -695,9 +742,14 @@ impl Host for HostState {
     }
 
     async fn http_get(&mut self, url: String) -> Result<Vec<u8>, String> {
-        let url = check_http(&url, &self.granted).map_err(|e| self.refused(e))?;
+        let checked = parse_http(&url).map_err(|e| self.refused(e))?;
+        if !declared_host(&checked.host, &self.granted) {
+            if let Err(e) = self.ask_for_host(&checked.host).await {
+                return Err(self.refused(e));
+            }
+        }
         let services = self.services.clone();
-        let body = self.waiting(limited("the request", HTTP_TIMEOUT, services.http_get(&url))).await?;
+        let body = self.waiting(limited("the request", HTTP_TIMEOUT, services.http_get(&checked.url))).await?;
         if body.len() > MAX_HTTP_BODY {
             return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
         }
@@ -884,6 +936,27 @@ impl HostTcpConnection for HostState {
         Ok(buf)
     }
 
+    /// Like `recv`, waiting at most `timeout_ms` (clamped to [`MAX_RECV_TIMEOUT_MS`]; 0 takes only what has already
+    /// arrived): `None` when nothing arrived in time, `Some(empty)` when the peer closed.
+    async fn recv_timeout(&mut self, conn: Resource<TcpConnection>, max: u32, timeout_ms: u32) -> Result<Option<Vec<u8>>, String> {
+        if max == 0 {
+            return Err("max must be at least 1".into());
+        }
+        let _paused = Paused::begin(&self.clock);
+        let stream = self.stream(&conn)?;
+        let mut buf = vec![0u8; (max as usize).min(MAX_TCP_RECV)];
+        let wait = Duration::from_millis(timeout_ms.min(MAX_RECV_TIMEOUT_MS).into());
+        // `timeout` polls the read once before looking at the clock, so a wait of 0 still takes what has arrived.
+        match tokio::time::timeout(wait, stream.read(&mut buf)).await {
+            Err(_) => Ok(None),
+            Ok(Err(e)) => Err(io_text(&e)),
+            Ok(Ok(n)) => {
+                buf.truncate(n);
+                Ok(Some(buf))
+            }
+        }
+    }
+
     async fn close(&mut self, conn: Resource<TcpConnection>) {
         if let Ok(c) = self.table.get(&conn) {
             let id = c.id;
@@ -1003,6 +1076,7 @@ impl PluginInstance {
             bail!("Plugin needs API 1.{needed} but its manifest says 1.{}", manifest.api_minor());
         }
         let has_tick = component.component_type().get_export(engine, "tick").is_some();
+        let hosts = services.asked_hosts();
         let mut linker: Linker<HostState> = Linker::new(engine);
         wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| anyhow::anyhow!("{e:#}"))?;
         Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| anyhow::anyhow!("{e:#}"))?;
@@ -1028,6 +1102,8 @@ impl PluginInstance {
             tcp: HashMap::new(),
             next_tcp: 0,
             plugin: manifest.id.clone(),
+            plugin_name: display_safe(&manifest.name, 80),
+            hosts,
             approvals,
             dialogs: 0,
             has_tick,

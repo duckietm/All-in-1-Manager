@@ -399,6 +399,7 @@ impl RevocationLock {
     }
 
     /// The sequence of the index the lock comes from.
+    #[cfg(test)]
     pub fn sequence(&self) -> Option<u64> {
         self.held.lock().as_ref().map(|l| l.sequence)
     }

@@ -336,6 +336,10 @@ pub struct Failure {
     /// G-Earth let the extension go after accepting it, before any hotel connection (it was
     /// restarted, or Connect in Nitro mode): a new job on a new connection should go on.
     pub reconnect: bool,
+    /// The other side of the connection did not answer as G-Earth (no InfoRequest within
+    /// [`RipOptions::handshake_timeout_ms`], another first message, or it closed): it is not
+    /// G-Earth's extension port, and G-Earth may be on another port.
+    pub not_gearth: bool,
     /// What was written before stopping (the built-in's `PartialOutput`).
     pub partial: Option<Box<Summary>>,
 }
@@ -386,6 +390,7 @@ impl Abort {
             cancelled: self.cancelled,
             gearth_error: self.gearth,
             reconnect: false,
+            not_gearth: false,
             partial: None,
         }
     }
@@ -938,6 +943,7 @@ impl Job {
                     cancelled: false,
                     gearth_error: Some(e),
                     reconnect: false,
+                    not_gearth: true,
                     partial: None,
                 }))
             }
@@ -946,6 +952,7 @@ impl Job {
                 let abort = self.gearth_lost(e);
                 Ctl::End(Step::Failed(Failure {
                     message: format!("Connecting to G-Earth failed: {}", abort.message),
+                    not_gearth: true,
                     ..abort.failure()
                 }))
             }

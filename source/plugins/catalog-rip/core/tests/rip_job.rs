@@ -1261,6 +1261,7 @@ fn gearth_closing_ends_the_session_and_keeps_partial_output() {
         failure.partial.is_some(),
         "the indexes and pages read are written"
     );
+    assert!(!failure.not_gearth, "it was G-Earth");
     // The step that lost G-Earth returns at once (before the export's fetches); the next ones
     // write the partial output (one data file per step) and end the job.
     let partial = failure.partial.as_ref().unwrap();
@@ -1356,6 +1357,37 @@ fn nothing_to_rip_and_no_gearth() {
         Some(catalog_rip_core::gearth::Error::NoInfoRequest)
     );
     assert_eq!(clock.0.get(), 3_000, "the handshake timeout");
+    assert!(failure.not_gearth, "another port may be G-Earth");
+
+    // Something that talks, but not as G-Earth.
+    struct Other(bool);
+    impl Transport for Other {
+        fn send(&mut self, _: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
+        fn recv(&mut self, _: usize, _: u32) -> Result<Option<Vec<u8>>, String> {
+            let first = std::mem::replace(&mut self.0, false);
+            Ok(first.then(|| catalog_rip_core::wire::Writer::new(77).i32(1).to_bytes()))
+        }
+    }
+    let mut job = Job::new(sim_options());
+    let run = run_job(
+        &mut job,
+        Other(true),
+        |_| {},
+        &mut MemFetch::none(),
+        &mut MemSink::default(),
+        &clock,
+        (None, None),
+        |_| 100,
+        |_, _| {},
+    );
+    let failure = failed(&run);
+    assert_eq!(
+        failure.gearth_error,
+        Some(catalog_rip_core::gearth::Error::NotGEarth(77))
+    );
+    assert!(failure.not_gearth);
 }
 
 // ------------------------------------------------------------------ review fixes

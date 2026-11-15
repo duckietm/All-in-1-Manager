@@ -16,7 +16,7 @@
 mod adapters;
 
 use adapters::{
-    add_profile, all_profiles, extension_info, generator, items_row, parse_delay, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
+    add_profile, after_failure, all_profiles, extension_info, generator, items_row, parse_delay, AfterFailure, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
     SourceError, SysClock, FIRST_PORT, LAST_PORT, PROFILES_FILE, SQL_LIMIT,
 };
 use aio_plugin_sdk::folders::{self, Folder};
@@ -42,8 +42,9 @@ enum Stage {
     Items(ItemsLoader),
     /// Looking for G-Earth: the ports left to try (the next one last), one per tick.
     Connect(Vec<u16>),
-    /// The job. `conn` is dropped (closed) as soon as the job is done with G-Earth.
-    Rip { job: Box<Job>, conn: Option<tcp::Conn> },
+    /// The job. `conn` is dropped (closed) as soon as the job is done with G-Earth. `rest`: the
+    /// ports still to try if this one does not answer as G-Earth.
+    Rip { job: Box<Job>, conn: Option<tcp::Conn>, rest: Vec<u16> },
 }
 
 /// A rip in progress.
@@ -172,7 +173,8 @@ impl Run {
                         self.port = Some(port);
                         let mut options = self.options.clone();
                         options.gearth_port = port;
-                        self.stage = Stage::Rip { job: Box::new(Job::new(options)), conn: Some(conn) };
+                        let rest = std::mem::take(ports);
+                        self.stage = Stage::Rip { job: Box::new(Job::new(options)), conn: Some(conn), rest };
                         None
                     }
                     Err(e) => {
@@ -181,7 +183,7 @@ impl Run {
                     }
                 }
             }
-            Stage::Rip { job, conn } => {
+            Stage::Rip { job, conn, rest } => {
                 let mut closed = Closed;
                 let mut tcp_transport;
                 let transport: &mut dyn Transport = match conn.as_mut() {
@@ -228,7 +230,20 @@ impl Run {
                     Step::Failed(failure) => {
                         // A G-Earth error ends the G-Earth session (the job no longer uses it either way).
                         *conn = None;
-                        Some(Ended::Failed(failure))
+                        match after_failure(&failure, rest.len()) {
+                            AfterFailure::Ended => Some(Ended::Failed(failure)),
+                            AfterFailure::NoGearth => {
+                                log.push(format!("{} No port left to try.", failure.message));
+                                Some(Ended::NoGearth)
+                            }
+                            AfterFailure::NextPort => {
+                                log.push(format!("{} Trying the next port.", failure.message));
+                                self.port = None;
+                                self.waiting = None;
+                                self.stage = Stage::Connect(std::mem::take(rest));
+                                None
+                            }
+                        }
                     }
                 }
             }

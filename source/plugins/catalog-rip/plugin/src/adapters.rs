@@ -11,7 +11,7 @@ use catalog_rip_core::gearth::ExtensionInfo;
 use catalog_rip_core::job::{MAX_DELAY_MS, MIN_DELAY_MS};
 use catalog_rip_core::profiles::{load_profiles, read_profile_file};
 use catalog_rip_core::transport::Transport;
-use catalog_rip_core::{Clock, Fetch, FetchError, HotelProfile, ItemsBaseRow, Sink};
+use catalog_rip_core::{Clock, Failure, Fetch, FetchError, HotelProfile, ItemsBaseRow, Sink};
 
 // ---------------------------------------------------------------- the job's I/O
 
@@ -180,6 +180,28 @@ impl Probe {
         let mut ports: Vec<u16> = self.found.into_iter().collect();
         ports.extend((FIRST_PORT..=LAST_PORT).filter(|p| Some(*p) != self.found));
         ports
+    }
+}
+
+/// What a rip does when its job failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterFailure {
+    /// The port did not answer as G-Earth: try the next one.
+    NextPort,
+    /// No port answered as G-Earth.
+    NoGearth,
+    /// The rip ended.
+    Ended,
+}
+
+/// What to do when the job failed, with `ports_left` G-Earth ports not tried yet.
+pub fn after_failure(failure: &Failure, ports_left: usize) -> AfterFailure {
+    if !failure.not_gearth || failure.cancelled {
+        AfterFailure::Ended
+    } else if ports_left > 0 {
+        AfterFailure::NextPort
+    } else {
+        AfterFailure::NoGearth
     }
 }
 
@@ -505,6 +527,22 @@ mod tests {
         now += PROBE_EVERY_MS;
         assert_eq!(sweep_without_answer(&mut p, &mut now), all);
         assert_eq!(p.due(now + 60_000), None);
+    }
+
+    #[test]
+    fn a_port_that_is_not_gearth_does_not_end_the_rip() {
+        let failure = |not_gearth: bool, cancelled: bool| Failure {
+            message: "G-Earth did not answer on port 9092 within 3 s".into(),
+            cancelled,
+            gearth_error: Some(catalog_rip_core::gearth::Error::NoInfoRequest),
+            reconnect: false,
+            not_gearth,
+            partial: None,
+        };
+        assert_eq!(after_failure(&failure(true, false), 3), AfterFailure::NextPort);
+        assert_eq!(after_failure(&failure(true, false), 0), AfterFailure::NoGearth);
+        assert_eq!(after_failure(&failure(false, false), 3), AfterFailure::Ended, "G-Earth failed later");
+        assert_eq!(after_failure(&failure(true, true), 3), AfterFailure::Ended, "cancelled");
     }
 
     fn row(id: i64) -> ItemsBaseRow {

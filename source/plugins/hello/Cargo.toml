@@ -10,7 +10,7 @@ description = "Example All-in-1 Manager plugin: a greeting form with a persisted
 crate-type = ["cdylib"]
 
 [dependencies]
-wit-bindgen = "0.63"
+aio-plugin-sdk = { path = "../sdk" }
 
 [features]
 # Test-only variants used by the host's sandbox tests. The default build has none of them.

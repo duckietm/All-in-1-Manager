@@ -2,7 +2,7 @@
 # source/tools/pack_plugin.py) and are excluded from the main workspace.
 [workspace]
 resolver = "2"
-members = ["hello", "sdk"]
+members = ["hello", "notes", "sdk"]
 
 [profile.release]
 opt-level = "s"

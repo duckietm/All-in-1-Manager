@@ -1,0 +1,179 @@
+//! "notes": a teaching example for `aio-plugin-sdk`.
+//!
+//! What it shows, one feature per section below:
+//!
+//! 1. **Private files** (`files`, permission `files`): the note and its title are kept in the
+//!    plugin's own data folder and survive restarts.
+//! 2. **Dialogs** (`host::prompt_text`, `host::pick_save_file`): ask the user for a text, and let
+//!    the user choose where to export. The plugin never sees a path; it only gets a handle to
+//!    the one file the user picked.
+//! 3. **Reading the database** (`sql::Select`, permission `sql:read:users`): a read-only table.
+//!    Only `id` and `username` are requested. Private columns such as `mail` or `password`
+//!    would need a separate `sql:read-private:...` permission, and a plugin should never ask
+//!    for one it does not really need.
+//! 4. **Failing gracefully**: every host call can fail (no server connected, access refused,
+//!    user said no). The page shows a friendly banner instead of crashing.
+//!
+//! Remember the model: `render` only *describes* the page from the current state; `on_event`
+//! changes the state when the user does something; the Manager then calls `render` again.
+
+use aio_plugin_sdk::{export_plugin, files, host, sql, ui::BannerKind, ErrorKind, Event, Plugin, Ui};
+
+/// Private file with the text of the note.
+const NOTES_FILE: &str = "notes.txt";
+/// Private file with the note's title.
+const TITLE_FILE: &str = "title.txt";
+/// Title used until the user renames the note.
+const DEFAULT_TITLE: &str = "My notes";
+/// How many users the table shows.
+const USER_LIMIT: u32 = 10;
+
+/// The state of the page. The instance lives as long as the plugin is open, so fields keep
+/// their values between `render` and `on_event` calls.
+struct Notes {
+    /// The note, as last typed.
+    text: String,
+    /// The title of the note.
+    title: String,
+    /// A message about the last action (saved, exported...), shown as a banner.
+    message: Option<(BannerKind, String)>,
+    /// The "Recent users" table: rows of `[id, username]`, or why it is not available.
+    users: Result<Vec<[String; 2]>, String>,
+}
+
+/// Read a private text file; a missing file is not an error, it just gives `default`.
+/// `read_to_string_if_exists` returns `Ok(None)` only for "not found"; any other failure is real.
+fn load(path: &str, default: &str) -> String {
+    match files::read_to_string_if_exists(path) {
+        Ok(Some(text)) => text,
+        Ok(None) => default.to_string(),
+        Err(e) => {
+            host::log(host::Level::Warn, &format!("could not read {path}: {e}"));
+            default.to_string()
+        }
+    }
+}
+
+/// Ask the server for the first users. `Select` is a builder: nothing is sent until `run`.
+/// The result is turned into plain strings, or into a message a person can understand.
+fn load_users() -> Result<Vec<[String; 2]>, String> {
+    let rows = sql::Select::from("users")
+        // Only these two columns. Asking for a private one would be refused by the host.
+        .columns(["id", "username"])
+        .limit(USER_LIMIT)
+        .run()
+        .map_err(|e| match e.kind() {
+            ErrorKind::Denied => "This plugin is not allowed to read the users table.".to_string(),
+            // "Not connected" and similar: the Manager has no server to ask.
+            _ => format!("The user list is not available right now ({e}). Connect to the server and refresh."),
+        })?;
+    let mut table = Vec::new();
+    for row in rows {
+        // `get` is typed: `id` is a number, `username` is text. A mismatch is an error.
+        let id: i64 = row.get("id").map_err(|e| e.to_string())?;
+        let username: String = row.get("username").map_err(|e| e.to_string())?;
+        table.push([id.to_string(), username]);
+    }
+    Ok(table)
+}
+
+impl Notes {
+    fn say(&mut self, kind: BannerKind, text: impl Into<String>) {
+        self.message = Some((kind, text.into()));
+    }
+
+    /// "Export...": ask the user where to save, then write the note there.
+    fn export(&mut self) {
+        // The user chooses the file in the Manager's own dialog. `None` means they cancelled.
+        let Some(file) = host::pick_save_file("Export notes", "notes.txt", ["txt"]) else {
+            return;
+        };
+        let content = format!("{}\n\n{}\n", self.title, self.text);
+        match file.write(content.as_bytes()) {
+            Ok(()) => self.say(BannerKind::Success, format!("Exported to {}.", file.name())),
+            Err(e) => self.say(BannerKind::Error, format!("Could not export: {e}")),
+        }
+    }
+
+    /// "Rename note title...": a small text prompt with the current title prefilled.
+    fn rename(&mut self) {
+        let Some(new_title) = host::prompt_text("Rename note", "Title", &self.title) else {
+            return; // cancelled
+        };
+        let new_title = new_title.trim().to_string();
+        if new_title.is_empty() {
+            self.say(BannerKind::Warning, "The title cannot be empty.");
+            return;
+        }
+        match files::write_str(TITLE_FILE, &new_title) {
+            Ok(()) => {
+                self.title = new_title;
+                self.say(BannerKind::Success, "Title renamed.");
+            }
+            Err(e) => self.say(BannerKind::Error, format!("Could not save the title: {e}")),
+        }
+    }
+}
+
+impl Plugin for Notes {
+    /// Called once, when the plugin starts: load what was saved before.
+    fn new() -> Self {
+        Notes {
+            text: load(NOTES_FILE, ""),
+            title: load(TITLE_FILE, DEFAULT_TITLE),
+            message: None,
+            users: load_users(),
+        }
+    }
+
+    /// Describe the page from the current state. No side effects here.
+    fn render(&mut self, ui: &mut Ui) {
+        ui.heading(self.title.clone());
+
+        if let Some((kind, text)) = &self.message {
+            ui.banner(*kind, text.clone());
+        }
+
+        // The note. The Manager reports the text when the field loses focus (Enter or a click
+        // elsewhere), and the 4,000 character limit of an input applies.
+        ui.input("notes", "Notes", self.text.clone());
+        ui.row(|ui| {
+            ui.button("export", "Export...");
+            ui.button("rename", "Rename note title...");
+        });
+
+        // The read-only table, or a banner that explains why there is none.
+        ui.card("Recent users", |ui| match &self.users {
+            Ok(rows) if rows.is_empty() => ui.text("There are no users yet."),
+            Ok(rows) => ui.table(["ID", "Username"], rows.iter().cloned()),
+            Err(why) => ui.banner(BannerKind::Warning, why.clone()),
+        });
+        ui.button("refresh", "Refresh users");
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<(), String> {
+        match event {
+            // Editing: save at once so nothing is lost if the page is closed.
+            Event::Changed { id, value } if id == "notes" => {
+                match files::write_str(NOTES_FILE, &value) {
+                    Ok(()) => self.message = None,
+                    // Keep what the user typed on screen, but tell them it is not saved.
+                    Err(e) => self.say(BannerKind::Error, format!("Could not save the note: {e}")),
+                }
+                self.text = value;
+            }
+            Event::Clicked { id } => match id.as_str() {
+                "export" => self.export(),
+                "rename" => self.rename(),
+                "refresh" => self.users = load_users(),
+                _ => {}
+            },
+            _ => {}
+        }
+        // Returning `Err(text)` would show `text` to the user as an error. Here every
+        // failure was already turned into a banner, so we always succeed.
+        Ok(())
+    }
+}
+
+export_plugin!(Notes);

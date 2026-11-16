@@ -4,6 +4,7 @@
 
 use crate::build::{self, Options};
 use crate::pack;
+use aio_plugin_host::i18n::Texts;
 use aio_plugin_host::package::{inspect, Package};
 use aio_plugin_host::runtime;
 use aio_plugin_host::{display_safe, BUILTIN_IDS};
@@ -45,6 +46,17 @@ pub fn report(bytes: &[u8], pkg: &Package, needed: u32) -> String {
         let _ = writeln!(out, "permissions:");
         for p in &m.permissions {
             let _ = writeln!(out, "  - {p}: {}", p.plain_words().english_text());
+        }
+    }
+    if pkg.i18n.is_empty() {
+        let _ = writeln!(out, "languages:   none (English only)");
+    } else {
+        let _ = writeln!(out, "languages:");
+        for (lang, data) in &pkg.i18n {
+            // The package was inspected, so every file parses; the count is the Manager's own.
+            if let Ok(texts) = Texts::parse(lang, data) {
+                let _ = writeln!(out, "  - {lang}: {} texts", texts.len());
+            }
         }
     }
     let _ = writeln!(out, "size:        {} bytes", bytes.len());
@@ -139,6 +151,37 @@ mod tests {
         // Too low a manifest is the Manager's load refusal; a 1.1 component is in tests/cli.rs (it needs a build).
         assert_eq!(api_check(1, "1.0").unwrap_err().to_string(), "Plugin needs API 1.1 but its manifest says 1.0");
         assert!(api_check(1, "1.1").is_ok() && api_check(0, "1.0").is_ok());
+    }
+
+    fn package_with_i18n(files: &[(&str, &str)]) -> Vec<u8> {
+        let manifest = serde_json::json!({
+            "id": "demo", "name": "Demo", "version": "1.0.0", "author": "Someone", "description": "A demo",
+            "api": "1.0", "permissions": ["files"], "page_title": "Demo",
+        });
+        let mut map = BTreeMap::from([("manifest.json".to_string(), manifest.to_string().into_bytes()), ("plugin.wasm".to_string(), HELLO_1_0.to_vec())]);
+        for (name, text) in files {
+            map.insert(format!("i18n/{name}.json"), text.as_bytes().to_vec());
+        }
+        pack::write_package(&map).unwrap()
+    }
+
+    #[test]
+    fn check_reports_languages() {
+        let text = check_bytes(&package_with_i18n(&[("it", r#"{"Hello":"Ciao","Greeted {n} times":"Saluti {n} volte"}"#), ("de", r#"{"Hello":"Hallo"}"#)])).unwrap();
+        for line in ["languages:", "  - de: 1 texts", "  - it: 2 texts"] {
+            assert!(text.lines().any(|l| l == line), "missing {line:?} in
+{text}");
+        }
+        let text = check_bytes(&package(&["files"], HELLO_1_0)).unwrap();
+        assert!(text.lines().any(|l| l == "languages:   none (English only)"), "{text}");
+    }
+
+    #[test]
+    fn check_refuses_lost_placeholder() {
+        let error = check_bytes(&package_with_i18n(&[("it", r#"{"Greeted {n} times":"Saluti"}"#)])).unwrap_err();
+        assert!(format!("{error:#}").contains(r#"i18n/it.json: "Greeted {n} times" lost {n}"#), "{error:#}");
+        let error = check_bytes(&package_with_i18n(&[("xx", "{}")])).unwrap_err();
+        assert!(format!("{error:#}").contains("Unknown language in the package: xx"), "{error:#}");
     }
 
     fn api_check(needed: u32, api: &str) -> Result<()> {

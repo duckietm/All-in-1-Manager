@@ -81,6 +81,7 @@ fn new_project_builds_and_checks() {
 
     let text = ok(aio_plugin(&project, &["check", aiop.to_str().unwrap()]), "check package");
     assert!(text.contains("id:          demo-counter") && text.contains("name:        Demo Counter"), "{text}");
+    assert!(text.lines().any(|l| l == "  - it: 2 texts"), "{text}");
     let sha = format!("sha256:      {:x}", Sha256::digest(std::fs::read(&aiop).unwrap()));
     assert!(text.contains(&sha), "{text}");
     // The folder, packed in memory, gives the same package.

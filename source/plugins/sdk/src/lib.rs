@@ -54,6 +54,7 @@ pub mod files;
 pub mod folders;
 pub mod host;
 pub mod http;
+pub mod i18n;
 pub mod script;
 pub mod sql;
 pub mod tcp;

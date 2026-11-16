@@ -125,6 +125,7 @@ The Manager itself: the plugin log, the status line, dialogs, files the user pic
 | `enum Level` | `Debug`, `Info`, `Warn`, `Error`. `#[non_exhaustive]`. |
 | `log(level: Level, text: &str)` | Appends a line to the plugin log (on the plugin's page, **Plugin log**). |
 | `status(text: &str)` | Sets the Manager's status line. Also logged. |
+| `language() -> String` | **API 1.1.** The Manager's current language code: `"en"`, or one of `it fr de nl es pt tr fi`. It can change between two calls. No permission. See [Translations](translations.md). |
 | `ask(question: &str) -> bool` | A yes/no question. `true` for yes. Closing the dialog answers no. |
 | `prompt_text(title: &str, label: &str, default: &str) -> Option<String>` | Asks for one line of text; `default` is already typed in. `None` if cancelled. |
 | `pick_open_file(title: &str, extensions: impl IntoIterator<Item = impl AsRef<str>>) -> Option<PickedFile>` | An open-file dialog. `extensions` without dots (`["sql", "txt"]`); an empty list allows every file (write it with its type: `[] as [&str; 0]`). `None` if cancelled. |
@@ -178,7 +179,16 @@ fn host_calls() -> aio_plugin_sdk::Result<()> {
 }
 ```
 
-Off `wasm32` (a native `cargo test`), `log` and `status` print to stderr; the other calls panic.
+Off `wasm32` (a native `cargo test`), `log` and `status` print to stderr, `language` returns `"en"`; the other calls panic.
+
+## `i18n`
+
+Translations, **API 1.1**. Permission: none. See [Translations](translations.md) for the file format.
+
+| Item | What it does |
+|---|---|
+| `tr(english: &str) -> String` | The translation of `english` in the Manager's current language, from the plugin's `i18n/<lang>.json`; `english` itself when there is none (English, no file, or no such key). Off `wasm32` it returns `english`. |
+| `tr_with(english: &str, values: &[(&str, &str)]) -> String` | `tr`, then fills each `{name}` placeholder from `values` in one pass; a placeholder with no value stays as written. |
 
 ## `files`
 

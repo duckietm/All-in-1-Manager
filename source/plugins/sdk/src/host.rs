@@ -67,6 +67,23 @@ pub fn keep_working() {
     host::keep_working();
 }
 
+/// The Manager's current language code: `"en"` for English, else one of `"it"`, `"fr"`, `"de"`, `"nl"`, `"es"`,
+/// `"pt"`, `"tr"`, `"fi"`. It can change between two calls (the user switched languages; the page is rendered
+/// again), so ask in [`render`](crate::Plugin::render), not once. Most plugins need only [`i18n::tr`](crate::i18n::tr).
+/// Needs no permission. Off `wasm32` it returns `"en"`.
+///
+/// Needs `"api": "1.1"` in the manifest.
+pub fn language() -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        host::language()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        "en".to_string()
+    }
+}
+
 /// Asks the user a yes/no question and waits for the answer: `true` for yes. `false` past the dialog limit.
 pub fn ask(question: &str) -> bool {
     host::ask(question)

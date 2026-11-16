@@ -80,6 +80,16 @@ impl Texts {
         &self.language
     }
 
+    /// How many texts are translated (empty translations do not count).
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Whether no text is translated.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
     /// The translation of `english`, if the file has one.
     pub fn get(&self, english: &str) -> Option<&str> {
         self.map.get(english).map(String::as_str)

@@ -15,6 +15,7 @@ Manager, which checks every call against the permissions the plugin declared and
 | [Getting started](getting-started.md) | Install Rust and the target, create a plugin with `aio-plugin new`, build, test, pack, check, and try it in the Manager. |
 | [The page (UI)](ui.md) | The `Ui` builder, events, how inputs report their text, long jobs in steps, and the page limits. |
 | [API reference](api.md) | Every public item of the SDK, with the permission it needs, its limits and its error kinds. |
+| [Translations](translations.md) | Show the page in the Manager's language: `tr`, `tr_with`, the `i18n/<lang>.json` files, and what the Manager translates itself. |
 | [Permissions](permissions.md) | Every permission string, what the user reads, private database columns, and approvals. |
 | [Limits](limits.md) | Memory, time, logs, files, picked folders, SQL, HTTP, TCP, scripts, the page, and packages, in one place. |
 | [Publishing](publishing.md) | Getting a plugin into the official index, updates, revocation. |
@@ -54,5 +55,7 @@ it, and `aio-plugin check` refuses a lower one).
 - **Port ranges**: `tcp:localhost:<a>-<b>`, at most 16 ports. See [Permissions](permissions.md).
 - **Asking for hosts**: `http:ask` lets a plugin fetch from a public host it does not name, after the user allows
   it. See [Asking for hosts](permissions.md#asking-for-hosts-httpask).
+- **Translations**: `i18n::tr` and `i18n::tr_with` show the page in the Manager's language from `i18n/<lang>.json`
+  files. See [Translations](translations.md).
 - **Picked folders**: `folders::pick` lets the user choose a folder where the plugin may create data files. See
   [`folders`](api.md#folders).

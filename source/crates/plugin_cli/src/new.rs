@@ -11,6 +11,7 @@ pub const SDK_GIT: &str = r#"aio-plugin-sdk = { git = "https://github.com/duckie
 const CARGO_TOML: &str = include_str!("../templates/Cargo.toml.txt");
 const MANIFEST: &str = include_str!("../templates/manifest.json.txt");
 const LIB_RS: &str = include_str!("../templates/lib.rs.txt");
+const ITALIAN: &str = include_str!("../templates/it.json.txt");
 const GITIGNORE: &str = include_str!("../templates/gitignore.txt");
 const README: &str = include_str!("../templates/README.md.txt");
 
@@ -80,8 +81,8 @@ pub fn create(dir: &Path, id: &str, sdk_path: Option<&Path>) -> Result<()> {
             .replace("{{id}}", id)
             .replace("{{name}}", &name)
     };
-    std::fs::create_dir_all(dir.join("src")).with_context(|| format!("cannot create {}", dir.display()))?;
-    for (file, template) in [("Cargo.toml", CARGO_TOML), ("manifest.json", MANIFEST), ("src/lib.rs", LIB_RS), (".gitignore", GITIGNORE), ("README.md", README)] {
+    std::fs::create_dir_all(dir.join("src")).and_then(|()| std::fs::create_dir_all(dir.join("i18n"))).with_context(|| format!("cannot create {}", dir.display()))?;
+    for (file, template) in [("Cargo.toml", CARGO_TOML), ("manifest.json", MANIFEST), ("src/lib.rs", LIB_RS), ("i18n/it.json", ITALIAN), (".gitignore", GITIGNORE), ("README.md", README)] {
         let path = dir.join(file);
         std::fs::write(&path, fill(template)).with_context(|| format!("cannot write {}", path.display()))?;
     }
@@ -120,7 +121,7 @@ mod tests {
         assert_eq!(manifest.permissions, [aio_plugin_host::Permission::Files]);
         let json: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("manifest.json")).unwrap()).unwrap();
         assert_eq!(json["dev_wasm"], "target/wasm32-wasip2/release/my_plugin.wasm");
-        for file in ["src/lib.rs", ".gitignore", "README.md"] {
+        for file in ["src/lib.rs", "i18n/it.json", ".gitignore", "README.md"] {
             assert!(dir.join(file).is_file(), "{file}");
         }
         assert_eq!(crate_name("9lives"), "plugin-9lives");

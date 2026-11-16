@@ -283,7 +283,7 @@ aio-plugin pack
 `i18n/<lang>.json`. Packing is reproducible: the same build gives the same bytes (fixed entry order, time
 1980-01-01 00:00:00, mode 0644, deflate level 9), identical to `source/tools/pack_plugin.py`.
 
-`icon.png` and `i18n/*.json` are accepted in a package and kept, but this version of the Manager does not show them.
+`icon.png` is accepted in a package and kept, but this version of the Manager does not show it. `i18n/*.json` are the plugin's [translations](translations.md): the Manager checks them at install and shows the page and the manifest texts in the user's language.
 
 ## 7. Check
 

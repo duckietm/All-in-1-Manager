@@ -152,7 +152,8 @@ These four page limits are `aio_plugin_sdk::ui::limits::{MAX_ELEMENTS, MAX_DEPTH
 | `plugin.wasm` | 24 MiB, not empty (also the limit for a developer folder's wasm) |
 | `manifest.json` | 256 KiB |
 | `icon.png` | 2 MiB |
-| One `i18n/<lang>.json` | 512 KiB (`<lang>`: 1 to 16 characters `A-Z a-z 0-9 - _`) |
+| One `i18n/<lang>.json` | 512 KiB; only the Manager's codes `it fr de nl es pt tr fi` (`en` is ignored); at most 5,000 entries, each key and value at most 4 KiB; a translation keeps every `{name}` of its key. See [Translations](translations.md) |
+| `i18n/<lang>.json` files in a developer folder | 64 (the others are ignored, with a warning) |
 | Plugin id | 2 to 40 characters: lowercase letters, digits and `-`, starting with a letter or digit; not a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`) and not a built-in plugin's id |
 | `version` | `MAJOR.MINOR.PATCH`, each part at most 6 digits, no leading zeros |
 | `api` | `1.0` or `1.1` (this Manager implements API 1.1); at least the API the component imports |

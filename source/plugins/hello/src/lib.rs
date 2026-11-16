@@ -143,9 +143,9 @@ impl Plugin for Hello {
         ui.text(format!("Greeted {} times", read_count()));
         #[cfg(feature = "translated")]
         {
-            use aio_plugin_sdk::export::abi::aio::plugin::host as raw;
-            ui.text(raw::translate("Greeted {n} times").replace("{n}", &read_count().to_string()));
-            ui.text(format!("language: {}", raw::language()));
+            use aio_plugin_sdk::i18n::tr_with;
+            ui.text(tr_with("Greeted {n} times", &[("n", &read_count().to_string())]));
+            ui.text(format!("language: {}", host::language()));
         }
         #[cfg(feature = "ticker")]
         self.job.render(ui);

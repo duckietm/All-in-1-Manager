@@ -78,11 +78,13 @@ When the exports folder is full, the status line says so and the file is not sav
 | File types | The last extension one of `json`, `sql`, `txt`, `md`, `csv`, `tsv`, `xml`, `html`, `png`, `gif`, `jpg`, `jpeg`, `webp`, `bmp`, `svg`, `zip`, `nitro`, `swf`, `bin`, `log` (any letter case); no name starting with `.` |
 | Files written through one `Folder` | 100,000 (`folders::MAX_FILES`) |
 | Bytes written through one `Folder`, in all | 2 GiB, the current sizes of its files (`folders::MAX_BYTES`) |
-| One file | 256 MiB (`folders::MAX_FILE`) |
+| One file | 256 MiB (`folders::MAX_FILE`), also after an `append` |
 | A file handed to `Folder::open_import_preview` | 32 MiB |
 | `Folder::reveal` | Once every 2 s per `Folder` |
 
-Past a size or count limit, the write fails with `permission denied: folder limit reached`.
+Past a size or count limit, the write (or append) fails with `permission denied: folder limit reached`. A file
+written in pieces with `Folder::append` counts its size after each piece; the plugin needs only one piece in memory
+at a time.
 
 ## SQL
 

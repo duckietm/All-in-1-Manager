@@ -224,6 +224,7 @@ dependencies = [
  "aio-plugin-host",
  "anyhow",
  "async-trait",
+ "libc",
  "serde",
  "serde_json",
  "tempfile",
@@ -232,6 +233,7 @@ dependencies = [
  "url",
  "wasmtime",
  "wasmtime-wasi",
+ "windows-sys 0.61.2",
  "wit-parser 0.263.0",
  "zip",
 ]

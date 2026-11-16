@@ -29,7 +29,8 @@
 //!   [`MAX_FILE_READ`]; a `picked-file` wraps the path the user picked (the guest sees only the file
 //!   name); `open-import-preview` hands the picked file's bytes (at most [`MAX_FILE_READ`]) to the Manager;
 //!   `pick-folder` (1.1, a dialog of the call) wraps a folder the user picked, where the plugin may only create new
-//!   files and rewrite its own, never through a link and never into a folder of the Manager (see [`crate::folders`]);
+//!   files and rewrite or append to its own, never through a link and never into a folder of the Manager (see
+//!   [`crate::folders`]);
 //! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
 //!   `Err("permission denied...")` to the guest and a sanitised `Warn` line in the plugin log):
 //!   `sql-select` through [`crate::sql::build_select`], then [`HostServices::sql_select`];
@@ -91,7 +92,7 @@ use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
 };
 use crate::bindings::Plugin;
-use crate::folders::{FolderLimits, PickedFolder, UserFolders};
+use crate::folders::{AppendFailed, FolderLimits, PickedFolder, UserFolders};
 use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
 use crate::net::{
     askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
@@ -996,6 +997,21 @@ impl HostPickedFolder for HostState {
         tokio::task::spawn_blocking(move || job.run(&data)).await.map_err(|_| "the write stopped".to_string())??;
         self.folder(&folder)?.record(&path, len);
         Ok(())
+    }
+
+    /// Like `write`. The handle's sizes follow the file: grown by `data` on success, its real size after a failure
+    /// part way (see [`crate::folders::AppendFailed`]).
+    async fn append(&mut self, folder: Resource<PickedFolder>, path: String, data: Vec<u8>) -> Result<(), String> {
+        let job = self.folder(&folder)?.check_append(&path, data.len() as u64)?;
+        let len = data.len() as u64;
+        let outcome = {
+            let _paused = Paused::begin(&self.clock);
+            tokio::task::spawn_blocking(move || job.append(&data)).await.unwrap_or_else(|_| {
+                Err(AppendFailed::Partial { error: "the append stopped".into(), size: None })
+            })
+        };
+        self.folder(&folder)?.record_append(&path, len, &outcome);
+        outcome.map(|_| ()).map_err(AppendFailed::into_message)
     }
 
     async fn reveal(&mut self, folder: Resource<PickedFolder>) -> Result<(), String> {

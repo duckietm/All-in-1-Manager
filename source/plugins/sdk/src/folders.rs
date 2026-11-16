@@ -11,6 +11,9 @@
 //! - a write creates a new file (and the folders it needs). A file that already exists and was not written through
 //!   this [`Folder`] is never touched; the plugin may rewrite only its own files, and a rewrite replaces the file
 //!   whole (a failed one leaves the old content);
+//! - [`append`](Folder::append) extends a file this [`Folder`] created (or creates it like a first write), so a large
+//!   file never has to be held whole in the plugin's memory. A failed append may leave part of the data at the end of
+//!   the file;
 //! - a path that leads through a link is refused;
 //! - one [`Folder`] writes at most [`MAX_FILES`] files and [`MAX_BYTES`] in all, each file at most [`MAX_FILE`].
 //!
@@ -27,6 +30,9 @@
 //! if let Some(folder) = folders::pick("Save the catalogue") {
 //!     folder.write_str("catalogue/furni.json", "{}")?;
 //!     folder.write("catalogue/icons/chair.png", &[0x89, b'P', b'N', b'G'])?;
+//!     for line in ["INSERT 1;\n", "INSERT 2;\n"] {
+//!         folder.append_str("catalogue/items.sql", line)?;
+//!     }
 //!     folder.reveal()?;
 //! }
 //! # Ok(())
@@ -82,6 +88,25 @@ impl Folder {
     /// Like [`write`](Folder::write), with `text` as UTF-8.
     pub fn write_str(&self, path: &str, text: &str) -> Result<()> {
         self.write(path, text.as_bytes())
+    }
+
+    /// Appends `data` to the file `path` that this handle created (with [`write`](Folder::write) or an earlier
+    /// `append`), or creates it, with the folders it needs, when it does not exist yet. Write a large file in pieces
+    /// with it instead of holding it whole in memory.
+    ///
+    /// The same rules as [`write`](Folder::write): a file that exists and was not created through this handle is
+    /// [`Denied`](crate::ErrorKind::Denied) (`permission denied: <path> already exists`), and so is the plugin's file
+    /// once it was replaced by a link or given another name (a hard link). The limits count the file's
+    /// size after the append ([`MAX_FILE`]), the handle's total ([`MAX_BYTES`]) and, for a new file, [`MAX_FILES`].
+    /// A failed append may leave part of `data` at the end of the file (a failed first one leaves no file); a later
+    /// [`write`](Folder::write) replaces the file whole, and it stays this handle's own.
+    pub fn append(&self, path: &str, data: &[u8]) -> Result<()> {
+        host_result(self.folder.append(path, data))
+    }
+
+    /// Like [`append`](Folder::append), with `text` as UTF-8.
+    pub fn append_str(&self, path: &str, text: &str) -> Result<()> {
+        self.append(path, text.as_bytes())
     }
 
     /// Opens the folder in the system's file manager. At most once every 2 s per handle; a quicker repeat is

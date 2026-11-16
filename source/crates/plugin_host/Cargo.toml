@@ -18,6 +18,15 @@ tokio.workspace = true
 # The URL parser reqwest fetches with: `askable_host` decides with it.
 url.workspace = true
 
+# Picked-folder appends: the link count and identity of an open file (GetFileInformationByHandle); versions already
+# in Cargo.lock.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+# Picked-folder appends: O_NOFOLLOW | O_NONBLOCK.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [features]
 # Failure-injection hooks for the tests only.
 test-hooks = []

@@ -5,7 +5,7 @@
 //! Switching one on or off uses the same store as the built-in plugins (`DisabledPlugins`), under the id
 //! `ext:<id>`, so a third-party id can never collide with a built-in one.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{bail, Context, Result};
 use aio_plugin_host::package::{self, Package, MAX_PACKAGE, MAX_WASM};
 use aio_plugin_host::manifest::valid_id;
+use aio_plugin_host::i18n::Texts;
 use aio_plugin_host::net::AskedHosts;
 use aio_plugin_host::{display_safe, Manifest, Permission};
 use aio_plugin_index::{Entry, Index, Revoked};
@@ -34,6 +35,67 @@ pub struct ExternalInfo {
     pub verified: bool,
     /// Loaded from a developer folder (developer mode), not installed.
     pub dev: bool,
+    /// The plugin's own translations (`i18n/<lang>.json`), read with the manifest.
+    pub texts: Translations,
+}
+
+impl ExternalInfo {
+    /// The plugin's texts in the window's language (`None` in English, or when it has no file for it).
+    pub fn current_texts(&self) -> Option<&Texts> {
+        self.texts.get(crate::i18n::current().code)
+    }
+
+    /// The manifest's name in the window's language. Plugin text: show it display-safe.
+    pub fn name(&self) -> &str {
+        plugin_text(&self.manifest.name, self.current_texts())
+    }
+
+    /// The manifest's description in the window's language. Plugin text: show it display-safe.
+    pub fn description(&self) -> &str {
+        plugin_text(&self.manifest.description, self.current_texts())
+    }
+
+    /// The manifest's page title in the window's language. Plugin text: show it display-safe.
+    pub fn page_title(&self) -> &str {
+        plugin_text(&self.manifest.page_title, self.current_texts())
+    }
+
+    /// The manifest's tile title and description in the window's language. Plugin text: show it display-safe.
+    pub fn tile_texts(&self) -> Option<(&str, &str)> {
+        let tile = self.manifest.tile.as_ref()?;
+        Some((plugin_text(&tile.title, self.current_texts()), plugin_text(&tile.description, self.current_texts())))
+    }
+}
+
+/// A manifest text (English, the key) in the language of `texts`, or the English text itself: never a blank or a key.
+pub fn plugin_text<'a>(manifest_english: &'a str, texts: Option<&'a Texts>) -> &'a str {
+    aio_plugin_host::i18n::translate(manifest_english, texts)
+}
+
+/// A plugin's translations by language code, and why files were ignored (shown in its log when the page opens).
+/// Cheap to clone.
+#[derive(Debug, Clone, Default)]
+pub struct Translations {
+    by_language: Arc<BTreeMap<String, Texts>>,
+    warnings: Arc<Vec<String>>,
+}
+
+impl Translations {
+    /// Reads `<dir>/i18n/*.json` (see [`aio_plugin_host::i18n::load_dir`]). Blocking (disk).
+    pub fn read(dir: &Path) -> Self {
+        let (by_language, warnings) = aio_plugin_host::i18n::load_dir(dir);
+        Self { by_language: Arc::new(by_language), warnings: Arc::new(warnings) }
+    }
+
+    /// The texts of the language `code`; `None` for English or a language without a file.
+    pub fn get(&self, code: &str) -> Option<&Texts> {
+        self.by_language.get(code)
+    }
+
+    /// One line per ignored file.
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
 }
 
 /// A package that was read and checked and waits for the user's consent. Nothing is written yet.
@@ -142,6 +204,8 @@ struct DevEntry {
     granted_id: String,
     /// The last good read of the folder, or why it failed.
     loaded: Result<(Manifest, PathBuf), String>,
+    /// The folder's `i18n/*.json`, read with `loaded`.
+    texts: Translations,
 }
 
 #[derive(Default)]
@@ -559,7 +623,10 @@ impl ExternalPlugins {
     pub fn reload(&self) {
         let list = package::installed(&self.root)
             .into_iter()
-            .map(|manifest| ExternalInfo { verified: is_verified(&self.dir(&manifest.id), &manifest, &self.trusted_keys), manifest, dev: false })
+            .map(|manifest| {
+                let dir = self.dir(&manifest.id);
+                ExternalInfo { verified: is_verified(&dir, &manifest, &self.trusted_keys), texts: Translations::read(&dir), manifest, dev: false }
+            })
             .collect();
         *self.list.lock() = list;
     }
@@ -595,11 +662,12 @@ impl ExternalPlugins {
                 None => (None, String::new()),
             };
             let loaded = read_dev_folder(folder).map_err(|e| format!("{e:#}"));
+            let texts = Translations::read(folder);
             // The folder now holds another plugin id: what was allowed was allowed for the old one.
             if loaded.as_ref().is_ok_and(|(m, _)| m.id != granted_id) {
                 granted = None;
             }
-            dev.entries.push(DevEntry { folder: folder.clone(), granted, granted_id, loaded });
+            dev.entries.push(DevEntry { folder: folder.clone(), granted, granted_id, loaded, texts });
         }
     }
 
@@ -632,7 +700,7 @@ impl ExternalPlugins {
                         if entry.granted_id != manifest.id || needs_consent(entry.granted.as_deref(), &manifest.permissions) {
                             DevState::NeedsConsent(manifest.clone())
                         } else {
-                            DevState::Ready(ExternalInfo { manifest: manifest.clone(), verified: false, dev: true })
+                            DevState::Ready(ExternalInfo { manifest: manifest.clone(), verified: false, dev: true, texts: entry.texts.clone() })
                         }
                     }
                 };
@@ -678,7 +746,8 @@ impl ExternalPlugins {
         if !dev.enabled {
             bail!("Developer mode is off");
         }
-        let entry = DevEntry { folder: pending.folder.clone(), granted: Some(manifest.permissions.clone()), granted_id: manifest.id.clone(), loaded: Ok((manifest, wasm)) };
+        let texts = Translations::read(&pending.folder);
+        let entry = DevEntry { folder: pending.folder.clone(), granted: Some(manifest.permissions.clone()), granted_id: manifest.id.clone(), loaded: Ok((manifest, wasm)), texts };
         match dev.entries.iter_mut().find(|e| e.folder == pending.folder) {
             Some(existing) => *existing = entry,
             None => dev.entries.push(entry),
@@ -695,6 +764,8 @@ impl ExternalPlugins {
         if manifest.id != id {
             bail!("The plugin id in manifest.json changed: add the folder again.");
         }
+        // The language files are read again too: an edited translation shows after Reload.
+        entry.texts = Translations::read(&entry.folder);
         let ask = needs_consent(entry.granted.as_deref(), &manifest.permissions);
         if !ask {
             entry.granted = Some(manifest.permissions.clone());
@@ -1311,6 +1382,68 @@ mod tests {
         assert!(!dir.path().join("ext").exists() || std::fs::read_dir(dir.path().join("ext")).unwrap().next().is_none());
         assert_eq!(ext.dev_dir("mine"), dir.path().join("ext-dev/mine"));
         assert!(!folder.join("data").exists());
+    }
+
+    #[test]
+    fn manifest_texts_follow_the_language() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("demo.aiop");
+        let manifest = serde_json::json!({
+            "id": "demo", "name": "Demo", "version": "1.0.0", "author": "Me", "description": "A demo",
+            "api": "1.1", "permissions": [], "page_title": "Demo page",
+            "tile": { "title": "Demo tile", "description": "Tile text", "color": "#aabbcc" },
+        });
+        let italian = serde_json::json!({ "Demo": "Dimostrazione", "Demo page": "Pagina", "Demo tile": "Riquadro", "Tile text": "Testo\u{202e}" });
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, data) in [("manifest.json", manifest.to_string()), ("plugin.wasm", "\0asm\x01\0\0\0".into()), ("i18n/it.json", italian.to_string())] {
+            zip.start_file(name, options).unwrap();
+            zip.write_all(data.as_bytes()).unwrap();
+        }
+        std::fs::write(&file, zip.finish().unwrap().into_inner()).unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        ext.install_file(&file).unwrap();
+        let info = ext.get(0).unwrap();
+
+        let it = info.texts.get("it");
+        assert_eq!(plugin_text(&info.manifest.name, it), "Dimostrazione");
+        assert_eq!(plugin_text(&info.manifest.page_title, it), "Pagina");
+        assert_eq!(plugin_text(&info.manifest.description, it), "A demo", "no translation: English, never a blank");
+        let tile = info.manifest.tile.as_ref().unwrap();
+        assert_eq!(plugin_text(&tile.title, it), "Riquadro");
+        // A translation is shown like any plugin text: display-safe.
+        assert_eq!(display_safe(plugin_text(&tile.description, it), 160), "Testo\u{fffd}");
+        // Another language without a file, and English: the manifest's text.
+        assert_eq!(plugin_text(&info.manifest.name, info.texts.get("fr")), "Demo");
+        assert_eq!(plugin_text(&info.manifest.name, info.texts.get("en")), "Demo");
+        assert!(info.texts.warnings().is_empty());
+    }
+
+    #[test]
+    fn dev_folder_reload_picks_up_an_edited_language_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let ext = ExternalPlugins::new(dir.path().join("ext"));
+        let folder = dev_folder(dir.path(), "mine", "mine", &[], None);
+        std::fs::create_dir(folder.join("i18n")).unwrap();
+        std::fs::write(folder.join("i18n/it.json"), r#"{"Dev demo": "Prova"}"#).unwrap();
+        std::fs::write(folder.join("i18n/xx.json"), "{}").unwrap();
+        ext.set_developer(true, std::slice::from_ref(&folder));
+        allowed(&ext, &folder);
+        let info = ext.get(0).unwrap();
+        assert_eq!(plugin_text(&info.manifest.name, info.texts.get("it")), "Prova");
+        assert_eq!(info.texts.warnings(), ["Unknown language: i18n/xx.json is ignored"]);
+
+        std::fs::write(folder.join("i18n/it.json"), r#"{"Dev demo": "Prova nuova"}"#).unwrap();
+        std::fs::write(folder.join("i18n/fr.json"), r#"{"Dev demo": 1}"#).unwrap();
+        assert_eq!(ext.reload_dev("mine").unwrap(), DevReload::Reloaded);
+        let info = ext.get(0).unwrap();
+        assert_eq!(plugin_text(&info.manifest.name, info.texts.get("it")), "Prova nuova");
+        // The bad file is ignored (English), with a warning for the plugin log.
+        assert_eq!(plugin_text(&info.manifest.name, info.texts.get("fr")), "Dev demo");
+        assert_eq!(
+            info.texts.warnings(),
+            [r#"i18n/fr.json: the translation of "Dev demo" is not a string; the file is ignored"#, "Unknown language: i18n/xx.json is ignored"]
+        );
     }
 
     #[test]

@@ -27,3 +27,6 @@ scripter = []
 # A job in ticks (API 1.1): "start" runs 3 quick ticks, "slow" 3 ticks of 2 s each, "spin" one tick that never
 # returns; "cancel" ends the job. The page counts the ticks.
 ticker = []
+# The counter line goes through `translate` (API 1.1) and the page shows `language`; the SDK's own wrappers come
+# later, so this calls the generated import directly.
+translated = []

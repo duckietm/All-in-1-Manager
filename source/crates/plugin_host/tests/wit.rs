@@ -44,6 +44,8 @@ fn wit_package_parses() {
         "[method]picked-folder.append",
         "[method]picked-folder.reveal",
         "[method]picked-folder.open-import-preview",
+        "language",
+        "translate",
     ] {
         assert!(host.functions.contains_key(func), "host must import {func}");
     }
@@ -78,6 +80,8 @@ fn wit_1_0_is_kept_and_1_1_only_adds() {
             "[method]picked-folder.open-import-preview",
             "pick-folder",
             "keep-working",
+            "language",
+            "translate",
         ]
     );
     // Every added item says since when it exists.

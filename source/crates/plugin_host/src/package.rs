@@ -10,7 +10,7 @@ pub const MAX_PACKAGE: usize = 32 * 1024 * 1024;
 pub const MAX_WASM: u64 = 24 * 1024 * 1024;
 const MAX_MANIFEST: u64 = 256 * 1024;
 const MAX_ICON: u64 = 2 * 1024 * 1024;
-const MAX_I18N: u64 = 512 * 1024;
+const MAX_I18N: u64 = crate::i18n::MAX_FILE;
 const MAX_ENTRIES: usize = 64;
 
 /// A validated package, held in memory.
@@ -19,7 +19,7 @@ pub struct Package {
     pub manifest: Manifest,
     pub wasm: Vec<u8>,
     pub icon: Option<Vec<u8>>,
-    /// language code to file content
+    /// language code to file content, each checked ([`crate::i18n::Texts::parse`]); an `en.json` is not kept
     pub i18n: BTreeMap<String, Vec<u8>>,
 }
 
@@ -74,7 +74,14 @@ pub fn inspect(aiop: &[u8], reserved_ids: &[&str]) -> Result<Package> {
             0 => manifest.replace(data).is_some(),
             1 => wasm.replace(data).is_some(),
             2 => icon.replace(data).is_some(),
-            _ => i18n.insert(lang_of(&name).unwrap_or_default().to_string(), data).is_some(),
+            _ => {
+                let lang = lang_of(&name).unwrap_or_default();
+                // An unknown language or a bad file fails the package; `en.json` is the English text itself: ignored.
+                match crate::i18n::check_package_file(lang, &data)? {
+                    Some(_) => i18n.insert(lang.to_string(), data).is_some(),
+                    None => false,
+                }
+            }
         };
         if duplicate {
             bail!("Duplicate file in the package: {name}");

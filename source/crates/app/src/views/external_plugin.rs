@@ -12,6 +12,10 @@
 //! Ticks (API 1.1): after each render, if the plugin asked for one (`keep-working`) and no event waits, the task runs
 //! `tick` and renders again. Queued events always go first, so a Cancel click reaches the plugin before the next tick.
 //! While ticks run the page stays drawn with a line saying that leaving it stops the work.
+//!
+//! Language: the task follows the window's language ([`crate::i18n::watch`]). When it changes, the instance gets the
+//! plugin's texts for the new language and the page is rendered again, between two calls (no event reaches the
+//! plugin, and a ticking job just carries on after that render).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,11 +23,11 @@ use std::sync::{Arc, OnceLock};
 
 use aio_plugin_host::approvals::Approvals;
 use aio_plugin_host::runtime::{PluginError, PluginInstance, UiEvent};
-use aio_plugin_host::services::HostServices;
+use aio_plugin_host::services::{HostServices, Level};
 use aio_plugin_host::{display_safe, Engine};
 use eframe::egui::{self, RichText};
 use parking_lot::Mutex;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::plugin_approval::{self, Outcome};
 use super::plugin_tree::{self, Shown};
@@ -64,6 +68,8 @@ struct State {
 }
 
 /// Loads the plugin, renders, then handles events until the page closes (the sender is dropped) or the plugin stops.
+/// `language` is the window's language code; a change renders the page again in the new language.
+#[allow(clippy::too_many_arguments)]
 async fn run(
     info: ExternalInfo,
     dir: PathBuf,
@@ -71,6 +77,7 @@ async fn run(
     approvals: Arc<Approvals>,
     state: Arc<Mutex<State>>,
     mut events: mpsc::UnboundedReceiver<UiEvent>,
+    mut language: watch::Receiver<&'static str>,
     ctx: egui::Context,
 ) {
     let update = |f: &dyn Fn(&mut State)| {
@@ -78,6 +85,11 @@ async fn run(
         ctx.request_repaint();
     };
     let id = info.manifest.id.clone();
+    let texts = info.texts.clone();
+    // Language files that were ignored (developer folders): said once, in the plugin's log.
+    for warning in texts.warnings() {
+        services.log(Level::Warn, warning);
+    }
     // Held as long as the instance: removing or updating the plugin waits until it is gone.
     let _live = LiveGuard::new(&id);
     let loaded = if info.dev {
@@ -100,7 +112,15 @@ async fn run(
             return;
         }
     };
+    // The language the instance has; checked before every render, so a change made while a job ticks (or while a
+    // call runs) shows in the next render.
+    let mut set_language = "";
     loop {
+        let code = *language.borrow_and_update();
+        if code != set_language {
+            set_language = code;
+            instance.set_language(code, texts.get(code).cloned());
+        }
         let rendered = instance.render().await;
         match rendered {
             Ok(tree) => {
@@ -145,9 +165,13 @@ async fn run(
             }
             continue;
         }
-        // Every queued event first, then one render.
+        // Every queued event first, then one render. A language change while waiting renders at once.
         loop {
-            let Some(event) = events.recv().await else { return };
+            let event = tokio::select! {
+                event = events.recv() => event,
+                Ok(()) = language.changed() => break,
+            };
+            let Some(event) = event else { return };
             update(&|s| {
                 s.busy = true;
                 s.queued = s.queued.saturating_sub(1);
@@ -188,14 +212,17 @@ impl Running {
         let state = Arc::new(Mutex::new(State { busy: true, ..State::default() }));
         let output = Arc::new(Mutex::new(PluginOutput::new()));
         let hosts = external::plugins().asked_hosts(&info.manifest.id, info.dev);
-        let services = Arc::new(AppServices::new(shared.clone(), &info.manifest.name, exports, output.clone()).with_hosts(hosts));
+        let services = Arc::new(AppServices::new(shared.clone(), info.name(), exports, output.clone()).with_hosts(hosts));
         let ctx = shared.ctx.clone();
         let approvals = Arc::new(Approvals::with_notifier(move || ctx.request_repaint()));
         // The card's text is built once per request, on the plugin's worker, never per frame.
         approvals.set_formatter(plugin_approval::card_lines);
         let (sender, receiver) = mpsc::unbounded_channel();
         let host: Arc<dyn HostServices> = services.clone();
-        let task = shared.runtime.spawn(run(info.clone(), dir, host, approvals.clone(), state.clone(), receiver, shared.ctx.clone())).abort_handle();
+        let task = shared
+            .runtime
+            .spawn(run(info.clone(), dir, host, approvals.clone(), state.clone(), receiver, crate::i18n::watch(), shared.ctx.clone()))
+            .abort_handle();
         // "Stop this plugin" in one of its dialogs: like "Reject and stop" on the approval card.
         let (stop_task, stop_state, stop_approvals, stop_id, ctx) = (task.clone(), state.clone(), approvals.clone(), info.manifest.id.clone(), shared.ctx.clone());
         services.on_stop(move || {
@@ -230,8 +257,6 @@ impl Drop for Running {
 /// An open external plugin page.
 pub struct ExternalPluginView {
     info: ExternalInfo,
-    /// The plugin's name, safe to show.
-    name: String,
     /// Where the plugin is in the list now (`Page::External`).
     pub index: u16,
     /// The installed folder and the exports folder.
@@ -258,7 +283,7 @@ impl ExternalPluginView {
 
     fn open_in(info: ExternalInfo, index: u16, dir: PathBuf, exports: PathBuf, shared: &Shared) -> Self {
         let running = Running::start(&info, dir.clone(), exports.clone(), shared);
-        Self { name: display_safe(&info.manifest.name, 80), info, index, dir, exports, running, page: None, generation: 0, inputs: HashMap::new(), reloading: None }
+        Self { info, index, dir, exports, running, page: None, generation: 0, inputs: HashMap::new(), reloading: None }
     }
 
     pub fn id(&self) -> &str {
@@ -267,6 +292,11 @@ impl ExternalPluginView {
 
     pub fn info(&self) -> &ExternalInfo {
         &self.info
+    }
+
+    /// The plugin's name in the window's language, safe to show.
+    fn name(&self) -> String {
+        display_safe(self.info.name(), 80)
     }
 
     /// True while an approved script or write batch of this plugin executes: the window waits for it.
@@ -313,14 +343,13 @@ impl ExternalPluginView {
         match result {
             Ok(external::DevReload::Reloaded) => {
                 if let Some(info) = plugins.index_of(&self.info.manifest.id).and_then(|i| plugins.get(i)) {
-                    self.name = display_safe(&info.manifest.name, 80);
                     self.info = info;
                 }
                 self.start_again(shared);
             }
             Ok(external::DevReload::NeedsConsent) => {
                 // The plugin leaves the list; the window closes this page and the Plugins page asks.
-                shared.set_status(&tf("{plugin} asks for more permissions: review them on the Plugins page.", &[("plugin", &self.name)]));
+                shared.set_status(&tf("{plugin} asks for more permissions: review them on the Plugins page.", &[("plugin", &self.name())]));
             }
             Err(error) => shared.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &display_safe(&format!("{error:#}"), 300))])),
         }
@@ -337,7 +366,7 @@ impl ExternalPluginView {
         let Some(sender) = &self.running.events else { return };
         let mut state = self.running.state.lock();
         if state.queued >= MAX_QUEUE {
-            shared.set_status(&tf("{plugin} is busy: wait until it has finished.", &[("plugin", &self.name)]));
+            shared.set_status(&tf("{plugin} is busy: wait until it has finished.", &[("plugin", &self.name())]));
             return;
         }
         if sender.send(event).is_ok() {
@@ -356,7 +385,7 @@ impl ExternalPluginView {
         };
         let executing = self.executing();
         ui.horizontal(|ui| {
-            ui.label(widgets::title_text(&self.name, 16.0));
+            ui.label(widgets::title_text(&self.name(), 16.0));
             ui.label(RichText::new(display_safe(&self.info.manifest.version, 40)).size(12.5).color(palette.muted));
             plugin_approval::badges(ui, palette, &self.info);
             // While a long job ticks, the "Working…" line above the page has the one spinner.
@@ -376,7 +405,7 @@ impl ExternalPluginView {
             user: self.running.services.bound_user(),
             changed: self.running.services.server_changed(),
         };
-        match plugin_approval::show(ui, palette, &self.running.approvals, &self.info, &self.name, &target) {
+        match plugin_approval::show(ui, palette, &self.running.approvals, &self.info, &self.name(), &target) {
             Outcome::Approve(id) => {
                 // Busy from the click on, so nothing (Reload, leaving the page) can cut the run off as it starts.
                 if self.running.approvals.pending().iter().any(|(p, _)| *p == id) {
@@ -435,9 +464,10 @@ impl ExternalPluginView {
             }
             // Everything the plugin draws sits in this frame, under its name: it cannot pass for the Manager's own UI.
             let mut events = Vec::new();
+            let name = self.name();
             egui::Frame::new().stroke(egui::Stroke::new(1.0_f32, palette.card_border_strong)).corner_radius(8).inner_margin(12).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(tf("Drawn by the plugin {plugin}", &[("plugin", &self.name)])).size(11.5).color(palette.subtle));
+                ui.label(RichText::new(tf("Drawn by the plugin {plugin}", &[("plugin", &name)])).size(11.5).color(palette.subtle));
                 ui.add_space(6.0);
                 match self.page.as_mut() {
                     Some(Ok(shown)) => {

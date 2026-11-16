@@ -5,7 +5,7 @@
 //! `render` again afterwards. This plugin only uses `host::log` and the private data folder
 //! (`files`, permission `files`).
 //!
-//! The Cargo features `runaway`, `hog`, `sleeper`, `asker`, `scripter` and `ticker` are test-only variants
+//! The Cargo features `runaway`, `hog`, `sleeper`, `asker`, `scripter`, `ticker` and `translated` are test-only variants
 //! used by the host's sandbox tests; the default build has none of them.
 
 use aio_plugin_sdk::{export_plugin, files, host, Event, Plugin, Ui};
@@ -139,7 +139,14 @@ impl Plugin for Hello {
         ui.heading("Hello");
         ui.input("name", "Name", self.name.clone());
         ui.primary_button("greet", "Greet");
+        #[cfg(not(feature = "translated"))]
         ui.text(format!("Greeted {} times", read_count()));
+        #[cfg(feature = "translated")]
+        {
+            use aio_plugin_sdk::export::abi::aio::plugin::host as raw;
+            ui.text(raw::translate("Greeted {n} times").replace("{n}", &read_count().to_string()));
+            ui.text(format!("language: {}", raw::language()));
+        }
         #[cfg(feature = "ticker")]
         self.job.render(ui);
     }

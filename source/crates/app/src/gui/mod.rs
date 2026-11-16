@@ -706,8 +706,8 @@ impl App {
                 let info = self.external.as_ref().map(|v| v.info().clone()).or_else(|| crate::plugins::external::plugins().get(index as usize));
                 match info {
                     Some(info) => (
-                        aio_plugin_host::display_safe(&info.manifest.page_title, 80),
-                        aio_plugin_host::display_safe(&info.manifest.description, 200),
+                        aio_plugin_host::display_safe(info.page_title(), 80),
+                        aio_plugin_host::display_safe(info.description(), 200),
                     ),
                     None => (t("Plugins").into(), String::new()),
                 }
@@ -827,7 +827,7 @@ impl App {
                         ui.add_space(2.0);
                         for (page, info) in external {
                             if open || selected(page) {
-                                nav(ui, &aio_plugin_host::display_safe(&info.manifest.page_title, 26), Icon::Puzzle, page);
+                                nav(ui, &aio_plugin_host::display_safe(info.page_title(), 26), Icon::Puzzle, page);
                             }
                         }
                     }

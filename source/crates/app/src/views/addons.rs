@@ -127,12 +127,14 @@ pub fn external_entries() -> Vec<Entry> {
     crate::plugins::external_pages()
         .into_iter()
         .filter_map(|(page, info)| {
-            let tile = info.manifest.tile?;
+            // In the window's language when the plugin ships a translation (plugin text all the same).
+            let (title, description) = info.tile_texts()?;
+            let color = info.manifest.tile.as_ref().map(|t| tile_color(&t.color))?;
             Some(Entry {
-                title: aio_plugin_host::display_safe(&tile.title, 40),
-                description: aio_plugin_host::display_safe(&tile.description, 160),
+                title: aio_plugin_host::display_safe(title, 40),
+                description: aio_plugin_host::display_safe(description, 160),
                 icon: Icon::Puzzle,
-                color: tile_color(&tile.color),
+                color,
                 scene: Scene::Room,
                 page,
             })

@@ -627,3 +627,24 @@ async fn each_tick_has_its_own_budget() {
     assert!(matches!(inst.render().await.unwrap_err(), PluginError::TimedOut));
     assert!(matches!(inst.tick().await.unwrap_err(), PluginError::TimedOut));
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn language_change_reaches_a_running_instance() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = install_hello(dir.path(), &support::hello_aiop());
+    let mut instance = load(&path, Arc::new(Fake::default())).await;
+    assert_eq!(instance.host_for_tests().language().await, "en");
+    assert_eq!(instance.host_for_tests().translate("Start".into()).await, "Start");
+
+    let italian = aio_plugin_host::i18n::Texts::parse("it", r#"{"Start": "Avvia"}"#.as_bytes()).unwrap();
+    instance.set_language("it", Some(italian));
+    assert_eq!(instance.host_for_tests().language().await, "it");
+    assert_eq!(instance.host_for_tests().translate("Start".into()).await, "Avvia");
+    assert_eq!(instance.host_for_tests().translate("Stop".into()).await, "Stop");
+    // The instance keeps working after the switch.
+    instance.render().await.unwrap();
+
+    instance.set_language("fr", None);
+    assert_eq!(instance.host_for_tests().language().await, "fr");
+    assert_eq!(instance.host_for_tests().translate("Start".into()).await, "Start");
+}

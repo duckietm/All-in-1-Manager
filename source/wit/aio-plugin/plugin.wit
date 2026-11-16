@@ -6,7 +6,7 @@
 /// each one gated by a permission in the plugin manifest and by the user's approval.
 ///
 /// 1.1 only adds items to 1.0 (kept verbatim in `../aio-plugin-1.0`): `host.keep-working`,
-/// `tcp-connection.recv-timeout`, `host.pick-folder` with the `picked-folder` resource, and the optional `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
+/// `tcp-connection.recv-timeout`, `host.pick-folder` with the `picked-folder` resource, `host.language`, `host.translate`, and the optional `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
 package aio:plugin@1.1.0;
 
 interface types {
@@ -307,6 +307,17 @@ interface host {
     /// that does not export `tick` gets an error (`tick is not exported`) that stops the call.
     @since(version = 1.1.0)
     keep-working: func();
+
+    /// The Manager's current language code (API 1.1): "en" for English, else one of "it", "fr", "de", "nl", "es",
+    /// "pt", "tr", "fi". It can change between two calls (the user switched languages; the page is rendered again).
+    @since(version = 1.1.0)
+    language: func() -> string;
+
+    /// The translation of `english` in the Manager's current language, from the plugin's own `i18n/<lang>.json`
+    /// (API 1.1), or `english` unchanged when there is none. `{name}` placeholders are kept as they are; the plugin
+    /// fills them in after translating. No permission is needed.
+    @since(version = 1.1.0)
+    translate: func(english: string) -> string;
 }
 
 world plugin {

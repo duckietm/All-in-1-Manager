@@ -31,6 +31,8 @@
 //!   `pick-folder` (1.1, a dialog of the call) wraps a folder the user picked, where the plugin may only create new
 //!   files and rewrite or append to its own, never through a link and never into a folder of the Manager (see
 //!   [`crate::folders`]);
+//!   `language` / `translate` (1.1) answer from memory: the code and the plugin's texts the app set with
+//!   [`PluginInstance::set_language`] (see [`crate::i18n`]);
 //! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
 //!   `Err("permission denied...")` to the guest and a sanitised `Warn` line in the plugin log):
 //!   `sql-select` through [`crate::sql::build_select`], then [`HostServices::sql_select`];
@@ -92,6 +94,7 @@ use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
 };
 use crate::bindings::Plugin;
+use crate::i18n::Texts;
 use crate::folders::{AppendFailed, FolderLimits, PickedFolder, UserFolders};
 use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
 use crate::net::{
@@ -432,6 +435,10 @@ pub struct HostState {
     folder_limits: FolderLimits,
     /// The user's folders a picked root may not be (`None`: [`UserFolders::of_this_user`], read at each pick).
     user_folders: Option<UserFolders>,
+    /// The Manager's language code (`language`), "en" until the app sets it ([`PluginInstance::set_language`]).
+    language: String,
+    /// The plugin's texts in that language (`translate`); `None`: English.
+    texts: Option<Texts>,
 }
 
 impl WasiView for HostState {
@@ -902,6 +909,18 @@ impl Host for HostState {
         }
     }
 
+    // Plain lookups in memory: they count as the guest's time, like any computation.
+    async fn language(&mut self) -> String {
+        self.language.clone()
+    }
+
+    async fn translate(&mut self, english: String) -> String {
+        match self.texts.as_ref().and_then(|t| t.get(&english)) {
+            Some(translated) => translated.to_string(),
+            None => english,
+        }
+    }
+
     async fn keep_working(&mut self) -> wasmtime::Result<()> {
         if !self.has_tick {
             return Err(wasmtime::format_err!("tick is not exported"));
@@ -1244,6 +1263,8 @@ impl PluginInstance {
             keep_working: false,
             folder_limits: FolderLimits::default(),
             user_folders: None,
+            language: "en".into(),
+            texts: None,
         };
         let mut store = Store::new(engine, state);
         store.limiter(|s| &mut s.limits);
@@ -1299,6 +1320,15 @@ impl PluginInstance {
         };
         let result = watchdog(&self.clock, tick.call_async(&mut self.store, ())).await;
         self.leave(result)?.0.map_err(PluginError::Failed)
+    }
+
+    /// The Manager's language is now `code` ("en" for English), with the plugin's texts for it (`None`: it has none,
+    /// English is shown). The next call sees it; the app renders again after a change. Texts of another language than
+    /// `code` are not used.
+    pub fn set_language(&mut self, code: &str, texts: Option<Texts>) {
+        let state = self.store.data_mut();
+        state.language = code.to_string();
+        state.texts = texts.filter(|t| t.language() == code);
     }
 
     /// The plugin called `keep-working` since its last event or tick started (and is not poisoned): run

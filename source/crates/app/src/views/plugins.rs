@@ -282,8 +282,8 @@ fn start_remove(shared: &Shared, info: ExternalInfo) {
     }
     let status = shared.clone();
     shared.spawn(async move {
+        let name = display_safe(info.name(), 80);
         let manifest = info.manifest;
-        let name = display_safe(&manifest.name, 80);
         remove_confirmed(&status, &manifest.id, &name).await;
         removing().lock().remove(&manifest.id);
     });
@@ -515,7 +515,7 @@ fn external_card_with(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, inf
             if flipped.on_hover_text(hint).on_disabled_hover_text(hint).changed() {
                 if plugins::set_enabled(&key, on) {
                     let state = if on { t("on") } else { t("off") };
-                    shared.set_status(&tf("{plugin} is {state}.", &[("plugin", &display_safe(&manifest.name, 80)), ("state", state)]));
+                    shared.set_status(&tf("{plugin} is {state}.", &[("plugin", &display_safe(info.name(), 80)), ("state", state)]));
                 } else {
                     shared.set_status(locked);
                 }
@@ -523,7 +523,7 @@ fn external_card_with(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, inf
             ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
-                    ui.label(widgets::title_text(&display_safe(&manifest.name, 60), 16.0));
+                    ui.label(widgets::title_text(&display_safe(info.name(), 60), 16.0));
                     ui.label(RichText::new(format!("{} · {}", display_safe(&manifest.version, 40), display_safe(&manifest.author, 60))).size(12.5).color(palette.muted));
                     if info.verified {
                         ui.label(RichText::new(t("Verified")).size(12.5).strong().color(palette.success_text));
@@ -534,7 +534,7 @@ fn external_card_with(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, inf
                         not_verified(ui, palette, t("Developer"));
                     }
                 });
-                widgets::muted(ui, palette, &display_safe(&manifest.description, 300), 12.5);
+                widgets::muted(ui, palette, &display_safe(info.description(), 300), 12.5);
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if info.dev {

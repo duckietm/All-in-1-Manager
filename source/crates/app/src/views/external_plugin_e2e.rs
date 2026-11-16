@@ -41,6 +41,8 @@ struct Page {
     events: mpsc::UnboundedSender<UiEvent>,
     approvals: Arc<Approvals>,
     task: tokio::task::JoinHandle<()>,
+    /// The window's language as the page task sees it (starts in English).
+    language: watch::Sender<&'static str>,
 }
 
 #[test]
@@ -59,7 +61,10 @@ fn the_hello_folder_loads_in_developer_mode() {
 
 /// Starts the page task on an installed plugin, with `session` as the login.
 fn open(aiop: Vec<u8>, permissions: &[&str], session: Option<Arc<dyn Server>>) -> Page {
-    let installed = install(aiop, permissions);
+    open_installed(install(aiop, permissions), session)
+}
+
+fn open_installed(installed: Installed, session: Option<Arc<dyn Server>>) -> Page {
     let shared = Shared::for_tests(tokio::runtime::Handle::current());
     shared.set_session_for_tests(session);
     let output = Arc::new(Mutex::new(PluginOutput::new()));
@@ -68,8 +73,9 @@ fn open(aiop: Vec<u8>, permissions: &[&str], session: Option<Arc<dyn Server>>) -
     let approvals = Arc::new(Approvals::new());
     let state = Arc::new(Mutex::new(State { busy: true, ..State::default() }));
     let (events, receiver) = mpsc::unbounded_channel();
-    let task = tokio::spawn(run(installed.info.clone(), installed.plugin_dir.clone(), services, approvals.clone(), state.clone(), receiver, shared.ctx.clone()));
-    Page { installed, state, output, events, approvals, task }
+    let (language, watching) = watch::channel("en");
+    let task = tokio::spawn(run(installed.info.clone(), installed.plugin_dir.clone(), services, approvals.clone(), state.clone(), receiver, watching, shared.ctx.clone()));
+    Page { installed, state, output, events, approvals, task, language }
 }
 
 /// Waits (at most 60 s: the first load compiles the plugin) until `done` holds.
@@ -232,4 +238,40 @@ async fn closing_the_page_stops_the_ticks() {
     assert!(texts(&last).contains(&"Ticked 1 times".to_string()), "{:?}", texts(&last));
     assert!(!page.output.lock().log.lines().iter().any(|l| l == "[info] starting tick 2"), "no tick after the close");
     assert!(!external::is_live("hello"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn language_change_rerenders_open_page() {
+    let _serial = serial().await;
+    let mut plugin = install(support::hello_aiop_with("ticker,translated"), &[]);
+    std::fs::create_dir_all(plugin.plugin_dir.join("i18n")).unwrap();
+    std::fs::write(plugin.plugin_dir.join("i18n/it.json"), r#"{"Greeted {n} times": "Salutato {n} volte"}"#).unwrap();
+    plugin.info.texts = external::Translations::read(&plugin.plugin_dir);
+    let page = open_installed(plugin, None);
+    until(&page, "the first page", |s| s.page.is_some() && !s.busy).await;
+    let first = texts(page.state.lock().page.as_ref().unwrap());
+    assert!(first.starts_with(&["Greeted 0 times".to_string(), "language: en".to_string()]), "{first:?}");
+
+    // No event: the language alone renders the page again, in Italian.
+    let generation = page.state.lock().generation;
+    page.language.send_replace("it");
+    until(&page, "the Italian page", |s| s.page.as_ref().is_some_and(|p| texts(p).contains(&"language: it".to_string()))).await;
+    let italian = texts(page.state.lock().page.as_ref().unwrap());
+    assert!(italian.starts_with(&["Salutato 0 volte".to_string(), "language: it".to_string()]), "{italian:?}");
+    assert_eq!(page.state.lock().generation, generation + 1, "one render, no event");
+    assert!(page.output.lock().log.lines().is_empty(), "nothing reached the plugin: {:?}", page.output.lock().log.lines());
+
+    // A language without a file: English again. During a job in ticks: the job carries on undisturbed.
+    page.events.send(UiEvent::Clicked("slow".into())).unwrap();
+    wait_for("the first tick", || page.output.lock().log.lines().iter().any(|l| l == "[info] starting tick 1")).await;
+    page.language.send_replace("fr");
+    until(&page, "the job to end", |s| s.page.as_ref().is_some_and(|p| texts(p).contains(&"Ticked 3 times".to_string())) && !s.busy).await;
+    let last = texts(page.state.lock().page.as_ref().unwrap());
+    assert!(last.starts_with(&["Greeted 0 times".to_string(), "language: fr".to_string()]), "{last:?}");
+    let ticks: Vec<String> = page.output.lock().log.lines().iter().filter(|l| l.starts_with("[info] tick ")).cloned().collect();
+    assert_eq!(ticks, ["[info] tick 1", "[info] tick 2", "[info] tick 3"]);
+    assert!(page.state.lock().stopped.is_none() && page.state.lock().failed.is_none());
+
+    drop(page.events);
+    page.task.await.unwrap();
 }

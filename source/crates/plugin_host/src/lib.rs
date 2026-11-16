@@ -24,6 +24,7 @@ pub mod bindings {
 
 pub mod approvals;
 pub mod folders;
+pub mod i18n;
 pub mod manifest;
 pub mod net;
 pub mod package;

@@ -67,10 +67,11 @@ The Available tab of the index shows English only: index entries carry no transl
 
 ## What stays in English
 
-The Manager keeps its security texts in English, with the plugin's English name: the permission lists and prompts, and
-the consent windows (installing, updating, loading a developer folder, `http:ask`, scripts, database writes). A
-translation never changes what a permission prompt says. The texts of dialogs your plugin opens (`ask`, `prompt_text`)
-are shown as you pass them, so pass them through `tr` yourself.
+The Manager keeps its security texts in English, with the plugin's English name from the manifest (the name the user
+consented to): the permission lists, the approval card, the "The plugin <name> asks" title of the host's dialogs, the
+"Drawn by the plugin <name>" line and the consent windows (installing, updating, loading a developer folder,
+`http:ask`, scripts, database writes). A translation never changes what a permission prompt says. The texts of dialogs
+your plugin opens (`ask`, `prompt_text`) are shown as you pass them, so pass them through `tr` yourself.
 
 All texts from language files are shown with the same treatment as every other plugin text: control, direction
 changing and invisible characters are replaced.
@@ -108,6 +109,6 @@ languages:
 ```
 
 A package with no language files prints `languages:   none (English only)`. The check does not tell you which `tr`
-texts a file lacks; a native test that reads `src/lib.rs` and the file can (the Catalogue ripper's does).
+texts a file lacks; a native test that reads `src/lib.rs` and the file can (the Catalogue ripper's plugin crate has such a test).
 
 `aio-plugin new` writes a starting `i18n/it.json` with two entries for the texts of its page.

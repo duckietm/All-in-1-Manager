@@ -55,15 +55,16 @@ fn tr_with_using(english: &str, values: &[(&str, &str)], translate: impl Fn(&str
     fill(&translate(english), values)
 }
 
-/// `text` with each `{name}` that has an entry in `values` replaced (one pass, left to right).
+/// `text` with each `{name}` that has an entry in `values` replaced (one pass, left to right). Names are read as the
+/// Manager reads them: a placeholder runs from a `{` to the next `}`, so in `"{a {b}"` the name is `b`, and `"{a "`
+/// stays as written.
 fn fill(text: &str, values: &[(&str, &str)]) -> String {
+    let mut parts = text.split('{');
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 1..];
-        match after.split_once('}') {
-            Some((name, tail)) => {
+    out.push_str(parts.next().unwrap_or_default());
+    for part in parts {
+        match part.split_once('}') {
+            Some((name, rest)) => {
                 match values.iter().find(|(key, _)| *key == name) {
                     Some((_, value)) => out.push_str(value),
                     None => {
@@ -72,15 +73,14 @@ fn fill(text: &str, values: &[(&str, &str)]) -> String {
                         out.push('}');
                     }
                 }
-                rest = tail;
+                out.push_str(rest);
             }
             None => {
-                out.push_str(&rest[open..]);
-                rest = "";
+                out.push('{');
+                out.push_str(part);
             }
         }
     }
-    out.push_str(rest);
     out
 }
 
@@ -105,6 +105,9 @@ mod tests {
         assert_eq!(fill("{missing} {a", &[("a", "1")]), "{missing} {a");
         assert_eq!(fill("no placeholders", &[]), "no placeholders");
         assert_eq!(fill("{n}{n}", &[("n", "é")]), "éé");
+        // The Manager's rule: the name runs from the last `{` before the `}`.
+        assert_eq!(fill("{a {b}", &[("b", "x")]), "{a x");
+        assert_eq!(fill("{a {b}", &[("a {b", "x")]), "{a {b}");
     }
 
     #[test]

@@ -51,9 +51,12 @@ pub fn current() -> Lang {
 
 pub fn set(code: &str) {
     if let Some(index) = LANGUAGES.iter().position(|l| l.code.eq_ignore_ascii_case(code)) {
-        CURRENT.store(index, Ordering::Relaxed);
         let code = LANGUAGES[index].code;
-        changes().send_if_modified(|current| std::mem::replace(current, code) != code);
+        // Both under the channel's lock, so two `set`s from different threads cannot leave them disagreeing.
+        changes().send_if_modified(|current| {
+            CURRENT.store(index, Ordering::Relaxed);
+            std::mem::replace(current, code) != code
+        });
     }
 }
 

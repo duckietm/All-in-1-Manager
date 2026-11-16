@@ -263,6 +263,12 @@ impl AppServices {
         }
     }
 
+    /// The name its dialogs and status lines show.
+    #[cfg(test)]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// "The plugin X asks": the title of every dialog it opens.
     fn asks(&self) -> String {
         tf("The plugin {plugin} asks", &[("plugin", &self.name)])

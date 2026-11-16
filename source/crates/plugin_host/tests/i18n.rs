@@ -97,6 +97,19 @@ fn developer_folder_files_become_warnings() {
 }
 
 #[test]
+fn developer_folder_reads_at_most_64_language_files() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("i18n")).unwrap();
+    for n in 0..70 {
+        std::fs::write(dir.path().join(format!("i18n/x{n:02}.json")), "{}").unwrap();
+    }
+    let (all, warnings) = i18n::load_dir(dir.path());
+    assert!(all.is_empty());
+    assert_eq!(warnings.len(), 65, "64 files read, then one line");
+    assert_eq!(warnings.last().unwrap(), "More than 64 language files: the others are ignored");
+}
+
+#[test]
 fn translate_falls_back_to_english() {
     let texts = Texts::parse("it", r#"{"Start": "Avvia", "Empty": "", "{n} files": "{n} file"}"#.as_bytes()).unwrap();
     assert_eq!(texts.language(), "it");

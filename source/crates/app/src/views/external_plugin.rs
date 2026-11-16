@@ -212,7 +212,8 @@ impl Running {
         let state = Arc::new(Mutex::new(State { busy: true, ..State::default() }));
         let output = Arc::new(Mutex::new(PluginOutput::new()));
         let hosts = external::plugins().asked_hosts(&info.manifest.id, info.dev);
-        let services = Arc::new(AppServices::new(shared.clone(), info.name(), exports, output.clone()).with_hosts(hosts));
+        // Security prompts (the "asks" title of its dialogs) name the plugin as the user consented to it: in English.
+        let services = Arc::new(AppServices::new(shared.clone(), &info.manifest.name, exports, output.clone()).with_hosts(hosts));
         let ctx = shared.ctx.clone();
         let approvals = Arc::new(Approvals::with_notifier(move || ctx.request_repaint()));
         // The card's text is built once per request, on the plugin's worker, never per frame.
@@ -294,9 +295,20 @@ impl ExternalPluginView {
         &self.info
     }
 
-    /// The plugin's name in the window's language, safe to show.
+    /// The plugin's name in the window's language, safe to show (the page header and status lines).
     fn name(&self) -> String {
-        display_safe(self.info.name(), 80)
+        self.name_in(crate::i18n::current().code)
+    }
+
+    /// The plugin's name in the language `code`, safe to show.
+    fn name_in(&self, code: &str) -> String {
+        display_safe(external::plugin_text(&self.info.manifest.name, self.info.texts.get(code)), 80)
+    }
+
+    /// The manifest's own (English) name, safe to show: the name the user consented to, used wherever a security
+    /// decision is asked for (the approval card, a request for more permissions; Ruling 3).
+    fn consented_name(&self) -> String {
+        display_safe(&self.info.manifest.name, 80)
     }
 
     /// True while an approved script or write batch of this plugin executes: the window waits for it.
@@ -349,7 +361,7 @@ impl ExternalPluginView {
             }
             Ok(external::DevReload::NeedsConsent) => {
                 // The plugin leaves the list; the window closes this page and the Plugins page asks.
-                shared.set_status(&tf("{plugin} asks for more permissions: review them on the Plugins page.", &[("plugin", &self.name())]));
+                shared.set_status(&tf("{plugin} asks for more permissions: review them on the Plugins page.", &[("plugin", &self.consented_name())]));
             }
             Err(error) => shared.set_status(&tf("The developer folder cannot be read: {error}", &[("error", &display_safe(&format!("{error:#}"), 300))])),
         }
@@ -405,7 +417,7 @@ impl ExternalPluginView {
             user: self.running.services.bound_user(),
             changed: self.running.services.server_changed(),
         };
-        match plugin_approval::show(ui, palette, &self.running.approvals, &self.info, &self.name(), &target) {
+        match plugin_approval::show(ui, palette, &self.running.approvals, &self.info, &self.consented_name(), &target) {
             Outcome::Approve(id) => {
                 // Busy from the click on, so nothing (Reload, leaving the page) can cut the run off as it starts.
                 if self.running.approvals.pending().iter().any(|(p, _)| *p == id) {

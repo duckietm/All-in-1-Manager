@@ -25,6 +25,10 @@ pub const MAX_TEXTS: usize = 5_000;
 pub const MAX_TEXT: usize = 4 * 1024;
 /// Bytes of one language file (the package's limit too).
 pub const MAX_FILE: u64 = 512 * 1024;
+/// Language files read from a developer folder (a package holds at most 64 files in all).
+pub const MAX_FILES: usize = 64;
+/// The warning when a folder has more.
+pub const TOO_MANY_FILES: &str = "More than 64 language files: the others are ignored";
 
 /// The texts of one language, checked. Cheap to clone (shared).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +108,9 @@ pub(crate) fn check_package_file(language: &str, bytes: &[u8]) -> Result<Option<
 pub fn load_dir(dir: &Path) -> (BTreeMap<String, Texts>, Vec<String>) {
     let (mut texts, mut warnings) = (BTreeMap::new(), Vec::new());
     let Ok(read) = std::fs::read_dir(dir.join("i18n")) else { return (texts, warnings) };
-    let mut files: Vec<_> = read.flatten().map(|e| e.path()).collect();
+    let mut files: Vec<_> = read.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "json")).take(MAX_FILES + 1).collect();
+    let too_many = files.len() > MAX_FILES;
+    files.truncate(MAX_FILES);
     files.sort();
     for path in files {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -122,6 +128,9 @@ pub fn load_dir(dir: &Path) -> (BTreeMap<String, Texts>, Vec<String>) {
             }
             Err(e) => warnings.push(format!("{e:#}; the file is ignored")),
         }
+    }
+    if too_many {
+        warnings.push(TOO_MANY_FILES.to_string());
     }
     (texts, warnings)
 }

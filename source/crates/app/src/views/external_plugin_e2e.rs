@@ -241,6 +241,25 @@ async fn closing_the_page_stops_the_ticks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn security_prompts_use_the_consented_name() {
+    let _serial = serial().await;
+    let mut plugin = install(support::hello_aiop(), &[]);
+    std::fs::create_dir_all(plugin.plugin_dir.join("i18n")).unwrap();
+    std::fs::write(plugin.plugin_dir.join("i18n/it.json"), serde_json::json!({ "Hello": "Ciao \u{202e}" }).to_string()).unwrap();
+    plugin.info.texts = external::Translations::read(&plugin.plugin_dir);
+    let shared = Shared::for_tests(tokio::runtime::Handle::current());
+    let exports = plugin.dir.path().join("ext-exports/hello");
+    let view = ExternalPluginView::open_in(plugin.info.clone(), 0, plugin.plugin_dir.clone(), exports, &shared);
+    // The page header follows the language (display-safe) ...
+    assert_eq!(view.name_in("it"), "Ciao \u{fffd}");
+    assert_eq!(view.name_in("fr"), "Hello");
+    // ... the approval card and the dialogs' "The plugin X asks" name the plugin as the user consented to it.
+    assert_eq!(view.consented_name(), "Hello");
+    assert_eq!(view.running.services.name(), "Hello");
+    drop(view);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn language_change_rerenders_open_page() {
     let _serial = serial().await;
     let mut plugin = install(support::hello_aiop_with("ticker,translated"), &[]);

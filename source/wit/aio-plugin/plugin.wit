@@ -279,10 +279,11 @@ interface host {
         /// Appends `data` to the file `path` that this handle created (with `write` or an earlier `append`), or creates
         /// it (like a first `write`) when it does not exist yet, so a large file can be written in pieces. The same
         /// path rules, data-file types and refusals as `write`: a file that exists and was not created through this
-        /// handle gets `permission denied: <path> already exists`. It counts against the same limits: the file at most
-        /// 256 MiB after the append, the handle's files at most 2 GiB in all, a new file one of the 100,000. A failed
-        /// append may leave part of `data` at the end of the file (a failed first one leaves no file). A later `write`
-        /// replaces the file whole, and it stays this handle's own.
+        /// handle gets `permission denied: <path> already exists`; a file replaced by a link or given another name
+        /// (a hard link) is refused too. It counts against the same limits: the file at most 256 MiB after the append,
+        /// the handle's files at most 2 GiB in all, a new file one of the 100,000. A failed append may leave part of
+        /// `data` at the end of the file (a failed first one leaves no file). A later `write` replaces the file whole,
+        /// and it stays this handle's own.
         @since(version = 1.1.0)
         append: func(path: string, data: list<u8>) -> result<_, string>;
         /// Opens the folder in the file manager.

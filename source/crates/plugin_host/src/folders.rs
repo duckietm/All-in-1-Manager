@@ -211,10 +211,12 @@ impl PickedFolder {
                 self.record(path, old.saturating_add(len));
             }
             Err(AppendFailed::Refused(_)) => {}
-            // Part of the data may be in the file: count its real size, or (unknown) as if all of it were.
+            // Part of the data may be in the handle's file: count its real size, or (unknown) as if all of it were.
+            // Never makes a file the handle's own (a stopped append of a file it did not have yet).
             Err(AppendFailed::Partial { size, .. }) => {
-                let old = self.written.get(path).copied().unwrap_or(0);
-                self.record(path, size.unwrap_or(old.saturating_add(len)));
+                if let Some(&old) = self.written.get(path) {
+                    self.record(path, size.unwrap_or(old.saturating_add(len)));
+                }
             }
         }
     }
@@ -307,33 +309,52 @@ impl WriteJob {
     /// Appends `data` to this handle's own file, or creates the file like a first [`run`](WriteJob::run) when it is
     /// not there (also when the plugin's file was removed in the meantime). Blocking file I/O.
     ///
-    /// The existing file is opened without following a link (`FILE_FLAG_OPEN_REPARSE_POINT` on Windows; on Unix the
-    /// opened file must be the one looked at) and must still be a plain file. A failed write may leave part of `data`
-    /// at the end: [`AppendFailed::Partial`] with the file's size read again.
+    /// The existing file is opened without following a link (Windows: `FILE_FLAG_OPEN_REPARSE_POINT`; Unix:
+    /// `O_NOFOLLOW | O_NONBLOCK`, so a FIFO or device put in its place fails or is refused instead of blocking). The
+    /// opened handle must show a plain file with a single name (no hard link to a file elsewhere), and the same file
+    /// as looked at just before. A file removed before the open is created like a first write. A failed write may
+    /// leave part of `data` at the end: [`AppendFailed::Partial`] with the file's size read again.
     pub(crate) fn append(self, data: &[u8]) -> Result<Appended, AppendFailed> {
         let exists = || AppendFailed::Refused(format!("permission denied: {} already exists", self.rel));
+        let link = || AppendFailed::Refused(format!("permission denied: {} leads through a link", self.rel));
         let refused = AppendFailed::Refused;
         let target = join(&self.root, &self.segments);
         match walk(&self.root, &self.segments, &self.rel).map_err(refused)? {
             Some(meta) if self.own && meta.is_file() => {}
             Some(_) => return Err(exists()),
             // Created like a first write: create-new, so a file that appears in the meantime is not touched.
-            None => return WriteJob { own: false, ..self }.run(data).map(|()| Appended::Created).map_err(refused),
+            None => return self.create(data),
         }
         self.check_manager(&target).map_err(refused)?;
         // Right before opening: still a plain file of this handle, no link on the way.
         let seen = match walk(&self.root, &self.segments, &self.rel).map_err(refused)? {
             Some(meta) if meta.is_file() => meta,
-            _ => return Err(exists()),
+            Some(_) => return Err(exists()),
+            None => return self.create(data),
         };
-        let mut file = match open_for_append(&target) {
-            Ok(file) => file,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(exists()),
+        let before = match identity_before(&target, &seen) {
+            Ok(id) => id,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return self.create(data),
             Err(e) => return Err(refused(io_text(&e))),
         };
-        let opened = file.metadata().map_err(|e| refused(io_text(&e)))?;
-        if !opened.is_file() || is_link(&opened) || !same_file(&seen, &opened) {
-            return Err(AppendFailed::Refused(format!("permission denied: {} leads through a link", self.rel)));
+        #[cfg(test)]
+        tests::before_open(&target);
+        let mut file = match open_for_append(&target) {
+            Ok(file) => file,
+            // Removed since it was looked at: a new file, by the first-write rules.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return self.create(data),
+            Err(e) if is_link_error(&e) => return Err(link()),
+            Err(e) => return Err(refused(io_text(&e))),
+        };
+        let opened = handle_info(&file).map_err(|e| refused(io_text(&e)))?;
+        if !opened.plain {
+            return Err(exists());
+        }
+        if opened.id != before {
+            return Err(link());
+        }
+        if opened.links != 1 {
+            return Err(AppendFailed::Refused(format!("permission denied: {} has other names (hard links)", self.rel)));
         }
         if let Err(e) = file.write_all(data) {
             // Read again: the totals count what is really in the file.
@@ -341,6 +362,11 @@ impl WriteJob {
             return Err(AppendFailed::Partial { error: io_text(&e), size });
         }
         Ok(Appended::Extended)
+    }
+
+    /// The append of a file that is not there: a first write (create-new; a failure leaves no file).
+    fn create(self, data: &[u8]) -> Result<Appended, AppendFailed> {
+        WriteJob { own: false, ..self }.run(data).map(|()| Appended::Created).map_err(AppendFailed::Refused)
     }
 
     /// Refuses `target` when its deepest existing folder (canonical, so in its real letter case) is inside one of the
@@ -409,39 +435,104 @@ impl AppendFailed {
     }
 }
 
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
 /// Opens the existing file `target` for appending without following a link: on Windows a reparse point is opened
-/// itself (`FILE_FLAG_OPEN_REPARSE_POINT`), so the caller sees it in the handle's attributes. The sharing is the
-/// default one, the same as `write`'s (others may read, write and delete). Never creates the file.
+/// itself (`FILE_FLAG_OPEN_REPARSE_POINT`), so the caller sees it in the handle's attributes; on Unix `O_NOFOLLOW`
+/// fails on a link and `O_NONBLOCK` keeps a FIFO from blocking the open. The sharing is the default one, the same as
+/// `write`'s (others may read, write and delete). Never creates the file.
 fn open_for_append(target: &Path) -> io::Result<fs::File> {
     let mut options = OpenOptions::new();
     options.append(true);
     #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt;
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     options.open(target)
 }
 
-/// The file opened (`opened`, from its handle) is the one looked at without following links (`seen`): on Unix the
-/// same device and inode, with a single name (no hard link to a file elsewhere); on Windows the same creation time
-/// (the open itself does not follow a link there).
-fn same_file(seen: &Metadata, opened: &Metadata) -> bool {
+/// The open failed because the last component is a link (`O_NOFOLLOW` on Unix).
+fn is_link_error(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        e.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = e;
+        false
+    }
+}
+
+/// What an open handle shows about its file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HandleInfo {
+    /// Unix: device and inode. Windows: volume serial number and file index.
+    id: (u64, u64),
+    /// The file's names (hard links).
+    links: u64,
+    /// A regular file, not a link or reparse point, not a device or FIFO.
+    plain: bool,
+}
+
+#[cfg(unix)]
+fn handle_info(file: &fs::File) -> io::Result<HandleInfo> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata()?;
+    Ok(HandleInfo { id: (meta.dev(), meta.ino()), links: meta.nlink(), plain: meta.file_type().is_file() })
+}
+
+#[cfg(windows)]
+fn handle_info(file: &fs::File) -> io::Result<HandleInfo> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let meta = file.metadata()?;
+    // SAFETY: a plain C struct, all zeroes is valid; the handle is open for the call; the struct is written by it.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok(HandleInfo {
+        id: (u64::from(info.dwVolumeSerialNumber), index),
+        links: u64::from(info.nNumberOfLinks),
+        plain: meta.is_file() && !is_link(&meta),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn handle_info(file: &fs::File) -> io::Result<HandleInfo> {
+    let meta = file.metadata()?;
+    Ok(HandleInfo { id: (0, 0), links: 1, plain: meta.is_file() })
+}
+
+/// The identity of the file looked at (`seen`, without following links) just before the open for appending. Unix:
+/// from `seen` itself. Windows: from a handle opened for no access at all, without following a reparse point.
+fn identity_before(target: &Path, seen: &Metadata) -> io::Result<(u64, u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        seen.dev() == opened.dev() && seen.ino() == opened.ino() && opened.nlink() == 1
+        let _ = target;
+        Ok((seen.dev(), seen.ino()))
     }
     #[cfg(windows)]
     {
-        use std::os::windows::fs::MetadataExt;
-        seen.creation_time() == opened.creation_time()
+        use std::os::windows::fs::OpenOptionsExt;
+        let _ = seen;
+        let file = OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(target)?;
+        Ok(handle_info(&file)?.id)
     }
     #[cfg(not(any(unix, windows)))]
     {
-        let _ = (seen, opened);
-        true
+        let _ = (target, seen);
+        Ok((0, 0))
     }
 }
 
@@ -501,6 +592,75 @@ fn walk(root: &Path, segments: &[String], rel: &str) -> Result<Option<Metadata>,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn Fn(&Path)>;
+
+    thread_local! {
+        /// Runs in [`WriteJob::append`] right before the open, on the test's thread: a change made in the window.
+        static BEFORE_OPEN: RefCell<Option<Hook>> = RefCell::new(None);
+    }
+
+    pub(super) fn before_open(target: &Path) {
+        BEFORE_OPEN.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook(target);
+            }
+        });
+    }
+
+    /// `folder` (an own file `own.txt` of 3 bytes) appended with `hook` run right before the open.
+    fn append_with_hook(dir: &Path, hook: Hook) -> (PickedFolder, Result<Appended, AppendFailed>) {
+        let mut folder = PickedFolder::open(dir, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        folder.check_write("own.txt", 3).unwrap().run(b"own").unwrap();
+        folder.record("own.txt", 3);
+        BEFORE_OPEN.with(|h| *h.borrow_mut() = Some(hook));
+        let outcome = folder.check_append("own.txt", 4).unwrap().append(b"more");
+        BEFORE_OPEN.with(|h| *h.borrow_mut() = None);
+        folder.record_append("own.txt", 4, &outcome);
+        (folder, outcome)
+    }
+
+    #[test]
+    fn append_creates_a_file_removed_right_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (folder, outcome) = append_with_hook(dir.path(), Box::new(|target| fs::remove_file(target).unwrap()));
+        assert_eq!(outcome, Ok(Appended::Created));
+        assert_eq!(fs::read(dir.path().join("own.txt")).unwrap(), b"more");
+        assert_eq!((folder.written["own.txt"], folder.total), (4, 4));
+    }
+
+    #[test]
+    fn append_refuses_a_hard_link_swapped_in_right_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("out");
+        fs::create_dir(&root).unwrap();
+        let victim = dir.path().join("victim.txt");
+        fs::write(&victim, b"victim").unwrap();
+        let swap = victim.clone();
+        let (folder, outcome) = append_with_hook(
+            &root,
+            Box::new(move |target| {
+                fs::remove_file(target).unwrap();
+                fs::hard_link(&swap, target).unwrap();
+            }),
+        );
+        let error = outcome.unwrap_err().into_message();
+        assert!(error.starts_with("permission denied:"), "{error}");
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        assert_eq!((folder.written["own.txt"], folder.total), (3, 3), "a refusal changes nothing");
+    }
+
+    #[test]
+    fn a_stopped_append_of_a_new_file_does_not_make_it_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        // What the host records when the blocking task stopped (a join error).
+        folder.record_append("new.txt", 10, &Err(AppendFailed::Partial { error: "stopped".into(), size: None }));
+        assert!(folder.written.is_empty());
+        assert_eq!(folder.total, 0);
+        assert!(folder.read_job("new.txt").is_err());
+    }
 
     #[test]
     fn reveal_refuses_a_root_that_is_no_longer_a_folder() {

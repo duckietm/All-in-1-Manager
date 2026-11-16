@@ -273,7 +273,7 @@ Rules:
 
 | Kind | When |
 |---|---|
-| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
+| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: <path> has other names (hard links)` (`append` to a file that was hard-linked); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
 | `NotFound` | `file not found` (`open_import_preview` of a file that was removed). |
 | `Other` | An invalid path (the [`files`](#files) message); `file larger than 32 MiB` (`open_import_preview`); `the file manager could not be opened (<kind>)`; other I/O errors. |
 

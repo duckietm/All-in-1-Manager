@@ -480,6 +480,25 @@ async fn append_follows_the_write_path_rules() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn append_refuses_a_hard_link_put_in_place_of_own_file() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    let outside = root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("victim.txt"), b"victim").unwrap();
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Save".into()).await.unwrap();
+    host.append(again(&folder), "own.txt".into(), b"own".to_vec()).await.unwrap();
+    // A plain file to every look without following links, but the same file as one outside the folder.
+    std::fs::remove_file(out.join("own.txt")).unwrap();
+    std::fs::hard_link(outside.join("victim.txt"), out.join("own.txt")).expect("hard links need no privilege");
+    let error = host.append(again(&folder), "own.txt".into(), b"evil".to_vec()).await.unwrap_err();
+    assert_eq!(error, "permission denied: own.txt has other names (hard links)");
+    assert_eq!(std::fs::read(outside.join("victim.txt")).unwrap(), b"victim");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[cfg_attr(windows, ignore = "needs symlink privilege on Windows")]
 async fn append_refuses_a_link_put_in_place_of_own_file() {
     let root = tempfile::tempdir().unwrap();
     let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
@@ -494,10 +513,7 @@ async fn append_refuses_a_link_put_in_place_of_own_file() {
     let made = std::os::windows::fs::symlink_file(outside.join("victim.txt"), out.join("own.txt")).is_ok();
     #[cfg(unix)]
     let made = std::os::unix::fs::symlink(outside.join("victim.txt"), out.join("own.txt")).is_ok();
-    if !made {
-        eprintln!("this user may not create file symlinks; skipping");
-        return;
-    }
+    assert!(made, "a file symlink could not be made");
     let error = host.append(again(&folder), "own.txt".into(), b"evil".to_vec()).await.unwrap_err();
     assert!(error.starts_with("permission denied:"), "{error}");
     assert_eq!(std::fs::read(outside.join("victim.txt")).unwrap(), b"victim");

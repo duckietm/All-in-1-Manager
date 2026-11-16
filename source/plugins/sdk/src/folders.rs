@@ -95,7 +95,8 @@ impl Folder {
     /// with it instead of holding it whole in memory.
     ///
     /// The same rules as [`write`](Folder::write): a file that exists and was not created through this handle is
-    /// [`Denied`](crate::ErrorKind::Denied) (`permission denied: <path> already exists`). The limits count the file's
+    /// [`Denied`](crate::ErrorKind::Denied) (`permission denied: <path> already exists`), and so is the plugin's file
+    /// once it was replaced by a link or given another name (a hard link). The limits count the file's
     /// size after the append ([`MAX_FILE`]), the handle's total ([`MAX_BYTES`]) and, for a new file, [`MAX_FILES`].
     /// A failed append may leave part of `data` at the end of the file (a failed first one leaves no file); a later
     /// [`write`](Folder::write) replaces the file whole, and it stays this handle's own.

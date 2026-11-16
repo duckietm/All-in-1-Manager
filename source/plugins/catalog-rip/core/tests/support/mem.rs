@@ -1,7 +1,7 @@
 //! In-memory I/O for the rip job: a sink that keeps the files, a fetch that answers like the
 //! built-in tests' `fake_cdn`, clocks, and a loop that steps a job to its end.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use catalog_rip_core::export::ItemsBase;
@@ -12,16 +12,40 @@ use catalog_rip_core::transport::{Closed, Transport};
 /// 2025-11-15 12:00:00 UTC: the time every test rip is made at.
 pub const UNIX_SECS: i64 = 1_763_208_000;
 
-/// The files a job wrote, by sink path.
+/// The files a job wrote, by sink path. A file is written once: either whole (`write`) or
+/// streamed (`append`s, the first creates it); a `write` of a file already there, or an
+/// `append` to a file that was written whole, fails the test. `fail_append`: `append`s of
+/// that path fail from the n-th (0-based) on.
 #[derive(Default, Debug)]
 pub struct MemSink {
     pub files: BTreeMap<String, Vec<u8>>,
+    pub streamed: BTreeSet<String>,
+    pub appends: BTreeMap<String, usize>,
+    pub fail_append: Option<(String, usize)>,
 }
 
 impl Sink for MemSink {
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
         assert!(!self.files.contains_key(path), "{path} written twice");
         self.files.insert(path.to_string(), data.to_vec());
+        Ok(())
+    }
+
+    fn append(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
+        assert!(
+            self.streamed.contains(path) || !self.files.contains_key(path),
+            "{path} appended to after a write"
+        );
+        let n = self.appends.entry(path.to_string()).or_default();
+        let call = *n;
+        *n += 1;
+        if let Some((fail, from)) = &self.fail_append {
+            if fail == path && call >= *from {
+                return Err("disk full".into());
+            }
+        }
+        self.streamed.insert(path.to_string());
+        self.files.entry(path.to_string()).or_default().extend_from_slice(data);
         Ok(())
     }
 }

@@ -272,9 +272,20 @@ pub struct MadeFile {
     pub log: Vec<String>,
 }
 
-/// The data files of [`data_files`], made one per call of [`DataExport::next_file`] with the
-/// same bytes, so the plugin holds one file at a time: each is serialized straight from the
-/// catalogue (no JSON tree, no list of rows) into a buffer of exactly its size.
+/// One data file streamed by [`DataExport::stream_next_file`].
+#[derive(Debug, Clone)]
+pub struct StreamedFile {
+    pub file: DataFile,
+    /// The first error of `append`: the file stopped there (part of it may be written).
+    pub result: Result<(), String>,
+    /// Log lines the built-in writes while making it.
+    pub log: Vec<String>,
+}
+
+/// The data files of [`data_files`], made one per call of [`DataExport::stream_next_file`] (or
+/// [`DataExport::next_file`]) with the same bytes: each is serialized straight from the
+/// catalogue (no JSON tree, no list of rows) and handed on in pieces of [`CHUNK`] bytes, so the
+/// plugin never holds a whole file.
 #[derive(Debug, Clone, Default)]
 pub struct DataExport {
     next: usize,
@@ -288,48 +299,104 @@ pub struct DataExport {
     pub missing_furni: Vec<MissingFurni>,
 }
 
-/// Counts what is written.
-struct Count(usize);
+/// The size of the pieces a data file is streamed in.
+pub const CHUNK: usize = 1024 * 1024;
 
-impl fmt::Write for Count {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.0 += s.len();
-        Ok(())
+/// Where a streamed file's pieces go: `append(file name, bytes)`; the first call creates the file.
+pub type Append<'a> = &'a mut dyn FnMut(&str, &[u8]) -> Result<(), String>;
+
+/// A data file being streamed: what is written is buffered and handed to `append` in pieces of
+/// at most [`CHUNK`] bytes (a single larger write goes as one piece). After the first error
+/// nothing more is sent, and the writers report an error so the serializers stop.
+struct Chunks<'a, 'b> {
+    name: &'static str,
+    append: &'a mut Append<'b>,
+    buf: Vec<u8>,
+    sent: bool,
+    error: Option<String>,
+}
+
+impl<'a, 'b> Chunks<'a, 'b> {
+    fn new(name: &'static str, append: &'a mut Append<'b>) -> Self {
+        Self {
+            name,
+            append,
+            buf: Vec::new(),
+            sent: false,
+            error: None,
+        }
+    }
+
+    fn send(&mut self, data: &[u8]) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        self.sent = true;
+        if let Err(e) = (self.append)(self.name, data) {
+            self.error = Some(e);
+            return false;
+        }
+        true
+    }
+
+    fn push(&mut self, data: &[u8]) -> bool {
+        if self.error.is_some() {
+            return false;
+        }
+        if self.buf.len() + data.len() > CHUNK && !self.buf.is_empty() {
+            let mut buf = std::mem::take(&mut self.buf);
+            let ok = self.send(&buf);
+            buf.clear();
+            self.buf = buf;
+            if !ok {
+                return false;
+            }
+        }
+        if data.len() >= CHUNK {
+            return self.send(data);
+        }
+        if self.buf.capacity() == 0 {
+            self.buf.reserve_exact(CHUNK);
+        }
+        self.buf.extend_from_slice(data);
+        true
+    }
+
+    /// Sends the rest (and creates an empty file when nothing was sent).
+    fn finish(mut self) -> Result<(), String> {
+        if !self.buf.is_empty() || !self.sent {
+            let buf = std::mem::take(&mut self.buf);
+            self.send(&buf);
+        }
+        match self.error {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 }
 
-impl io::Write for Count {
+impl fmt::Write for Chunks<'_, '_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        if self.push(s.as_bytes()) {
+            Ok(())
+        } else {
+            Err(fmt::Error)
+        }
+    }
+}
+
+impl io::Write for Chunks<'_, '_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0 += buf.len();
-        Ok(buf.len())
+        if self.push(buf) {
+            Ok(buf.len())
+        } else {
+            Err(io::Error::other("append failed"))
+        }
     }
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
-}
-
-/// Text written twice: counted, then into a buffer of exactly that size (a growing buffer
-/// would hold up to twice the file while it moves).
-fn exact_text(mut write: impl FnMut(&mut dyn fmt::Write)) -> Vec<u8> {
-    let mut count = Count(0);
-    write(&mut count);
-    let mut text = String::with_capacity(count.0);
-    write(&mut text);
-    text.into_bytes()
-}
-
-/// [`pretty`] into a buffer of exactly its size.
-fn exact_json(value: &impl serde::Serialize) -> Vec<u8> {
-    let mut count = Count(0);
-    if serde_json::to_writer_pretty(&mut count, value).is_err() {
-        return Vec::new();
-    }
-    let mut out = Vec::with_capacity(count.0);
-    if serde_json::to_writer_pretty(&mut out, value).is_err() {
-        return Vec::new();
-    }
-    out
 }
 
 /// missing_furni.json.
@@ -344,15 +411,32 @@ impl DataExport {
         Self::default()
     }
 
-    /// Makes the next data file (serializing one file at most); `None` once every file is made.
-    /// A file with nothing to say (the `_bc` pair without a Builders Club catalogue, the
-    /// missing furni without missing products, the extras without answers) is skipped.
+    /// Makes the next data file whole (the bytes [`stream_next_file`](Self::stream_next_file)
+    /// streams).
     pub fn next_file(&mut self, input: &ExportInput) -> Option<MadeFile> {
+        let mut bytes = Vec::new();
+        let made = self.stream_next_file(input, &mut |_, data| {
+            bytes.extend_from_slice(data);
+            Ok(())
+        })?;
+        Some(MadeFile {
+            file: made.file,
+            bytes,
+            log: made.log,
+        })
+    }
+
+    /// Streams the next data file (one file at most) to `append`, in pieces of at most
+    /// [`CHUNK`] bytes; `None` once every file is made. A file with nothing to say (the `_bc`
+    /// pair without a Builders Club catalogue, the missing furni without missing products, the
+    /// extras without answers) is skipped.
+    pub fn stream_next_file(&mut self, input: &ExportInput, mut append: Append) -> Option<StreamedFile> {
         let catalog = input.catalog;
         while let Some(&file) = MADE.get(self.next) {
             self.next += 1;
             let mut log = Vec::new();
-            let bytes = match file {
+            let mut out = Chunks::new(file.name(), &mut append);
+            match file {
                 DataFile::Sql(sql) => {
                     let bc = catalog
                         .modes
@@ -364,20 +448,15 @@ impl DataExport {
                     let unresolved = *self.products_unresolved.get_or_insert_with(|| {
                         export::products_unresolved(catalog, input.items, input.furnidata)
                     });
-                    let before = self.sql.clone();
-                    let stats = &mut self.sql;
-                    exact_text(|out| {
-                        *stats = before.clone();
-                        export::write_arcturus_file(
-                            out,
-                            catalog,
-                            input.items,
-                            input.furnidata,
-                            sql,
-                            unresolved,
-                            stats,
-                        );
-                    })
+                    export::write_arcturus_file(
+                        &mut out,
+                        catalog,
+                        input.items,
+                        input.furnidata,
+                        sql,
+                        unresolved,
+                        &mut self.sql,
+                    );
                 }
                 DataFile::Manager => {
                     let export = ManagerExport {
@@ -390,14 +469,10 @@ impl DataExport {
                             input.existing
                         },
                     };
-                    let stats = &mut self.manager;
-                    let bytes = exact_text(|out| {
-                        *stats = manager::write_manager_sql(out, catalog, &export);
-                    });
+                    self.manager = manager::write_manager_sql(&mut out, catalog, &export);
                     if !self.manager.note.is_empty() {
                         log.push(format!("Manager import file: {}", self.manager.note));
                     }
-                    bytes
                 }
                 DataFile::MissingFurni => {
                     self.missing_furni = missing::missing_furni(
@@ -418,10 +493,13 @@ impl DataExport {
                             ""
                         }
                     ));
-                    exact_json(&MissingJson {
-                        count: self.missing_furni.len(),
-                        furni: &self.missing_furni,
-                    })
+                    let _ = serde_json::to_writer_pretty(
+                        &mut out,
+                        &MissingJson {
+                            count: self.missing_furni.len(),
+                            furni: &self.missing_furni,
+                        },
+                    );
                 }
                 DataFile::MissingFurnidata => {
                     let Some(data) = input.furnidata.filter(|_| !self.missing_furni.is_empty())
@@ -429,30 +507,36 @@ impl DataExport {
                         continue;
                     };
                     let wanted = missing::missing_keys(&self.missing_furni);
-                    exact_json(&data.subset_json(&wanted))
+                    let _ = serde_json::to_writer_pretty(&mut out, &data.subset_json(&wanted));
                 }
                 DataFile::Extras => {
                     if input.extra_answers.is_empty() {
                         continue;
                     }
-                    pretty(&extras::extras_json(input.extra_answers))
+                    let _ = serde_json::to_writer_pretty(&mut out, &extras::extras_json(input.extra_answers));
                 }
-                DataFile::Catalog => exact_json(&export::CatalogJson {
-                    catalog,
-                    extra: input.products.map(|products| {
-                        (
-                            "product_names",
-                            ProductNamesJson {
-                                catalog,
-                                furnidata: input.furnidata,
-                                products,
-                            },
-                        )
-                    }),
-                }),
-            };
+                DataFile::Catalog => {
+                    let _ = serde_json::to_writer_pretty(
+                        &mut out,
+                        &export::CatalogJson {
+                            catalog,
+                            extra: input.products.map(|products| {
+                                (
+                                    "product_names",
+                                    ProductNamesJson {
+                                        catalog,
+                                        furnidata: input.furnidata,
+                                        products,
+                                    },
+                                )
+                            }),
+                        },
+                    );
+                }
+            }
+            let result = out.finish();
             self.made.push(file);
-            return Some(MadeFile { file, bytes, log });
+            return Some(StreamedFile { file, result, log });
         }
         None
     }
@@ -638,6 +722,56 @@ mod tests {
         assert_eq!(n0(0), "0");
         assert_eq!(n0(1234), "1,234");
         assert_eq!(n0(1234567), "1,234,567");
+    }
+
+    /// Streams `pieces` through [`Chunks`] whose `append` fails from call `fail_from` on.
+    fn stream(pieces: &[&[u8]], fail_from: usize) -> (Vec<Vec<u8>>, Result<(), String>, bool) {
+        let mut calls: Vec<Vec<u8>> = Vec::new();
+        let mut append = |name: &str, data: &[u8]| {
+            assert_eq!(name, "catalog.json");
+            calls.push(data.to_vec());
+            if calls.len() > fail_from {
+                Err("disk full".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let mut append: Append = &mut append;
+        let mut out = Chunks::new("catalog.json", &mut append);
+        let mut all_ok = true;
+        for piece in pieces {
+            all_ok &= io::Write::write_all(&mut out, piece).is_ok();
+        }
+        let result = out.finish();
+        (calls, result, all_ok)
+    }
+
+    #[test]
+    fn chunks_hand_on_pieces_of_at_most_a_chunk() {
+        let small = vec![b'a'; 300 * 1024];
+        let big = vec![b'b'; CHUNK + 5];
+        let pieces: Vec<&[u8]> = vec![&small, &small, &small, &small, &big, &small];
+        let (calls, result, ok) = stream(&pieces, usize::MAX);
+        assert!(ok && result.is_ok());
+        let sizes: Vec<usize> = calls.iter().map(Vec::len).collect();
+        // Three small pieces fill a chunk; the fourth starts the next; a piece bigger than a
+        // chunk goes alone, after what was buffered.
+        assert_eq!(sizes, [900 * 1024, 300 * 1024, CHUNK + 5, 300 * 1024]);
+        assert_eq!(calls.concat(), pieces.concat());
+    }
+
+    #[test]
+    fn an_empty_file_is_created_and_an_error_stops_the_stream() {
+        let (calls, result, _) = stream(&[], usize::MAX);
+        assert_eq!(calls, [Vec::<u8>::new()]);
+        assert!(result.is_ok());
+
+        let small = vec![b'a'; 700 * 1024];
+        let pieces: Vec<&[u8]> = vec![&small; 6];
+        let (calls, result, ok) = stream(&pieces, 1);
+        assert_eq!(result, Err("disk full".to_string()));
+        assert!(!ok, "the writer reports the error");
+        assert_eq!(calls.len(), 2, "nothing is sent after the failed append");
     }
 
     #[test]

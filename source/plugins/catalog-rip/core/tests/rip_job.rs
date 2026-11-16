@@ -274,6 +274,27 @@ fn show_diff(got: &BTreeMap<String, Vec<u8>>, want: &BTreeMap<String, Vec<u8>>) 
 /// README sections the built-in's `Output::write` adds copied into [`builtin_output`]. It is
 /// not a differential run of the built-in crate (that crate is not a dependency here); the
 /// exporters themselves are covered by being byte-identical copies.
+/// A data file whose stream fails (an `append` error) fails the rip like a failed write: the
+/// file is named, and the files after it are not made.
+#[test]
+fn a_failed_append_fails_the_rip_and_names_the_file() {
+    let (port, _seen, fake) = start(official());
+    let mut fetch = fake_cdn();
+    let path = format!("{FOLDER}/catalog_items.sql");
+    let mut sink = MemSink {
+        fail_append: Some((path.clone(), 0)),
+        ..MemSink::default()
+    };
+    let run = run_tcp(options(port), port, &mut fetch, &mut sink, None);
+    fake.join().unwrap();
+    let failure = failed(&run);
+    assert_eq!(failure.message, format!("writing {path}: disk full"));
+    assert!(sink.files.contains_key(&format!("{FOLDER}/catalog_pages.sql")));
+    assert!(!sink.files.contains_key(&path));
+    assert!(!sink.files.contains_key(&format!("{FOLDER}/catalog.json")));
+    assert!(!sink.files.contains_key(&format!("{FOLDER}/README.txt")));
+}
+
 #[test]
 fn full_rip_matches_reconstructed_builtin_output() {
     let (port, seen, fake) = start(official());

@@ -62,7 +62,11 @@ pub trait Fetch {
 /// Where the output goes. `path` is relative to the folder the rips are made in and starts with
 /// the rip folder (`habbo.nl_2026-11-15_12-00-00/images/icons/icon_3.png`), `/`-separated.
 pub trait Sink {
+    /// Creates the file `path` with `data` (an image: each file is written once).
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String>;
+    /// Appends `data` to the file `path`, creating it on the first call (the data files are
+    /// streamed through it in pieces, so none is held whole in memory).
+    fn append(&mut self, path: &str, data: &[u8]) -> Result<(), String>;
 }
 
 /// The time.
@@ -2147,28 +2151,32 @@ impl Job {
             .filter(|s| !s.trim().is_empty())
     }
 
-    /// The next data file (one per step: each is serialized into memory whole, and the biggest
-    /// take a good part of the plugin's memory and of a tick's time); once all are written, on
-    /// to the images.
+    /// The next data file (one per step: each is streamed straight from the catalogue to the
+    /// sink in pieces of about 1 MiB, but the biggest take a good part of a tick's time); once
+    /// all are written, on to the images.
     fn write_data(&mut self, io: &mut JobIo) -> Ctl {
         let out = self.out.as_mut().expect("out");
-        let made = out.data.next_file(&output::ExportInput {
-            catalog: &out.catalog,
-            items: io.items,
-            furnidata: out.furnidata.as_ref(),
-            products: out.products.as_ref(),
-            manager_mode: self.options.manager_mode,
-            existing: io.existing,
-            extra_answers: &self.extra_answers,
-        });
+        let folder = &self.folder;
+        let sink = &mut *io.sink;
+        let made = out.data.stream_next_file(
+            &output::ExportInput {
+                catalog: &out.catalog,
+                items: io.items,
+                furnidata: out.furnidata.as_ref(),
+                products: out.products.as_ref(),
+                manager_mode: self.options.manager_mode,
+                existing: io.existing,
+                extra_answers: &self.extra_answers,
+            },
+            &mut |name, data| sink.append(&format!("{folder}/{name}"), data),
+        );
         if let Some(made) = made {
-            let path = format!("{}/{}", self.folder, made.file.name());
-            if let Err(e) = io.sink.write(&path, &made.bytes) {
+            if let Err(e) = made.result {
+                let path = format!("{}/{}", self.folder, made.file.name());
                 return Ctl::End(Step::Failed(
                     Abort::new(format!("writing {path}: {e}")).failure(),
                 ));
             }
-            drop(made.bytes);
             if !out.data.needs_furnidata_entries() {
                 if let Some(furnidata) = out.furnidata.as_mut() {
                     furnidata.entries.clear();

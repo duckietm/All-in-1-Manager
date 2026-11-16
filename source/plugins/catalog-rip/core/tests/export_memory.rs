@@ -8,10 +8,9 @@
 //! stack and data, and the plugin's own state). Each step must also stay far below the host's
 //! 5 s CPU limit per call (wasm runs roughly 1.5-3x slower than native).
 //!
-//! Not met by one step: catalog.json is ~40 MiB at this size (pretty-printed, byte for byte
-//! the built-in's), and a picked folder's `write` takes a whole file, so that step holds the
-//! file next to the catalogue it is made from (~62 MiB live). The test pins that bound; getting
-//! under 40 MiB needs a streamed (appending) write in the host API, or another catalog.json.
+//! catalog.json is ~40 MiB at this size (pretty-printed, byte for byte the built-in's): like
+//! every data file it is streamed to the sink in pieces of 1 MiB (`Sink::append`, the picked
+//! folder's `append`), so no step holds a whole file.
 //!
 //! A counting global allocator, so this file is its own test binary with a single test. Slow in
 //! a debug build: run it with
@@ -369,7 +368,7 @@ impl Transport for Chunked {
     }
 }
 
-/// Counts what was written.
+/// Counts what was written (a streamed file once, with its whole size).
 #[derive(Default)]
 struct CountingSink {
     files: Vec<(String, usize)>,
@@ -379,6 +378,14 @@ impl Sink for CountingSink {
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
         if !path.contains("/images/") {
             self.files.push((path.to_string(), data.len()));
+        }
+        Ok(())
+    }
+
+    fn append(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
+        match self.files.last_mut() {
+            Some((last, len)) if last == path => *len += data.len(),
+            _ => self.files.push((path.to_string(), data.len())),
         }
         Ok(())
     }
@@ -500,32 +507,23 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
         println!("  {:?} in a {:?} step [{}] (peak {:.1} MiB)", s.time, s.phase, s.what, mib(s.peak));
     }
     let slowest = by_time[0];
-    // Every step but the one that writes catalog.json stays under 40 MiB.
+    // catalog.json is bigger than any step's heap may be: it is streamed.
     let catalog_json = sink
         .files
         .iter()
         .find(|(name, _)| name.ends_with("/catalog.json"))
         .map(|(_, len)| *len)
         .expect("catalog.json");
+    assert!(catalog_json > 30 * 1024 * 1024, "catalog.json is {:.1} MiB", mib(catalog_json));
+    // Every step, the data files' included, stays under 40 MiB.
     for s in &steps {
-        if s.what == "catalog.json" {
-            // That file is one buffer of its whole size (the sink writes whole files), next to
-            // the catalogue it is made from: not more than that.
-            assert!(
-                s.peak <= catalog_json + 24 * 1024 * 1024,
-                "the catalog.json step peaks at {:.1} MiB for a {:.1} MiB file",
-                mib(s.peak),
-                mib(catalog_json)
-            );
-        } else {
-            assert!(
-                s.peak <= 40 * 1024 * 1024,
-                "peak live heap {:.1} MiB > 40 MiB in a {:?} step [{}]",
-                mib(s.peak),
-                s.phase,
-                s.what
-            );
-        }
+        assert!(
+            s.peak <= 40 * 1024 * 1024,
+            "peak live heap {:.1} MiB > 40 MiB in a {:?} step [{}]",
+            mib(s.peak),
+            s.phase,
+            s.what
+        );
     }
     assert!(
         slowest.time < Duration::from_millis(800),

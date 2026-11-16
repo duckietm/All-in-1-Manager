@@ -64,6 +64,10 @@ impl Sink for FolderSink<'_> {
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
         self.0.write(path, data).map_err(|e| e.to_string())
     }
+
+    fn append(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
+        self.0.append(path, data).map_err(|e| e.to_string())
+    }
 }
 
 /// WASI's clocks (`Instant` and `SystemTime` work in a `wasm32-wasip2` guest).

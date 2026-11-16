@@ -20,13 +20,15 @@ use adapters::{
     SourceError, SysClock, FIRST_PORT, LAST_PORT, PROFILES_FILE, SQL_LIMIT,
 };
 use aio_plugin_sdk::folders::{self, Folder};
+use aio_plugin_sdk::i18n::{tr, tr_with};
 use aio_plugin_sdk::sql::{Op, Select};
 use aio_plugin_sdk::ui::BannerKind;
 use aio_plugin_sdk::{export_plugin, files, host, tcp, ErrorKind, Event, Plugin, Ui};
+use catalog_rip_core::images::ImageStats;
 use catalog_rip_core::output::items_base;
 use catalog_rip_core::transport::{Closed, Transport};
 use catalog_rip_core::{
-    Clock, Failure, HotelProfile, ItemsBase, ItemsBaseRow, Job, JobIo, Phase, ProfileChoice, RipOptions, Step, Summary,
+    Clock, Failure, HotelKind, HotelProfile, ItemsBase, ItemsBaseRow, Job, JobIo, Phase, ProfileChoice, RipOptions, Step, Summary,
 };
 
 /// What one tick gives the job; the rest of the tick's 5 s is margin (the job's G-Earth waits are host I/O).
@@ -126,18 +128,40 @@ impl ItemsSource for SqlItems {
     }
 }
 
-fn phase_text(phase: Phase) -> &'static str {
+fn phase_text(phase: Phase) -> String {
     match phase {
-        Phase::Connect => "Connecting to G-Earth",
-        Phase::WaitHotel => "Waiting for the hotel connection",
-        Phase::Learn => "Learning the packet ids from the client",
-        Phase::Index => "Reading the catalogue index",
-        Phase::Pages => "Reading the catalogue pages",
-        Phase::Extras => "Reading the extra catalogue messages",
-        Phase::Export => "Writing the files",
-        Phase::Images => "Downloading the images",
-        Phase::Done => "Done",
+        Phase::Connect => tr("Connecting to G-Earth"),
+        Phase::WaitHotel => tr("Waiting for the hotel connection"),
+        Phase::Learn => tr("Learning the packet ids from the client"),
+        Phase::Index => tr("Reading the catalogue index"),
+        Phase::Pages => tr("Reading the catalogue pages"),
+        Phase::Extras => tr("Reading the extra catalogue messages"),
+        Phase::Export => tr("Writing the files"),
+        Phase::Images => tr("Downloading the images"),
+        Phase::Done => tr("Done"),
     }
+}
+
+/// The kind of a hotel profile, as the profile list shows it (the core's `label` is English).
+fn kind_text(kind: HotelKind) -> String {
+    match kind {
+        HotelKind::Official => tr("official Habbo"),
+        HotelKind::FlashRetro => tr("Flash retro"),
+        HotelKind::NitroRetro => tr("Nitro retro"),
+    }
+}
+
+/// What the image downloads came to (the core's `describe` is English).
+fn images_text(images: &ImageStats) -> String {
+    let downloaded = images.downloaded.to_string();
+    let missing = images.missing.to_string();
+    if images.failed > 0 {
+        return tr_with(
+            "{downloaded} downloaded, {missing} not on the server, {failed} failed",
+            &[("downloaded", &downloaded), ("missing", &missing), ("failed", &images.failed.to_string())],
+        );
+    }
+    tr_with("{downloaded} downloaded, {missing} not on the server", &[("downloaded", &downloaded), ("missing", &missing)])
 }
 
 impl Run {
@@ -150,15 +174,16 @@ impl Run {
                 match load {
                     Load::More => None,
                     Load::Done => {
-                        log.push(format!("Read {} items_base rows.", loader.rows.len()));
+                        log.push(tr_with("Read {count} items_base rows.", &[("count", &loader.rows.len().to_string())]));
                         self.items = Some(items_base(&loader.rows));
                         self.stage = Stage::Connect(self.ports());
                         None
                     }
                     Load::Unavailable(why) => {
-                        log.push(format!(
+                        log.push(tr_with(
                             "items_base cannot be read ({why}): the item ids are written as items_base subqueries, \
-                             resolved when the SQL is imported."
+                             resolved when the SQL is imported.",
+                            &[("why", &why)],
                         ));
                         self.stage = Stage::Connect(self.ports());
                         None
@@ -169,7 +194,7 @@ impl Run {
                 let Some(port) = ports.pop() else { return Some(Ended::NoGearth) };
                 match tcp::connect(port) {
                     Ok(conn) => {
-                        log.push(format!("Connected to port {port} (G-Earth?)."));
+                        log.push(tr_with("Connected to port {port} (G-Earth?).", &[("port", &port.to_string())]));
                         self.port = Some(port);
                         let mut options = self.options.clone();
                         options.gearth_port = port;
@@ -178,7 +203,7 @@ impl Run {
                         None
                     }
                     Err(e) => {
-                        log.push(format!("Port {port}: {e}"));
+                        log.push(tr_with("Port {port}: {error}", &[("port", &port.to_string()), ("error", &e.to_string())]));
                         ports.is_empty().then_some(Ended::NoGearth)
                     }
                 }
@@ -211,7 +236,7 @@ impl Run {
                 // Every event has a log line too; nothing more to show.
                 job.take_events();
                 if !job.uses_gearth() && conn.take().is_some() {
-                    log.push("Closed the connection to G-Earth.".into());
+                    log.push(tr("Closed the connection to G-Earth."));
                 }
                 // Memory: the files still to write (catalog.json, the biggest) do not need it. Kept after a
                 // failure: the next port's job or Try again reuses it.
@@ -234,11 +259,11 @@ impl Run {
                         match after_failure(&failure, rest.len()) {
                             AfterFailure::Ended => Some(Ended::Failed(failure)),
                             AfterFailure::NoGearth => {
-                                log.push(format!("{} No port left to try.", failure.message));
+                                log.push(format!("{} {}", failure.message, tr("No port left to try.")));
                                 Some(Ended::NoGearth)
                             }
                             AfterFailure::NextPort => {
-                                log.push(format!("{} Trying the next port.", failure.message));
+                                log.push(format!("{} {}", failure.message, tr("Trying the next port.")));
                                 self.port = None;
                                 self.waiting = None;
                                 self.stage = Stage::Connect(std::mem::take(rest));
@@ -274,12 +299,12 @@ impl Ripper {
         let text = match files::read_to_string_if_exists(PROFILES_FILE) {
             Ok(text) => text,
             Err(e) => {
-                self.push_log([format!("The saved hotel profiles cannot be read: {e}")]);
+                self.push_log([tr_with("The saved hotel profiles cannot be read: {error}", &[("error", &e.to_string())])]);
                 None
             }
         };
         let (profiles, errors) = all_profiles(text.as_deref());
-        self.push_log(errors.into_iter().map(|e| format!("Saved hotel profiles: {e}")));
+        self.push_log(errors.into_iter().map(|e| tr_with("Saved hotel profiles: {error}", &[("error", &e)])));
         self.profiles = profiles;
         self.profile = self.profile.min(self.profiles.len());
     }
@@ -292,8 +317,8 @@ impl Ripper {
             .and_then(|old| add_profile(old.as_deref(), file_name, json))
             .and_then(|text| files::write_str(PROFILES_FILE, &text).map_err(|e| e.to_string()));
         match saved {
-            Ok(()) => self.push_log(["The learned packet ids were saved as a hotel profile.".to_string()]),
-            Err(e) => self.push_log([format!("The learned hotel profile could not be saved: {e}")]),
+            Ok(()) => self.push_log([tr("The learned packet ids were saved as a hotel profile.")]),
+            Err(e) => self.push_log([tr_with("The learned hotel profile could not be saved: {error}", &[("error", &e)])]),
         }
         self.load_profiles();
     }
@@ -317,23 +342,23 @@ impl Ripper {
 
     fn start(&mut self) {
         if !self.normal && !self.builders_club {
-            self.say(BannerKind::Warning, "Choose the normal catalogue, the Builders Club one, or both.");
+            self.say(BannerKind::Warning, tr("Choose the normal catalogue, the Builders Club one, or both."));
             return;
         }
         let delay_ms = match parse_delay(&self.delay_text) {
             Ok(ms) => ms,
             Err(e) => {
-                self.say(BannerKind::Warning, format!("{e} Correct it, then click Rip catalogue again."));
+                self.say(BannerKind::Warning, format!("{e} {}", tr("Correct it, then click Rip catalogue again.")));
                 return;
             }
         };
-        let Some(folder) = folders::pick("Where to save the catalogue") else {
+        let Some(folder) = folders::pick(&tr("Where to save the catalogue")) else {
             return;
         };
         self.message = None;
         self.outcome = None;
         self.log.clear();
-        self.push_log([format!("Saving into the folder {}.", folder.name())]);
+        self.push_log([tr_with("Saving into the folder {folder}.", &[("folder", &folder.name())])]);
         self.run = Some(Run {
             stage: Stage::Items(ItemsLoader::new()),
             folder,
@@ -350,7 +375,7 @@ impl Ripper {
     fn retry(&mut self) {
         let Some(outcome) = self.outcome.take() else { return };
         self.message = None;
-        self.push_log(["Trying again with a new connection to G-Earth.".to_string()]);
+        self.push_log([tr("Trying again with a new connection to G-Earth.")]);
         let order = self.probe.connect_order();
         self.run = Some(Run {
             stage: Stage::Connect(order.iter().rev().copied().collect()),
@@ -381,22 +406,27 @@ impl Ripper {
         match &ended {
             Ended::Done(summary) => {
                 self.save_learned(&summary.learned_profile);
-                let mut text = format!(
-                    "{} pages ({} failed) and {} offers saved in {}/{}. Images: {}.",
-                    summary.pages,
-                    summary.pages_failed,
-                    summary.items,
-                    run.folder.name(),
-                    summary.folder,
-                    summary.images.describe()
+                let mut text = tr_with(
+                    "{pages} pages ({failed} failed) and {offers} offers saved in {folder}/{path}. Images: {images}.",
+                    &[
+                        ("pages", &summary.pages.to_string()),
+                        ("failed", &summary.pages_failed.to_string()),
+                        ("offers", &summary.items.to_string()),
+                        ("folder", &run.folder.name()),
+                        ("path", &summary.folder),
+                        ("images", &images_text(&summary.images)),
+                    ],
                 );
+                // Each sentence is translated whole and the sentences are joined with a space.
                 if summary.cancelled {
-                    text.push_str(" Cancelled while writing: the catalogue is whole, some images are missing.");
+                    text.push(' ');
+                    text.push_str(&tr("Cancelled while writing: the catalogue is whole, some images are missing."));
                 }
                 if !summary.missing_furni.is_empty() {
-                    text.push_str(&format!(
-                        " {} products are not in this hotel's items_base (missing_furni.json).",
-                        summary.missing_furni.len()
+                    text.push(' ');
+                    text.push_str(&tr_with(
+                        "{count} products are not in this hotel's items_base (missing_furni.json).",
+                        &[("count", &summary.missing_furni.len().to_string())],
                     ));
                 }
                 self.say(BannerKind::Success, text);
@@ -408,23 +438,25 @@ impl Ripper {
                 let kind = if failure.cancelled { BannerKind::Info } else { BannerKind::Error };
                 let mut text = failure.message.clone();
                 if failure.reconnect {
-                    text.push_str(" Click Try again to connect to G-Earth again.");
+                    text.push(' ');
+                    text.push_str(&tr("Click Try again to connect to G-Earth again."));
                 }
                 self.say(kind, text);
             }
             Ended::NoGearth => self.say(
                 BannerKind::Error,
-                format!(
-                    "G-Earth did not answer on ports {FIRST_PORT} to {LAST_PORT}. Start G-Earth and log in to the hotel, \
-                     then click Try again."
+                tr_with(
+                    "G-Earth did not answer on ports {first} to {last}. Start G-Earth and log in to the hotel, \
+                     then click Try again.",
+                    &[("first", &FIRST_PORT.to_string()), ("last", &LAST_PORT.to_string())],
                 ),
             ),
-            Ended::Cancelled => self.say(BannerKind::Info, "Cancelled before anything was asked from the hotel."),
+            Ended::Cancelled => self.say(BannerKind::Info, tr("Cancelled before anything was asked from the hotel.")),
         }
-        host::status(match &ended {
-            Ended::Done(_) => "Catalogue ripped.",
-            Ended::Cancelled => "Catalogue rip cancelled.",
-            _ => "The catalogue rip stopped.",
+        host::status(&match &ended {
+            Ended::Done(_) => tr("Catalogue ripped."),
+            Ended::Cancelled => tr("Catalogue rip cancelled."),
+            _ => tr("The catalogue rip stopped."),
         });
         self.outcome = Some(Outcome { ended, folder: run.folder, options: run.options, items: run.items });
         // Look for G-Earth again: one more sweep in ticks (or a recheck of the port that answered).
@@ -435,14 +467,14 @@ impl Ripper {
         let Some(Outcome { ended: Ended::Done(summary), folder, .. }) = &self.outcome else { return };
         let path = format!("{}/{MANAGER_SQL}", summary.folder);
         if let Err(e) = folder.open_import_preview(&path) {
-            self.say(BannerKind::Error, format!("Could not open the import preview: {e}"));
+            self.say(BannerKind::Error, tr_with("Could not open the import preview: {error}", &[("error", &e.to_string())]));
         }
     }
 
     fn reveal(&mut self) {
         let Some(outcome) = &self.outcome else { return };
         if let Err(e) = outcome.folder.reveal() {
-            self.say(BannerKind::Warning, format!("Could not open the folder: {e}"));
+            self.say(BannerKind::Warning, tr_with("Could not open the folder: {error}", &[("error", &e.to_string())]));
         }
     }
 
@@ -472,54 +504,62 @@ impl Ripper {
     }
 
     fn render_gearth(&self, ui: &mut Ui) {
-        ui.card("G-Earth", |ui| {
+        ui.card(tr("G-Earth"), |ui| {
             if let Some(run) = &self.run {
                 match (&run.stage, run.port) {
-                    (Stage::Rip { conn: Some(_), .. }, Some(port)) => ui.text(format!("Connected on port {port}.")),
-                    (Stage::Rip { .. }, _) => ui.text("The rip is done with G-Earth; the connection is closed."),
-                    _ => ui.text("Connecting when the rip starts."),
+                    (Stage::Rip { conn: Some(_), .. }, Some(port)) => ui.text(tr_with("Connected on port {port}.", &[("port", &port.to_string())])),
+                    (Stage::Rip { .. }, _) => ui.text(tr("The rip is done with G-Earth; the connection is closed.")),
+                    _ => ui.text(tr("Connecting when the rip starts.")),
                 }
                 return;
             }
             ui.text(self.probe.status());
             if self.probe.found().is_none() {
-                ui.text(format!("Download G-Earth: {GEARTH_RELEASES}"));
+                ui.text(tr_with("Download G-Earth: {address}", &[("address", GEARTH_RELEASES)]));
             }
             if self.probe.sweep_port().is_none() {
-                ui.button("check", "Check again");
+                ui.button("check", tr("Check again"));
             }
         });
     }
 
     fn render_settings(&self, ui: &mut Ui) {
-        ui.card("Settings", |ui| {
-            let options = std::iter::once("Detect from the hotel connection".to_string()).chain(
-                self.profiles.iter().map(|p| {
-                    let saved = if p.builtin { "" } else { ", saved" };
-                    format!("{} ({}{saved})", p.name, p.kind.label())
-                }),
-            );
+        ui.card(tr("Settings"), |ui| {
+            let options = std::iter::once(tr("Detect from the hotel connection")).chain(self.profiles.iter().map(|p| {
+                let values = [("name", p.name.as_str()), ("kind", &kind_text(p.kind))];
+                if p.builtin {
+                    tr_with("{name} ({kind})", &values)
+                } else {
+                    tr_with("{name} ({kind}, saved)", &values)
+                }
+            }));
             ui.select("profile", options, self.profile);
-            ui.checkbox("normal", "Normal catalogue", self.normal);
-            ui.checkbox("builders_club", "Builders Club catalogue", self.builders_club);
-            ui.checkbox("images", "Download the images", self.images);
-            ui.input("delay", "Delay between requests (ms)", self.delay_text.as_str());
+            ui.checkbox("normal", tr("Normal catalogue"), self.normal);
+            ui.checkbox("builders_club", tr("Builders Club catalogue"), self.builders_club);
+            ui.checkbox("images", tr("Download the images"), self.images);
+            ui.input("delay", tr("Delay between requests (ms)"), self.delay_text.as_str());
         });
     }
 
     fn render_run(run: &Run, ui: &mut Ui) {
-        ui.card("Progress", |ui| match &run.stage {
-            Stage::Items(loader) => ui.text(format!("Reading the hotel's items_base ({} rows so far)...", loader.rows.len())),
-            Stage::Connect(_) => ui.text("Looking for G-Earth..."),
+        ui.card(tr("Progress"), |ui| match &run.stage {
+            Stage::Items(loader) => ui.text(tr_with("Reading the hotel's items_base ({count} rows so far)...", &[("count", &loader.rows.len().to_string())])),
+            Stage::Connect(_) => ui.text(tr("Looking for G-Earth...")),
             Stage::Rip { job, .. } => {
                 let progress = job.progress();
-                let mut line = phase_text(progress.phase).to_string();
-                if progress.total > 0 {
-                    line.push_str(&format!(": {} of {}", progress.done, progress.total));
-                }
-                if !progress.label.is_empty() {
-                    line.push_str(&format!(" ({})", progress.label));
-                }
+                let phase = phase_text(progress.phase);
+                let done = progress.done.to_string();
+                let total = progress.total.to_string();
+                // The label is a name from the hotel's data, kept as it is.
+                let line = match (progress.total > 0, progress.label.is_empty()) {
+                    (true, true) => tr_with("{phase}: {done} of {total}", &[("phase", &phase), ("done", &done), ("total", &total)]),
+                    (true, false) => tr_with(
+                        "{phase}: {done} of {total} ({label})",
+                        &[("phase", &phase), ("done", &done), ("total", &total), ("label", &progress.label)],
+                    ),
+                    (false, true) => phase,
+                    (false, false) => tr_with("{phase} ({label})", &[("phase", &phase), ("label", &progress.label)]),
+                };
                 ui.text(line);
                 ui.progress(progress.done, progress.total);
                 if let Some(waiting) = &run.waiting {
@@ -528,22 +568,22 @@ impl Ripper {
             }
         });
         if run.cancelling {
-            ui.text("Cancelling...");
+            ui.text(tr("Cancelling..."));
         } else {
-            ui.button("cancel", "Cancel");
+            ui.button("cancel", tr("Cancel"));
         }
-        ui.text("Leaving this page stops the rip.");
+        ui.text(tr("Leaving this page stops the rip."));
     }
 
     fn render_outcome(outcome: &Outcome, ui: &mut Ui) {
         ui.row(|ui| {
             if let Ended::Done(summary) = &outcome.ended {
-                ui.button("reveal", "Open folder");
+                ui.button("reveal", tr("Open folder"));
                 if summary.files.iter().any(|f| f == MANAGER_SQL) {
-                    ui.primary_button("import", "Import into hotel");
+                    ui.primary_button("import", tr("Import into hotel"));
                 }
             } else if matches!(&outcome.ended, Ended::Failed(f) if f.partial.is_some()) {
-                ui.button("reveal", "Open folder");
+                ui.button("reveal", tr("Open folder"));
             }
             let retry = match &outcome.ended {
                 Ended::Failed(failure) => failure.reconnect,
@@ -551,7 +591,7 @@ impl Ripper {
                 _ => false,
             };
             if retry {
-                ui.primary_button("retry", "Try again");
+                ui.primary_button("retry", tr("Try again"));
             }
         });
     }
@@ -581,11 +621,11 @@ impl Plugin for Ripper {
         if self.run.is_none() {
             self.probe();
         }
-        ui.heading("Catalogue ripper");
-        ui.text(
+        ui.heading(tr("Catalogue ripper"));
+        ui.text(tr(
             "Reads the catalogue of the hotel you are logged in to through G-Earth, and saves it as SQL and JSON \
              files (with the images) in a folder you choose.",
-        );
+        ));
         if let Some((kind, text)) = &self.message {
             ui.banner(*kind, text.as_str());
         }
@@ -594,14 +634,14 @@ impl Plugin for Ripper {
             Some(run) => Self::render_run(run, ui),
             None => {
                 self.render_settings(ui);
-                ui.primary_button("rip", "Rip catalogue");
+                ui.primary_button("rip", tr("Rip catalogue"));
                 if let Some(outcome) = &self.outcome {
                     Self::render_outcome(outcome, ui);
                 }
             }
         }
         if !self.log.is_empty() {
-            ui.card("Log", |ui| ui.log(self.log.iter().cloned()));
+            ui.card(tr("Log"), |ui| ui.log(self.log.iter().cloned()));
         }
     }
 

@@ -13,17 +13,25 @@
 //!    for one it does not really need.
 //! 4. **Failing gracefully**: every host call can fail (no server connected, access refused,
 //!    user said no). The page shows a friendly banner instead of crashing.
+//! 5. **Translations** (`aio_plugin_sdk::i18n`, the `i18n` folder): every text the page shows goes
+//!    through `tr` (a fixed text) or `tr_with` (a text with `{name}` placeholders). The English
+//!    text is the key; `i18n/it.json` maps each one to Italian, and a language the plugin does not
+//!    translate shows English. The manifest's texts (name, description, page title, tile) are
+//!    translated by the Manager from the same file, so they are keys there too. Keep keys and
+//!    placeholders identical in the code and the file.
 //!
 //! Remember the model: `render` only *describes* the page from the current state; `on_event`
 //! changes the state when the user does something; the Manager then calls `render` again.
 
+use aio_plugin_sdk::i18n::{tr, tr_with};
 use aio_plugin_sdk::{export_plugin, files, host, sql, ui::BannerKind, ErrorKind, Event, Plugin, Ui};
 
 /// Private file with the text of the note.
 const NOTES_FILE: &str = "notes.txt";
 /// Private file with the note's title.
 const TITLE_FILE: &str = "title.txt";
-/// Title used until the user renames the note.
+/// Title used until the user renames the note. It is an English key: `title()` translates it while it is in use,
+/// and a title the user typed is shown as it is.
 const DEFAULT_TITLE: &str = "My notes";
 /// How many users the table shows.
 const USER_LIMIT: u32 = 10;
@@ -66,13 +74,13 @@ fn load_users() -> Result<Vec<[String; 2]>, String> {
         .run()
         .map_err(|e| match e.kind() {
             ErrorKind::Denied => {
-                "The users table is not available: the plugin lacks the `sql:read:users` permission.".to_string()
+                tr("The users table is not available: the plugin lacks the `sql:read:users` permission.")
             }
-            ErrorKind::Rejected => "The request was rejected, so the user list was not loaded.".to_string(),
-            ErrorKind::Timeout => "The server did not answer in time. Try Refresh users again.".to_string(),
+            ErrorKind::Rejected => tr("The request was rejected, so the user list was not loaded."),
+            ErrorKind::Timeout => tr("The server did not answer in time. Try Refresh users again."),
             // `ErrorKind` is `#[non_exhaustive]`, so a catch-all arm is required. NotFound and
-            // Other get the text of the error.
-            _ => format!("The user list is not available right now ({e})."),
+            // Other get the text of the error. `tr_with` fills `{error}` after translating.
+            _ => tr_with("The user list is not available right now ({error}).", &[("error", &e.to_string())]),
         })?;
     let mut table = Vec::new();
     for row in rows {
@@ -85,6 +93,15 @@ fn load_users() -> Result<Vec<[String; 2]>, String> {
 }
 
 impl Notes {
+    /// The title to show: the default one is translated, one the user typed is not.
+    fn title(&self) -> String {
+        if self.title == DEFAULT_TITLE {
+            tr(DEFAULT_TITLE)
+        } else {
+            self.title.clone()
+        }
+    }
+
     fn say(&mut self, kind: BannerKind, text: impl Into<String>) {
         self.message = Some((kind, text.into()));
     }
@@ -92,32 +109,32 @@ impl Notes {
     /// "Export...": ask the user where to save, then write the note there.
     fn export(&mut self) {
         // The user chooses the file in the Manager's own dialog. `None` means they cancelled.
-        let Some(file) = host::pick_save_file("Export notes", "notes.txt", ["txt"]) else {
+        let Some(file) = host::pick_save_file(&tr("Export notes"), "notes.txt", ["txt"]) else {
             return;
         };
-        let content = format!("{}\n\n{}\n", self.title, self.text);
+        let content = format!("{}\n\n{}\n", self.title(), self.text);
         match file.write(content.as_bytes()) {
-            Ok(()) => self.say(BannerKind::Success, format!("Exported to {}.", file.name())),
-            Err(e) => self.say(BannerKind::Error, format!("Could not export: {e}")),
+            Ok(()) => self.say(BannerKind::Success, tr_with("Exported to {file}.", &[("file", &file.name())])),
+            Err(e) => self.say(BannerKind::Error, tr_with("Could not export: {error}", &[("error", &e.to_string())])),
         }
     }
 
     /// "Rename note title...": a small text prompt with the current title prefilled.
     fn rename(&mut self) {
-        let Some(new_title) = host::prompt_text("Rename note", "Title", &self.title) else {
+        let Some(new_title) = host::prompt_text(&tr("Rename note"), &tr("Title"), &self.title()) else {
             return; // cancelled
         };
         let new_title = new_title.trim().to_string();
         if new_title.is_empty() {
-            self.say(BannerKind::Warning, "The title cannot be empty.");
+            self.say(BannerKind::Warning, tr("The title cannot be empty."));
             return;
         }
         match files::write_str(TITLE_FILE, &new_title) {
             Ok(()) => {
                 self.title = new_title;
-                self.say(BannerKind::Success, "Title renamed.");
+                self.say(BannerKind::Success, tr("Title renamed."));
             }
-            Err(e) => self.say(BannerKind::Error, format!("Could not save the title: {e}")),
+            Err(e) => self.say(BannerKind::Error, tr_with("Could not save the title: {error}", &[("error", &e.to_string())])),
         }
     }
 }
@@ -135,7 +152,10 @@ impl Plugin for Notes {
             text.truncate(cut);
             message = Some((
                 BannerKind::Info,
-                format!("The saved note was longer than {INPUT_LIMIT} characters and was shortened."),
+                tr_with(
+                    "The saved note was longer than {limit} characters and was shortened.",
+                    &[("limit", &INPUT_LIMIT.to_string())],
+                ),
             ));
         }
         Notes { text, title: load(TITLE_FILE, DEFAULT_TITLE), message, users: load_users() }
@@ -143,27 +163,31 @@ impl Plugin for Notes {
 
     /// Describe the page from the current state. No side effects here.
     fn render(&mut self, ui: &mut Ui) {
-        ui.heading(self.title.as_str());
+        ui.heading(self.title());
 
         if let Some((kind, text)) = &self.message {
             ui.banner(*kind, text.as_str());
         }
 
+        // Call `tr` here, in `render`, every time: when the user switches the Manager's language the page is
+        // drawn again and every text comes out in the new language. (Texts made outside `render`, like the
+        // banners below, are translated once, in the language of that moment.)
+        //
         // The note. The Manager reports the text when the field loses focus (Enter or a click
         // elsewhere), and the 4,000 character limit of an input applies.
-        ui.input("notes", "Notes", self.text.as_str());
+        ui.input("notes", tr("Notes"), self.text.as_str());
         ui.row(|ui| {
-            ui.button("export", "Export...");
-            ui.button("rename", "Rename note title...");
+            ui.button("export", tr("Export..."));
+            ui.button("rename", tr("Rename note title..."));
         });
 
         // The read-only table, or a banner that explains why there is none.
-        ui.card("Recent users", |ui| match &self.users {
-            Ok(rows) if rows.is_empty() => ui.text("There are no users yet."),
-            Ok(rows) => ui.table(["ID", "Username"], rows.iter().cloned()),
+        ui.card(tr("Recent users"), |ui| match &self.users {
+            Ok(rows) if rows.is_empty() => ui.text(tr("There are no users yet.")),
+            Ok(rows) => ui.table([tr("ID"), tr("Username")], rows.iter().cloned()),
             Err(why) => ui.banner(BannerKind::Warning, why.as_str()),
         });
-        ui.button("refresh", "Refresh users");
+        ui.button("refresh", tr("Refresh users"));
     }
 
     fn on_event(&mut self, event: Event) -> Result<(), String> {
@@ -173,7 +197,7 @@ impl Plugin for Notes {
                 match files::write_str(NOTES_FILE, &value) {
                     Ok(()) => self.message = None,
                     // Keep what the user typed on screen, but tell them it is not saved.
-                    Err(e) => self.say(BannerKind::Error, format!("Could not save the note: {e}")),
+                    Err(e) => self.say(BannerKind::Error, tr_with("Could not save the note: {error}", &[("error", &e.to_string())])),
                 }
                 self.text = value;
             }

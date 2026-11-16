@@ -5,6 +5,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aio_plugin_sdk::folders::Folder;
+use aio_plugin_sdk::i18n::tr_with;
 use aio_plugin_sdk::sql::Value;
 use aio_plugin_sdk::{http, tcp};
 use catalog_rip_core::gearth::ExtensionInfo;
@@ -34,8 +35,9 @@ pub struct HttpFetch;
 impl Fetch for HttpFetch {
     fn get(&mut self, url: &str) -> Result<Vec<u8>, FetchError> {
         if !is_http_url(url) {
-            return Err(FetchError::Failed(format!(
-                "{url}: the plugin can only read http and https addresses, not files"
+            return Err(FetchError::Failed(tr_with(
+                "{url}: the plugin can only read http and https addresses, not files",
+                &[("url", url)],
             )));
         }
         http::get(url).map_err(|e| fetch_error(e.message()))
@@ -180,20 +182,25 @@ impl Probe {
 
     /// The idle page's line about G-Earth.
     pub fn status(&self) -> String {
-        let ports = format!("{FIRST_PORT}\u{2013}{LAST_PORT}");
+        let first = FIRST_PORT.to_string();
+        let last = LAST_PORT.to_string();
         if let Some(port) = self.sweep_port() {
-            return format!("Checking port {port}\u{2026}");
+            return tr_with("Checking port {port}…", &[("port", &port.to_string())]);
         }
         match self.found {
-            Some(port) => format!("Something answers on port {port} (G-Earth?)."),
-            None if self.none_answered() => {
-                format!("Not found on ports {ports}. Start G-Earth, then click Check again.")
-            }
-            None if self.misses > 0 => format!(
-                "Not found on ports {FIRST_PORT}\u{2013}{} so far. Start G-Earth, then click Check again.",
-                FIRST_PORT + self.misses - 1
+            Some(port) => tr_with("Something answers on port {port} (G-Earth?).", &[("port", &port.to_string())]),
+            None if self.none_answered() => tr_with(
+                "Not found on ports {first}–{last}. Start G-Earth, then click Check again.",
+                &[("first", &first), ("last", &last)],
             ),
-            None => format!("Start G-Earth, then click Check again to look for it on ports {ports}."),
+            None if self.misses > 0 => tr_with(
+                "Not found on ports {first}–{last} so far. Start G-Earth, then click Check again.",
+                &[("first", &first), ("last", &(FIRST_PORT + self.misses - 1).to_string())],
+            ),
+            None => tr_with(
+                "Start G-Earth, then click Check again to look for it on ports {first}–{last}.",
+                &[("first", &first), ("last", &last)],
+            ),
         }
     }
 
@@ -356,17 +363,16 @@ impl ItemsLoader {
             self.effect_failures = 0;
         }
         if let Some(why) = self.effect_error.take() {
-            self.notes.push(format!("items_base: the read with effect_id_male failed ({why}); using 0."));
+            self.notes.push(tr_with("items_base: the read with effect_id_male failed ({why}); using 0.", &[("why", &why)]));
         }
         if rows.len() >= SQL_LIMIT && self.width > WINDOW {
             self.width = (self.width / 2).max(WINDOW);
             return Load::More;
         }
         if rows.len() >= SQL_LIMIT {
-            self.notes.push(format!(
-                "items_base has {SQL_LIMIT} rows with ids from {} to {}: ids repeat, so some rows may be missing.",
-                self.from,
-                to - 1
+            self.notes.push(tr_with(
+                "items_base has {limit} rows with ids from {from} to {to}: ids repeat, so some rows may be missing.",
+                &[("limit", &SQL_LIMIT.to_string()), ("from", &self.from.to_string()), ("to", &(to - 1).to_string())],
             ));
         }
         let count = rows.len();
@@ -393,7 +399,10 @@ impl ItemsLoader {
 
     fn done(&mut self) -> Load {
         if let Some(why) = self.first_skip.take() {
-            self.notes.push(format!("{} items_base rows could not be read and were left out (first: {why}).", self.skipped));
+            self.notes.push(tr_with(
+                "{count} items_base rows could not be read and were left out (first: {why}).",
+                &[("count", &self.skipped.to_string()), ("why", &why)],
+            ));
         }
         Load::Done
     }
@@ -449,10 +458,12 @@ pub fn all_profiles(text: Option<&str>) -> (Vec<HotelProfile>, Vec<String>) {
 pub fn add_profile(existing: Option<&str>, file_name: &str, json: &str) -> Result<String, String> {
     let mut list = match existing {
         Some(text) if !text.trim().is_empty() => read_profile_file(PROFILES_FILE, text)
-            .map_err(|e| format!("{PROFILES_FILE} cannot be read ({e:#}), so it was not changed"))?,
+            .map_err(|e| {
+                tr_with("{file} cannot be read ({error}), so it was not changed", &[("file", PROFILES_FILE), ("error", &format!("{e:#}"))])
+            })?,
         _ => Vec::new(),
     };
-    let new = read_profile_file(file_name, json).map_err(|e| format!("the learned profile cannot be read ({e:#})"))?;
+    let new = read_profile_file(file_name, json).map_err(|e| tr_with("the learned profile cannot be read ({error})", &[("error", &format!("{e:#}"))]))?;
     for profile in new {
         match list.iter_mut().find(|p| p.name.eq_ignore_ascii_case(&profile.name)) {
             Some(old) => *old = profile,
@@ -481,10 +492,12 @@ pub fn extension_info() -> ExtensionInfo {
 
 /// The delay input's text as milliseconds between two requests.
 pub fn parse_delay(text: &str) -> Result<u64, String> {
-    let range = format!("a number of milliseconds from {MIN_DELAY_MS} to {MAX_DELAY_MS}");
     match text.trim().parse::<u64>() {
         Ok(ms) if (MIN_DELAY_MS..=MAX_DELAY_MS).contains(&ms) => Ok(ms),
-        _ => Err(format!("The delay must be {range}.")),
+        _ => Err(tr_with(
+            "The delay must be a number of milliseconds from {min} to {max}.",
+            &[("min", &MIN_DELAY_MS.to_string()), ("max", &MAX_DELAY_MS.to_string())],
+        )),
     }
 }
 

@@ -311,6 +311,12 @@ impl ExternalPluginView {
         display_safe(&self.info.manifest.name, 80)
     }
 
+    /// The line above the plugin's own content: it tells the user the page is the plugin's, not the Manager's, so it
+    /// names the plugin as consented (Ruling 3).
+    fn drawn_by(&self) -> String {
+        tf("Drawn by the plugin {plugin}", &[("plugin", &self.consented_name())])
+    }
+
     /// True while an approved script or write batch of this plugin executes: the window waits for it.
     pub fn executing(&self) -> bool {
         if self.running.task.is_finished() {
@@ -476,10 +482,10 @@ impl ExternalPluginView {
             }
             // Everything the plugin draws sits in this frame, under its name: it cannot pass for the Manager's own UI.
             let mut events = Vec::new();
-            let name = self.name();
+            let drawn_by = self.drawn_by();
             egui::Frame::new().stroke(egui::Stroke::new(1.0_f32, palette.card_border_strong)).corner_radius(8).inner_margin(12).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                ui.label(RichText::new(tf("Drawn by the plugin {plugin}", &[("plugin", &name)])).size(11.5).color(palette.subtle));
+                ui.label(RichText::new(&drawn_by).size(11.5).color(palette.subtle));
                 ui.add_space(6.0);
                 match self.page.as_mut() {
                     Some(Ok(shown)) => {

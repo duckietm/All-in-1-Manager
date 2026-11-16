@@ -256,6 +256,8 @@ async fn security_prompts_use_the_consented_name() {
     // ... the approval card and the dialogs' "The plugin X asks" name the plugin as the user consented to it.
     assert_eq!(view.consented_name(), "Hello");
     assert_eq!(view.running.services.name(), "Hello");
+    // The attribution line above the plugin's content too.
+    assert_eq!(view.drawn_by(), "Drawn by the plugin Hello");
     drop(view);
 }
 

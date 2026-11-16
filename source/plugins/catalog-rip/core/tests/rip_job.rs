@@ -267,13 +267,6 @@ fn show_diff(got: &BTreeMap<String, Vec<u8>>, want: &BTreeMap<String, Vec<u8>>) 
 
 // ------------------------------------------------------------------ over TCP
 
-/// Pins the job's glue (what it asks, assembles and hands to the exporters, the files it
-/// writes, README.txt, the images and their order of URLs) against a reconstruction of the
-/// built-in's output: the same packets parsed into a `RippedCatalog` and written by the
-/// exporters that are byte-identical to the built-in's (`export.rs`, `manager.rs`), with the
-/// README sections the built-in's `Output::write` adds copied into [`builtin_output`]. It is
-/// not a differential run of the built-in crate (that crate is not a dependency here); the
-/// exporters themselves are covered by being byte-identical copies.
 /// A data file whose stream fails (an `append` error) fails the rip like a failed write: the
 /// file is named, and the files after it are not made.
 #[test]
@@ -295,6 +288,13 @@ fn a_failed_append_fails_the_rip_and_names_the_file() {
     assert!(!sink.files.contains_key(&format!("{FOLDER}/README.txt")));
 }
 
+/// Pins the job's glue (what it asks, assembles and hands to the exporters, the files it
+/// writes, README.txt, the images and their order of URLs) against a reconstruction of the
+/// built-in's output: the same packets parsed into a `RippedCatalog` and written by the
+/// exporters that are byte-identical to the built-in's (`export.rs`, `manager.rs`), with the
+/// README sections the built-in's `Output::write` adds copied into [`builtin_output`]. It is
+/// not a differential run of the built-in crate (that crate is not a dependency here); the
+/// exporters themselves are covered by being byte-identical copies.
 #[test]
 fn full_rip_matches_reconstructed_builtin_output() {
     let (port, seen, fake) = start(official());

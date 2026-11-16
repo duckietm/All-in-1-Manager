@@ -113,7 +113,7 @@ pub struct ExtensionInfo {
 impl Default for ExtensionInfo {
     fn default() -> Self {
         Self {
-            title: "All-in-1 Manager".into(),
+            title: "Catalogue ripper (All-in-1 Manager)".into(),
             author: "SimoLeoLife".into(),
             version: env!("CARGO_PKG_VERSION").into(),
             description: "Catalogue ripper: reads the catalogue index and pages through your own Habbo session".into(),

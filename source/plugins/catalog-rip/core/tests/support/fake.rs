@@ -370,7 +370,7 @@ pub fn start(hotel: Hotel) -> (u16, Arc<Mutex<Seen>>, JoinHandle<()>) {
 }
 
 pub fn check_protocol(seen: &Seen) {
-    assert_eq!(seen.title, "All-in-1 Manager");
+    assert_eq!(seen.title, "Catalogue ripper (All-in-1 Manager)");
     assert_eq!(seen.echo_mismatch, 0);
     assert_eq!(
         seen.intercepts_echoed, seen.intercepts_sent,

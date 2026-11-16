@@ -16,7 +16,7 @@
 mod adapters;
 
 use adapters::{
-    add_profile, after_failure, all_profiles, extension_info, generator, items_row, parse_delay, AfterFailure, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
+    add_profile, after_failure, all_profiles, drop_items_base, extension_info, generator, items_row, parse_delay, AfterFailure, ConnTransport, FolderSink, HttpFetch, ItemsLoader, ItemsSource, Load, Probe,
     SourceError, SysClock, FIRST_PORT, LAST_PORT, PROFILES_FILE, SQL_LIMIT,
 };
 use aio_plugin_sdk::folders::{self, Folder};
@@ -213,8 +213,9 @@ impl Run {
                 if !job.uses_gearth() && conn.take().is_some() {
                     log.push("Closed the connection to G-Earth.".into());
                 }
-                // Memory: the files still to write (catalog.json, the biggest) do not need it.
-                if !job.uses_items_base() {
+                // Memory: the files still to write (catalog.json, the biggest) do not need it. Kept after a
+                // failure: the next port's job or Try again reuses it.
+                if drop_items_base(&step, job.uses_items_base()) {
                     self.items = None;
                 }
                 match step {

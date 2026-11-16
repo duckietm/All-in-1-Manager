@@ -11,7 +11,7 @@ use catalog_rip_core::gearth::ExtensionInfo;
 use catalog_rip_core::job::{MAX_DELAY_MS, MIN_DELAY_MS};
 use catalog_rip_core::profiles::{load_profiles, read_profile_file};
 use catalog_rip_core::transport::Transport;
-use catalog_rip_core::{Clock, Failure, Fetch, FetchError, HotelProfile, ItemsBaseRow, Sink};
+use catalog_rip_core::{Clock, Failure, Fetch, FetchError, HotelProfile, ItemsBaseRow, Sink, Step};
 
 // ---------------------------------------------------------------- the job's I/O
 
@@ -235,6 +235,13 @@ pub fn after_failure(failure: &Failure, ports_left: usize) -> AfterFailure {
     } else {
         AfterFailure::NoGearth
     }
+}
+
+/// Whether the plugin may drop the hotel's items_base after a step that returned `step`, the job saying
+/// `uses_items_base`. Never after a failed job: a job on the next port, or Try again, reuses it (a finished job,
+/// failed ones included, says it no longer uses it).
+pub fn drop_items_base(step: &Step, uses_items_base: bool) -> bool {
+    !uses_items_base && !matches!(step, Step::Failed(_))
 }
 
 // ---------------------------------------------------------------- items_base
@@ -816,7 +823,64 @@ mod tests {
         assert_eq!(generator(), format!("Catalogue ripper plugin {VERSION}"));
         let info = extension_info();
         assert_eq!(info.version, VERSION);
-        assert_eq!(info.title, ExtensionInfo::default().title);
+        assert_eq!(info.title, "Catalogue ripper (All-in-1 Manager)");
+    }
+
+    /// A job that fails at once: nothing behind the G-Earth connection.
+    fn failed_job() -> (catalog_rip_core::Job, catalog_rip_core::Step) {
+        use catalog_rip_core::transport::Closed;
+        use catalog_rip_core::{Job, JobIo, RipOptions, Step};
+        struct NoFetch;
+        impl Fetch for NoFetch {
+            fn get(&mut self, _url: &str) -> Result<Vec<u8>, FetchError> {
+                Err(FetchError::NotFound)
+            }
+        }
+        struct NoSink;
+        impl Sink for NoSink {
+            fn write(&mut self, _path: &str, _data: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+            fn append(&mut self, _path: &str, _data: &[u8]) -> Result<(), String> {
+                Ok(())
+            }
+        }
+        let mut job = Job::new(RipOptions::default());
+        let clock = SysClock::new();
+        for _ in 0..100 {
+            let mut io = JobIo {
+                transport: &mut Closed,
+                fetch: &mut NoFetch,
+                sink: &mut NoSink,
+                clock: &clock,
+                items: None,
+                existing: None,
+            };
+            let step = job.step(&mut io, 10);
+            if matches!(step, Step::Failed(_)) {
+                return (job, step);
+            }
+        }
+        panic!("the job did not fail");
+    }
+
+    #[test]
+    fn items_base_survives_a_failed_job_for_the_next_port_and_try_again() {
+        use catalog_rip_core::Step;
+        let (job, step) = failed_job();
+        // A finished job no longer reads items_base...
+        assert!(!job.uses_items_base());
+        // ...but a failed one may be followed by a job on the next port or by Try again, which reuse it.
+        assert!(!drop_items_base(&step, job.uses_items_base()));
+        let Step::Failed(failure) = &step else { unreachable!() };
+        for ports_left in [0, 3] {
+            let next = after_failure(failure, ports_left);
+            assert!(!drop_items_base(&step, false), "{next:?}: items_base kept");
+        }
+        // While it runs, and once it is done, the job's own answer decides.
+        assert!(!drop_items_base(&Step::Running, true));
+        assert!(drop_items_base(&Step::Running, false));
+        assert!(drop_items_base(&Step::Waiting("x".into()), false));
     }
 
     #[test]

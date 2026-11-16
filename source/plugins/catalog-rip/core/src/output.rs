@@ -375,6 +375,16 @@ impl<'a, 'b> Chunks<'a, 'b> {
     }
 }
 
+/// Writes `value` as pretty JSON into `out`. A serializer error (not only a failed append) fails
+/// the file: [`Chunks::finish`] returns it, unless an append error came first.
+fn write_json<T: serde::Serialize + ?Sized>(out: &mut Chunks, value: &T) {
+    if let Err(e) = serde_json::to_writer_pretty(&mut *out, value) {
+        if out.error.is_none() {
+            out.error = Some(format!("{} could not be written as JSON: {e}", out.name));
+        }
+    }
+}
+
 impl fmt::Write for Chunks<'_, '_> {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         if self.push(s.as_bytes()) {
@@ -493,7 +503,7 @@ impl DataExport {
                             ""
                         }
                     ));
-                    let _ = serde_json::to_writer_pretty(
+                    write_json(
                         &mut out,
                         &MissingJson {
                             count: self.missing_furni.len(),
@@ -507,16 +517,16 @@ impl DataExport {
                         continue;
                     };
                     let wanted = missing::missing_keys(&self.missing_furni);
-                    let _ = serde_json::to_writer_pretty(&mut out, &data.subset_json(&wanted));
+                    write_json(&mut out, &data.subset_json(&wanted));
                 }
                 DataFile::Extras => {
                     if input.extra_answers.is_empty() {
                         continue;
                     }
-                    let _ = serde_json::to_writer_pretty(&mut out, &extras::extras_json(input.extra_answers));
+                    write_json(&mut out, &extras::extras_json(input.extra_answers));
                 }
                 DataFile::Catalog => {
-                    let _ = serde_json::to_writer_pretty(
+                    write_json(
                         &mut out,
                         &export::CatalogJson {
                             catalog,
@@ -716,6 +726,39 @@ pub fn n0(value: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_json_error_fails_the_file_like_an_append_error() {
+        // A map with non-string keys cannot be JSON: the serializer fails without any I/O error.
+        let bad: BTreeMap<(i32, i32), i32> = [((1, 2), 3)].into();
+        let mut written = Vec::new();
+        let mut sink = |_: &str, data: &[u8]| -> Result<(), String> {
+            written.extend_from_slice(data);
+            Ok(())
+        };
+        let mut append: Append = &mut sink;
+        let mut out = Chunks::new("catalog.json", &mut append);
+        write_json(&mut out, &bad);
+        let error = out.finish().unwrap_err();
+        assert!(error.contains("JSON"), "{error}");
+
+        // An append error stays the reported error.
+        let mut failing = |_: &str, _: &[u8]| -> Result<(), String> { Err("disk full".into()) };
+        let mut append: Append = &mut failing;
+        let mut out = Chunks::new("catalog.json", &mut append);
+        write_json(&mut out, &vec!["x".repeat(2 * CHUNK)]);
+        assert_eq!(out.finish(), Err("disk full".to_string()));
+
+        // A good value is written whole.
+        let mut sink = |_: &str, data: &[u8]| -> Result<(), String> {
+            written.extend_from_slice(data);
+            Ok(())
+        };
+        let mut append: Append = &mut sink;
+        let mut out = Chunks::new("catalog.json", &mut append);
+        write_json(&mut out, &[1, 2]);
+        assert_eq!(out.finish(), Ok(()));
+    }
 
     #[test]
     fn numbers() {

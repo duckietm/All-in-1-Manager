@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # All-in-1 Manager: build it on Linux (and macOS).
-#   ./build.sh release   the program to hand out  -> public/release/all-in-1-manager (with Assets/)
+#   ./build.sh release   the program to hand out  -> public/release/all-in-1-manager (with plugins/)
 #   ./build.sh dev       a debug build            -> public/dev/all-in-1-manager
 #   ./build.sh run       a debug build, and start it
 #   ./build.sh test      all tests
@@ -45,9 +45,11 @@ case "$choice" in
     cargo build --release -p aio-app
     mkdir -p public/release
     cp -f "target/release/$exe" "public/release/$exe"
-    # The client images are in the program too; the folder next to it is what Deploy Assets reads first.
-    rm -rf public/release/Assets
-    cp -R source/Assets public/release/Assets
+    # The data packs of the Plugins page, next to the program, so it needs no download.
+    rm -rf public/release/plugins/client-assets
+    mkdir -p public/release/plugins/default-catalog
+    cp -R source/Assets public/release/plugins/client-assets
+    cp -f source/crates/app/assets/catalog/Full_Catalog.zip public/release/plugins/default-catalog/
     shortcut public/release all-in-1-manager "All-in-1 Manager"
     echo "Ready: $PWD/public/release/$exe (link: ./all-in-1-manager)"
     ;;

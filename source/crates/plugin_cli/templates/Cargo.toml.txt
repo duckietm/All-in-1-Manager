@@ -1,0 +1,22 @@
+[package]
+name = "{{crate}}"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "An All-in-1 Manager plugin"
+
+[lib]
+# A plugin is a WebAssembly component: a cdylib built for wasm32-wasip2 (`aio-plugin build`).
+crate-type = ["cdylib"]
+
+[dependencies]
+{{sdk}}
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+
+# The plugin is its own workspace. Remove this table to make it a member of an existing workspace;
+# the wasm then builds into that workspace's target/, so set dev_wasm in manifest.json to match (`aio-plugin dev` warns).
+[workspace]

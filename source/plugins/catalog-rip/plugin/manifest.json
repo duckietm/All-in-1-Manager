@@ -1,0 +1,31 @@
+{
+  "id": "catalog-rip",
+  "name": "Catalogue ripper",
+  "version": "0.1.0",
+  "author": "All-in-1 Manager",
+  "description": "Reads a hotel's catalogue through G-Earth while you are logged in, and saves it as SQL and JSON files with the images, ready to import.",
+  "api": "1.1",
+  "permissions": [
+    "tcp:localhost:9092-9101",
+    "http:images.habbo.com",
+    "http:www.habbo.com",
+    "http:www.habbo.com.br",
+    "http:www.habbo.de",
+    "http:www.habbo.es",
+    "http:www.habbo.fi",
+    "http:www.habbo.fr",
+    "http:www.habbo.it",
+    "http:www.habbo.nl",
+    "http:www.habbo.com.tr",
+    "http:ask",
+    "sql:read:items_base",
+    "files"
+  ],
+  "page_title": "Catalogue ripper",
+  "tile": {
+    "title": "Catalogue ripper",
+    "description": "Rip a hotel's catalogue through G-Earth.",
+    "color": "#d9822b"
+  },
+  "dev_wasm": "target/wasm32-wasip2/release/catalog_rip.wasm"
+}

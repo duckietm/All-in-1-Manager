@@ -1,0 +1,16 @@
+{
+  "id": "notes",
+  "name": "Notes",
+  "version": "1.0.0",
+  "author": "All-in-1 Manager",
+  "description": "Example plugin: keep admin notes, export them, and see the latest registered users.",
+  "api": "1.1",
+  "permissions": ["files", "sql:read:users"],
+  "page_title": "Notes",
+  "tile": {
+    "title": "Notes",
+    "description": "Example plugin: admin notes and recent users.",
+    "color": "#2fa37a"
+  },
+  "dev_wasm": "target/wasm32-wasip2/release/notes.wasm"
+}

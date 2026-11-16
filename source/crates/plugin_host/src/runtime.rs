@@ -1,0 +1,1396 @@
+//! The sandbox: runs one untrusted plugin component.
+//!
+//! What a guest can reach is exactly this list; everything else does not exist for it:
+//!
+//! * its own linear memory, at most [`MAX_MEMORY`] in total over all its memories (a `ResourceLimiter`
+//!   refuses to grow past it, so the guest's allocator fails and the guest traps; the host never aborts);
+//! * time: each call into the guest (and the instantiation) may take [`CALL_LIMIT`], not counting the time
+//!   spent waiting for the user in a host dialog or on host I/O (`sql-select`, `http-get`, `tcp-connect`,
+//!   `recv`, `recv-timeout`; each has its own limit: [`SQL_TIMEOUT`], [`HTTP_TIMEOUT`], [`TCP_CONNECT_TIMEOUT`],
+//!   [`TCP_RECV_TIMEOUT`], and a timeout there is an error for the guest, not a poisoned instance). Two
+//!   mechanisms enforce it: epoch interruption stops wasm
+//!   code (a ticker thread advances the engine's epoch every [`TICK`]; a call gets [`CALL_TICKS`] ticks and
+//!   the epoch callback extends the deadline only by the dialog time), and a wall-clock watchdog stops a
+//!   call parked in a host wait where no wasm runs (a WASI clock sleep or poll). Past the limit the call
+//!   fails with [`PluginError::TimedOut`];
+//! * WASI (a `wasm32-wasip2` std guest imports it): no preopened directories (no filesystem), no
+//!   environment variables, no arguments, stdin closed, TCP/UDP off and every address denied, no name
+//!   lookup. Clocks and random numbers are the host's. stdout and stderr become plugin log lines (Info and
+//!   Error);
+//! * the plugin log and status line, through one choke point (`LogSink`): every control character (C0,
+//!   DEL, C1; tab excepted) and every bidi override or isolate becomes U+FFFD, a newline starts a new
+//!   entry, each entry is cut to [`MAX_LOG_ENTRY`] bytes, and one call may emit at most
+//!   [`MAX_LOG_ENTRIES`] entries / [`MAX_LOG_BYTES`] bytes, then one [`LOG_TRUNCATED`] entry and nothing
+//!   more until the next call;
+//! * the `aio:plugin/host` imports: `log` / `status` / `ask` / `prompt-text` / the file dialogs go to
+//!   [`HostServices`] (at most [`MAX_DIALOGS`] dialogs per call; past it they get the cancel answer and are not
+//!   shown); `file-read` / `file-write` only inside `<plugin dir>/data/` (see
+//!   [`resolve_private`]), with a quota of [`MAX_DATA_BYTES`] / [`MAX_DATA_ENTRIES`] and files of at most
+//!   [`MAX_FILE_READ`]; a `picked-file` wraps the path the user picked (the guest sees only the file
+//!   name); `open-import-preview` hands the picked file's bytes (at most [`MAX_FILE_READ`]) to the Manager;
+//!   `pick-folder` (1.1, a dialog of the call) wraps a folder the user picked, where the plugin may only create new
+//!   files and rewrite or append to its own, never through a link and never into a folder of the Manager (see
+//!   [`crate::folders`]);
+//! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
+//!   `Err("permission denied...")` to the guest and a sanitised `Warn` line in the plugin log):
+//!   `sql-select` through [`crate::sql::build_select`], then [`HostServices::sql_select`];
+//!   `sql-write` through [`crate::sql::build_writes`], then the user's approval
+//!   ([`crate::approvals::Approvals`]), then [`HostServices::sql_write`] under [`SQL_TIMEOUT`];
+//!   `run-script` (`ssh`, or `ssh:root` for root) through [`crate::approvals::check_script`] (at most
+//!   [`crate::approvals::MAX_SCRIPT`], nothing the preview would alter), then the user's approval, then
+//!   [`HostServices::run_script`] under [`SCRIPT_TIMEOUT`]; neither the approval wait nor the run
+//!   counts against [`CALL_LIMIT`]; `http-get` through [`crate::net::check_http`]'s grammar and a declared
+//!   host, or with `http:ask` (1.1) a host the user allowed ([`crate::net::AskedHosts`]; an unanswered one is
+//!   asked for with [`HostServices::ask_host`], a dialog of the call), then [`HostServices::http_get`], bodies over
+//!   [`crate::net::MAX_HTTP_BODY`] refused; `tcp-connect` through [`crate::net::check_tcp`] (single ports and,
+//!   since 1.1, ranges), then a tokio `TcpStream` to `127.0.0.1:<port>` owned by the runtime: at most
+//!   [`crate::net::MAX_TCP_CONNECTIONS`] open at once, `recv` and `recv-timeout` (1.1, waiting at most
+//!   [`crate::net::MAX_RECV_TIMEOUT_MS`]) return at most [`crate::net::MAX_TCP_RECV`] bytes, and every
+//!   connection is closed when the instance is dropped or poisoned.
+//!
+//! The watchdog uses `tokio::time`: calls must run inside a tokio runtime (the app's).
+//!
+//! API versions: the imports are linked through the 1.1 bindings, and wasmtime's semver matching resolves a
+//! component's `aio:plugin/*@1.0.0` imports against them, so a component built for 1.0 runs unchanged. A component
+//! that imports `aio:plugin/*@1.1.0` needs `"api": "1.1"` in its manifest (checked at load). The exports are looked
+//! up by name: `render` and `on-event` must exist, `tick` (1.1) is optional.
+//!
+//! Ticks (1.1): `keep-working` during a call asks for one [`PluginInstance::tick`] after the next render
+//! ([`PluginInstance::wants_tick`]); each event or tick starts without that request. A tick is a call like any other
+//! (the same time limit, log budget and dialog limit, each tick its own). The app runs ticks only while the page is
+//! open and hands queued events to the plugin first.
+//!
+//! A call that traps, times out or is cancelled (its future dropped) poisons the instance: every later
+//! call returns the same error without running guest code. The app reloads the plugin with a fresh
+//! [`PluginInstance::load`].
+//!
+//! Page types: the WIT bindgen types are re-exported as they are ([`UiTree`], [`UiElement`], [`UiEvent`]
+//! and the element records). They are already plain owned Rust data (strings, vectors, enums), so a copy
+//! into look-alike types would add code without adding safety. Note: a tree comes from the guest and is
+//! untrusted; indices may be out of range or form cycles (the renderer must check them).
+
+use std::collections::HashMap;
+use std::io;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::path::{Component as PathComponent, Path, PathBuf};
+use std::pin::Pin;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
+
+use anyhow::{bail, Context as _, Result};
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
+use wasmtime::component::{Component, HasSelf, Instance, Linker, Resource, ResourceTable, TypedFunc};
+use wasmtime::{Config, Engine, ResourceLimiter, Store, Trap, UpdateDeadline};
+use wasmtime_wasi::cli::{IsTerminal, StdoutStream};
+use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+
+use crate::approvals::{check_script, Approvals, Decision, Pending};
+use crate::bindings::aio::plugin::host::{Host, HostPickedFile, HostPickedFolder, HostTcpConnection};
+use crate::bindings::aio::plugin::types::{
+    LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
+};
+use crate::bindings::Plugin;
+use crate::folders::{AppendFailed, FolderLimits, PickedFolder, UserFolders};
+use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
+use crate::net::{
+    askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
+    MAX_TCP_CONNECTIONS, MAX_TCP_RECV,
+};
+use crate::permissions::Permission;
+use crate::services::{HostServices, Level, ScriptRequest, SqlValue};
+use crate::sql::{build_select, build_writes};
+
+pub use crate::bindings::aio::plugin::types::{
+    BannerData, BannerKind, ButtonData, CardData, ChangedData, CheckboxData, InputData, ProgressData, SelectData,
+    TableData, UiElement, UiEvent, UiTree,
+};
+
+/// Linear memory a plugin may use, summed over all its memories.
+pub const MAX_MEMORY: usize = 64 * 1024 * 1024;
+/// Table elements a plugin may use, summed over all its tables.
+pub const MAX_TABLE_ELEMENTS: usize = 100_000;
+/// How often the epoch advances.
+pub const TICK: Duration = Duration::from_millis(100);
+/// Guest time one call may take.
+pub const CALL_LIMIT: Duration = Duration::from_secs(5);
+/// [`CALL_LIMIT`] in ticks.
+pub const CALL_TICKS: u64 = 50;
+/// The largest private or picked file handed to a guest (it must fit in its memory anyway).
+pub const MAX_FILE_READ: u64 = 32 * 1024 * 1024;
+/// Longest log entry or status text kept (bytes); the rest is cut.
+pub const MAX_LOG_ENTRY: usize = 4 * 1024;
+/// Log entries (status texts included) one call may emit.
+pub const MAX_LOG_ENTRIES: usize = 1_000;
+/// Log bytes one call may emit.
+pub const MAX_LOG_BYTES: usize = 256 * 1024;
+/// The entry that replaces everything past the per-call log budget.
+pub const LOG_TRUNCATED: &str = "log truncated by the host";
+/// Total size of the files in a plugin's private folder.
+pub const MAX_DATA_BYTES: u64 = 64 * 1024 * 1024;
+/// Files and folders in a plugin's private folder.
+pub const MAX_DATA_ENTRIES: usize = 10_000;
+/// Dialogs (`ask`, `prompt-text`, the file pickers) one call may open. Past it, each dialog request gets the cancel
+/// answer without anything being shown, so a plugin cannot keep the user in a loop of dialogs.
+pub const MAX_DIALOGS: usize = 20;
+/// The log line written once a call goes past [`MAX_DIALOGS`].
+pub const DIALOGS_REFUSED: &str = "more than 20 dialogs in one call: further dialogs are cancelled without being shown";
+/// Longest relative path accepted by `file-read` / `file-write`.
+const MAX_PATH: usize = 255;
+/// Most folder levels in a private path.
+const MAX_DEPTH: usize = 8;
+
+const DENIED: &str = "permission denied";
+
+/// Why a call into a plugin failed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum PluginError {
+    /// The guest trapped (a bug, `abort`, out of memory or a cancelled call). The instance is poisoned.
+    #[error("the plugin crashed: {0}")]
+    Trapped(String),
+    /// The guest ran longer than [`CALL_LIMIT`]. The instance is poisoned.
+    #[error("the plugin took too long and was stopped")]
+    TimedOut,
+    /// The plugin asked for something it is not allowed to do.
+    #[error("permission denied: {0}")]
+    Denied(String),
+    /// `on-event` returned an error (the plugin's own message). The instance stays usable.
+    #[error("the plugin reported an error: {0}")]
+    Failed(String),
+}
+
+/// A wasmtime engine for plugins: component model, async calls, epoch interruption, and a background
+/// thread that ticks its epoch every [`TICK`]. The thread ends when the last clone of the engine is
+/// dropped. Create one per app and share it (it is cheap to clone).
+pub fn engine() -> Engine {
+    let mut config = Config::new();
+    config.wasm_component_model(true);
+    config.epoch_interruption(true);
+    // Calls are async by construction in wasmtime 50 (`Config::async_support` is a deprecated no-op);
+    // the stack limits stay at wasmtime's defaults (512 KiB wasm stack inside a 2 MiB fiber stack), so a
+    // deep recursion traps instead of overflowing the host.
+    let engine = Engine::new(&config).expect("the plugin engine configuration is valid");
+    let weak = engine.weak();
+    std::thread::Builder::new()
+        .name("aio-plugin-epoch".into())
+        .spawn(move || loop {
+            std::thread::sleep(TICK);
+            match weak.upgrade() {
+                Some(engine) => engine.increment_epoch(),
+                None => break,
+            }
+        })
+        .expect("starting the plugin epoch thread");
+    engine
+}
+
+/// Memory and table quotas of one instance.
+#[derive(Default)]
+struct Limits {
+    memory: usize,
+    table_elements: usize,
+}
+
+impl ResourceLimiter for Limits {
+    fn memory_growing(&mut self, current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        let total = (self.memory.saturating_sub(current)).saturating_add(desired);
+        if total > MAX_MEMORY {
+            return Ok(false);
+        }
+        self.memory = total;
+        Ok(true)
+    }
+
+    fn table_growing(&mut self, current: usize, desired: usize, _maximum: Option<usize>) -> wasmtime::Result<bool> {
+        let total = (self.table_elements.saturating_sub(current)).saturating_add(desired);
+        if total > MAX_TABLE_ELEMENTS {
+            return Ok(false);
+        }
+        self.table_elements = total;
+        Ok(true)
+    }
+
+    fn instances(&self) -> usize {
+        64
+    }
+
+    fn tables(&self) -> usize {
+        64
+    }
+
+    fn memories(&self) -> usize {
+        8
+    }
+}
+
+/// Time accounting of the current call, shared by the epoch callback, the watchdog and the dialog imports.
+#[derive(Default)]
+struct CallClock {
+    inner: Mutex<ClockState>,
+}
+
+#[derive(Default)]
+struct ClockState {
+    /// Start of the current call (None between calls).
+    started: Option<Instant>,
+    /// Dialog time of the current call, dialogs that ended.
+    waited: Duration,
+    /// Start of the dialog the call is waiting on now.
+    waiting_since: Option<Instant>,
+}
+
+impl CallClock {
+    fn lock(&self) -> MutexGuard<'_, ClockState> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn start(&self) {
+        *self.lock() = ClockState { started: Some(Instant::now()), ..ClockState::default() };
+    }
+
+    fn stop(&self) {
+        *self.lock() = ClockState::default();
+    }
+
+    fn begin_wait(&self) {
+        self.lock().waiting_since = Some(Instant::now());
+    }
+
+    fn end_wait(&self) {
+        let mut s = self.lock();
+        if let Some(since) = s.waiting_since.take() {
+            s.waited += since.elapsed();
+        }
+    }
+
+    /// Time the current call has used, dialog time excluded; None between calls.
+    fn used(&self) -> Option<Duration> {
+        let s = self.lock();
+        let started = s.started?;
+        let now = Instant::now();
+        let waited = s.waited + s.waiting_since.map(|w| now.duration_since(w)).unwrap_or_default();
+        Some(now.duration_since(started).saturating_sub(waited))
+    }
+}
+
+/// True for a character [`sanitise`] replaces: control characters (C0, DEL, C1; tab excepted), bidi
+/// overrides / isolates and the invisible characters listed there.
+pub(crate) fn replaced(c: char) -> bool {
+    (c.is_control() && c != '\t') || crate::manifest::spoofing(c)
+}
+
+/// Replaces control characters (C0, DEL, C1; tab excepted), bidi overrides / isolates and invisible
+/// characters (U+200B-U+200F zero-width and direction marks, U+2028/U+2029 separators, U+FEFF) with U+FFFD and
+/// cuts the text to [`MAX_LOG_ENTRY`] bytes.
+pub(crate) fn sanitise(text: &str) -> String {
+    let mut out = String::with_capacity(text.len().min(MAX_LOG_ENTRY));
+    for c in text.chars() {
+        let c = if replaced(c) { '\u{FFFD}' } else { c };
+        if out.len() + c.len_utf8() > MAX_LOG_ENTRY {
+            break;
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[derive(Default)]
+struct Budget {
+    entries: usize,
+    bytes: usize,
+    truncated: bool,
+}
+
+/// The only way guest text reaches the log and the status line: sanitised, within the per-call budget.
+struct LogSink {
+    services: Arc<dyn HostServices>,
+    budget: Mutex<Budget>,
+}
+
+impl LogSink {
+    fn reset(&self) {
+        *self.budget.lock().unwrap_or_else(|e| e.into_inner()) = Budget::default();
+    }
+
+    /// Takes one entry of `len` bytes from the budget; false (after one truncation entry) once it is spent.
+    fn take(&self, len: usize) -> bool {
+        let mut b = self.budget.lock().unwrap_or_else(|e| e.into_inner());
+        if b.truncated {
+            return false;
+        }
+        if b.entries >= MAX_LOG_ENTRIES || b.bytes + len > MAX_LOG_BYTES {
+            b.truncated = true;
+            drop(b);
+            self.services.log(Level::Warn, LOG_TRUNCATED);
+            return false;
+        }
+        b.entries += 1;
+        b.bytes += len;
+        true
+    }
+
+    /// One log entry per line of `text` (`\n` or `\r\n`; a final newline adds no empty entry).
+    fn log(&self, level: Level, text: &str) {
+        let text = text.strip_suffix('\n').unwrap_or(text);
+        for line in text.split('\n') {
+            let entry = sanitise(line.strip_suffix('\r').unwrap_or(line));
+            if self.take(entry.len()) {
+                self.services.log(level, &entry);
+            }
+        }
+    }
+
+    /// The status line: one entry; a newline is replaced like any control character.
+    fn status(&self, text: &str) {
+        let entry = sanitise(text);
+        if self.take(entry.len()) {
+            self.services.status(&entry);
+        }
+    }
+}
+
+/// A file the user picked in a dialog. The guest gets a handle; the path stays here.
+pub struct PickedFile {
+    path: PathBuf,
+    /// Picked with an open dialog: the plugin may read it, never write it.
+    /// Picked with a save dialog: the plugin may write it, never read it.
+    opened: bool,
+}
+
+/// A local TCP connection handle. The stream itself lives in `HostState::tcp` under `id`, so that
+/// poisoning the instance can close every connection at once.
+pub struct TcpConnection {
+    id: u64,
+}
+
+/// Longest wait for `sql-select` (host I/O time does not count against [`CALL_LIMIT`]).
+pub const SQL_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest wait for a whole `http-get`.
+pub const HTTP_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest wait for `tcp-connect`.
+pub const TCP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+/// Longest wait for one `recv`.
+pub const TCP_RECV_TIMEOUT: Duration = Duration::from_secs(30);
+/// Longest run of an approved script, counted from the approval (an approved write batch has
+/// [`SQL_TIMEOUT`]).
+pub const SCRIPT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// While alive, the call clock is paused (a dialog or host I/O); ends the pause on drop, also when the
+/// call is cancelled mid-wait.
+struct Paused(Arc<CallClock>);
+
+impl Paused {
+    fn begin(clock: &Arc<CallClock>) -> Paused {
+        clock.begin_wait();
+        Paused(clock.clone())
+    }
+}
+
+impl Drop for Paused {
+    fn drop(&mut self) {
+        self.0.end_wait();
+    }
+}
+
+/// Runs host I/O with its own time limit; a timeout is an error for the guest, not a poisoned instance.
+async fn limited<T>(what: &str, limit: Duration, io: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+    tokio::time::timeout(limit, io)
+        .await
+        .unwrap_or_else(|_| Err(format!("{what} timed out after {} s", limit.as_secs())))
+}
+
+/// The store data of one plugin instance.
+pub struct HostState {
+    wasi: WasiCtx,
+    table: ResourceTable,
+    services: Arc<dyn HostServices>,
+    /// Canonical `<plugin dir>/data`.
+    data: PathBuf,
+    limits: Limits,
+    clock: Arc<CallClock>,
+    log: Arc<LogSink>,
+    /// The manifest's permissions.
+    granted: Vec<Permission>,
+    /// Open local TCP connections by id (at most [`MAX_TCP_CONNECTIONS`]).
+    tcp: HashMap<u64, TcpStream>,
+    next_tcp: u64,
+    /// The manifest id (scripts and write batches are queued in its name).
+    plugin: String,
+    /// The manifest name, display-safe (the `http:ask` question names it).
+    plugin_name: String,
+    /// What the user answered under `http:ask` (the app's, shared by the plugin's instances in a session).
+    hosts: Arc<AskedHosts>,
+    approvals: Arc<Approvals>,
+    /// Dialogs opened by the current call (reset by each call; see [`MAX_DIALOGS`]).
+    dialogs: usize,
+    /// The component exports `tick` (API 1.1).
+    has_tick: bool,
+    /// `keep-working` was called since the last event or tick started.
+    keep_working: bool,
+    /// What each picked folder may write (see [`crate::folders`]).
+    folder_limits: FolderLimits,
+    /// The user's folders a picked root may not be (`None`: [`UserFolders::of_this_user`], read at each pick).
+    user_folders: Option<UserFolders>,
+}
+
+impl WasiView for HostState {
+    fn ctx(&mut self) -> WasiCtxView<'_> {
+        WasiCtxView { ctx: &mut self.wasi, table: &mut self.table }
+    }
+}
+
+impl HostState {
+    /// Awaits a host service that waits for the user, excluding that time from the call's time limit.
+    async fn waiting<F: std::future::Future>(&mut self, fut: F) -> F::Output {
+        let _paused = Paused::begin(&self.clock);
+        fut.await
+    }
+
+    /// Test hook: the home and startup folders picks are checked against, instead of this user's.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_user_folders(&mut self, user: UserFolders) {
+        self.user_folders = Some(user);
+    }
+
+    /// Test hook: the limits of the folders picked from now on.
+    #[cfg(feature = "test-hooks")]
+    pub fn set_folder_limits(&mut self, limits: FolderLimits) {
+        self.folder_limits = limits;
+    }
+
+    /// Counts a dialog of the current call; false past [`MAX_DIALOGS`] (the first refusal is logged).
+    fn dialog_allowed(&mut self) -> bool {
+        if self.dialogs < MAX_DIALOGS {
+            self.dialogs += 1;
+            return true;
+        }
+        if self.dialogs == MAX_DIALOGS {
+            self.dialogs += 1;
+            self.log.log(Level::Warn, DIALOGS_REFUSED);
+        }
+        false
+    }
+
+    fn picked(&self, file: &Resource<PickedFile>) -> Result<&PickedFile, String> {
+        self.table.get(file).map_err(|_| "invalid file handle".to_string())
+    }
+
+    /// Logs a refusal (sanitised, through the log sink) and hands it back for the guest.
+    fn refused(&self, e: String) -> String {
+        let reason = e.strip_prefix(DENIED).map(|r| r.trim_start_matches(':').trim_start()).unwrap_or(&e);
+        let reason = if reason.is_empty() { "refused" } else { reason };
+        self.log.log(Level::Warn, &PluginError::Denied(reason.to_string()).to_string());
+        e
+    }
+
+    /// Queues `p` for the user and waits for the decision (no time limit). A guest call is synchronous,
+    /// so an instance has at most one request in the queue.
+    fn approve(&self, p: Pending) -> impl std::future::Future<Output = Decision> + Send + 'static {
+        debug_assert!(!self.approvals.has_pending_for(&self.plugin), "one pending request per instance");
+        let approvals = self.approvals.clone();
+        async move { approvals.request(p).await }
+    }
+
+    /// `http:ask`: a host that is not declared may be fetched from if the user allows it. Asks once (a dialog of the
+    /// call); Yes is remembered in [`AskedHosts`], No for the session. Every refusal is a `permission denied` text.
+    async fn ask_for_host(&mut self, host: &str) -> Result<(), String> {
+        if !self.granted.contains(&Permission::HttpAsk) {
+            return Err(undeclared(host));
+        }
+        // Only public names: never this computer or the local network.
+        if !askable_host(host) {
+            return Err(deny(format!("host {} cannot be asked for", sanitise(host))));
+        }
+        let refused = || deny(format!("host {host} was refused"));
+        match self.hosts.answer(host) {
+            Some(true) => return Ok(()),
+            Some(false) => return Err(refused()),
+            None => {}
+        }
+        if self.hosts.refused_full() {
+            return Err(deny(format!("host {host} was refused (too many hosts were refused this session)")));
+        }
+        if self.hosts.is_full() {
+            return Err(deny(format!("at most {MAX_ASKED_HOSTS} hosts can be allowed; forget one on the Plugins page")));
+        }
+        // Past the dialog limit the question is not shown and nothing is remembered: the user did not refuse.
+        if !self.dialog_allowed() {
+            return Err(deny(format!("host {host} was not asked (too many dialogs in one call)")));
+        }
+        let (services, name) = (self.services.clone(), self.plugin_name.clone());
+        match self.waiting(services.ask_host(&name, host)).await {
+            Some(true) => {}
+            Some(false) => {
+                self.hosts.refuse(host);
+                return Err(refused());
+            }
+            // No answer (the plugin is being stopped): refused now, asked again next time.
+            None => return Err(refused()),
+        }
+        if let Err(e) = self.hosts.allow(host) {
+            self.log.log(Level::Warn, &format!("{host} is allowed this time but not remembered: {e}"));
+        }
+        Ok(())
+    }
+
+    /// The open stream behind a connection handle.
+    fn stream(&mut self, conn: &Resource<TcpConnection>) -> Result<&mut TcpStream, String> {
+        let id = self.table.get(conn).map_err(|_| "invalid connection handle".to_string())?.id;
+        self.tcp.get_mut(&id).ok_or_else(|| "the connection is closed".to_string())
+    }
+}
+
+fn to_wit(v: SqlValue) -> WitValue {
+    match v {
+        SqlValue::Null => WitValue::Null,
+        SqlValue::Int(i) => WitValue::Int(i),
+        SqlValue::Float(f) => WitValue::Float(f),
+        SqlValue::Text(s) => WitValue::Text(s),
+        SqlValue::Bytes(b) => WitValue::Bytes(b),
+    }
+}
+
+/// An I/O error as the guest sees it: the kind only, never a host path.
+pub(crate) fn io_text(e: &io::Error) -> String {
+    match e.kind() {
+        io::ErrorKind::NotFound => "file not found".into(),
+        io::ErrorKind::PermissionDenied => "access denied".into(),
+        _ => format!("i/o error ({:?})", e.kind()),
+    }
+}
+
+/// Reads a whole file, refusing anything but a regular file of at most [`MAX_FILE_READ`] bytes.
+pub(crate) fn read_limited(path: &Path) -> Result<Vec<u8>, String> {
+    let meta = std::fs::metadata(path).map_err(|e| io_text(&e))?;
+    if !meta.is_file() {
+        return Err("not a file".into());
+    }
+    if meta.len() > MAX_FILE_READ {
+        return Err(format!("file larger than {} MiB", MAX_FILE_READ / (1024 * 1024)));
+    }
+    std::fs::read(path).map_err(|e| io_text(&e))
+}
+
+/// `true` for names Windows maps to devices (`CON`, `nul.txt`, `COM1`, ...), in any folder.
+fn windows_device(segment: &str) -> bool {
+    let stem = segment.split('.').next().unwrap_or("").to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$")
+        || ((stem.starts_with("COM") || stem.starts_with("LPT"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit())
+}
+
+/// The refusal of a path [`check_relative`] does not accept.
+const INVALID: &str = "invalid path: use a relative path with / and the characters A-Z a-z 0-9 . _ -";
+
+/// The segments of a plugin's relative path (`/` separated), for the private folder and picked folders. Refused:
+/// empty, too long ([`MAX_PATH`]) or too deep ([`MAX_DEPTH`]) paths; absolute paths, drive letters and UNC prefixes;
+/// `\`, `:` (alternate streams), NUL and any character outside `A-Z a-z 0-9 . _ -`; empty, `.` and `..` segments;
+/// segments ending in `.`; Windows device names.
+pub(crate) fn check_relative(path: &str) -> Result<Vec<&str>, String> {
+    if path.is_empty() || path.len() > MAX_PATH {
+        return Err(INVALID.into());
+    }
+    let segments: Vec<&str> = path.split('/').collect();
+    if segments.len() > MAX_DEPTH {
+        return Err(INVALID.into());
+    }
+    for s in &segments {
+        let ok = !s.is_empty()
+            && *s != "."
+            && *s != ".."
+            && !s.ends_with('.')
+            && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+            && !windows_device(s);
+        if !ok {
+            return Err(INVALID.into());
+        }
+    }
+    Ok(segments)
+}
+
+/// Maps a plugin's relative path ([`check_relative`]) to a path inside the private folder `data` (which must exist).
+/// Every part of the path that exists is canonicalised and must still lie inside `data`, so a symlink or junction
+/// cannot lead out.
+pub fn resolve_private(data: &Path, path: &str) -> Result<PathBuf, String> {
+    let segments = check_relative(path)?;
+    let root = std::fs::canonicalize(data).map_err(|_| "the private folder is missing".to_string())?;
+    let mut target = root.clone();
+    for s in &segments {
+        target.push(s);
+        // Belt and braces: the checks above leave only normal components.
+        if !matches!(target.components().next_back(), Some(PathComponent::Normal(_))) {
+            return Err(INVALID.into());
+        }
+        if std::fs::symlink_metadata(&target).is_ok() {
+            let real = std::fs::canonicalize(&target).map_err(|e| io_text(&e))?;
+            if !real.starts_with(&root) {
+                return Err("access denied: outside the private folder".into());
+            }
+        }
+    }
+    Ok(target)
+}
+
+/// Guest stdout or stderr: each line becomes a plugin log line.
+struct GuestOutput {
+    log: Arc<LogSink>,
+    level: Level,
+}
+
+impl IsTerminal for GuestOutput {
+    fn is_terminal(&self) -> bool {
+        false
+    }
+}
+
+impl StdoutStream for GuestOutput {
+    fn async_stream(&self) -> Box<dyn AsyncWrite + Send + Sync> {
+        Box::new(LineWriter { log: self.log.clone(), level: self.level, pending: Vec::new() })
+    }
+}
+
+struct LineWriter {
+    log: Arc<LogSink>,
+    level: Level,
+    pending: Vec<u8>,
+}
+
+impl LineWriter {
+    fn emit(&mut self, line: &[u8]) {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        self.log.log(self.level, &String::from_utf8_lossy(line));
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        for &b in data {
+            if b == b'\n' {
+                let line = std::mem::take(&mut self.pending);
+                self.emit(&line);
+            } else {
+                self.pending.push(b);
+                if self.pending.len() >= MAX_LOG_ENTRY {
+                    let line = std::mem::take(&mut self.pending);
+                    self.emit(&line);
+                }
+            }
+        }
+    }
+
+    fn finish(&mut self) {
+        if !self.pending.is_empty() {
+            let line = std::mem::take(&mut self.pending);
+            self.emit(&line);
+        }
+    }
+}
+
+impl AsyncWrite for LineWriter {
+    fn poll_write(self: Pin<&mut Self>, _cx: &mut Context<'_>, data: &[u8]) -> Poll<io::Result<usize>> {
+        self.get_mut().push(data);
+        Poll::Ready(Ok(data.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        self.get_mut().finish();
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for LineWriter {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+impl crate::bindings::aio::plugin::types::Host for HostState {}
+
+impl Host for HostState {
+    async fn log(&mut self, level: LogLevel, text: String) {
+        let level = match level {
+            LogLevel::Debug => Level::Debug,
+            LogLevel::Info => Level::Info,
+            LogLevel::Warn => Level::Warn,
+            LogLevel::Error => Level::Error,
+        };
+        self.log.log(level, &text);
+    }
+
+    async fn ask(&mut self, question: String) -> bool {
+        if !self.dialog_allowed() {
+            return false;
+        }
+        let services = self.services.clone();
+        self.waiting(services.ask(question)).await
+    }
+
+    async fn status(&mut self, text: String) {
+        self.log.status(&text);
+    }
+
+    async fn run_script(&mut self, script: String, as_root: bool) -> Result<WitScriptResult, String> {
+        let needed = if as_root { Permission::SshRoot } else { Permission::Ssh };
+        if !self.granted.contains(&needed) {
+            return Err(self.refused(format!("{DENIED}: running a script needs the '{needed}' permission")));
+        }
+        check_script(&script).map_err(|e| self.refused(e))?;
+        let pending = Pending::Script { plugin: self.plugin.clone(), script: script.clone(), as_root };
+        // The user's time and the script's run do not count against the call (Ruling 14).
+        let _paused = Paused::begin(&self.clock);
+        self.services.before_approval();
+        if self.approve(pending).await == Decision::Rejected {
+            return Err("the user rejected the script".into());
+        }
+        let req = ScriptRequest { plugin: self.plugin.clone(), script, as_root };
+        let r = limited("the script", SCRIPT_TIMEOUT, self.services.clone().run_script(req)).await?;
+        Ok(WitScriptResult { exit_code: r.exit_code, output: r.output, error: r.error })
+    }
+
+    async fn sql_select(&mut self, query: Select) -> Result<WitRows, String> {
+        let (sql, params) = build_select(&query, &self.granted).map_err(|e| self.refused(e))?;
+        let services = self.services.clone();
+        let rows = self.waiting(limited("the query", SQL_TIMEOUT, services.sql_select(sql, params))).await?;
+        Ok(WitRows {
+            columns: rows.columns,
+            rows: rows.rows.into_iter().map(|r| r.into_iter().map(to_wit).collect()).collect(),
+        })
+    }
+
+    async fn sql_write(&mut self, ops: Vec<WriteOp>) -> Result<u64, String> {
+        // Built now so that permission errors reach the plugin (and its developer) already.
+        let batch = build_writes(&ops, &self.granted).map_err(|e| self.refused(e))?;
+        let pending = Pending::Writes { plugin: self.plugin.clone(), batch: batch.clone() };
+        let _paused = Paused::begin(&self.clock);
+        self.services.before_approval();
+        if self.approve(pending).await == Decision::Rejected {
+            return Err("the user rejected the database changes".into());
+        }
+        // Exactly the batch that was shown.
+        limited("the database changes", SQL_TIMEOUT, self.services.clone().sql_write(batch)).await
+    }
+
+    async fn http_get(&mut self, url: String) -> Result<Vec<u8>, String> {
+        let checked = parse_http(&url).map_err(|e| self.refused(e))?;
+        let declared = declared_host(&checked.host, &self.granted);
+        if !declared {
+            if let Err(e) = self.ask_for_host(&checked.host).await {
+                return Err(self.refused(e));
+            }
+        }
+        let services = self.services.clone();
+        let fetch = async {
+            if declared {
+                services.http_get(&checked.url).await
+            } else {
+                // An asked host: the fetch refuses local addresses when connecting.
+                services.http_get_asked(&checked.url, &checked.host).await
+            }
+        };
+        let body = self.waiting(limited("the request", HTTP_TIMEOUT, fetch)).await?;
+        if body.len() > MAX_HTTP_BODY {
+            return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
+        }
+        Ok(body)
+    }
+
+    async fn tcp_connect(&mut self, port: u16) -> Result<Resource<TcpConnection>, String> {
+        check_tcp(port, &self.granted).map_err(|e| self.refused(e))?;
+        if self.tcp.len() >= MAX_TCP_CONNECTIONS {
+            return Err(self.refused(format!(
+                "{DENIED}: at most {MAX_TCP_CONNECTIONS} local connections may be open at once"
+            )));
+        }
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let connect = async { TcpStream::connect(addr).await.map_err(|e| format!("connecting to port {port} failed ({:?})", e.kind())) };
+        let stream = self.waiting(limited("connecting", TCP_CONNECT_TIMEOUT, connect)).await?;
+        let id = self.next_tcp;
+        self.next_tcp += 1;
+        let handle = self.table.push(TcpConnection { id }).map_err(|_| "too many handles".to_string())?;
+        self.tcp.insert(id, stream);
+        Ok(handle)
+    }
+
+    async fn file_read(&mut self, path: String) -> Result<Vec<u8>, String> {
+        let target = resolve_private(&self.data, &path)?;
+        read_limited(&target)
+    }
+
+    async fn file_write(&mut self, path: String, data: Vec<u8>) -> Result<(), String> {
+        // Every check comes before anything is created, so a refused write leaves nothing behind.
+        if data.len() as u64 > MAX_FILE_READ {
+            return Err(format!("file larger than {} MiB", MAX_FILE_READ / (1024 * 1024)));
+        }
+        let target = resolve_private(&self.data, &path)?;
+        if target.is_dir() {
+            return Err("a folder has that name".into());
+        }
+        check_quota(&self.data, &target, data.len() as u64)?;
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| io_text(&e))?;
+        }
+        // Check again now that the folders exist (one of them could be a link made in the meantime).
+        let target = resolve_private(&self.data, &path)?;
+        if target.is_dir() {
+            return Err("a folder has that name".into());
+        }
+        std::fs::write(&target, data).map_err(|e| io_text(&e))
+    }
+
+    async fn prompt_text(&mut self, title: String, label: String, default_value: String) -> Option<String> {
+        if !self.dialog_allowed() {
+            return None;
+        }
+        let services = self.services.clone();
+        self.waiting(services.prompt_text(title, label, default_value)).await
+    }
+
+    async fn pick_open_file(&mut self, title: String, extensions: Vec<String>) -> Option<Resource<PickedFile>> {
+        if !self.dialog_allowed() {
+            return None;
+        }
+        let services = self.services.clone();
+        let path = self.waiting(services.pick_open_file(title, extensions)).await?;
+        self.table.push(PickedFile { path, opened: true }).ok()
+    }
+
+    async fn pick_save_file(
+        &mut self,
+        title: String,
+        suggested_name: String,
+        extensions: Vec<String>,
+    ) -> Option<Resource<PickedFile>> {
+        if !self.dialog_allowed() {
+            return None;
+        }
+        let services = self.services.clone();
+        let path = self.waiting(services.pick_save_file(title, suggested_name, extensions)).await?;
+        self.table.push(PickedFile { path, opened: false }).ok()
+    }
+
+    async fn open_import_preview(&mut self, file: Resource<PickedFile>) -> Result<(), String> {
+        let picked = self.picked(&file)?;
+        if !picked.opened {
+            return Err("a file picked for saving cannot be read".into());
+        }
+        let name = file_name(&picked.path);
+        let bytes = read_limited(&picked.path)?;
+        self.services.open_import_preview(name, bytes);
+        Ok(())
+    }
+
+    async fn pick_folder(&mut self, title: String) -> Option<Resource<PickedFolder>> {
+        if !self.dialog_allowed() {
+            return None;
+        }
+        let services = self.services.clone();
+        let path = self.waiting(services.pick_folder(title)).await?;
+        // The Manager's folders, and always this plugin's own (its code and its private data).
+        let mut manager = services.manager_folders();
+        manager.extend(self.data.parent().map(Path::to_path_buf));
+        let user = self.user_folders.clone().unwrap_or_else(UserFolders::of_this_user);
+        match PickedFolder::open(&path, &manager, &user, self.folder_limits) {
+            Ok(folder) => self.table.push(folder).ok(),
+            Err(e) => {
+                self.log.log(Level::Warn, &format!("the picked folder was refused: {e}"));
+                None
+            }
+        }
+    }
+
+    async fn keep_working(&mut self) -> wasmtime::Result<()> {
+        if !self.has_tick {
+            return Err(wasmtime::format_err!("tick is not exported"));
+        }
+        self.keep_working = true;
+        Ok(())
+    }
+}
+
+/// Size of the files and number of files and folders under `root` (links are counted, never followed).
+fn usage(root: &Path) -> io::Result<(u64, usize)> {
+    let (mut bytes, mut entries) = (0u64, 0usize);
+    let mut folders = vec![root.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder)? {
+            let path = entry?.path();
+            let meta = std::fs::symlink_metadata(&path)?;
+            entries += 1;
+            if meta.is_dir() {
+                folders.push(path);
+            } else {
+                bytes += meta.len();
+            }
+        }
+    }
+    Ok((bytes, entries))
+}
+
+/// Refuses a write of `len` bytes to `target` (inside `data`) that would take the private folder past
+/// [`MAX_DATA_BYTES`] or [`MAX_DATA_ENTRIES`]. A file being replaced counts with its new size only.
+fn check_quota(data: &Path, target: &Path, len: u64) -> Result<(), String> {
+    let (used, entries) = usage(data).map_err(|e| io_text(&e))?;
+    let old = std::fs::symlink_metadata(target).map(|m| if m.is_file() { m.len() } else { 0 }).unwrap_or(0);
+    if used.saturating_sub(old) + len > MAX_DATA_BYTES {
+        return Err(format!("the private folder is full ({} MiB)", MAX_DATA_BYTES / (1024 * 1024)));
+    }
+    // The file itself, if new, and every folder still to be created.
+    let new_entries = target.ancestors().take_while(|p| *p != data).filter(|p| !p.exists()).count();
+    if entries + new_entries > MAX_DATA_ENTRIES {
+        return Err(format!("the private folder is full ({MAX_DATA_ENTRIES} files and folders)"));
+    }
+    Ok(())
+}
+
+fn file_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+impl HostPickedFile for HostState {
+    async fn name(&mut self, file: Resource<PickedFile>) -> String {
+        self.picked(&file).map(|p| file_name(&p.path)).unwrap_or_default()
+    }
+
+    async fn read(&mut self, file: Resource<PickedFile>) -> Result<Vec<u8>, String> {
+        let picked = self.picked(&file)?;
+        if !picked.opened {
+            return Err("a file picked for saving cannot be read".into());
+        }
+        read_limited(&picked.path)
+    }
+
+    async fn write(&mut self, file: Resource<PickedFile>, data: Vec<u8>) -> Result<(), String> {
+        let picked = self.picked(&file)?;
+        if picked.opened {
+            return Err("a file picked for opening cannot be written".into());
+        }
+        std::fs::write(&picked.path, data).map_err(|e| io_text(&e))
+    }
+
+    async fn drop(&mut self, file: Resource<PickedFile>) -> wasmtime::Result<()> {
+        self.table.delete(file)?;
+        Ok(())
+    }
+}
+
+impl HostState {
+    fn folder(&mut self, folder: &Resource<PickedFolder>) -> Result<&mut PickedFolder, String> {
+        self.table.get_mut(folder).map_err(|_| "invalid folder handle".to_string())
+    }
+}
+
+impl HostPickedFolder for HostState {
+    async fn name(&mut self, folder: Resource<PickedFolder>) -> String {
+        self.folder(&folder).map(|f| f.name()).unwrap_or_default()
+    }
+
+    /// The checks against the handle first, then the file I/O off the async workers, with the call's clock paused
+    /// (a 256 MiB file on a slow disk is host I/O, not plugin time).
+    async fn write(&mut self, folder: Resource<PickedFolder>, path: String, data: Vec<u8>) -> Result<(), String> {
+        let job = self.folder(&folder)?.check_write(&path, data.len() as u64)?;
+        let len = data.len() as u64;
+        let _paused = Paused::begin(&self.clock);
+        tokio::task::spawn_blocking(move || job.run(&data)).await.map_err(|_| "the write stopped".to_string())??;
+        self.folder(&folder)?.record(&path, len);
+        Ok(())
+    }
+
+    /// Like `write`. The handle's sizes follow the file: grown by `data` on success, its real size after a failure
+    /// part way (see [`crate::folders::AppendFailed`]).
+    async fn append(&mut self, folder: Resource<PickedFolder>, path: String, data: Vec<u8>) -> Result<(), String> {
+        let job = self.folder(&folder)?.check_append(&path, data.len() as u64)?;
+        let len = data.len() as u64;
+        let outcome = {
+            let _paused = Paused::begin(&self.clock);
+            tokio::task::spawn_blocking(move || job.append(&data)).await.unwrap_or_else(|_| {
+                Err(AppendFailed::Partial { error: "the append stopped".into(), size: None })
+            })
+        };
+        self.folder(&folder)?.record_append(&path, len, &outcome);
+        outcome.map(|_| ()).map_err(AppendFailed::into_message)
+    }
+
+    async fn reveal(&mut self, folder: Resource<PickedFolder>) -> Result<(), String> {
+        let root = self.folder(&folder)?.reveal_path()?;
+        self.services.reveal_folder(&root)
+    }
+
+    /// Like `write`: the checks first, then the read (up to 32 MiB) off the async workers with the clock paused.
+    async fn open_import_preview(&mut self, folder: Resource<PickedFolder>, path: String) -> Result<(), String> {
+        let job = self.folder(&folder)?.read_job(&path)?;
+        let (name, bytes) = {
+            let _paused = Paused::begin(&self.clock);
+            tokio::task::spawn_blocking(move || job.run()).await.map_err(|_| "the read stopped".to_string())??
+        };
+        self.services.open_import_preview(name, bytes);
+        Ok(())
+    }
+
+    async fn drop(&mut self, folder: Resource<PickedFolder>) -> wasmtime::Result<()> {
+        self.table.delete(folder)?;
+        Ok(())
+    }
+}
+
+impl HostTcpConnection for HostState {
+    async fn send(&mut self, conn: Resource<TcpConnection>, data: Vec<u8>) -> Result<(), String> {
+        let stream = self.stream(&conn)?;
+        stream.write_all(&data).await.map_err(|e| io_text(&e))
+    }
+
+    /// Reads what is available, at most `max` and at most [`MAX_TCP_RECV`] bytes; empty = peer closed.
+    async fn recv(&mut self, conn: Resource<TcpConnection>, max: u32) -> Result<Vec<u8>, String> {
+        if max == 0 {
+            return Err("max must be at least 1".into());
+        }
+        let _paused = Paused::begin(&self.clock);
+        let stream = self.stream(&conn)?;
+        let mut buf = vec![0u8; (max as usize).min(MAX_TCP_RECV)];
+        let read = async { stream.read(&mut buf).await.map_err(|e| io_text(&e)) };
+        let n = limited("recv", TCP_RECV_TIMEOUT, read).await?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+
+    /// Like `recv`, waiting at most `timeout_ms` (clamped to [`MAX_RECV_TIMEOUT_MS`]; 0 takes only what has already
+    /// arrived): `None` when nothing arrived in time, `Some(empty)` when the peer closed.
+    async fn recv_timeout(&mut self, conn: Resource<TcpConnection>, max: u32, timeout_ms: u32) -> Result<Option<Vec<u8>>, String> {
+        if max == 0 {
+            return Err("max must be at least 1".into());
+        }
+        let _paused = Paused::begin(&self.clock);
+        let stream = self.stream(&conn)?;
+        let mut buf = vec![0u8; (max as usize).min(MAX_TCP_RECV)];
+        let wait = Duration::from_millis(timeout_ms.min(MAX_RECV_TIMEOUT_MS).into());
+        // `timeout` polls the read once before looking at the clock, so a wait of 0 still takes what has arrived.
+        match tokio::time::timeout(wait, stream.read(&mut buf)).await {
+            Err(_) => Ok(None),
+            Ok(Err(e)) => Err(io_text(&e)),
+            Ok(Ok(n)) => {
+                buf.truncate(n);
+                Ok(Some(buf))
+            }
+        }
+    }
+
+    async fn close(&mut self, conn: Resource<TcpConnection>) {
+        if let Ok(c) = self.table.get(&conn) {
+            let id = c.id;
+            self.tcp.remove(&id);
+        }
+    }
+
+    async fn drop(&mut self, conn: Resource<TcpConnection>) -> wasmtime::Result<()> {
+        let c = self.table.delete(conn)?;
+        self.tcp.remove(&c.id);
+        Ok(())
+    }
+}
+
+/// The guest's exports, looked up by name (`tick` is optional, so the generated world type cannot hold them).
+struct Exports {
+    render: TypedFunc<(), (UiTree,)>,
+    on_event: TypedFunc<(UiEvent,), (Result<(), String>,)>,
+    tick: Option<TypedFunc<(), (Result<(), String>,)>>,
+}
+
+impl Exports {
+    fn find(store: &mut Store<HostState>, instance: &Instance, has_tick: bool) -> Result<Exports> {
+        let wrong = |name: &'static str| move |e: wasmtime::Error| anyhow::anyhow!("the plugin's `{name}` export is missing or of the wrong type: {e:#}");
+        let render = instance.get_typed_func(&mut *store, "render").map_err(wrong("render"))?;
+        let on_event = instance.get_typed_func(&mut *store, "on-event").map_err(wrong("on-event"))?;
+        let tick = if has_tick { Some(instance.get_typed_func(&mut *store, "tick").map_err(wrong("tick"))?) } else { None };
+        Ok(Exports { render, on_event, tick })
+    }
+}
+
+/// The API minor version a component needs: the highest `aio:plugin/<interface>@1.<minor>.<patch>` it imports, 0 if
+/// it imports none.
+fn needed_api_minor(component: &Component, engine: &Engine) -> u32 {
+    component
+        .component_type()
+        .imports(engine)
+        .filter_map(|(name, _)| {
+            let version = name.strip_prefix("aio:plugin/")?.split_once('@')?.1;
+            let mut parts = version.split('.');
+            if parts.next()? != "1" {
+                return None;
+            }
+            parts.next()?.parse().ok()
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+/// The API minor version the component `wasm` needs (the highest `aio:plugin/*@1.<minor>` it imports); compiles it
+/// with `engine` (an [`engine`]), so it fails as a load would for bytes that are not a component the host can compile.
+/// For tools (`aio-plugin check`); a load does the same check itself.
+pub fn component_api_minor(engine: &Engine, wasm: &[u8]) -> Result<u32> {
+    let component = Component::from_binary(engine, wasm).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+    Ok(needed_api_minor(&component, engine))
+}
+
+/// The load's refusal of a component that needs API 1.`needed` under a `manifest` that promises less (or more than
+/// this host has, [`HOST_API_MINOR`]).
+pub fn check_api(needed: u32, manifest: &Manifest) -> Result<()> {
+    if needed > manifest.api_minor().min(HOST_API_MINOR) {
+        bail!("Plugin needs API 1.{needed} but its manifest says 1.{}", manifest.api_minor());
+    }
+    Ok(())
+}
+
+/// One loaded plugin. `Send`: run its calls on a tokio worker thread, never on the egui thread.
+pub struct PluginInstance {
+    store: Store<HostState>,
+    exports: Exports,
+    manifest: Manifest,
+    /// The same clock as the store's `HostState::clock`, reachable while the store is borrowed by a call.
+    clock: Arc<CallClock>,
+    /// Set once a call trapped, timed out or was cancelled.
+    poisoned: Option<PluginError>,
+    /// True while a call runs; still true at the next call if the previous future was dropped.
+    in_call: bool,
+}
+
+impl PluginInstance {
+    /// Loads the installed plugin folder `dir` (`<root>/<id>/`): compiles `dir/plugin.wasm` and
+    /// instantiates it under the limits above. `dir/data/` is created if missing; it is the only folder
+    /// `file-read` / `file-write` touch. Scripts and write batches wait in `approvals` (shared with the
+    /// app, which shows them to the user). The compile runs on tokio's blocking pool.
+    pub async fn load(
+        engine: &Engine,
+        dir: &Path,
+        manifest: Manifest,
+        services: Arc<dyn HostServices>,
+        approvals: Arc<Approvals>,
+    ) -> Result<Self> {
+        Self::load_from(engine, &dir.join("plugin.wasm"), dir, manifest, services, approvals).await
+    }
+
+    /// Like [`PluginInstance::load`], for a plugin whose `.wasm` file is not in its own folder (developer mode: the
+    /// author's build output). `dir` is the plugin's private folder; its `data/` is created there, never next to
+    /// `wasm_file`.
+    pub async fn load_from(
+        engine: &Engine,
+        wasm_file: &Path,
+        dir: &Path,
+        manifest: Manifest,
+        services: Arc<dyn HostServices>,
+        approvals: Arc<Approvals>,
+    ) -> Result<Self> {
+        // The same limit as a package's plugin.wasm, checked before the whole file is read.
+        let mut wasm = Vec::new();
+        {
+            use std::io::Read;
+            let file = std::fs::File::open(wasm_file).with_context(|| format!("reading {}", wasm_file.display()))?;
+            file.take(crate::package::MAX_WASM + 1).read_to_end(&mut wasm).with_context(|| format!("reading {}", wasm_file.display()))?;
+            if wasm.len() as u64 > crate::package::MAX_WASM {
+                bail!("plugin.wasm is larger than 24 MiB");
+            }
+        }
+        let data = dir.join("data");
+        std::fs::create_dir_all(&data).with_context(|| format!("creating {}", data.display()))?;
+        let dir_real = std::fs::canonicalize(dir)?;
+        let data = std::fs::canonicalize(&data)?;
+        if data.parent() != Some(dir_real.as_path()) {
+            bail!("{} must be a folder inside {}, not a link", data.display(), dir_real.display());
+        }
+
+        // Compiling (Cranelift) is CPU work that cannot be cancelled: off the async workers, which the app's SSH
+        // tasks share.
+        let compiling = engine.clone();
+        let component = tokio::task::spawn_blocking(move || Component::from_binary(&compiling, &wasm))
+            .await
+            .context("compiling the plugin stopped")?
+            .map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        // The manifest promises the API the component is built for (`HOST_API_MINOR` caps what it may say).
+        check_api(needed_api_minor(&component, engine), &manifest)?;
+        let has_tick = component.component_type().get_export(engine, "tick").is_some();
+        let hosts = services.asked_hosts();
+        let mut linker: Linker<HostState> = Linker::new(engine);
+        wasmtime_wasi::p2::add_to_linker_async(&mut linker).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+        Plugin::add_to_linker::<_, HasSelf<_>>(&mut linker, |s| s).map_err(|e| anyhow::anyhow!("{e:#}"))?;
+
+        let log = Arc::new(LogSink { services: services.clone(), budget: Mutex::default() });
+        let clock = Arc::new(CallClock::default());
+        let wasi = WasiCtxBuilder::new()
+            .stdout(GuestOutput { log: log.clone(), level: Level::Info })
+            .stderr(GuestOutput { log: log.clone(), level: Level::Error })
+            .allow_tcp(false)
+            .allow_udp(false)
+            .allow_ip_name_lookup(false)
+            .build();
+        let state = HostState {
+            wasi,
+            table: ResourceTable::new(),
+            services,
+            data,
+            limits: Limits::default(),
+            clock: clock.clone(),
+            log,
+            granted: manifest.permissions.clone(),
+            tcp: HashMap::new(),
+            next_tcp: 0,
+            plugin: manifest.id.clone(),
+            plugin_name: display_safe(&manifest.name, 80),
+            hosts,
+            approvals,
+            dialogs: 0,
+            has_tick,
+            keep_working: false,
+            folder_limits: FolderLimits::default(),
+            user_folders: None,
+        };
+        let mut store = Store::new(engine, state);
+        store.limiter(|s| &mut s.limits);
+        store.epoch_deadline_callback(|ctx| {
+            let Some(used) = ctx.data().clock.used() else {
+                return Ok(UpdateDeadline::Continue(CALL_TICKS));
+            };
+            if used >= CALL_LIMIT {
+                return Ok(UpdateDeadline::Interrupt);
+            }
+            let left = (CALL_LIMIT - used).as_millis().div_ceil(TICK.as_millis());
+            Ok(UpdateDeadline::Continue((left as u64).max(1)))
+        });
+
+        // Instantiation can run guest code (start functions): it is a call like any other.
+        arm(&mut store);
+        let instance = watchdog(&clock, linker.instantiate_async(&mut store, &component)).await;
+        disarm(&mut store);
+        let instance = instance.map_err(|e| anyhow::anyhow!("{e}"))?;
+        let exports = Exports::find(&mut store, &instance, has_tick)?;
+        Ok(PluginInstance { store, exports, manifest, clock, poisoned: None, in_call: false })
+    }
+
+    pub fn manifest(&self) -> &Manifest {
+        &self.manifest
+    }
+
+    /// The plugin's page. A render keeps a pending tick request (and may make one).
+    pub async fn render(&mut self) -> Result<UiTree, PluginError> {
+        self.enter()?;
+        let result = watchdog(&self.clock, self.exports.render.call_async(&mut self.store, ())).await;
+        self.leave(result).map(|(tree,)| tree)
+    }
+
+    /// Hands a user action to the plugin. The app renders again afterwards.
+    pub async fn event(&mut self, e: UiEvent) -> Result<(), PluginError> {
+        self.enter()?;
+        self.store.data_mut().keep_working = false;
+        let result = watchdog(&self.clock, self.exports.on_event.call_async(&mut self.store, (e,))).await;
+        self.leave(result)?.0.map_err(PluginError::Failed)
+    }
+
+    /// One step of the plugin's long job (API 1.1), run by the app after a render while [`wants_tick`] holds and no
+    /// event waits. A call like [`event`](Self::event): its own time limit, and the app renders again afterwards.
+    /// Does nothing for a component without a `tick` export.
+    ///
+    /// [`wants_tick`]: Self::wants_tick
+    pub async fn tick(&mut self) -> Result<(), PluginError> {
+        self.enter()?;
+        self.store.data_mut().keep_working = false;
+        let Some(tick) = self.exports.tick else {
+            return self.leave(Ok(()));
+        };
+        let result = watchdog(&self.clock, tick.call_async(&mut self.store, ())).await;
+        self.leave(result)?.0.map_err(PluginError::Failed)
+    }
+
+    /// The plugin called `keep-working` since its last event or tick started (and is not poisoned): run
+    /// [`tick`](Self::tick) after the next render.
+    pub fn wants_tick(&self) -> bool {
+        self.poisoned.is_none() && self.store.data().keep_working
+    }
+
+    /// Test hook: the host side of the imports, to call them as a guest would.
+    #[cfg(feature = "test-hooks")]
+    pub fn host_for_tests(&mut self) -> &mut HostState {
+        self.store.data_mut()
+    }
+
+    fn enter(&mut self) -> Result<(), PluginError> {
+        if self.in_call && self.poisoned.is_none() {
+            self.poison(PluginError::Trapped("a previous call was cancelled".into()));
+        }
+        if let Some(e) = &self.poisoned {
+            return Err(e.clone());
+        }
+        self.in_call = true;
+        arm(&mut self.store);
+        Ok(())
+    }
+
+    fn leave<R>(&mut self, result: Result<R, PluginError>) -> Result<R, PluginError> {
+        disarm(&mut self.store);
+        self.in_call = false;
+        result.inspect_err(|e| self.poison(e.clone()))
+    }
+
+    /// Marks the instance unusable, closes its local TCP connections and rejects its queued requests.
+    fn poison(&mut self, e: PluginError) {
+        self.poisoned = Some(e);
+        let state = self.store.data_mut();
+        state.tcp.clear();
+        state.approvals.reject_all_for(&state.plugin);
+    }
+
+    /// Local TCP connections open now.
+    pub fn open_connections(&self) -> usize {
+        self.store.data().tcp.len()
+    }
+}
+
+impl Drop for PluginInstance {
+    /// Closing the page drops the instance: whatever it still has in the approval queue is rejected.
+    fn drop(&mut self) {
+        let state = self.store.data();
+        state.approvals.reject_all_for(&state.plugin);
+    }
+}
+
+fn arm(store: &mut Store<HostState>) {
+    let state = store.data_mut();
+    state.clock.start();
+    state.log.reset();
+    state.dialogs = 0;
+    store.set_epoch_deadline(CALL_TICKS);
+}
+
+fn disarm(store: &mut Store<HostState>) {
+    store.data().clock.stop();
+}
+
+/// Runs one guest call under the wall-clock limit: [`CALL_LIMIT`] by the call's clock, dialog waits
+/// excluded. Epoch interruption cannot stop a call parked in a host wait (a WASI sleep or poll, where no
+/// wasm runs); this does, by dropping the call future (wasmtime unwinds the guest's fiber). While wasm
+/// runs, the future is not polled, so a busy guest is stopped by the epoch instead.
+async fn watchdog<R>(
+    clock: &CallClock,
+    call: impl std::future::Future<Output = wasmtime::Result<R>>,
+) -> Result<R, PluginError> {
+    let mut call = std::pin::pin!(call);
+    loop {
+        let left = CALL_LIMIT.saturating_sub(clock.used().unwrap_or_default());
+        if left.is_zero() {
+            return Err(PluginError::TimedOut);
+        }
+        tokio::select! {
+            result = &mut call => return result.map_err(classify),
+            // While a dialog is open `used` stands still, so this just checks again later.
+            _ = tokio::time::sleep(left.max(Duration::from_millis(10))) => {}
+        }
+    }
+}
+
+fn classify(e: wasmtime::Error) -> PluginError {
+    if e.downcast_ref::<Trap>() == Some(&Trap::Interrupt) {
+        PluginError::TimedOut
+    } else {
+        PluginError::Trapped(format!("{e:#}"))
+    }
+}

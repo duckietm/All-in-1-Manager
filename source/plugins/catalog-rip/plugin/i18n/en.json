@@ -1,0 +1,6 @@
+{
+  "name": "Catalogue ripper",
+  "description": "Reads a hotel's catalogue through G-Earth while you are logged in, and saves it as SQL and JSON files with the images, ready to import.",
+  "tile.title": "Catalogue ripper",
+  "tile.description": "Rip a hotel's catalogue through G-Earth."
+}

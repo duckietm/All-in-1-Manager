@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use aio_plugin_sdk::folders::Folder;
-use aio_plugin_sdk::i18n::tr_with;
+use aio_plugin_sdk::i18n::{tr, tr_with};
 use aio_plugin_sdk::sql::Value;
 use aio_plugin_sdk::{http, tcp};
 use catalog_rip_core::gearth::ExtensionInfo;
@@ -415,9 +415,9 @@ pub fn items_row<'a>(value: impl Fn(&str) -> Option<&'a Value>) -> Result<ItemsB
     fn int(value: Option<&Value>, column: &str) -> Result<Option<i64>, String> {
         match value {
             Some(Value::Int(v)) => Ok(Some(*v)),
-            Some(Value::Text(t)) => t.trim().parse().map(Some).map_err(|_| format!("{column} is not a number: {t}")),
+            Some(Value::Text(t)) => t.trim().parse().map(Some).map_err(|_| tr_with("{column} is not a number: {value}", &[("column", column), ("value", t)])),
             Some(Value::Null) | None => Ok(None),
-            Some(_) => Err(format!("{column} is not a number")),
+            Some(_) => Err(tr_with("{column} is not a number", &[("column", column)])),
         }
     }
     fn text(value: Option<&Value>) -> String {
@@ -427,12 +427,12 @@ pub fn items_row<'a>(value: impl Fn(&str) -> Option<&'a Value>) -> Result<ItemsB
             _ => String::new(),
         }
     }
-    let id = int(value("id"), "id")?.ok_or("a row has no id")?;
-    let id32 = u32::try_from(id).map_err(|_| format!("id {id} is out of range"))?;
+    let id = int(value("id"), "id")?.ok_or_else(|| tr("a row has no id"))?;
+    let id32 = u32::try_from(id).map_err(|_| tr_with("id {id} is out of range", &[("id", &id.to_string())]))?;
     let sprite_id = int(value("sprite_id"), "sprite_id")?.unwrap_or(0);
     Ok(ItemsBaseRow {
         id: id32,
-        sprite_id: i32::try_from(sprite_id).map_err(|_| format!("sprite_id of {id} is out of range"))?,
+        sprite_id: i32::try_from(sprite_id).map_err(|_| tr_with("sprite_id of {id} is out of range", &[("id", &id.to_string())]))?,
         item_type: text(value("type")),
         item_name: text(value("item_name")),
         effect_id: int(value("effect_id_male"), "effect_id_male")?.and_then(|e| i32::try_from(e).ok()).unwrap_or(0),

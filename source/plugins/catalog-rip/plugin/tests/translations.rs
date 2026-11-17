@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The plugin's sources, as `(file, text)`.
 fn sources() -> Vec<(String, String)> {
     let mut found = Vec::new();
+    // The scan is not recursive: a subfolder would be skipped without a word, so refuse one.
+    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+        assert!(entry.unwrap().path().is_file(), "src/ has a subdirectory: scan it too (make `sources` recursive)");
+    }
     for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "rs") {
@@ -72,10 +76,10 @@ fn used_texts(file: &str, text: &str) -> BTreeSet<String> {
             let boundary = i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_');
             if boundary && chars[i..i + call.len()] == call[..] {
                 let mut at = i + call.len();
-                while chars[at].is_whitespace() {
+                while chars.get(at).is_some_and(|c| c.is_whitespace()) {
                     at += 1;
                 }
-                assert_eq!(chars[at], '"', "{file}: a call of {name} whose first argument is not a string literal");
+                assert_eq!(chars.get(at), Some(&'"'), "{file}: a call of {name} whose first argument is not a string literal");
                 let (english, end) = literal(&chars, at);
                 found.insert(english);
                 i = end;

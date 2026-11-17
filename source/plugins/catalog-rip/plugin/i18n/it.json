@@ -54,7 +54,7 @@
   "Leaving this page stops the rip.": "Uscendo da questa pagina l'estrazione si ferma.",
 
   "Choose the normal catalogue, the Builders Club one, or both.": "Scegli il catalogo normale, quello Builders Club, o entrambi.",
-  "Correct it, then click Rip catalogue again.": "Correggilo, poi fai di nuovo clic su Estrai il catalogo.",
+  "Correct it, then click Rip catalogue again.": "Correggila, poi fai di nuovo clic su Estrai il catalogo.",
   "Where to save the catalogue": "Dove salvare il catalogo",
   "{pages} pages ({failed} failed) and {offers} offers saved in {folder}/{path}. Images: {images}.": "{pages} pagine ({failed} non riuscite) e {offers} offerte salvate in {folder}/{path}. Immagini: {images}.",
   "{downloaded} downloaded, {missing} not on the server": "{downloaded} scaricate, {missing} non presenti sul server",
@@ -88,6 +88,11 @@
   "The learned hotel profile could not be saved: {error}": "Impossibile salvare il profilo hotel appreso: {error}",
   "{file} cannot be read ({error}), so it was not changed": "{file} non può essere letto ({error}), quindi non è stato modificato",
   "the learned profile cannot be read ({error})": "il profilo appreso non può essere letto ({error})",
+  "a row has no id": "una riga non ha id",
+  "{column} is not a number: {value}": "{column} non è un numero: {value}",
+  "{column} is not a number": "{column} non è un numero",
+  "id {id} is out of range": "id {id} fuori intervallo",
+  "sprite_id of {id} is out of range": "sprite_id di {id} fuori intervallo",
   "{url}: the plugin can only read http and https addresses, not files": "{url}: il plugin può leggere solo indirizzi http e https, non file",
   "The delay must be a number of milliseconds from {min} to {max}.": "La pausa deve essere un numero di millisecondi da {min} a {max}."
 }

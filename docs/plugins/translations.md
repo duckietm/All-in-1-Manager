@@ -25,10 +25,10 @@ fn page(ui: &mut Ui, count: usize) {
   pass (a value that contains `{x}` is not filled again) and a placeholder with no value stays as written.
 - `host::language()` returns the current code (`"en"` for English) if you ever need it. Most plugins do not.
 
-Call `tr` in `render` every time. When the user switches the Manager's language, every open plugin page is rendered
-again (the plugin gets no event, and a running long job is not disturbed), so keep English texts, not translated ones,
-in your state. A text built outside `render` (a status line, an error returned from `on_event`) is translated where it
-is made, in the language of that moment.
+Call `tr` in `render` every time, so the page texts follow a language switch: when the user switches the Manager's
+language, every open plugin page is rendered again (the plugin gets no event, and a running long job is not
+disturbed). A message the plugin stores (a banner, a log line, an error returned from `on_event`) is translated where
+it is made and keeps the language of that moment, as in the ripper and notes examples.
 
 Off `wasm32` (a native `cargo test`) `tr` returns the English text, so a plugin's page tests keep working unchanged.
 

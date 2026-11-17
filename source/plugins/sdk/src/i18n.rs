@@ -20,7 +20,8 @@
 //! (no `tr` needed for those). Permission prompts and consent windows stay in English.
 //!
 //! The Manager draws the page again when the user switches language, so call `tr` in
-//! [`render`](crate::Plugin::render) each time rather than keeping translated texts in the plugin's state.
+//! [`render`](crate::Plugin::render) each time and the page texts follow the switch. A message the plugin stores
+//! (a banner, a log line) keeps the language it was made in.
 //!
 //! Off `wasm32` (a native `cargo test`) there is no Manager: [`tr`] returns the English text and
 //! [`host::language`](crate::host::language) returns `"en"`, so a plugin's pages test with English texts.

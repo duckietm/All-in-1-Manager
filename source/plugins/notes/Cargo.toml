@@ -1,0 +1,13 @@
+[package]
+name = "notes"
+version = "1.0.0"
+edition = "2021"
+publish = false
+description = "Example All-in-1 Manager plugin: notes saved in the private folder, export, and a read-only users table"
+
+[lib]
+# A component is a cdylib built for wasm32-wasip2.
+crate-type = ["cdylib"]
+
+[dependencies]
+aio-plugin-sdk = { path = "../sdk" }

@@ -452,6 +452,17 @@ fn param_value(value: Value) -> SqlValue {
     }
 }
 
+/// Like [`param_value`], but bytes that are not UTF-8 stay [`SqlValue::Bytes`].
+fn raw_value(value: Value) -> SqlValue {
+    match value {
+        Value::Bytes(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => SqlValue::Text(text),
+            Err(e) => SqlValue::Bytes(e.into_bytes()),
+        },
+        other => param_value(other),
+    }
+}
+
 fn row_values(row: Row, kinds: &[ColumnKind]) -> Vec<SqlValue> {
     row.unwrap()
         .into_iter()
@@ -695,6 +706,25 @@ impl SqlSession {
         }
         transaction.commit().await?;
         Ok((changed, last_id))
+    }
+
+    /// Runs one query with `?` parameters in `database` (USE on the browse connection first) and returns the column
+    /// names and the rows. Binary values stay bytes unless they are UTF-8 text. For the plugin host, whose statements
+    /// name no database.
+    pub async fn select_in(&self, database: &str, sql: &str, params: Vec<SqlValue>) -> Result<(Vec<String>, Vec<Vec<SqlValue>>)> {
+        let params: Vec<Value> = params.iter().map(SqlValue::to_param).collect();
+        let mut conn = self.browse.lock().await;
+        conn.query_drop(format!("USE {}", quote(database))).await?;
+        let result = conn.exec_iter(sql, params).await?;
+        let columns = result.columns().map(|c| c.iter().map(|c| c.name_str().into_owned()).collect()).unwrap_or_default();
+        let rows: Vec<Row> = result.collect_and_drop().await?;
+        Ok((columns, rows.into_iter().map(|row| row.unwrap().into_iter().map(raw_value).collect()).collect()))
+    }
+
+    /// [`SqlSession::execute`] in `database` (USE on the browse connection first).
+    pub async fn execute_in(&self, database: &str, statements: &[(String, Vec<SqlValue>)]) -> Result<(u64, u64)> {
+        self.browse.lock().await.query_drop(format!("USE {}", quote(database))).await?;
+        self.execute(statements).await
     }
 
     /// The database the query editor uses (changed by USE).

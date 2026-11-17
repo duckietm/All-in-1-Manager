@@ -1,0 +1,4 @@
+{
+  "Clicked {n} times": "Cliccato {n} volte",
+  "Click me": "Cliccami"
+}

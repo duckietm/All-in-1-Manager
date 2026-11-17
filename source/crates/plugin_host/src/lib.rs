@@ -1,0 +1,44 @@
+//! Host side of the external plugin API `aio:plugin@1.1.0` (components built for `1.0.0` run unchanged).
+
+/// Generated bindings for the WIT world `plugin` (see `source/wit/aio-plugin/plugin.wit`). The imports are linked
+/// through these 1.1 bindings; wasmtime's semver matching resolves a component's `@1.0.0` imports against them. The
+/// exports are looked up by name in [`runtime`], since `tick` is optional.
+pub mod bindings {
+    wasmtime::component::bindgen!({
+        world: "plugin",
+        path: "../../wit/aio-plugin",
+        imports: {
+            // An error stops the guest's call (a component without `tick` asked for one).
+            "aio:plugin/host.keep-working": async | trappable,
+            default: async,
+        },
+        exports: { default: async },
+        // The resources are host structs in `runtime`, kept in the store's `ResourceTable`.
+        with: {
+            "aio:plugin/host.picked-file": crate::runtime::PickedFile,
+            "aio:plugin/host.picked-folder": crate::folders::PickedFolder,
+            "aio:plugin/host.tcp-connection": crate::runtime::TcpConnection,
+        },
+    });
+}
+
+pub mod approvals;
+pub mod folders;
+pub mod i18n;
+pub mod manifest;
+pub mod net;
+pub mod package;
+pub mod permissions;
+pub mod runtime;
+pub mod services;
+pub mod sql;
+
+pub use async_trait::async_trait;
+/// The engine type of [`runtime::engine`], for apps that keep one without depending on wasmtime.
+pub use wasmtime::Engine;
+
+pub use manifest::{display_safe, Manifest, Tile, BUILTIN_IDS};
+#[cfg(feature = "test-hooks")]
+pub use package::{install_failing_after_move_aside, install_failing_with_data_restore_failure, install_with_fault, Fault, Step};
+pub use package::{inspect, install, installed, remove, Package};
+pub use permissions::{Permission, PlainWords};

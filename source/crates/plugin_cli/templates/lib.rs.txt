@@ -1,0 +1,36 @@
+//! {{name}}: an All-in-1 Manager plugin written on `aio-plugin-sdk`.
+//!
+//! The plugin never draws anything itself: `render` describes the page with the `Ui` builder, `on_event`
+//! receives what the user did (a click, an edited input) and the Manager calls `render` again afterwards.
+
+use aio_plugin_sdk::i18n::{tr, tr_with};
+use aio_plugin_sdk::{export_plugin, Event, Plugin, Ui};
+
+struct Counter {
+    /// How many times the button was clicked in this session.
+    clicks: u64,
+}
+
+impl Plugin for Counter {
+    fn new() -> Self {
+        Counter { clicks: 0 }
+    }
+
+    fn render(&mut self, ui: &mut Ui) {
+        ui.heading("{{name}}");
+        // `tr` shows the text in the Manager's language: see `i18n/it.json`.
+        ui.text(tr_with("Clicked {n} times", &[("n", &self.clicks.to_string())]));
+        ui.primary_button("count", tr("Click me"));
+    }
+
+    fn on_event(&mut self, event: Event) -> Result<(), String> {
+        match event {
+            Event::Clicked { id } if id == "count" => self.clicks += 1,
+            // Other events do not concern this plugin.
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+export_plugin!(Counter);

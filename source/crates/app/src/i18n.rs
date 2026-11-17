@@ -51,8 +51,23 @@ pub fn current() -> Lang {
 
 pub fn set(code: &str) {
     if let Some(index) = LANGUAGES.iter().position(|l| l.code.eq_ignore_ascii_case(code)) {
-        CURRENT.store(index, Ordering::Relaxed);
+        let code = LANGUAGES[index].code;
+        // Both under the channel's lock, so two `set`s from different threads cannot leave them disagreeing.
+        changes().send_if_modified(|current| {
+            CURRENT.store(index, Ordering::Relaxed);
+            std::mem::replace(current, code) != code
+        });
     }
+}
+
+fn changes() -> &'static tokio::sync::watch::Sender<&'static str> {
+    static CHANGES: OnceLock<tokio::sync::watch::Sender<&'static str>> = OnceLock::new();
+    CHANGES.get_or_init(|| tokio::sync::watch::channel(current().code).0)
+}
+
+/// The current language code, and a wake-up each time [`set`] changes it (open plugin pages render again).
+pub fn watch() -> tokio::sync::watch::Receiver<&'static str> {
+    changes().subscribe()
 }
 
 /// settings.json `Language`, else the system language when it is one of ours, else English.
@@ -104,6 +119,13 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn plugin_languages_are_the_managers() {
+        // The plugin host owns the list of codes a plugin may ship a language file for: the window's, without English.
+        let ours: Vec<&str> = LANGUAGES.iter().map(|l| l.code).filter(|c| *c != "en").collect();
+        assert_eq!(aio_plugin_host::i18n::LANGUAGES.to_vec(), ours);
     }
 
     #[test]

@@ -57,5 +57,8 @@ it, and `aio-plugin check` refuses a lower one).
   it. See [Asking for hosts](permissions.md#asking-for-hosts-httpask).
 - **Translations**: `i18n::tr` and `i18n::tr_with` show the page in the Manager's language from `i18n/<lang>.json`
   files. See [Translations](translations.md).
-- **Picked folders**: `folders::pick` lets the user choose a folder where the plugin may create data files. See
-  [`folders`](api.md#folders).
+- **Picked folders**: `folders::pick` lets the user choose a folder where the plugin may create data files, and
+  read or list the data files already there. See [`folders`](api.md#folders).
+- **Several requests at once**: `http::get_many` fetches up to 8 URLs together. See [`http`](api.md#http).
+- **Manager pages**: `host::open_manager_page` sends the user to a page of the Manager (G-Earth). See
+  [`host`](api.md#host).

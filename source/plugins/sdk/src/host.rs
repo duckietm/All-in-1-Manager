@@ -1,4 +1,4 @@
-//! The Manager itself: the plugin log, the status line, dialogs and the files the user picks.
+//! The Manager itself: the plugin log, the status line, dialogs, the files the user picks and its other pages.
 //!
 //! None of these needs a permission. A dialog (`ask`, [`prompt_text`], the file pickers, the folder picker
 //! [`folders::pick`](crate::folders::pick)) waits for the user, and that time does not count against the call's time
@@ -82,6 +82,28 @@ pub fn language() -> String {
     {
         "en".to_string()
     }
+}
+
+/// A page of the Manager a plugin may open with [`open_manager_page`].
+///
+/// New pages may be added in a later 1.x version: match with a `_` arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ManagerPage {
+    /// Tools → G-Earth: where the user installs and starts G-Earth (the packet logger).
+    GearthTool,
+}
+
+/// Switches the Manager to `page`, as if the user had chosen it: the plugin's page closes (a running job stops, like
+/// on leaving the page), and nothing is started on the new page. Nothing happens while the Manager is busy (a tool or
+/// approved work runs). Needs no permission.
+///
+/// Needs `"api": "1.1"` in the manifest.
+pub fn open_manager_page(page: ManagerPage) {
+    let page = match page {
+        ManagerPage::GearthTool => host::ManagerPage::GearthTool,
+    };
+    host::open_manager_page(page);
 }
 
 /// Asks the user a yes/no question and waits for the answer: `true` for yes. `false` past the dialog limit.

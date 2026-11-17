@@ -29,8 +29,9 @@
 //!   [`MAX_FILE_READ`]; a `picked-file` wraps the path the user picked (the guest sees only the file
 //!   name); `open-import-preview` hands the picked file's bytes (at most [`MAX_FILE_READ`]) to the Manager;
 //!   `pick-folder` (1.1, a dialog of the call) wraps a folder the user picked, where the plugin may only create new
-//!   files and rewrite or append to its own, never through a link and never into a folder of the Manager (see
-//!   [`crate::folders`]);
+//!   files and rewrite or append to its own, read data files (at most [`crate::folders::MAX_FOLDER_READ`] per call)
+//!   and list folders, never through a link and never into a folder of the Manager (see [`crate::folders`]);
+//!   `open-manager-page` (1.1) asks the app to switch pages ([`HostServices::open_manager_page`]);
 //!   `language` / `translate` (1.1) answer from memory: the code and the plugin's texts the app set with
 //!   [`PluginInstance::set_language`] (see [`crate::i18n`]);
 //! * the permission-gated imports, checked against the manifest's permissions (every refusal is an
@@ -44,8 +45,10 @@
 //!   counts against [`CALL_LIMIT`]; `http-get` through [`crate::net::check_http`]'s grammar and a declared
 //!   host, or with `http:ask` (1.1) a host the user allowed ([`crate::net::AskedHosts`]; an unanswered one is
 //!   asked for with [`HostServices::ask_host`], a dialog of the call), then [`HostServices::http_get`], bodies over
-//!   [`crate::net::MAX_HTTP_BODY`] refused; `tcp-connect` through [`crate::net::check_tcp`] (single ports and,
-//!   since 1.1, ranges), then a tokio `TcpStream` to `127.0.0.1:<port>` owned by the runtime: at most
+//!   [`crate::net::MAX_HTTP_BODY`] refused; `http-get-many` (1.1) checks (and asks for) its URLs one at a time in
+//!   order, exactly like `http-get`, then fetches the allowed ones together, at most [`crate::net::MAX_MANY_URLS`]
+//!   and [`crate::net::MAX_MANY_BYTES`] of bodies per call; `tcp-connect` through [`crate::net::check_tcp`] (single
+//!   ports and, since 1.1, ranges), then a tokio `TcpStream` to `127.0.0.1:<port>` owned by the runtime: at most
 //!   [`crate::net::MAX_TCP_CONNECTIONS`] open at once, `recv` and `recv-timeout` (1.1, waiting at most
 //!   [`crate::net::MAX_RECV_TIMEOUT_MS`]) return at most [`crate::net::MAX_TCP_RECV`] bytes, and every
 //!   connection is closed when the instance is dropped or poisoned.
@@ -81,6 +84,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as _, Result};
+use futures::stream::{FuturesUnordered, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use wasmtime::component::{Component, HasSelf, Instance, Linker, Resource, ResourceTable, TypedFunc};
@@ -89,7 +93,9 @@ use wasmtime_wasi::cli::{IsTerminal, StdoutStream};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
 use crate::approvals::{check_script, Approvals, Decision, Pending};
-use crate::bindings::aio::plugin::host::{Host, HostPickedFile, HostPickedFolder, HostTcpConnection};
+use crate::bindings::aio::plugin::host::{
+    FolderEntry, Host, HostPickedFile, HostPickedFolder, HostTcpConnection, ManagerPage as WitManagerPage,
+};
 use crate::bindings::aio::plugin::types::{
     LogLevel, Rows as WitRows, ScriptResult as WitScriptResult, Select, SqlValue as WitValue, WriteOp,
 };
@@ -98,11 +104,11 @@ use crate::i18n::Texts;
 use crate::folders::{AppendFailed, FolderLimits, PickedFolder, UserFolders};
 use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
 use crate::net::{
-    askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, MAX_ASKED_HOSTS, MAX_HTTP_BODY, MAX_RECV_TIMEOUT_MS,
-    MAX_TCP_CONNECTIONS, MAX_TCP_RECV,
+    askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, BUDGET_EXCEEDED, MAX_ASKED_HOSTS, MAX_HTTP_BODY,
+    MAX_MANY_BYTES, MAX_MANY_URLS, MAX_RECV_TIMEOUT_MS, MAX_TCP_CONNECTIONS, MAX_TCP_RECV,
 };
 use crate::permissions::Permission;
-use crate::services::{HostServices, Level, ScriptRequest, SqlValue};
+use crate::services::{HostServices, Level, ManagerPage, ScriptRequest, SqlValue};
 use crate::sql::{build_select, build_writes};
 
 pub use crate::bindings::aio::plugin::types::{
@@ -541,10 +547,78 @@ impl HostState {
         Ok(())
     }
 
+    /// The checks of one `http-get` (also each URL of `http-get-many`): the URL grammar, then a declared host or, with
+    /// `http:ask`, a host the user allowed (asked for now when unanswered). A refusal is logged.
+    async fn check_get(&mut self, url: &str) -> Result<Get, String> {
+        let checked = parse_http(url).map_err(|e| self.refused(e))?;
+        if declared_host(&checked.host, &self.granted) {
+            return Ok(Get { url: checked.url, asked: None });
+        }
+        if let Err(e) = self.ask_for_host(&checked.host).await {
+            return Err(self.refused(e));
+        }
+        Ok(Get { url: checked.url, asked: Some(checked.host) })
+    }
+
     /// The open stream behind a connection handle.
     fn stream(&mut self, conn: &Resource<TcpConnection>) -> Result<&mut TcpStream, String> {
         let id = self.table.get(conn).map_err(|_| "invalid connection handle".to_string())?.id;
         self.tcp.get_mut(&id).ok_or_else(|| "the connection is closed".to_string())
+    }
+}
+
+/// A checked GET ([`HostState::check_get`]).
+struct Get {
+    /// Rebuilt from the checked parts.
+    url: String,
+    /// `Some(host)`: allowed through `http:ask` only, fetched with [`HostServices::http_get_asked`].
+    asked: Option<String>,
+}
+
+/// Fetches a checked GET under [`HTTP_TIMEOUT`]; a body over [`MAX_HTTP_BODY`] is refused.
+async fn fetch(services: &dyn HostServices, get: &Get) -> Result<Vec<u8>, String> {
+    let request = async {
+        match &get.asked {
+            None => services.http_get(&get.url).await,
+            // An asked host: the fetch refuses local addresses when connecting.
+            Some(host) => services.http_get_asked(&get.url, host).await,
+        }
+    };
+    let body = limited("the request", HTTP_TIMEOUT, request).await?;
+    if body.len() > MAX_HTTP_BODY {
+        return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
+    }
+    Ok(body)
+}
+
+/// The fetches of one `http-get-many`, together: each result at its index of `results` (the refused ones are already
+/// there). The bodies handed over add up to at most [`MAX_MANY_BYTES`]: the first that does not fit, and every fetch
+/// not finished by then (dropped, so stopped), get [`BUDGET_EXCEEDED`].
+async fn fetch_many(services: Arc<dyn HostServices>, gets: Vec<(usize, Get)>, results: &mut [Option<Result<Vec<u8>, String>>]) {
+    let mut running: FuturesUnordered<_> = gets
+        .iter()
+        .map(|(index, get)| {
+            let services = services.as_ref();
+            async move { (*index, fetch(services, get).await) }
+        })
+        .collect();
+    let mut left = MAX_MANY_BYTES;
+    while let Some((index, result)) = running.next().await {
+        match result {
+            Ok(body) if body.len() > left => {
+                results[index] = Some(Err(BUDGET_EXCEEDED.to_string()));
+                break;
+            }
+            Ok(body) => {
+                left -= body.len();
+                results[index] = Some(Ok(body));
+            }
+            Err(e) => results[index] = Some(Err(e)),
+        }
+    }
+    drop(running);
+    for slot in results.iter_mut().filter(|r| r.is_none()) {
+        *slot = Some(Err(BUDGET_EXCEEDED.to_string()));
     }
 }
 
@@ -782,27 +856,41 @@ impl Host for HostState {
     }
 
     async fn http_get(&mut self, url: String) -> Result<Vec<u8>, String> {
-        let checked = parse_http(&url).map_err(|e| self.refused(e))?;
-        let declared = declared_host(&checked.host, &self.granted);
-        if !declared {
-            if let Err(e) = self.ask_for_host(&checked.host).await {
-                return Err(self.refused(e));
-            }
-        }
+        let get = self.check_get(&url).await?;
         let services = self.services.clone();
-        let fetch = async {
-            if declared {
-                services.http_get(&checked.url).await
-            } else {
-                // An asked host: the fetch refuses local addresses when connecting.
-                services.http_get_asked(&checked.url, &checked.host).await
-            }
-        };
-        let body = self.waiting(limited("the request", HTTP_TIMEOUT, fetch)).await?;
-        if body.len() > MAX_HTTP_BODY {
-            return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
+        self.waiting(fetch(services.as_ref(), &get)).await
+    }
+
+    /// Every URL checked (and asked for) first, one at a time in order, like `http-get`; then the allowed ones are
+    /// fetched together ([`fetch_many`]). The results keep the order of `urls`.
+    async fn http_get_many(&mut self, urls: Vec<String>) -> Vec<Result<Vec<u8>, String>> {
+        if urls.len() > MAX_MANY_URLS {
+            let e = self.refused(deny(format!("at most {MAX_MANY_URLS} URLs per call")));
+            return urls.iter().map(|_| Err(e.clone())).collect();
         }
-        Ok(body)
+        let mut results: Vec<Option<Result<Vec<u8>, String>>> = Vec::with_capacity(urls.len());
+        let mut gets = Vec::new();
+        for (index, url) in urls.iter().enumerate() {
+            match self.check_get(url).await {
+                Ok(get) => {
+                    results.push(None);
+                    gets.push((index, get));
+                }
+                Err(e) => results.push(Some(Err(e))),
+            }
+        }
+        if !gets.is_empty() {
+            let services = self.services.clone();
+            self.waiting(fetch_many(services, gets, &mut results)).await;
+        }
+        results.into_iter().map(|r| r.unwrap_or_else(|| Err(BUDGET_EXCEEDED.to_string()))).collect()
+    }
+
+    async fn open_manager_page(&mut self, page: WitManagerPage) {
+        let page = match page {
+            WitManagerPage::GearthTool => ManagerPage::GearthTool,
+        };
+        self.services.open_manager_page(page);
     }
 
     async fn tcp_connect(&mut self, port: u16) -> Result<Resource<TcpConnection>, String> {
@@ -1031,6 +1119,21 @@ impl HostPickedFolder for HostState {
         };
         self.folder(&folder)?.record_append(&path, len, &outcome);
         outcome.map(|_| ()).map_err(AppendFailed::into_message)
+    }
+
+    /// Like `write`: the checks first, then the read off the async workers with the clock paused.
+    async fn read(&mut self, folder: Resource<PickedFolder>, path: String, offset: u64, max: u32) -> Result<Vec<u8>, String> {
+        let job = self.folder(&folder)?.check_read(&path, max)?;
+        let _paused = Paused::begin(&self.clock);
+        tokio::task::spawn_blocking(move || job.run(offset, max)).await.map_err(|_| "the read stopped".to_string())?
+    }
+
+    /// Like `read`.
+    async fn list(&mut self, folder: Resource<PickedFolder>, path: String) -> Result<Vec<FolderEntry>, String> {
+        let job = self.folder(&folder)?.check_list(&path)?;
+        let _paused = Paused::begin(&self.clock);
+        let entries = tokio::task::spawn_blocking(move || job.run()).await.map_err(|_| "the list stopped".to_string())??;
+        Ok(entries.into_iter().map(|e| FolderEntry { name: e.name, is_folder: e.is_folder, size: e.size }).collect())
     }
 
     async fn reveal(&mut self, folder: Resource<PickedFolder>) -> Result<(), String> {

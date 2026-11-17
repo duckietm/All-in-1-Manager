@@ -1,5 +1,6 @@
 //! Folders the user picks: a place outside the private folder where the plugin may save new data files (an export,
-//! a downloaded catalogue). Needs `"api": "1.1"` in the manifest, and no permission: the user picks the folder each
+//! a downloaded catalogue) and read the data files already there (an earlier export to resume or compare with).
+//! Needs `"api": "1.1"` in the manifest, and no permission, for writing as for reading: the user picks the folder each
 //! time, and the plugin never sees its path, only its [name](Folder::name).
 //!
 //! The Manager's rules:
@@ -14,7 +15,11 @@
 //! - [`append`](Folder::append) extends a file this [`Folder`] created (or creates it like a first write), so a large
 //!   file never has to be held whole in the plugin's memory. A failed append may leave part of the data at the end of
 //!   the file;
-//! - a path that leads through a link is refused;
+//! - [`read`](Folder::read) reads any data file in the folder, not only the handle's own, at most [`MAX_READ`]
+//!   bytes per call ([`read_all`](Folder::read_all) loops over it); a file with other names (a hard link) is refused;
+//! - [`list`](Folder::list) shows at most [`MAX_ENTRIES`] entries of a folder; links, hidden names and names a path
+//!   cannot name are left out;
+//! - a path that leads through a link is refused, and nothing in a folder of the Manager is read or written;
 //! - one [`Folder`] writes at most [`MAX_FILES`] files and [`MAX_BYTES`] in all, each file at most [`MAX_FILE`].
 //!
 //! Every refusal is [`ErrorKind::Denied`](crate::ErrorKind::Denied), with a message starting `permission denied:`.
@@ -34,6 +39,14 @@
 //!         folder.append_str("catalogue/items.sql", line)?;
 //!     }
 //!     folder.reveal()?;
+//! }
+//! if let Some(folder) = folders::pick("Resume from an earlier rip") {
+//!     for entry in folder.list("")? {
+//!         if !entry.is_folder && entry.name.ends_with(".json") {
+//!             let head = folder.read(&entry.name, 0, 1024)?;
+//!             # let _ = head;
+//!         }
+//!     }
 //! }
 //! # Ok(())
 //! # }
@@ -56,6 +69,26 @@ pub const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Largest file written into a picked folder.
 pub const MAX_FILE: u64 = 256 * 1024 * 1024;
+
+/// Most bytes one [`Folder::read`] returns (4 MiB); a larger `max` is [`Denied`](crate::ErrorKind::Denied).
+pub const MAX_READ: u32 = 4 * 1024 * 1024;
+
+/// Most entries one [`Folder::list`] returns; a folder with more is [`Denied`](crate::ErrorKind::Denied).
+pub const MAX_ENTRIES: usize = 10_000;
+
+/// An entry of a picked folder, from [`Folder::list`].
+///
+/// New fields may be added in a later 1.x version.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct Entry {
+    /// The name, without folders.
+    pub name: String,
+    /// A folder (else a file).
+    pub is_folder: bool,
+    /// A file's size in bytes; 0 for a folder.
+    pub size: u64,
+}
 
 /// Shows a folder dialog titled `title`. `None` if the user cancelled, picked a folder that cannot be picked (see the
 /// [module](self)), or past the dialog limit (20 dialogs in one call, see [`host`](crate::host)). Waiting for the user
@@ -109,6 +142,34 @@ impl Folder {
         self.append(path, text.as_bytes())
     }
 
+    /// Reads at most `max` bytes (at most [`MAX_READ`]) of the file `path` from byte `offset`: fewer at the end of the
+    /// file, none at or past it. Any data file in the folder may be read, also one this handle did not write, by the
+    /// same path rules and data-file types as [`write`](Folder::write). Refused
+    /// ([`Denied`](crate::ErrorKind::Denied)): a `max` over [`MAX_READ`], another file type, a hidden name, a path
+    /// through a link, a file with other names (a hard link), a file in a folder of the Manager. A missing file is
+    /// [`NotFound`](crate::ErrorKind::NotFound). The time spent reading does not count against the call's time limit.
+    ///
+    /// Read a large file in pieces (and keep only what you need of each) instead of whole: the plugin has 64 MiB of
+    /// memory in all.
+    pub fn read(&self, path: &str, offset: u64, max: u32) -> Result<Vec<u8>> {
+        host_result(self.folder.read(path, offset, max))
+    }
+
+    /// The whole file `path`, read with [`read`](Folder::read) in pieces of [`MAX_READ`] until a piece comes back
+    /// short. The same rules and errors as [`read`](Folder::read); the whole file must fit in the plugin's memory.
+    pub fn read_all(&self, path: &str) -> Result<Vec<u8>> {
+        read_all_with(|offset, max| self.read(path, offset, max))
+    }
+
+    /// The entries of the folder `path` (`""` for the picked folder itself), sorted by name: files of every type with
+    /// their sizes, and folders. Links (symlinks, junctions), hidden names (starting with `.`) and names a path cannot
+    /// name (other characters than `A-Z a-z 0-9 . _ -`) are left out. Refused ([`Denied`](crate::ErrorKind::Denied)): a
+    /// path through a link, a hidden name, a folder of the Manager, a folder with more than [`MAX_ENTRIES`] entries.
+    pub fn list(&self, path: &str) -> Result<Vec<Entry>> {
+        let entries = host_result(self.folder.list(path))?;
+        Ok(entries.into_iter().map(|e| Entry { name: e.name, is_folder: e.is_folder, size: e.size }).collect())
+    }
+
     /// Opens the folder in the system's file manager. At most once every 2 s per handle; a quicker repeat is
     /// [`Denied`](crate::ErrorKind::Denied).
     pub fn reveal(&self) -> Result<()> {
@@ -122,9 +183,71 @@ impl Folder {
     }
 }
 
+/// [`Folder::read_all`] over `read(offset, max)`: pieces of [`MAX_READ`] from offset 0 until one comes back short.
+fn read_all_with(mut read: impl FnMut(u64, u32) -> Result<Vec<u8>>) -> Result<Vec<u8>> {
+    let mut all = Vec::new();
+    loop {
+        let piece = read(all.len() as u64, MAX_READ)?;
+        let last = piece.len() < MAX_READ as usize;
+        all.extend_from_slice(&piece);
+        if last {
+            return Ok(all);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Error, ErrorKind};
+
+    /// A file of `len` bytes (byte `i` is `i % 251`) read as the host does: at most `max` bytes from `offset`.
+    fn file(len: usize, calls: &mut Vec<(u64, u32)>) -> impl FnMut(u64, u32) -> Result<Vec<u8>> + '_ {
+        move |offset, max| {
+            calls.push((offset, max));
+            let start = (offset as usize).min(len);
+            let end = start.saturating_add(max as usize).min(len);
+            Ok((start..end).map(|i| (i % 251) as u8).collect())
+        }
+    }
+
+    #[test]
+    fn read_all_reads_in_pieces_until_a_short_one() {
+        let piece = MAX_READ as usize;
+        for (len, expected_calls) in [(0, 1), (10, 1), (piece - 1, 1), (piece, 2), (piece + 1, 2), (2 * piece + 7, 3)] {
+            let mut calls = Vec::new();
+            let all = read_all_with(file(len, &mut calls)).unwrap();
+            assert_eq!(all.len(), len);
+            assert!(all.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
+            assert_eq!(calls.len(), expected_calls, "{len} bytes");
+            for (n, (offset, max)) in calls.iter().enumerate() {
+                assert_eq!((*offset, *max), ((n * piece) as u64, MAX_READ), "never more than 4 MiB at once");
+            }
+        }
+    }
+
+    #[test]
+    fn read_all_stops_at_the_first_error() {
+        let mut calls = 0;
+        let error = read_all_with(|offset, _| {
+            calls += 1;
+            if offset == 0 {
+                Ok(vec![0; MAX_READ as usize])
+            } else {
+                Err(Error::from_host("permission denied: x.json has other names (hard links)".into()))
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::Denied);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn read_and_list_limits_are_the_managers() {
+        // folders.rs `MAX_FOLDER_READ`, `MAX_FOLDER_ENTRIES`.
+        assert_eq!(MAX_READ, 4_194_304);
+        assert_eq!(MAX_ENTRIES, 10_000);
+    }
 
     #[test]
     fn data_extensions_are_lower_case_and_distinct() {

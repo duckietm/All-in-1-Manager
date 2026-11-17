@@ -3945,5 +3945,9 @@
   "{plugin} could not be installed.": "Liitännäistä {plugin} ei voitu asentaa.",
   "· checked {age}": "· tarkistettu {age}",
   "Choose a folder …": "Valitse kansio …",
-  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "Laajennus pyytää sinua valitsemaan kansion. Se voi vain luoda siihen datatiedostoja (kuvia, tekstiä, SQL:ää, JSONia), ei mitään muuta: kansiossa jo olevat tiedostot pysyvät ennallaan."
+  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "Laajennus pyytää sinua valitsemaan kansion. Se voi vain luoda siihen datatiedostoja (kuvia, tekstiä, SQL:ää, JSONia), ei mitään muuta: kansiossa jo olevat tiedostot pysyvät ennallaan.",
+  "G-Earth": "G-Earth",
+  "G-Earth tool": "G-Earth-työkalu",
+  "Install and start G-Earth from here.": "Asenna ja käynnistä G-Earth täältä.",
+  "Install and start G-Earth, the packet logger, on this computer": "Asenna ja käynnistä G-Earth, pakettien tallennin, tällä tietokoneella"
 }

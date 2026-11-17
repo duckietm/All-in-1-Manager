@@ -572,3 +572,194 @@ async fn append_after_write_and_write_after_append() {
     assert_eq!(names, vec![std::ffi::OsString::from("state.json")]);
     assert_eq!(host.append(again(&folder), "third.txt".into(), Vec::new()).await.unwrap_err(), LIMIT_REACHED);
 }
+
+// ---- Reading and listing a picked folder ---------------------------------------------------------
+
+/// `link` -> `target` as a directory symlink, else a junction (no privilege needed); false when neither can be made.
+fn dir_link(target: &Path, link: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_dir(target, link).is_ok()
+            || std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(link)
+                .arg(target)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).is_ok()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_any_data_file_in_folder() {
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    // Files the user (or an earlier run) put there, not written through any handle.
+    std::fs::create_dir_all(out.join("rip/packets")).unwrap();
+    std::fs::write(out.join("rip/catalog.json"), b"{\"pages\":[]}").unwrap();
+    std::fs::write(out.join("rip/packets/0001.BIN"), [0u8, 1, 2, 3]).unwrap();
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Resume".into()).await.unwrap();
+    assert_eq!(host.read(again(&folder), "rip/catalog.json".into(), 0, 1024).await.unwrap(), b"{\"pages\":[]}");
+    // Any letter case of a data extension.
+    assert_eq!(host.read(again(&folder), "rip/packets/0001.BIN".into(), 1, 2).await.unwrap(), [1, 2]);
+    // Its own files too.
+    host.write(again(&folder), "own.txt".into(), b"mine".to_vec()).await.unwrap();
+    assert_eq!(host.read(again(&folder), "own.txt".into(), 0, 10).await.unwrap(), b"mine");
+    // Missing files and folders are errors, not refusals.
+    assert_eq!(host.read(again(&folder), "rip/missing.json".into(), 0, 10).await.unwrap_err(), "file not found");
+    assert_eq!(host.read(again(&folder), "nowhere/missing.json".into(), 0, 10).await.unwrap_err(), "file not found");
+    // A folder with a data name is not a file.
+    std::fs::create_dir_all(out.join("album.png")).unwrap();
+    assert_eq!(host.read(again(&folder), "album.png".into(), 0, 10).await.unwrap_err(), "not a file");
+    // Reading changes nothing.
+    assert_eq!(std::fs::read(out.join("rip/catalog.json")).unwrap(), b"{\"pages\":[]}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_refuses_links_hard_links_and_non_data() {
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let (mut inst, out) = setup(root.path(), fake.clone()).await;
+    let outside = root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("secret.txt"), b"secret").unwrap();
+    // Not data files, hidden names, escapes.
+    std::fs::write(out.join("tool.exe"), b"MZ").unwrap();
+    std::fs::write(out.join("noext"), b"x").unwrap();
+    std::fs::create_dir_all(out.join(".git")).unwrap();
+    std::fs::write(out.join(".git/config.txt"), b"x").unwrap();
+    std::fs::write(out.join(".env.txt"), b"x").unwrap();
+    // A hard link to a file outside: a plain file to every look without following links.
+    std::fs::hard_link(outside.join("secret.txt"), out.join("linked.txt")).expect("hard links need no privilege");
+    // A Manager folder below the picked one.
+    let manager = out.join("manager");
+    std::fs::create_dir_all(&manager).unwrap();
+    std::fs::write(manager.join("logins.json"), b"{}").unwrap();
+    *fake.manager.lock().unwrap() = vec![manager.clone()];
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Resume".into()).await.unwrap();
+    for path in [
+        "tool.exe",
+        "noext",
+        ".git/config.txt",
+        ".env.txt",
+        "linked.txt",
+        "manager/logins.json",
+        "../outside/secret.txt",
+        "C:/x.txt",
+        "nul.txt",
+    ] {
+        let error = host.read(again(&folder), path.into(), 0, 100).await.unwrap_err();
+        assert!(error.starts_with("permission denied:") || error.starts_with("invalid path"), "{path}: {error}");
+    }
+    assert_eq!(host.read(again(&folder), "tool.exe".into(), 0, 1).await.unwrap_err(), "permission denied: tool.exe is not a data file");
+    assert_eq!(
+        host.read(again(&folder), "linked.txt".into(), 0, 1).await.unwrap_err(),
+        "permission denied: linked.txt has other names (hard links)"
+    );
+    assert_eq!(host.read(again(&folder), "manager/logins.json".into(), 0, 1).await.unwrap_err(), MANAGER_FOLDER);
+    // Through a link (symlink or junction) to a folder outside.
+    if dir_link(&outside, &out.join("link")) {
+        let error = host.read(again(&folder), "link/secret.txt".into(), 0, 100).await.unwrap_err();
+        assert_eq!(error, "permission denied: link/secret.txt leads through a link");
+    } else {
+        eprintln!("this user may create neither symlinks nor junctions; the link case is skipped");
+    }
+    // A file symlink (Unix; Windows needs a privilege for it).
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(outside.join("secret.txt"), out.join("sym.txt")).unwrap();
+        let error = host.read(again(&folder), "sym.txt".into(), 0, 100).await.unwrap_err();
+        assert!(error.starts_with("permission denied:"), "{error}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_chunks_and_eof() {
+    use aio_plugin_host::folders::MAX_FOLDER_READ;
+    let root = tempfile::tempdir().unwrap();
+    let (mut inst, out) = setup(root.path(), Arc::new(Fake::default())).await;
+    let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+    std::fs::write(out.join("big.bin"), &data).unwrap();
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Resume".into()).await.unwrap();
+    // Chunks of 4096: two full, one short, then empty at and past the end.
+    let mut all = Vec::new();
+    let mut sizes = Vec::new();
+    loop {
+        let chunk = host.read(again(&folder), "big.bin".into(), all.len() as u64, 4096).await.unwrap();
+        sizes.push(chunk.len());
+        if chunk.is_empty() {
+            break;
+        }
+        all.extend(chunk);
+    }
+    assert_eq!(sizes, [4096, 4096, 1808, 0]);
+    assert_eq!(all, data);
+    assert!(host.read(again(&folder), "big.bin".into(), u64::MAX, 10).await.unwrap().is_empty());
+    assert!(host.read(again(&folder), "big.bin".into(), 5, 0).await.unwrap().is_empty());
+    // At most 4 MiB per call; asking for more is refused.
+    assert_eq!(MAX_FOLDER_READ, 4 * 1024 * 1024);
+    assert_eq!(host.read(again(&folder), "big.bin".into(), 0, MAX_FOLDER_READ).await.unwrap().len(), 10_000);
+    let error = host.read(again(&folder), "big.bin".into(), 0, MAX_FOLDER_READ + 1).await.unwrap_err();
+    assert_eq!(error, "permission denied: at most 4 MiB can be read at once");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_hides_links_and_hidden_names() {
+    use aio_plugin_host::folders::MAX_FOLDER_ENTRIES;
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let (mut inst, out) = setup(root.path(), fake.clone()).await;
+    let outside = root.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(out.join("rip/images")).unwrap();
+    std::fs::write(out.join("rip/catalog.json"), b"12345").unwrap();
+    std::fs::write(out.join("rip/notes.exe"), b"MZ").unwrap();
+    std::fs::write(out.join("rip/.hidden.txt"), b"x").unwrap();
+    std::fs::create_dir_all(out.join("rip/.cache")).unwrap();
+    std::fs::write(out.join("rip/bad name.txt"), b"x").unwrap();
+    let linked = dir_link(&outside, &out.join("rip/link"));
+    let host = inst.host_for_tests();
+    let folder = host.pick_folder("Resume".into()).await.unwrap();
+    let entry = |name: &str, is_folder: bool, size: u64| (name.to_string(), is_folder, size);
+    let plain = |list: Vec<aio_plugin_host::bindings::aio::plugin::host::FolderEntry>| {
+        list.into_iter().map(|e| (e.name, e.is_folder, e.size)).collect::<Vec<_>>()
+    };
+    let listed = plain(host.list(again(&folder), "rip".into()).await.unwrap());
+    assert_eq!(
+        listed,
+        vec![entry("catalog.json", false, 5), entry("images", true, 0), entry("notes.exe", false, 2)],
+        "links ({linked}), hidden names and names no path can name are left out"
+    );
+    // The picked folder itself.
+    assert_eq!(plain(host.list(again(&folder), "".into()).await.unwrap()), vec![entry("rip", true, 0)]);
+    assert!(host.list(again(&folder), "rip/images".into()).await.unwrap().is_empty());
+    // Not through a link, nor into hidden folders, files or missing folders.
+    if linked {
+        assert_eq!(host.list(again(&folder), "rip/link".into()).await.unwrap_err(), "permission denied: rip/link leads through a link");
+    }
+    assert!(host.list(again(&folder), "rip/.cache".into()).await.unwrap_err().starts_with("permission denied:"));
+    assert!(host.list(again(&folder), "../outside".into()).await.is_err());
+    assert_eq!(host.list(again(&folder), "rip/catalog.json".into()).await.unwrap_err(), "not a folder");
+    assert_eq!(host.list(again(&folder), "rip/missing".into()).await.unwrap_err(), "file not found");
+    // Never into a Manager folder.
+    *fake.manager.lock().unwrap() = vec![out.join("rip/images")];
+    let folder = host.pick_folder("Resume".into()).await.unwrap();
+    assert_eq!(host.list(again(&folder), "rip/images".into()).await.unwrap_err(), MANAGER_FOLDER);
+    // At most 10,000 entries.
+    assert_eq!(MAX_FOLDER_ENTRIES, 10_000);
+    let many = out.join("many");
+    std::fs::create_dir_all(&many).unwrap();
+    for i in 0..MAX_FOLDER_ENTRIES {
+        std::fs::write(many.join(format!("{i}.png")), b"").unwrap();
+    }
+    assert_eq!(host.list(again(&folder), "many".into()).await.unwrap().len(), MAX_FOLDER_ENTRIES);
+    std::fs::write(many.join("one-more.png"), b"").unwrap();
+    assert_eq!(host.list(again(&folder), "many".into()).await.unwrap_err(), "permission denied: many has more than 10000 entries");
+}

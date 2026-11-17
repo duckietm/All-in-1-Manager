@@ -23,6 +23,12 @@ use crate::runtime::sanitise;
 
 /// Largest HTTP response body handed to a plugin.
 pub const MAX_HTTP_BODY: usize = 32 * 1024 * 1024;
+/// Most URLs one `http-get-many` (API 1.1) takes.
+pub const MAX_MANY_URLS: usize = 8;
+/// Most bytes of the bodies one `http-get-many` hands over, together.
+pub const MAX_MANY_BYTES: usize = 32 * 1024 * 1024;
+/// The refusal of a body of `http-get-many` past [`MAX_MANY_BYTES`] (and of the fetches not finished by then).
+pub const BUDGET_EXCEEDED: &str = "permission denied: response budget exceeded";
 /// Longest URL accepted.
 pub const MAX_URL: usize = 2_048;
 /// Local TCP connections one plugin instance may hold open at once.

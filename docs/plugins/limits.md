@@ -23,7 +23,8 @@ file needs 32 MiB of the 64.
 | Waiting for the user (a dialog, an approval) | No limit, and not counted in the 5 s |
 | A database read (`Select::run`) | 30 s, not counted in the 5 s |
 | An approved database batch (`sql::write`) | 30 s once approved |
-| An HTTP request (`http::get`), redirects and body included | 60 s, not counted in the 5 s |
+| An HTTP request (`http::get`, each URL of `http::get_many`), redirects and body included | 60 s, not counted in the 5 s |
+| Reading or listing a picked folder (`Folder::read`, `Folder::list`) | Not counted in the 5 s |
 | Connecting to a local port (`tcp::connect`) | 5 s, not counted in the 5 s |
 | One `Conn::recv` | 30 s, not counted in the 5 s |
 | One `Conn::recv_timeout` (API 1.1) | What you ask, at most 30 s (30,000 ms; a longer wait is cut to 30 s); not counted in the 5 s, and not an error when it runs out (`Ok(None)`) |
@@ -80,11 +81,14 @@ When the exports folder is full, the status line says so and the file is not sav
 | Bytes written through one `Folder`, in all | 2 GiB, the current sizes of its files (`folders::MAX_BYTES`) |
 | One file | 256 MiB (`folders::MAX_FILE`), also after an `append` |
 | A file handed to `Folder::open_import_preview` | 32 MiB |
+| One `Folder::read` | 4 MiB (`folders::MAX_READ`); a larger `max` is refused |
+| Entries of one `Folder::list` | 10,000 (`folders::MAX_ENTRIES`); a folder with more is refused |
 | `Folder::reveal` | Once every 2 s per `Folder` |
 
 Past a size or count limit, the write (or append) fails with `permission denied: folder limit reached`. A file
 written in pieces with `Folder::append` counts its size after each piece; the plugin needs only one piece in memory
-at a time.
+at a time. Reading has no total: `Folder::read` reads any data file of the folder (not through a link, not a file
+with other names) in pieces of at most 4 MiB, so a large file never has to be in memory whole.
 
 ## SQL
 
@@ -105,6 +109,8 @@ at a time.
 | URL | 2,048 bytes, printable ASCII, `http` or `https`, default port only, no user information |
 | Redirects | 5, to the same host only, on its default port, never from https to http |
 | Response body | 32 MiB |
+| URLs of one `http::get_many` (API 1.1) | 8, fetched together; more refuses the whole call |
+| Bodies of one `http::get_many`, together | 32 MiB; past it `permission denied: response budget exceeded` |
 | Status | 2xx; anything else is `HTTP <code>` |
 | Hosts allowed under `http:ask` (API 1.1) | 64 per plugin, remembered |
 | Hosts refused under `http:ask` (API 1.1) | Remembered for the session; after 256, every other host is refused without asking |

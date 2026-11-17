@@ -224,6 +224,7 @@ dependencies = [
  "aio-plugin-host",
  "anyhow",
  "async-trait",
+ "futures",
  "libc",
  "serde",
  "serde_json",

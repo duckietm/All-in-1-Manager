@@ -17,8 +17,8 @@ Ask for the least you need. Users read this list, and the official index's revie
 | `sql:read:<tables>` | [`Select`](api.md#reading) on these tables. | Read the table `<tables>` of the hotel database (one table) / Read the tables `<t1>, <t2>` of the hotel database (several) |
 | `sql:write:<tables>` | [`sql::write`](api.md#changing): insert, update and delete in these tables, each batch approved by the user. | Change the table `<tables>` of the hotel database (you approve each change) / Change the tables `<t1>, <t2>` of the hotel database (you approve each change) |
 | `sql:read-private:<table>.<column>` | Read, filter on, or write one [private column](#private-columns). Needs `sql:read` or `sql:write` for the table as well. | Read the private column `<column>` of the table `<table>` (it can hold passwords, addresses or tokens) |
-| `http:<host>` | [`http::get`](api.md#http) to exactly this host, on the default port. | Fetch pages from `<host>` on the internet |
-| `http:ask` | **API 1.1.** [`http::get`](api.md#http) to a public host that no `http:<host>` names, after the user allows that host. See [Asking for hosts](#asking-for-hosts-httpask). Shown in the warning colour. | Ask you before fetching from any other internet host |
+| `http:<host>` | [`http::get`](api.md#http) and `http::get_many` to exactly this host, on the default port. | Fetch pages from `<host>` on the internet |
+| `http:ask` | **API 1.1.** [`http::get`](api.md#http) and `http::get_many` to a public host that no `http:<host>` names, after the user allows that host. See [Asking for hosts](#asking-for-hosts-httpask). Shown in the warning colour. | Ask you before fetching from any other internet host |
 | `tcp:localhost:<port>` | [`tcp::connect`](api.md#tcp) to `127.0.0.1:<port>`. | Connect to a program on this computer, port `<port>` (for example G-Earth) |
 | `tcp:localhost:<a>-<b>` | **API 1.1.** [`tcp::connect`](api.md#tcp) to any port from `<a>` to `<b>`, at most 16 ports. | Connect to programs on this computer, ports `<a>`–`<b>` (for example G-Earth) |
 
@@ -29,8 +29,10 @@ permissions:
   - files: Keep its own files in a private folder (always allowed)
 ```
 
-The host calls of [`host`](api.md#host) (log, status line, questions, text prompts, file dialogs, `keep_working`), the
-folder picker [`folders::pick`](api.md#folders) and the [page](ui.md) need no permission.
+The host calls of [`host`](api.md#host) (log, status line, questions, text prompts, file dialogs, `keep_working`,
+`open_manager_page`), the folder picker [`folders::pick`](api.md#folders) with everything a picked `Folder` does
+(writing new files and reading or listing what is in it) and the [page](ui.md) need no permission: the user picks the
+folder each time, so picking it is the consent.
 
 The permissions marked **API 1.1** need `"api": "1.1"` in the manifest; with `"1.0"` the manifest is refused with
 `The permission <p> needs API 1.1 ("api": "1.1" in the manifest)`.
@@ -124,7 +126,8 @@ this:
    names ending in `.localhost`, single-label names (`nas`), and names ending in `.local`, `.lan`, `.internal` or
    `.home.arpa` are refused without asking (`permission denied: host <host> cannot be asked for`).
 2. The first time, the Manager asks the user: "<plugin> wants to fetch from <host>. Allow?". The dialog counts
-   towards the 20 dialogs of a call, and the user's time does not count against the call's 5 s.
+   towards the 20 dialogs of a call, and the user's time does not count against the call's 5 s. `http::get_many`
+   asks about its hosts one at a time, before it fetches anything.
 3. **Yes** is remembered for the plugin: later requests to that host need no question. At most 64 hosts are
    remembered per plugin; past that the call fails with `permission denied: at most 64 hosts can be allowed; forget
    one on the Plugins page`.

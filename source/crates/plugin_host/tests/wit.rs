@@ -44,13 +44,19 @@ fn wit_package_parses() {
         "[method]picked-folder.append",
         "[method]picked-folder.reveal",
         "[method]picked-folder.open-import-preview",
+        "[method]picked-folder.read",
+        "[method]picked-folder.list",
         "language",
         "translate",
+        "http-get-many",
+        "open-manager-page",
     ] {
         assert!(host.functions.contains_key(func), "host must import {func}");
     }
     assert!(host.types.contains_key("picked-file"), "host must define resource picked-file");
     assert!(host.types.contains_key("picked-folder"), "host must define resource picked-folder");
+    assert!(host.types.contains_key("folder-entry"), "host must define record folder-entry");
+    assert!(host.types.contains_key("manager-page"), "host must define enum manager-page");
 }
 
 /// The 1.0 text is kept verbatim for the backward-compatibility tests: 1.1 only adds items.
@@ -72,13 +78,17 @@ fn wit_1_0_is_kept_and_1_1_only_adds() {
     assert_eq!(
         added,
         [
+            "http-get-many",
             "[method]tcp-connection.recv-timeout",
             "[method]picked-folder.name",
             "[method]picked-folder.write",
             "[method]picked-folder.append",
+            "[method]picked-folder.read",
+            "[method]picked-folder.list",
             "[method]picked-folder.reveal",
             "[method]picked-folder.open-import-preview",
             "pick-folder",
+            "open-manager-page",
             "keep-working",
             "language",
             "translate",
@@ -90,8 +100,10 @@ fn wit_1_0_is_kept_and_1_1_only_adds() {
         let stability = &new.interfaces[host_id].functions[f.as_str()].stability;
         assert!(matches!(stability, wit_parser::Stability::Stable { .. }), "host.{f} needs @since: {stability:?}");
     }
-    let folder = new.interfaces[host_id].types["picked-folder"];
-    assert!(matches!(new.types[folder].stability, wit_parser::Stability::Stable { .. }), "picked-folder needs @since");
+    for added_type in ["picked-folder", "folder-entry", "manager-page"] {
+        let id = new.interfaces[host_id].types[added_type];
+        assert!(matches!(new.types[id].stability, wit_parser::Stability::Stable { .. }), "{added_type} needs @since");
+    }
     let types = |r: &Resolve, pkg| r.interfaces[r.packages[pkg].interfaces["types"]].types.keys().cloned().collect::<Vec<_>>();
     assert_eq!(types(&old, old_pkg), types(&new, new_pkg), "the types are unchanged");
 }

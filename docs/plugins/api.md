@@ -118,7 +118,8 @@ Permission: none.
 
 ## `host`
 
-The Manager itself: the plugin log, the status line, dialogs, files the user picks, and long jobs. Permission: none.
+The Manager itself: the plugin log, the status line, dialogs, files the user picks, long jobs and the Manager's other
+pages. Permission: none.
 
 | Item | What it does |
 |---|---|
@@ -136,6 +137,8 @@ The Manager itself: the plugin log, the status line, dialogs, files the user pic
 | `PickedFile::is_for_saving(&self) -> bool` | `true` for a file from `pick_save_file`. |
 | `PickedFile::read(&self) -> Result<Vec<u8>>` | The whole content of a file picked for opening. At most 32 MiB. |
 | `PickedFile::write(&self, data: &[u8]) -> Result<()>` | Replaces the content of a file picked for saving. |
+| `enum ManagerPage` | **API 1.1.** A page of the Manager a plugin may open: `GearthTool` (Tools → G-Earth, where the user installs and starts G-Earth). `#[non_exhaustive]`. |
+| `open_manager_page(page: ManagerPage)` | **API 1.1.** Switches the Manager to `page`, as if the user had chosen it: the plugin's page closes (the plugin stops, like when the user leaves its page) and nothing is started on the new page. Nothing happens while the Manager is busy (a tool or approved work runs). No permission. |
 | `keep_working()` | **API 1.1.** Asks for one more `Plugin::tick` after the next render. It holds only for the call that makes it: each event and tick starts without it, so call it in every event handler and tick that leaves work to do. See [Long jobs](ui.md#long-jobs). |
 
 Before a file dialog opens, the Manager shows its own window saying what the plugin wants ("The plugin wants you to
@@ -180,6 +183,18 @@ fn host_calls() -> aio_plugin_sdk::Result<()> {
 ```
 
 Off `wasm32` (a native `cargo test`), `log` and `status` print to stderr, `language` returns `"en"`; the other calls panic.
+
+A plugin that needs G-Earth (a packet logger) can send the user to the page that installs it:
+
+```rust
+use aio_plugin_sdk::host::{self, ManagerPage};
+
+fn need_gearth() {
+    if host::ask("G-Earth is not running. Open the G-Earth page to install or start it?") {
+        host::open_manager_page(ManagerPage::GearthTool);
+    }
+}
+```
 
 ## `i18n`
 
@@ -240,9 +255,10 @@ The folder is `configuration/plugins/ext/<id>/data/` for an installed plugin and
 
 ## `folders`
 
-**API 1.1.** A folder the user picks, where the plugin may create data files: an export, a downloaded catalogue with
-its pictures. Permission: none, because the user picks the folder each time. The plugin never sees the folder's path,
-only its name.
+**API 1.1.** A folder the user picks, where the plugin may create data files (an export, a downloaded catalogue with
+its pictures) and read the data files already there (an earlier export to resume or compare with). Permission: none,
+for writing as for reading, because the user picks the folder each time. The plugin never sees the folder's path, only
+its name.
 
 | Item | What it does |
 |---|---|
@@ -253,12 +269,18 @@ only its name.
 | `Folder::write_str(&self, path: &str, text: &str) -> Result<()>` | The same with `text` as UTF-8. |
 | `Folder::append(&self, path: &str, data: &[u8]) -> Result<()>` | Appends `data` to a file this `Folder` created (with `write` or `append`), or creates it (and the folders it needs) when it does not exist yet: a large file in pieces, never whole in memory. |
 | `Folder::append_str(&self, path: &str, text: &str) -> Result<()>` | The same with `text` as UTF-8. |
+| `Folder::read(&self, path: &str, offset: u64, max: u32) -> Result<Vec<u8>>` | At most `max` bytes (at most `MAX_READ`, 4 MiB) of the data file `path` from byte `offset`: fewer at the end of the file, none at or past it. Any data file in the folder, not only this `Folder`'s own. |
+| `Folder::read_all(&self, path: &str) -> Result<Vec<u8>>` | The whole file, read with `read` in pieces of 4 MiB until one comes back short. It must fit in the plugin's 64 MiB. |
+| `Folder::list(&self, path: &str) -> Result<Vec<Entry>>` | The entries of the folder `path` (`""` for the picked folder itself), sorted by name, at most `MAX_ENTRIES`. Files of every type, with their sizes, and folders; links, hidden names and names a path cannot name are left out. |
+| `struct Entry` | `name: String`, `is_folder: bool`, `size: u64` (0 for a folder). `#[non_exhaustive]`. |
 | `Folder::reveal(&self) -> Result<()>` | Opens the folder in the system's file manager. At most once every 2 s per `Folder`. |
 | `Folder::open_import_preview(&self, path: &str) -> Result<()>` | Hands a file this `Folder` wrote, of at most 32 MiB, to the Catalogue's import, like `host::open_import_preview`. |
 | `DATA_EXTENSIONS` | The file types a plugin may write: `json`, `sql`, `txt`, `md`, `csv`, `tsv`, `xml`, `html`, `png`, `gif`, `jpg`, `jpeg`, `webp`, `bmp`, `svg`, `zip`, `nitro`, `swf`, `bin`, `log`. |
 | `MAX_FILES` | `100_000`: most files one `Folder` writes. |
 | `MAX_BYTES` | `2 * 1024 * 1024 * 1024`: most bytes one `Folder` writes in all (2 GiB, the current sizes of its files). |
 | `MAX_FILE` | `256 * 1024 * 1024`: the largest file (256 MiB). |
+| `MAX_READ` | `4 * 1024 * 1024`: most bytes one `read` returns (4 MiB). |
+| `MAX_ENTRIES` | `10_000`: most entries one `list` returns. |
 
 Before the dialog opens, the Manager says what the plugin wants ("The plugin wants you to choose a folder. It can
 create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.").
@@ -276,6 +298,12 @@ Rules:
   The file's size after the append counts against `MAX_FILE`, the appended bytes against `MAX_BYTES`, a new file
   against `MAX_FILES`. A failed append may leave part of the data at the end of the file (a failed first append
   leaves no file); a later `write` replaces the file whole and it stays the `Folder`'s own;
+- `read` reads any data file in the folder by the same path rules and file types, also one the `Folder` did not
+  write, but never through a link, never a file that has other names (a hard link, which could be a file outside the
+  folder) and never a file in a folder of the Manager. Read a large file in pieces and keep only what you need of each:
+  the plugin has 64 MiB of memory in all. The time spent reading does not count against the call's 5 s;
+- `list` shows files of every type (only data files can be read) and folders; a folder with more than `MAX_ENTRIES`
+  entries is refused;
 - a new `pick` of the same folder starts over: it cannot rewrite the files of an earlier `Folder`;
 - some folders cannot be picked: a drive's root, the home folder itself, a startup folder (or anything inside one), and
   the Manager's own install and configuration folders (or anything inside them). `pick` returns `None` and the plugin
@@ -283,9 +311,9 @@ Rules:
 
 | Kind | When |
 |---|---|
-| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: <path> has other names (hard links)` (`append` to a file that was hard-linked); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
-| `NotFound` | `file not found` (`open_import_preview` of a file that was removed). |
-| `Other` | An invalid path (the [`files`](#files) message); `file larger than 32 MiB` (`open_import_preview`); `the file manager could not be opened (<kind>)`; other I/O errors. |
+| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: <path> has other names (hard links)` (`append` to, or `read` of, a file that is hard-linked); `permission denied: <path> is not a plain file` (`read`); `permission denied: at most 4 MiB can be read at once` (`read`); `permission denied: <path> has more than 10000 entries` (`list`; `the folder` for `""`); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
+| `NotFound` | `file not found` (`read`, `list` or `open_import_preview` of a file or folder that is not there). |
+| `Other` | An invalid path (the [`files`](#files) message); `not a file` (`read` of a folder); `not a folder` (`list` of a file); `file larger than 32 MiB` (`open_import_preview`); `the file manager could not be opened (<kind>)`; other I/O errors. |
 
 ```rust
 use aio_plugin_sdk::{folders, host};
@@ -303,6 +331,30 @@ fn export_catalogue() -> aio_plugin_sdk::Result<()> {
     host::status(&format!("Saved in {}", folder.name()));
     folder.reveal()?;
     Ok(())
+}
+
+/// Counts the lines of an earlier export without holding it whole in memory.
+fn count_lines() -> aio_plugin_sdk::Result<usize> {
+    let Some(folder) = folders::pick("Choose an earlier export") else {
+        return Ok(0);
+    };
+    let mut lines = 0;
+    for entry in folder.list("catalogue")? {
+        if entry.is_folder || !entry.name.ends_with(".sql") {
+            continue;
+        }
+        let path = format!("catalogue/{}", entry.name);
+        let mut offset = 0;
+        loop {
+            let piece = folder.read(&path, offset, folders::MAX_READ)?;
+            if piece.is_empty() {
+                break;
+            }
+            lines += piece.iter().filter(|b| **b == b'\n').count();
+            offset += piece.len() as u64;
+        }
+    }
+    Ok(lines)
 }
 ```
 
@@ -414,6 +466,8 @@ ask the user about other hosts.
 | Item | What it does |
 |---|---|
 | `get(url: &str) -> Result<Vec<u8>>` | GETs `url` and returns the response body. |
+| `get_many(urls: &[&str]) -> Vec<Result<Vec<u8>>>` | **API 1.1.** Up to `MAX_MANY` (8) GETs at once: one result per URL, in the order of `urls`. Each URL is checked like `get`; the bodies of one call add up to at most `MAX_MANY_BYTES` (32 MiB). |
+| `MAX_MANY`, `MAX_MANY_BYTES` | `8` and `32 * 1024 * 1024`. |
 
 Rules:
 
@@ -430,11 +484,16 @@ Rules:
 - a redirect is followed only to the same host, on its default port, and never from https to http; at most 5
   redirects;
 - a status other than 2xx is an error;
-- the response body has at most 32 MiB, and the whole request has 60 s.
+- the response body has at most 32 MiB, and the whole request has 60 s;
+- `get_many` follows every rule above for each URL. Under `http:ask` it first asks about the hosts not answered yet,
+  one question at a time and in order (each one of the call's 20 dialogs; a host is asked about once), and only then
+  fetches the allowed URLs, all together, each with its own 60 s. When a body does not fit in what is left of the
+  call's 32 MiB, that URL and every one not finished yet fail with `permission denied: response budget exceeded`.
+  More than 8 URLs: every result is `permission denied: at most 8 URLs per call` and nothing is fetched.
 
 | Kind | When |
 |---|---|
-| `Denied` | `permission denied: host 'example.com' is not declared with http:example.com`; with `http:ask`: `permission denied: host <host> was refused` (the user said no, now or earlier in the session), `permission denied: host <host> was not asked (too many dialogs in one call)`, `permission denied: host <host> cannot be asked for` (not a public host name), `permission denied: host <host> resolves to a local address`, `permission denied: at most 64 hosts can be allowed; forget one on the Plugins page`; `permission denied: '<url>' is not an allowed http(s) URL`; `permission denied: only http and https URLs are allowed, not '<url>'`; `permission denied: a URL with user information is not allowed: '<url>'`; `permission denied: '<url>': only the default port of https is allowed`; a redirect to another host (the message ends with `a redirect to another host was refused`). |
+| `Denied` | `permission denied: host 'example.com' is not declared with http:example.com`; with `http:ask`: `permission denied: host <host> was refused` (the user said no, now or earlier in the session), `permission denied: host <host> was not asked (too many dialogs in one call)`, `permission denied: host <host> cannot be asked for` (not a public host name), `permission denied: host <host> resolves to a local address`, `permission denied: at most 64 hosts can be allowed; forget one on the Plugins page`; `permission denied: '<url>' is not an allowed http(s) URL`; `permission denied: only http and https URLs are allowed, not '<url>'`; `permission denied: a URL with user information is not allowed: '<url>'`; `permission denied: '<url>': only the default port of https is allowed`; `get_many`: `permission denied: response budget exceeded`, `permission denied: at most 8 URLs per call`; a redirect to another host (the message ends with `a redirect to another host was refused`). |
 | `Timeout` | `the request timed out after 60 s` |
 | `Other` | `HTTP <code>` (for example `HTTP 404`); `the response is larger than 32 MiB`; too many redirects; a network error. |
 
@@ -447,6 +506,14 @@ fn http_call() -> aio_plugin_sdk::Result<()> {
     let body = http::get("https://api.example.com/v1/status")?;
     let text = String::from_utf8_lossy(&body);
     host::log(Level::Info, &text);
+    // Several at once: one result per URL, in order.
+    let urls = ["https://api.example.com/v1/a.png", "https://api.example.com/v1/b.png"];
+    for (url, result) in urls.iter().zip(http::get_many(&urls)) {
+        match result {
+            Ok(body) => host::log(Level::Info, &format!("{url}: {} bytes", body.len())),
+            Err(e) => host::log(Level::Warn, &format!("{url}: {e}")),
+        }
+    }
     Ok(())
 }
 ```

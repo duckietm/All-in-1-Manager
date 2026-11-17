@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
 use aio_plugin_host::net::{is_local_address, AskedHosts, MAX_HTTP_BODY};
-use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
+use aio_plugin_host::services::{HostServices, Level, ManagerPage, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::{async_trait, display_safe};
 use aio_remote::sql_session::{SqlSession, SqlValue as DbValue};
 use aio_remote::Server;
@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 
 use crate::gui::dialogs::{Choice, InputReply};
 use crate::gui::log_view::LogLines;
-use crate::gui::Shared;
+use crate::gui::{Page, Request, Shared};
 use crate::i18n::{t, tf};
 
 /// Lines kept in a plugin page's log.
@@ -699,6 +699,14 @@ impl HostServices for AppServices {
         dialog.pick_folder().await.map(|f| f.path().to_path_buf())
     }
 
+    fn open_manager_page(&self, page: ManagerPage) {
+        // Like a click on the page in the window: ignored while the window is busy (`App::go`).
+        let page = match page {
+            ManagerPage::GearthTool => Page::GearthTool,
+        };
+        self.shared.request(Request::Go(page));
+    }
+
     fn reveal_folder(&self, folder: &Path) -> Result<(), String> {
         let folder = plain_path(folder);
         // Straight to the file manager, never through a shell (which would read characters of the name).
@@ -1107,6 +1115,18 @@ mod tests {
         // Stopped: nothing is shown any more.
         assert_eq!(app.pick_folder("Again".into()).await, None);
         assert!(!shared.dialogs.is_open());
+    }
+
+    #[tokio::test]
+    async fn open_manager_page_switches_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let shared = Shared::for_tests(tokio::runtime::Handle::current());
+        let app = services(&shared, dir.path());
+        assert!(shared.take_requests_for_tests().is_empty());
+        app.open_manager_page(ManagerPage::GearthTool);
+        assert_eq!(shared.take_requests_for_tests(), vec![Request::Go(Page::GearthTool)]);
+        // The page is one of the Tools page's: always shown, also without a login and with every plugin off.
+        assert!(crate::plugins::page_visible(Page::GearthTool));
     }
 
     /// A plugin can never get the user to pick the Manager's configuration (plugin code, `http-hosts.json`,

@@ -65,6 +65,13 @@ pub struct WriteBatch {
     pub summary: Vec<String>,
 }
 
+/// A page of the Manager a plugin may open (`open-manager-page`, API 1.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagerPage {
+    /// Tools → G-Earth.
+    GearthTool,
+}
+
 /// The Manager side of the plugin API. Calls come from tokio worker threads, never from the egui
 /// thread; the dialog methods must hand the request to the UI and wait for the user's answer.
 #[async_trait]
@@ -125,6 +132,10 @@ pub trait HostServices: Send + Sync {
     fn reveal_folder(&self, folder: &Path) -> Result<(), String> {
         let _ = folder;
         Err("this host cannot show folders".into())
+    }
+    /// Switches the Manager to `page` (API 1.1; no permission). The default does nothing.
+    fn open_manager_page(&self, page: ManagerPage) {
+        let _ = page;
     }
     /// The Manager's own folders (its configuration: plugin code, `http-hosts.json`, `verified.json`): a picked folder
     /// may not lie inside one, and nothing is written into one through a folder above it. The runtime adds the

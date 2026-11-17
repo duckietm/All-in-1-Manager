@@ -3945,5 +3945,9 @@
   "{plugin} could not be installed.": "{plugin} kurulamadı.",
   "· checked {age}": "· denetlendi: {age}",
   "Choose a folder …": "Klasör seç …",
-  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "Eklenti bir klasör seçmenizi istiyor. İçinde yalnızca veri dosyaları (resimler, metin, SQL, JSON) oluşturabilir, başka hiçbir şey yapamaz: orada zaten bulunan dosyalar olduğu gibi kalır."
+  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "Eklenti bir klasör seçmenizi istiyor. İçinde yalnızca veri dosyaları (resimler, metin, SQL, JSON) oluşturabilir, başka hiçbir şey yapamaz: orada zaten bulunan dosyalar olduğu gibi kalır.",
+  "G-Earth": "G-Earth",
+  "G-Earth tool": "G-Earth aracı",
+  "Install and start G-Earth from here.": "G-Earth'ü buradan kur ve başlat.",
+  "Install and start G-Earth, the packet logger, on this computer": "G-Earth'ü (paket kaydedici) bu bilgisayara kur ve başlat"
 }

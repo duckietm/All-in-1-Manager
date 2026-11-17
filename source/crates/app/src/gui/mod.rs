@@ -74,6 +74,8 @@ pub enum Page {
     EmulatorMonitor,
     Terminal,
     Doctor,
+    /// Tools → G-Earth (also opened by a plugin with `open-manager-page`).
+    GearthTool,
     History,
     Settings,
     Plugins,
@@ -159,6 +161,11 @@ impl Shared {
 
     pub fn set_session_for_tests(&self, server: Option<Arc<dyn Server>>) {
         *self.session.lock() = server;
+    }
+
+    /// The requests made since the last call (what the window would handle next).
+    pub fn take_requests_for_tests(&self) -> Vec<Request> {
+        std::mem::take(&mut *self.requests.lock())
     }
 }
 
@@ -685,6 +692,7 @@ impl App {
             Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, and update.").into()),
             Page::Doctor => (t("Health check").into(), tf("How {host} is doing: services, disk, certificate, backups, updates.", &[("host", &host)])),
             Page::ServerStatus => (t("Server status").into(), tf("Live figures of {host}, every 2 seconds.", &[("host", &host)])),
+            Page::GearthTool => (t("G-Earth").into(), t("Install and start G-Earth, the packet logger, on this computer").into()),
             Page::Terminal => (
                 t("SSH terminal").into(),
                 tf(
@@ -765,7 +773,7 @@ impl App {
                             | Page::DefaultCatalog
                             | Page::SqlEditor
                     ),
-                    Page::Tools => matches!(current, Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor),
+                    Page::Tools => matches!(current, Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor | Page::GearthTool),
                     other => current == other,
                 };
                 let mut nav = |ui: &mut egui::Ui, label: &str, icon: Icon, page: Page| {
@@ -1046,7 +1054,7 @@ impl App {
             Page::Gamedata => self.gamedata.show(ui, palette, &shared),
             Page::Debug => self.debug.show(ui, palette, &shared),
             Page::History => self.history.show(ui, palette, &shared),
-            Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor => {
+            Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor | Page::GearthTool => {
                 self.tools.set_page(page);
                 self.tools.show(ui, palette, &shared);
                 self.page = self.tools.page();

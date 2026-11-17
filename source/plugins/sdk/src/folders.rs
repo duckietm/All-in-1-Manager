@@ -17,8 +17,9 @@
 //!   the file;
 //! - [`read`](Folder::read) reads any data file in the folder, not only the handle's own, at most [`MAX_READ`]
 //!   bytes per call ([`read_all`](Folder::read_all) loops over it); a file with other names (a hard link) is refused;
-//! - [`list`](Folder::list) shows at most [`MAX_ENTRIES`] entries of a folder; links, hidden names and names a path
-//!   cannot name are left out;
+//! - [`list`](Folder::list) shows a page of at most [`MAX_ENTRIES`] entries of a folder, sorted by name, from a given
+//!   index ([`list_all`](Folder::list_all) pages through all of them); links, hidden names and names a path cannot
+//!   name are left out;
 //! - a path that leads through a link is refused, and nothing in a folder of the Manager is read or written;
 //! - one [`Folder`] writes at most [`MAX_FILES`] files and [`MAX_BYTES`] in all, each file at most [`MAX_FILE`].
 //!
@@ -41,7 +42,7 @@
 //!     folder.reveal()?;
 //! }
 //! if let Some(folder) = folders::pick("Resume from an earlier rip") {
-//!     for entry in folder.list("")? {
+//!     for entry in folder.list_all("")? {
 //!         if !entry.is_folder && entry.name.ends_with(".json") {
 //!             let head = folder.read(&entry.name, 0, 1024)?;
 //!             # let _ = head;
@@ -73,8 +74,11 @@ pub const MAX_FILE: u64 = 256 * 1024 * 1024;
 /// Most bytes one [`Folder::read`] returns (4 MiB); a larger `max` is [`Denied`](crate::ErrorKind::Denied).
 pub const MAX_READ: u32 = 4 * 1024 * 1024;
 
-/// Most entries one [`Folder::list`] returns; a folder with more is [`Denied`](crate::ErrorKind::Denied).
+/// Most entries one [`Folder::list`] returns (one page).
 pub const MAX_ENTRIES: usize = 10_000;
+
+/// Most entries a folder may have to be listed at all; a folder with more is [`Denied`](crate::ErrorKind::Denied).
+pub const MAX_LISTED: usize = 1_000_000;
 
 /// An entry of a picked folder, from [`Folder::list`].
 ///
@@ -161,13 +165,22 @@ impl Folder {
         read_all_with(|offset, max| self.read(path, offset, max))
     }
 
-    /// The entries of the folder `path` (`""` for the picked folder itself), sorted by name: files of every type with
-    /// their sizes, and folders. Links (symlinks, junctions), hidden names (starting with `.`) and names a path cannot
-    /// name (other characters than `A-Z a-z 0-9 . _ -`) are left out. Refused ([`Denied`](crate::ErrorKind::Denied)): a
-    /// path through a link, a hidden name, a folder of the Manager, a folder with more than [`MAX_ENTRIES`] entries.
-    pub fn list(&self, path: &str) -> Result<Vec<Entry>> {
-        let entries = host_result(self.folder.list(path))?;
+    /// A page of the entries of the folder `path` (`""` for the picked folder itself), sorted by name: at most
+    /// [`MAX_ENTRIES`] from index `start`; the next page starts at `start` plus the length of this one, and a page past
+    /// the last entry is empty. Files of every type with their sizes, and folders. Links (symlinks, junctions), hidden
+    /// names (starting with `.`) and names a path cannot name (other characters than `A-Z a-z 0-9 . _ -`) are left
+    /// out. Refused ([`Denied`](crate::ErrorKind::Denied)): a path through a link, a hidden name, a folder of the
+    /// Manager, a folder with more than [`MAX_LISTED`] entries. A missing folder is
+    /// [`NotFound`](crate::ErrorKind::NotFound).
+    pub fn list(&self, path: &str, start: u32) -> Result<Vec<Entry>> {
+        let entries = host_result(self.folder.list(path, start))?;
         Ok(entries.into_iter().map(|e| Entry { name: e.name, is_folder: e.is_folder, size: e.size }).collect())
+    }
+
+    /// Every entry of the folder `path`, page after page of [`list`](Folder::list) until a short one. The same rules
+    /// and errors as [`list`](Folder::list).
+    pub fn list_all(&self, path: &str) -> Result<Vec<Entry>> {
+        list_all_with(|start| self.list(path, start))
     }
 
     /// Opens the folder in the system's file manager. At most once every 2 s per handle; a quicker repeat is
@@ -180,6 +193,20 @@ impl Folder {
     /// the user reviews it before anything is changed. Another file is [`Denied`](crate::ErrorKind::Denied).
     pub fn open_import_preview(&self, path: &str) -> Result<()> {
         host_result(self.folder.open_import_preview(path))
+    }
+}
+
+/// [`Folder::list_all`] over `list(start)`: pages from index 0 until one is shorter than [`MAX_ENTRIES`].
+fn list_all_with(mut list: impl FnMut(u32) -> Result<Vec<Entry>>) -> Result<Vec<Entry>> {
+    let mut all = Vec::new();
+    loop {
+        let start = u32::try_from(all.len()).map_err(|_| crate::Error::denied("the folder has too many entries"))?;
+        let page = list(start)?;
+        let last = page.len() < MAX_ENTRIES;
+        all.extend(page);
+        if last {
+            return Ok(all);
+        }
     }
 }
 
@@ -243,10 +270,28 @@ mod tests {
     }
 
     #[test]
+    fn list_all_pages_until_a_short_page() {
+        let entry = |i: usize| Entry { name: format!("{i:06}.png"), is_folder: false, size: 0 };
+        for (count, expected_calls) in [(0, 1), (5, 1), (MAX_ENTRIES, 2), (MAX_ENTRIES + 1, 2), (2 * MAX_ENTRIES + 3, 3)] {
+            let mut starts = Vec::new();
+            let all = list_all_with(|start| {
+                starts.push(start);
+                let from = (start as usize).min(count);
+                Ok((from..(from + MAX_ENTRIES).min(count)).map(entry).collect())
+            })
+            .unwrap();
+            assert_eq!(all, (0..count).map(entry).collect::<Vec<_>>(), "{count} entries");
+            assert_eq!(starts.len(), expected_calls, "{count} entries");
+            assert!(starts.iter().enumerate().all(|(n, s)| *s as usize == n * MAX_ENTRIES));
+        }
+    }
+
+    #[test]
     fn read_and_list_limits_are_the_managers() {
         // folders.rs `MAX_FOLDER_READ`, `MAX_FOLDER_ENTRIES`.
         assert_eq!(MAX_READ, 4_194_304);
         assert_eq!(MAX_ENTRIES, 10_000);
+        assert_eq!(MAX_LISTED, 1_000_000);
     }
 
     #[test]

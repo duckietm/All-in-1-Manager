@@ -731,35 +731,45 @@ async fn list_hides_links_and_hidden_names() {
     let plain = |list: Vec<aio_plugin_host::bindings::aio::plugin::host::FolderEntry>| {
         list.into_iter().map(|e| (e.name, e.is_folder, e.size)).collect::<Vec<_>>()
     };
-    let listed = plain(host.list(again(&folder), "rip".into()).await.unwrap());
+    let listed = plain(host.list(again(&folder), "rip".into(), 0).await.unwrap());
+    // A page from an index.
+    assert_eq!(plain(host.list(again(&folder), "rip".into(), 2).await.unwrap()), vec![entry("notes.exe", false, 2)]);
     assert_eq!(
         listed,
         vec![entry("catalog.json", false, 5), entry("images", true, 0), entry("notes.exe", false, 2)],
         "links ({linked}), hidden names and names no path can name are left out"
     );
     // The picked folder itself.
-    assert_eq!(plain(host.list(again(&folder), "".into()).await.unwrap()), vec![entry("rip", true, 0)]);
-    assert!(host.list(again(&folder), "rip/images".into()).await.unwrap().is_empty());
+    assert_eq!(plain(host.list(again(&folder), "".into(), 0).await.unwrap()), vec![entry("rip", true, 0)]);
+    assert!(host.list(again(&folder), "rip/images".into(), 0).await.unwrap().is_empty());
     // Not through a link, nor into hidden folders, files or missing folders.
     if linked {
-        assert_eq!(host.list(again(&folder), "rip/link".into()).await.unwrap_err(), "permission denied: rip/link leads through a link");
+        assert_eq!(host.list(again(&folder), "rip/link".into(), 0).await.unwrap_err(), "permission denied: rip/link leads through a link");
     }
-    assert!(host.list(again(&folder), "rip/.cache".into()).await.unwrap_err().starts_with("permission denied:"));
-    assert!(host.list(again(&folder), "../outside".into()).await.is_err());
-    assert_eq!(host.list(again(&folder), "rip/catalog.json".into()).await.unwrap_err(), "not a folder");
-    assert_eq!(host.list(again(&folder), "rip/missing".into()).await.unwrap_err(), "file not found");
+    assert!(host.list(again(&folder), "rip/.cache".into(), 0).await.unwrap_err().starts_with("permission denied:"));
+    assert!(host.list(again(&folder), "../outside".into(), 0).await.is_err());
+    assert_eq!(host.list(again(&folder), "rip/catalog.json".into(), 0).await.unwrap_err(), "not a folder");
+    assert_eq!(host.list(again(&folder), "rip/missing".into(), 0).await.unwrap_err(), "file not found");
     // Never into a Manager folder.
     *fake.manager.lock().unwrap() = vec![out.join("rip/images")];
     let folder = host.pick_folder("Resume".into()).await.unwrap();
-    assert_eq!(host.list(again(&folder), "rip/images".into()).await.unwrap_err(), MANAGER_FOLDER);
-    // At most 10,000 entries.
+    assert_eq!(host.list(again(&folder), "rip/images".into(), 0).await.unwrap_err(), MANAGER_FOLDER);
+    // At most 10,000 entries per page; the next page starts where it ended, and a page past the end is empty.
     assert_eq!(MAX_FOLDER_ENTRIES, 10_000);
     let many = out.join("many");
     std::fs::create_dir_all(&many).unwrap();
-    for i in 0..MAX_FOLDER_ENTRIES {
-        std::fs::write(many.join(format!("{i}.png")), b"").unwrap();
+    for i in 0..=MAX_FOLDER_ENTRIES {
+        std::fs::write(many.join(format!("{i:05}.png")), b"").unwrap();
     }
-    assert_eq!(host.list(again(&folder), "many".into()).await.unwrap().len(), MAX_FOLDER_ENTRIES);
-    std::fs::write(many.join("one-more.png"), b"").unwrap();
-    assert_eq!(host.list(again(&folder), "many".into()).await.unwrap_err(), "permission denied: many has more than 10000 entries");
+    let first = plain(host.list(again(&folder), "many".into(), 0).await.unwrap());
+    assert_eq!(first.len(), MAX_FOLDER_ENTRIES);
+    assert_eq!(first[0].0, "00000.png");
+    let second = plain(host.list(again(&folder), "many".into(), MAX_FOLDER_ENTRIES as u32).await.unwrap());
+    assert_eq!(second, vec![entry("10000.png", false, 0)]);
+    assert!(host.list(again(&folder), "many".into(), MAX_FOLDER_ENTRIES as u32 + 1).await.unwrap().is_empty());
+    assert!(host.list(again(&folder), "many".into(), u32::MAX).await.unwrap().is_empty());
+    // The pages together are the folder, in order.
+    let names: Vec<String> = first.into_iter().chain(second).map(|e| e.0).collect();
+    assert!(names.windows(2).all(|w| w[0] < w[1]));
+    assert_eq!(names.len(), MAX_FOLDER_ENTRIES + 1);
 }

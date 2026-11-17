@@ -104,7 +104,7 @@ use crate::i18n::Texts;
 use crate::folders::{AppendFailed, FolderLimits, PickedFolder, UserFolders};
 use crate::manifest::{display_safe, Manifest, HOST_API_MINOR};
 use crate::net::{
-    askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, BUDGET_EXCEEDED, MAX_ASKED_HOSTS, MAX_HTTP_BODY,
+    askable_host, check_tcp, declared_host, deny, parse_http, undeclared, AskedHosts, BodyBudget, MAX_ASKED_HOSTS, MAX_HTTP_BODY,
     MAX_MANY_BYTES, MAX_MANY_URLS, MAX_RECV_TIMEOUT_MS, MAX_TCP_CONNECTIONS, MAX_TCP_RECV,
 };
 use crate::permissions::Permission;
@@ -591,34 +591,31 @@ async fn fetch(services: &dyn HostServices, get: &Get) -> Result<Vec<u8>, String
     Ok(body)
 }
 
-/// The fetches of one `http-get-many`, together: each result at its index of `results` (the refused ones are already
-/// there). The bodies handed over add up to at most [`MAX_MANY_BYTES`]: the first that does not fit, and every fetch
-/// not finished by then (dropped, so stopped), get [`BUDGET_EXCEEDED`].
+/// The fetches of one `http-get-many`, together, each under [`HTTP_TIMEOUT`]: each result at its index of `results`
+/// (the refused ones are already there). All of them reserve their bodies from one [`BodyBudget`] of
+/// [`MAX_MANY_BYTES`] while they read them ([`HostServices::http_get_budgeted`]), so the host never holds much more
+/// than that at once; a body that does not fit fails with [`crate::net::BUDGET_EXCEEDED`] and the others go on.
 async fn fetch_many(services: Arc<dyn HostServices>, gets: Vec<(usize, Get)>, results: &mut [Option<Result<Vec<u8>, String>>]) {
+    let budget = BodyBudget::new(MAX_MANY_BYTES);
     let mut running: FuturesUnordered<_> = gets
         .iter()
         .map(|(index, get)| {
-            let services = services.as_ref();
-            async move { (*index, fetch(services, get).await) }
+            let (services, budget) = (services.as_ref(), &budget);
+            async move {
+                let request = services.http_get_budgeted(&get.url, get.asked.as_deref(), budget);
+                let result = limited("the request", HTTP_TIMEOUT, request).await.and_then(|body| {
+                    if body.len() > MAX_HTTP_BODY {
+                        budget.release(body.len());
+                        return Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)));
+                    }
+                    Ok(body)
+                });
+                (*index, result)
+            }
         })
         .collect();
-    let mut left = MAX_MANY_BYTES;
     while let Some((index, result)) = running.next().await {
-        match result {
-            Ok(body) if body.len() > left => {
-                results[index] = Some(Err(BUDGET_EXCEEDED.to_string()));
-                break;
-            }
-            Ok(body) => {
-                left -= body.len();
-                results[index] = Some(Ok(body));
-            }
-            Err(e) => results[index] = Some(Err(e)),
-        }
-    }
-    drop(running);
-    for slot in results.iter_mut().filter(|r| r.is_none()) {
-        *slot = Some(Err(BUDGET_EXCEEDED.to_string()));
+        results[index] = Some(result);
     }
 }
 
@@ -864,9 +861,9 @@ impl Host for HostState {
     /// Every URL checked (and asked for) first, one at a time in order, like `http-get`; then the allowed ones are
     /// fetched together ([`fetch_many`]). The results keep the order of `urls`.
     async fn http_get_many(&mut self, urls: Vec<String>) -> Vec<Result<Vec<u8>, String>> {
+        // One refusal for the whole call, whatever the number of URLs (nothing is built per URL).
         if urls.len() > MAX_MANY_URLS {
-            let e = self.refused(deny(format!("at most {MAX_MANY_URLS} URLs per call")));
-            return urls.iter().map(|_| Err(e.clone())).collect();
+            return vec![Err(self.refused(deny(format!("at most {MAX_MANY_URLS} URLs per call"))))];
         }
         let mut results: Vec<Option<Result<Vec<u8>, String>>> = Vec::with_capacity(urls.len());
         let mut gets = Vec::new();
@@ -883,7 +880,7 @@ impl Host for HostState {
             let services = self.services.clone();
             self.waiting(fetch_many(services, gets, &mut results)).await;
         }
-        results.into_iter().map(|r| r.unwrap_or_else(|| Err(BUDGET_EXCEEDED.to_string()))).collect()
+        results.into_iter().map(|r| r.unwrap_or_else(|| Err("the request stopped".to_string()))).collect()
     }
 
     async fn open_manager_page(&mut self, page: WitManagerPage) {
@@ -1129,8 +1126,8 @@ impl HostPickedFolder for HostState {
     }
 
     /// Like `read`.
-    async fn list(&mut self, folder: Resource<PickedFolder>, path: String) -> Result<Vec<FolderEntry>, String> {
-        let job = self.folder(&folder)?.check_list(&path)?;
+    async fn list(&mut self, folder: Resource<PickedFolder>, path: String, start: u32) -> Result<Vec<FolderEntry>, String> {
+        let job = self.folder(&folder)?.check_list(&path, start)?;
         let _paused = Paused::begin(&self.clock);
         let entries = tokio::task::spawn_blocking(move || job.run()).await.map_err(|_| "the list stopped".to_string())??;
         Ok(entries.into_iter().map(|e| FolderEntry { name: e.name, is_folder: e.is_folder, size: e.size }).collect())

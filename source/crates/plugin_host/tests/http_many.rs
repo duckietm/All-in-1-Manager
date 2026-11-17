@@ -1,5 +1,6 @@
 //! `http-get-many` (API 1.1): up to 8 GETs of one call fetched together, each one checked exactly like `http-get`,
-//! the `http:ask` questions asked one at a time before anything is fetched, and the bodies of a call within 32 MiB.
+//! the `http:ask` questions asked one at a time before anything is fetched, and the bodies of a call within one shared
+//! 32 MiB budget that the fetches reserve from while they read (so the host never holds much more at once).
 
 mod support;
 
@@ -10,13 +11,17 @@ use std::time::Duration;
 
 use aio_plugin_host::approvals::Approvals;
 use aio_plugin_host::bindings::aio::plugin::host::Host;
-use aio_plugin_host::net::{BUDGET_EXCEEDED, MAX_HTTP_BODY, MAX_MANY_BYTES, MAX_MANY_URLS};
+use aio_plugin_host::net::{BodyBudget, BUDGET_EXCEEDED, MAX_HTTP_BODY, MAX_MANY_BYTES, MAX_MANY_URLS};
 use aio_plugin_host::runtime::{engine, PluginInstance, MAX_DIALOGS};
 use aio_plugin_host::services::{HostServices, Level, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::{inspect, install, Permission};
 
-/// Answers `http_get` with the body size the URL's last path segment names (`/size/1024`, else 1 byte), after
-/// `delay`; records what happened in order.
+/// The piece a fetch of the fake reads at a time (like a network chunk).
+const CHUNK: usize = 64 * 1024;
+
+/// Streams a body of the size the URL's last path segment names (`/size/1024`, else 1 byte) in [`CHUNK`]s after
+/// `delay`, reserving each chunk from the call's budget as the app does; records what happened in order and how many
+/// body bytes it held at once.
 #[derive(Default)]
 struct Fake {
     logs: Mutex<Vec<(Level, String)>>,
@@ -30,6 +35,9 @@ struct Fake {
     most_asking: AtomicUsize,
     fetching: AtomicUsize,
     most_fetching: AtomicUsize,
+    /// Body bytes held by fetches (running or finished), now and at most.
+    held: AtomicUsize,
+    most_held: AtomicUsize,
 }
 
 impl Fake {
@@ -37,9 +45,13 @@ impl Fake {
         self.events.lock().unwrap().clone()
     }
 
-    fn body(url: &str) -> Vec<u8> {
-        let size = url.rsplit('/').next().and_then(|s| s.parse().ok()).unwrap_or(1);
-        vec![b'x'; size]
+    fn size(url: &str) -> usize {
+        url.rsplit('/').next().and_then(|s| s.parse().ok()).unwrap_or(1)
+    }
+
+    fn hold(&self, bytes: usize) {
+        let now = self.held.fetch_add(bytes, Ordering::SeqCst) + bytes;
+        self.most_held.fetch_max(now, Ordering::SeqCst);
     }
 }
 
@@ -73,22 +85,46 @@ impl HostServices for Fake {
     async fn sql_write(&self, _batch: WriteBatch) -> Result<u64, String> {
         panic!("sql_write reached the services")
     }
-    async fn http_get(&self, url: &str) -> Result<Vec<u8>, String> {
+    async fn http_get(&self, _url: &str) -> Result<Vec<u8>, String> {
+        panic!("http-get-many must fetch within the shared budget")
+    }
+    async fn http_get_asked(&self, _url: &str, _host: &str) -> Result<Vec<u8>, String> {
+        panic!("http-get-many must fetch within the shared budget")
+    }
+    async fn http_get_budgeted(&self, url: &str, asked: Option<&str>, budget: &BodyBudget) -> Result<Vec<u8>, String> {
+        if let Some(host) = asked {
+            assert!(url.contains(host));
+            self.events.lock().unwrap().push(format!("asked-get {url}"));
+        }
         self.events.lock().unwrap().push(format!("get {url}"));
         enter(&self.fetching, &self.most_fetching);
-        let wait = if url.ends_with("/hang") { Duration::from_secs(3600) } else { self.delay };
-        tokio::time::sleep(wait).await;
+        tokio::time::sleep(self.delay).await;
+        let size = Self::size(url);
+        let result = if url.ends_with("/404") {
+            Err("HTTP 404".to_string())
+        } else if size > MAX_HTTP_BODY {
+            // A Content-Length over the cap: refused before anything is read or reserved.
+            Err(format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024)))
+        } else {
+            let mut body = Vec::new();
+            loop {
+                let piece = CHUNK.min(size - body.len());
+                if piece == 0 {
+                    break Ok(body);
+                }
+                self.hold(piece);
+                if let Err(e) = budget.reserve(piece) {
+                    self.held.fetch_sub(body.len() + piece, Ordering::SeqCst);
+                    budget.release(body.len());
+                    break Err(e);
+                }
+                body.resize(body.len() + piece, b'x');
+                tokio::task::yield_now().await;
+            }
+        };
         self.fetching.fetch_sub(1, Ordering::SeqCst);
         self.events.lock().unwrap().push(format!("done {url}"));
-        if url.ends_with("/404") {
-            return Err("HTTP 404".into());
-        }
-        Ok(Self::body(url))
-    }
-    async fn http_get_asked(&self, url: &str, host: &str) -> Result<Vec<u8>, String> {
-        assert!(url.contains(host));
-        self.events.lock().unwrap().push(format!("asked-get {url}"));
-        self.http_get(url).await
+        result
     }
     async fn prompt_text(&self, _t: String, _l: String, _d: String) -> Option<String> {
         None
@@ -171,19 +207,29 @@ async fn get_many_applies_every_get_rule() {
     assert_eq!(denied(&results[0]), "permission denied: host 'other.example.org' is not declared with http:other.example.org");
     assert!(fake.events().is_empty());
 
-    // More than 8 URLs: the whole call is refused, nothing fetched.
     let host = inst.host_for_tests();
-    let nine = vec!["https://api.example.com/".to_string(); MAX_MANY_URLS + 1];
-    let results = host.http_get_many(nine).await;
-    assert_eq!(results.len(), MAX_MANY_URLS + 1);
-    for r in &results {
-        assert_eq!(denied(r), "permission denied: at most 8 URLs per call");
-    }
-    assert!(fake.events().is_empty());
     assert!(host.http_get_many(Vec::new()).await.is_empty());
     // Exactly 8 is fine.
     let eight = vec!["https://api.example.com/".to_string(); MAX_MANY_URLS];
     assert!(host.http_get_many(eight).await.iter().all(|r| r.as_deref() == Ok(b"x".as_slice())));
+}
+
+/// More than 8 URLs: one refusal for the whole call, however many there are, and nothing is checked or fetched.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_many_refuses_more_than_8_urls_with_one_entry() {
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let mut inst = hello_with(root.path(), &["http:api.example.com", "http:ask"], fake.clone()).await;
+    let host = inst.host_for_tests();
+    for n in [MAX_MANY_URLS + 1, 100_000] {
+        let urls: Vec<String> = (0..n).map(|i| format!("https://host{i}.example.org/")).collect();
+        let results = host.http_get_many(urls).await;
+        assert_eq!(results.len(), 1, "{n} URLs");
+        assert_eq!(denied(&results[0]), "permission denied: at most 8 URLs per call");
+    }
+    assert!(fake.events().is_empty(), "nothing asked or fetched");
+    let warnings = fake.logs.lock().unwrap().iter().filter(|(l, _)| *l == Level::Warn).count();
+    assert_eq!(warnings, 2, "one log line per refused call");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -236,37 +282,90 @@ async fn get_many_asks_hosts_one_at_a_time() {
 #[tokio::test(flavor = "multi_thread")]
 async fn get_many_body_budget() {
     assert_eq!(MAX_MANY_BYTES, 32 * 1024 * 1024);
+    let mib = 1024 * 1024;
     let root = tempfile::tempdir().unwrap();
     let fake = Arc::new(Fake::default());
     let mut inst = hello_with(root.path(), &["http:api.example.com"], fake.clone()).await;
     let host = inst.host_for_tests();
-    let mib = 1024 * 1024;
-    // 3 x 10 MiB fits; a fourth does not: whichever finishes last of the four gets the refusal.
+    // 3 x 10 MiB fits; the fourth does not: the fetch whose piece does not fit fails, gives its share back, and the
+    // others finish.
     let urls: Vec<String> = (0..4).map(|_| format!("https://api.example.com/size/{}", 10 * mib)).collect();
     let results = host.http_get_many(urls).await;
     let refused: Vec<_> = results.iter().filter(|r| r.is_err()).collect();
     assert_eq!(refused.len(), 1, "one of the four is over the budget");
     assert_eq!(refused[0].as_deref().unwrap_err(), BUDGET_EXCEEDED);
     assert_eq!(results.iter().filter_map(|r| r.as_ref().ok()).map(Vec::len).sum::<usize>(), 30 * mib);
-    // Exactly the budget fits.
+    // Exactly the budget fits: each call has a budget of its own.
     let urls = strings(&["https://api.example.com/size/16777216", "https://api.example.com/size/16777216"]);
     assert!(host.http_get_many(urls).await.iter().all(|r| r.is_ok()));
     // A body over the per-request cap fails as with http-get and takes nothing from the budget.
-    let urls = vec![format!("https://api.example.com/size/{}", MAX_HTTP_BODY + 1), "https://api.example.com/size/2".to_string()];
+    let urls = vec![format!("https://api.example.com/size/{}", MAX_HTTP_BODY + 1), format!("https://api.example.com/size/{}", 32 * mib)];
     let results = host.http_get_many(urls).await;
     assert_eq!(results[0].as_deref().unwrap_err(), "the response is larger than 32 MiB");
-    assert_eq!(results[1].as_deref().unwrap(), b"xx");
+    assert_eq!(results[1].as_ref().unwrap().len(), 32 * mib);
+}
 
-    // Once over the budget, the fetches not finished yet are stopped and refused too.
-    let urls = vec![
-        "https://api.example.com/hang".to_string(),
-        format!("https://api.example.com/size/{}", 20 * mib),
-        format!("https://api.example.com/size/{}", 20 * mib),
-    ];
-    let started = std::time::Instant::now();
+/// Eight large bodies at once: the host holds at most the budget plus the piece each fetch is reading, not 8 x 32 MiB.
+#[tokio::test(flavor = "multi_thread")]
+async fn get_many_holds_at_most_the_budget_and_a_chunk_per_fetch() {
+    let mib = 1024 * 1024;
+    let root = tempfile::tempdir().unwrap();
+    let fake = Arc::new(Fake::default());
+    let mut inst = hello_with(root.path(), &["http:api.example.com"], fake.clone()).await;
+    let host = inst.host_for_tests();
+    let urls: Vec<String> = (0..MAX_MANY_URLS).map(|_| format!("https://api.example.com/size/{}", 30 * mib)).collect();
     let results = host.http_get_many(urls).await;
-    assert!(started.elapsed() < Duration::from_secs(30), "the hanging fetch was stopped");
-    assert_eq!(results[0].as_deref().unwrap_err(), BUDGET_EXCEEDED);
-    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-    assert!(!fake.events().contains(&"done https://api.example.com/hang".to_string()));
+    assert_eq!(fake.most_fetching.load(Ordering::SeqCst), MAX_MANY_URLS, "read together");
+    let most = fake.most_held.load(Ordering::SeqCst);
+    assert!(most <= MAX_MANY_BYTES + MAX_MANY_URLS * CHUNK, "held {most} bytes at once");
+    let fetched: usize = results.iter().filter_map(|r| r.as_ref().ok()).map(Vec::len).sum();
+    assert!(fetched <= MAX_MANY_BYTES);
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "one 30 MiB body fits");
+    assert!(results.iter().filter_map(|r| r.as_ref().err()).all(|e| e == BUDGET_EXCEEDED));
+}
+
+/// A host that cannot fetch within a shared budget refuses `http-get-many` instead of fetching unbounded.
+#[test]
+fn budgeted_fetch_fails_closed_by_default() {
+    struct Bare;
+    #[aio_plugin_host::async_trait]
+    impl HostServices for Bare {
+        async fn ask(&self, _q: String) -> bool {
+            false
+        }
+        fn log(&self, _level: Level, _text: &str) {}
+        fn status(&self, _text: &str) {}
+        async fn run_script(&self, _req: ScriptRequest) -> Result<ScriptResult, String> {
+            Err("no".into())
+        }
+        async fn sql_select(&self, _sql: String, _params: Vec<SqlValue>) -> Result<Rows, String> {
+            Err("no".into())
+        }
+        async fn sql_write(&self, _batch: WriteBatch) -> Result<u64, String> {
+            Err("no".into())
+        }
+        async fn http_get(&self, _url: &str) -> Result<Vec<u8>, String> {
+            Ok(vec![0; 10])
+        }
+        async fn prompt_text(&self, _t: String, _l: String, _d: String) -> Option<String> {
+            None
+        }
+        async fn pick_open_file(&self, _t: String, _e: Vec<String>) -> Option<PathBuf> {
+            None
+        }
+        async fn pick_save_file(&self, _t: String, _s: String, _e: Vec<String>) -> Option<PathBuf> {
+            None
+        }
+        fn open_import_preview(&self, _name: String, _bytes: Vec<u8>) {}
+    }
+    let budget = BodyBudget::new(100);
+    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let error = rt.block_on(Bare.http_get_budgeted("https://example.com/", None, &budget)).unwrap_err();
+    assert!(error.starts_with("permission denied:"), "{error}");
+    // The budget itself: all or nothing per reservation, given back on release.
+    assert!(budget.reserve(60).is_ok());
+    assert_eq!(budget.reserve(41).unwrap_err(), BUDGET_EXCEEDED);
+    assert_eq!(budget.left(), 40);
+    budget.release(60);
+    assert_eq!(budget.left(), 100);
 }

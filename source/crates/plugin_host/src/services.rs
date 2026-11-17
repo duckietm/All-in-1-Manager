@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::net::AskedHosts;
+use crate::net::{AskedHosts, BodyBudget};
 
 /// Severity of a plugin log line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +112,16 @@ pub trait HostServices: Send + Sync {
     async fn http_get_asked(&self, url: &str, host: &str) -> Result<Vec<u8>, String> {
         let _ = (url, host);
         Err("permission denied: this host cannot fetch from asked hosts".into())
+    }
+    /// One fetch of `http-get-many` (API 1.1): like [`HostServices::http_get`] (`asked: None`) or
+    /// [`HostServices::http_get_asked`] (`asked: Some(host)`, refusing local addresses), with every rule of those, and
+    /// besides: each piece of the body is reserved from `budget` (shared by the call's fetches) before it is kept, a
+    /// known `Content-Length` up front; a reservation that fails ends the fetch with
+    /// [`crate::net::BUDGET_EXCEEDED`]. A failed fetch releases what it reserved; a body shorter than reserved
+    /// releases the rest. The default fails closed (a host without it cannot keep several bodies within one budget).
+    async fn http_get_budgeted(&self, url: &str, asked: Option<&str>, budget: &BodyBudget) -> Result<Vec<u8>, String> {
+        let _ = (url, asked, budget);
+        Err("permission denied: this host cannot fetch several URLs at once".into())
     }
     /// A line of text from the user; `None` when cancelled.
     async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String>;

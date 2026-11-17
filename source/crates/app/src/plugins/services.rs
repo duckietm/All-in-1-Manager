@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Weak};
 
-use aio_plugin_host::net::{is_local_address, AskedHosts, MAX_HTTP_BODY};
+use aio_plugin_host::net::{is_local_address, AskedHosts, BodyBudget, MAX_HTTP_BODY};
 use aio_plugin_host::services::{HostServices, Level, ManagerPage, Rows, ScriptRequest, ScriptResult, SqlValue, WriteBatch};
 use aio_plugin_host::{async_trait, display_safe};
 use aio_remote::sql_session::{SqlSession, SqlValue as DbValue};
@@ -438,20 +438,53 @@ fn asked_http_client_with(lookup: Lookup) -> reqwest::Client {
 
 /// GET `url`; a non-2xx status is `Err("HTTP <code>")`, and the body read stops past [`MAX_HTTP_BODY`].
 pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, String> {
+    fetch_within(client, url, None).await
+}
+
+/// [`fetch`], and with `budget` (one fetch of `http-get-many`) every piece of the body is reserved from it before it
+/// is kept: a known `Content-Length` up front, the rest chunk by chunk. A reservation that fails ends the fetch with
+/// `permission denied: response budget exceeded`; any failure gives back what this fetch reserved, and a body shorter
+/// than reserved gives back the rest.
+pub async fn fetch_within(client: &reqwest::Client, url: &str, budget: Option<&BodyBudget>) -> Result<Vec<u8>, String> {
+    let mut reserved = 0usize;
+    let result = read_body(client, url, budget, &mut reserved).await;
+    if let Some(budget) = budget {
+        let kept = result.as_ref().map_or(0, Vec::len);
+        budget.release(reserved.saturating_sub(kept));
+    }
+    result
+}
+
+/// The body of [`fetch_within`]; `reserved` counts what was taken from `budget`.
+async fn read_body(client: &reqwest::Client, url: &str, budget: Option<&BodyBudget>, reserved: &mut usize) -> Result<Vec<u8>, String> {
     let too_large = || format!("the response is larger than {} MiB", MAX_HTTP_BODY / (1024 * 1024));
+    let mut reserve = |upto: usize| -> Result<(), String> {
+        if let Some(budget) = budget {
+            if upto > *reserved {
+                budget.reserve(upto - *reserved)?;
+                *reserved = upto;
+            }
+        }
+        Ok(())
+    };
     let mut response = client.get(url).send().await.map_err(|e| request_error(&e))?;
     let status = response.status();
     if !status.is_success() {
         return Err(format!("HTTP {}", status.as_u16()));
     }
-    if response.content_length().is_some_and(|n| n > MAX_HTTP_BODY as u64) {
+    let announced = response.content_length();
+    if announced.is_some_and(|n| n > MAX_HTTP_BODY as u64) {
         return Err(too_large());
+    }
+    if let Some(n) = announced {
+        reserve(n as usize)?;
     }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|e| request_error(&e))? {
         if body.len() + chunk.len() > MAX_HTTP_BODY {
             return Err(too_large());
         }
+        reserve(body.len() + chunk.len())?;
         body.extend_from_slice(&chunk);
     }
     Ok(body)
@@ -643,6 +676,12 @@ impl HostServices for AppServices {
         fetch(&self.asked_http, url).await
     }
 
+    async fn http_get_budgeted(&self, url: &str, asked: Option<&str>, budget: &BodyBudget) -> Result<Vec<u8>, String> {
+        // The same two clients: an asked host only through the one that refuses local addresses.
+        let client = if asked.is_some() { &self.asked_http } else { &self.http };
+        fetch_within(client, url, Some(budget)).await
+    }
+
     async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String> {
         if self.is_stopped() {
             return None;
@@ -691,7 +730,7 @@ impl HostServices for AppServices {
     }
 
     async fn pick_folder(&self, title: String) -> Option<PathBuf> {
-        let message = t("The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.");
+        let message = t("The plugin wants you to choose a folder. It can list what is in it, read the data files already there (pictures, text, SQL, JSON …) and create new ones. It never changes or removes the files already there.");
         if !self.before_picking(&title, message, t("Choose a folder …")).await {
             return None;
         }
@@ -756,6 +795,45 @@ mod tests {
             }
         });
         port
+    }
+
+    /// A fetch of `http-get-many` keeps its body within the shared budget: the announced length up front, chunked
+    /// bodies piece by piece; a refused or failed fetch gives its reservation back.
+    #[tokio::test]
+    async fn budgeted_fetch_reserves_its_body() {
+        use aio_plugin_host::net::BUDGET_EXCEEDED;
+        let body = vec![b'x'; 300_000];
+        let sized = body.clone();
+        let with_length = serve(move |_| {
+            let mut r = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", sized.len()).into_bytes();
+            r.extend_from_slice(&sized);
+            r
+        })
+        .await;
+        let unsized_body = body.clone();
+        let without_length = serve(move |_| {
+            let mut r = b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_vec();
+            r.extend_from_slice(&unsized_body);
+            r
+        })
+        .await;
+        let client = http_client();
+        for port in [with_length, without_length] {
+            let url = format!("http://127.0.0.1:{port}/");
+            // Too small a budget: refused, and nothing stays taken.
+            let budget = BodyBudget::new(200_000);
+            assert_eq!(fetch_within(&client, &url, Some(&budget)).await.unwrap_err(), BUDGET_EXCEEDED);
+            assert_eq!(budget.left(), 200_000, "port {port}");
+            // Enough: the body is taken from it, exactly.
+            let budget = BodyBudget::new(1_000_000);
+            assert_eq!(fetch_within(&client, &url, Some(&budget)).await.unwrap().len(), 300_000);
+            assert_eq!(budget.left(), 700_000, "port {port}");
+        }
+        // A failed fetch gives its reservation back.
+        let failing = serve(|_| b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()).await;
+        let budget = BodyBudget::new(10);
+        assert_eq!(fetch_within(&client, &format!("http://127.0.0.1:{failing}/"), Some(&budget)).await.unwrap_err(), "HTTP 404");
+        assert_eq!(budget.left(), 10);
     }
 
     #[tokio::test]

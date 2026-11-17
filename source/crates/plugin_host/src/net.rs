@@ -27,8 +27,41 @@ pub const MAX_HTTP_BODY: usize = 32 * 1024 * 1024;
 pub const MAX_MANY_URLS: usize = 8;
 /// Most bytes of the bodies one `http-get-many` hands over, together.
 pub const MAX_MANY_BYTES: usize = 32 * 1024 * 1024;
-/// The refusal of a body of `http-get-many` past [`MAX_MANY_BYTES`] (and of the fetches not finished by then).
+/// The refusal of a body of `http-get-many` that does not fit in what is left of [`MAX_MANY_BYTES`].
 pub const BUDGET_EXCEEDED: &str = "permission denied: response budget exceeded";
+
+/// The bytes left for the bodies of one `http-get-many`, shared by its fetches. A fetch reserves each piece of a body
+/// before keeping it ([`BodyBudget::reserve`]), so the bodies held at once stay within the budget plus the piece each
+/// fetch is looking at; a fetch that fails gives its reservation back ([`BodyBudget::release`]).
+#[derive(Debug)]
+pub struct BodyBudget {
+    left: std::sync::atomic::AtomicUsize,
+}
+
+impl BodyBudget {
+    pub fn new(bytes: usize) -> Self {
+        Self { left: std::sync::atomic::AtomicUsize::new(bytes) }
+    }
+
+    /// Takes `bytes` from the budget, or nothing and [`BUDGET_EXCEEDED`] when fewer are left.
+    pub fn reserve(&self, bytes: usize) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        self.left
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |left| left.checked_sub(bytes))
+            .map(|_| ())
+            .map_err(|_| BUDGET_EXCEEDED.to_string())
+    }
+
+    /// Gives back `bytes` reserved before (a failed fetch, a body shorter than announced).
+    pub fn release(&self, bytes: usize) {
+        self.left.fetch_add(bytes, std::sync::atomic::Ordering::AcqRel);
+    }
+
+    /// The bytes left.
+    pub fn left(&self) -> usize {
+        self.left.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
 /// Longest URL accepted.
 pub const MAX_URL: usize = 2_048;
 /// Local TCP connections one plugin instance may hold open at once.

@@ -82,7 +82,8 @@ When the exports folder is full, the status line says so and the file is not sav
 | One file | 256 MiB (`folders::MAX_FILE`), also after an `append` |
 | A file handed to `Folder::open_import_preview` | 32 MiB |
 | One `Folder::read` | 4 MiB (`folders::MAX_READ`); a larger `max` is refused |
-| Entries of one `Folder::list` | 10,000 (`folders::MAX_ENTRIES`); a folder with more is refused |
+| Entries of one `Folder::list` | 10,000 (`folders::MAX_ENTRIES`), one page; the next page starts where it ended |
+| Entries of a folder that can be listed | 1,000,000 (`folders::MAX_LISTED`); a folder with more is refused |
 | `Folder::reveal` | Once every 2 s per `Folder` |
 
 Past a size or count limit, the write (or append) fails with `permission denied: folder limit reached`. A file
@@ -110,7 +111,7 @@ with other names) in pieces of at most 4 MiB, so a large file never has to be in
 | Redirects | 5, to the same host only, on its default port, never from https to http |
 | Response body | 32 MiB |
 | URLs of one `http::get_many` (API 1.1) | 8, fetched together; more refuses the whole call |
-| Bodies of one `http::get_many`, together | 32 MiB; past it `permission denied: response budget exceeded` |
+| Bodies of one `http::get_many`, together | 32 MiB, counted while they arrive; a body that does not fit gets `permission denied: response budget exceeded` |
 | Status | 2xx; anything else is `HTTP <code>` |
 | Hosts allowed under `http:ask` (API 1.1) | 64 per plugin, remembered |
 | Hosts refused under `http:ask` (API 1.1) | Remembered for the session; after 256, every other host is refused without asking |

@@ -15,8 +15,13 @@
 //! * read any existing data file in the folder (not only its own), at most [`MAX_FOLDER_READ`] bytes per call, through
 //!   a handle opened without following a link that must show a plain file with a single name (no hard link to a file
 //!   elsewhere), the same file as looked at just before; never a file in a folder of the Manager;
-//! * list a folder: at most [`MAX_FOLDER_ENTRIES`] entries; links, hidden names and names the path rules cannot name
-//!   are left out.
+//! * list a folder, a page of at most [`MAX_FOLDER_ENTRIES`] entries (sorted by name) from a given index; links,
+//!   hidden names and names the path rules cannot name are left out.
+//!
+//! An open for `read` or `append` is checked again after it succeeded: on Windows the handle's final path
+//! (`GetFinalPathNameByHandleW`) must still lie in the picked root and outside the Manager's folders (a folder on the
+//! way swapped for a junction between the look and the open would lead elsewhere); on Unix the path is walked again
+//! without following links and must still name the opened file (device and inode).
 //!
 //! Every existing component below the picked root is looked at without following it ([`std::fs::symlink_metadata`]);
 //! a symlink, a junction or any other reparse point is refused, so a write cannot be led out of the folder. The root
@@ -45,8 +50,10 @@ pub const MAX_FOLDER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 pub const MAX_FOLDER_FILE: u64 = 256 * 1024 * 1024;
 /// Most bytes one `read` of a picked folder returns.
 pub const MAX_FOLDER_READ: u32 = 4 * 1024 * 1024;
-/// Most entries one `list` of a picked folder returns (a folder with more is refused).
+/// Most entries one `list` of a picked folder returns (one page; the next starts where it ended).
 pub const MAX_FOLDER_ENTRIES: usize = 10_000;
+/// Most entries a folder may have to be listed at all (they are all read and sorted for every page).
+pub const MAX_FOLDER_SCAN: usize = 1_000_000;
 /// The refusal past a limit of [`FolderLimits`].
 pub const LIMIT_REACHED: &str = "permission denied: folder limit reached";
 /// The refusal of a folder that is (or leads into) one of the Manager's own folders.
@@ -260,13 +267,13 @@ impl PickedFolder {
         FileRead { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments }
     }
 
-    /// Checks a `list` of the folder `path` (`""`: the picked folder itself): the path rules, no hidden names;
-    /// nothing is touched yet.
-    pub(crate) fn check_list(&self, path: &str) -> Result<ListJob, String> {
+    /// Checks a `list` of the folder `path` (`""`: the picked folder itself) from entry `start`: the path rules, no
+    /// hidden names; nothing is touched yet.
+    pub(crate) fn check_list(&self, path: &str, start: u32) -> Result<ListJob, String> {
         let segments: Vec<String> =
             if path.is_empty() { Vec::new() } else { check_relative(path)?.into_iter().map(str::to_string).collect() };
         check_not_hidden(path, &segments)?;
-        Ok(ListJob { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments })
+        Ok(ListJob { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments, start })
     }
 
     /// The folder to show in the file manager, at most once per [`REVEAL_SPACING`].
@@ -346,6 +353,8 @@ impl FileRead {
             Some(_) => return Err("not a file".into()),
             None => return Err("file not found".into()),
         };
+        #[cfg(test)]
+        tests::after_walk(&target);
         check_manager(&self.root, &self.manager, &target)?;
         let before = identity_before(&target, &seen).map_err(|e| io_text(&e))?;
         let file = match open_no_follow(&target, false) {
@@ -363,8 +372,78 @@ impl FileRead {
         if opened.links != 1 {
             return Err(format!("permission denied: {} has other names (hard links)", self.rel));
         }
+        check_opened(&file, opened.id, &self.root, &self.manager, &self.segments, &self.rel)?;
         Ok(file)
     }
+}
+
+/// After an open: the handle is still the file the plugin named inside the picked root (see the module's notes). Windows:
+/// its final path lies in `root` and in none of `manager`; Unix: `root/segments`, walked again without following links,
+/// names the opened file (`id`: device and inode).
+fn check_opened(file: &fs::File, id: (u64, u64), root: &Path, manager: &[PathBuf], segments: &[String], rel: &str) -> Result<(), String> {
+    let link = || format!("permission denied: {rel} leads through a link");
+    #[cfg(windows)]
+    {
+        let _ = (id, segments);
+        let real = normalised(&final_path(file).map_err(|e| io_text(&e))?);
+        if !inside(&real, &normalised(root)) {
+            return Err(link());
+        }
+        if manager.iter().any(|m| inside(&real, &normalised(m))) {
+            return Err(MANAGER_FOLDER.into());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = (file, manager);
+        match walk(root, segments, rel)? {
+            Some(meta) if (meta.dev(), meta.ino()) == id => {}
+            _ => return Err(link()),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (file, id, root, manager, segments, link);
+    Ok(())
+}
+
+/// The path an open handle really refers to (`GetFinalPathNameByHandleW`, normalised, with a drive letter).
+#[cfg(windows)]
+fn final_path(file: &fs::File) -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    let mut buffer = vec![0u16; 512];
+    loop {
+        // SAFETY: the handle is open for the call; the buffer is valid for `len` u16s and written by it.
+        let n = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle() as _, buffer.as_mut_ptr(), buffer.len() as u32, 0) } as usize;
+        if n == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if n < buffer.len() {
+            buffer.truncate(n);
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        // Too small: `n` is the size needed, with the terminating NUL.
+        buffer.resize(n + 1, 0);
+    }
+}
+
+/// A Windows path for comparing: without the `\\?\` (or `\\?\UNC\`) prefix and a trailing `\`, lower case.
+#[cfg(windows)]
+fn normalised(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let plain = match text.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => text.strip_prefix(r"\\?\").unwrap_or(&text).to_string(),
+    };
+    plain.trim_end_matches('\\').to_lowercase()
+}
+
+/// `path` is `folder` or inside it (both [`normalised`]).
+#[cfg(windows)]
+fn inside(path: &str, folder: &str) -> bool {
+    path == folder || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('\\'))
 }
 
 /// One entry of a listed folder.
@@ -383,12 +462,15 @@ pub(crate) struct ListJob {
     manager: Vec<PathBuf>,
     rel: String,
     segments: Vec<String>,
+    /// The index of the first entry returned.
+    start: u32,
 }
 
 impl ListJob {
-    /// The folder's entries sorted by name: plain files and folders whose names a plugin path can name and that are
-    /// not hidden; links (symlinks, junctions, any reparse point) and anything else are left out. More than
-    /// [`MAX_FOLDER_ENTRIES`] of them is refused. Blocking file I/O.
+    /// The folder's entries sorted by name, at most [`MAX_FOLDER_ENTRIES`] from index `start` (none past the last):
+    /// plain files and folders whose names a plugin path can name and that are not hidden; links (symlinks, junctions,
+    /// any reparse point) and anything else are left out. A folder with more than [`MAX_FOLDER_SCAN`] such entries is
+    /// refused. Blocking file I/O.
     pub(crate) fn run(&self) -> Result<Vec<Entry>, String> {
         let target = join(&self.root, &self.segments);
         if self.segments.is_empty() {
@@ -424,13 +506,16 @@ impl ListJob {
             } else {
                 continue;
             };
-            if entries.len() == MAX_FOLDER_ENTRIES {
-                return Err(format!("permission denied: {shown} has more than {MAX_FOLDER_ENTRIES} entries"));
+            if entries.len() == MAX_FOLDER_SCAN {
+                return Err(format!("permission denied: {shown} has more than {MAX_FOLDER_SCAN} entries"));
             }
             entries.push(Entry { name, is_folder, size });
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
+        let start = (self.start as usize).min(entries.len());
+        let end = start.saturating_add(MAX_FOLDER_ENTRIES).min(entries.len());
+        entries.truncate(end);
+        Ok(entries.split_off(start))
     }
 }
 
@@ -500,6 +585,8 @@ impl WriteJob {
             Some(_) => return Err(exists()),
             None => return self.create(data),
         };
+        #[cfg(test)]
+        tests::after_walk(&target);
         let before = match identity_before(&target, &seen) {
             Ok(id) => id,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return self.create(data),
@@ -524,6 +611,7 @@ impl WriteJob {
         if opened.links != 1 {
             return Err(AppendFailed::Refused(format!("permission denied: {} has other names (hard links)", self.rel)));
         }
+        check_opened(&file, opened.id, &self.root, &self.manager, &self.segments, &self.rel).map_err(refused)?;
         if let Err(e) = file.write_all(data) {
             // Read again: the totals count what is really in the file.
             let size = file.metadata().ok().map(|m| m.len());
@@ -772,6 +860,108 @@ mod tests {
     thread_local! {
         /// Runs in [`WriteJob::append`] right before the open, on the test's thread: a change made in the window.
         static BEFORE_OPEN: RefCell<Option<Hook>> = RefCell::new(None);
+        /// Runs in [`WriteJob::append`] and [`FileRead::open`] right after the path was walked, before the file's
+        /// identity is taken and it is opened.
+        static AFTER_WALK: RefCell<Option<Hook>> = RefCell::new(None);
+    }
+
+    pub(super) fn after_walk(target: &Path) {
+        AFTER_WALK.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook(target);
+            }
+        });
+    }
+
+    /// Swaps the folder `folder` (of `root`) for a junction to `outside` holding the same file names: every look and
+    /// open by path then reaches `outside`, with no link left in the last component. False when no junction can be
+    /// made.
+    #[cfg(windows)]
+    fn junction_swap(folder: &Path, outside: &Path) -> bool {
+        fs::rename(folder, folder.with_extension("old")).unwrap();
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(folder)
+            .arg(outside)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// A folder on the way swapped for a junction between the walk and the open: the read is refused by the handle's
+    /// final path, although the file looked at and the file opened are the same (outside) file.
+    #[cfg(windows)]
+    #[test]
+    fn read_refuses_a_folder_swapped_for_a_junction_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, outside) = (dir.path().join("out"), dir.path().join("outside"));
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("sub/data.txt"), b"mine").unwrap();
+        fs::write(outside.join("data.txt"), b"secret").unwrap();
+        let folder = PickedFolder::open(&root, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        let job = folder.check_read("sub/data.txt", 100).unwrap();
+        let (sub, target) = (root.join("sub"), outside.clone());
+        let made = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = made.clone();
+        AFTER_WALK.with(|h| *h.borrow_mut() = Some(Box::new(move |_| flag.set(junction_swap(&sub, &target)))));
+        let outcome = job.run(0, 100);
+        AFTER_WALK.with(|h| *h.borrow_mut() = None);
+        if !made.get() {
+            eprintln!("no junction could be made; skipping");
+            return;
+        }
+        assert_eq!(outcome.unwrap_err(), "permission denied: sub/data.txt leads through a link");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn append_refuses_a_folder_swapped_for_a_junction_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, outside) = (dir.path().join("out"), dir.path().join("outside"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("own.txt"), b"victim").unwrap();
+        let mut folder = PickedFolder::open(&root, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        folder.check_write("sub/own.txt", 3).unwrap().run(b"own").unwrap();
+        folder.record("sub/own.txt", 3);
+        let job = folder.check_append("sub/own.txt", 4).unwrap();
+        let (sub, target) = (root.join("sub"), outside.clone());
+        let made = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = made.clone();
+        AFTER_WALK.with(|h| *h.borrow_mut() = Some(Box::new(move |_| flag.set(junction_swap(&sub, &target)))));
+        let outcome = job.append(b"evil");
+        AFTER_WALK.with(|h| *h.borrow_mut() = None);
+        if !made.get() {
+            eprintln!("no junction could be made; skipping");
+            return;
+        }
+        assert_eq!(outcome.unwrap_err().into_message(), "permission denied: sub/own.txt leads through a link");
+        assert_eq!(fs::read(outside.join("own.txt")).unwrap(), b"victim");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn final_paths_compare_without_prefix_and_case() {
+        assert_eq!(normalised(Path::new(r"\\?\C:\Users\Me\Out\")), r"c:\users\me\out");
+        assert_eq!(normalised(Path::new(r"\\?\UNC\server\share\x")), r"\\server\share\x");
+        assert!(inside(r"c:\out\a.txt", r"c:\out"));
+        assert!(inside(r"c:\out", r"c:\out"));
+        assert!(!inside(r"c:\outside\a.txt", r"c:\out"));
+    }
+
+    #[test]
+    fn list_pages_are_sorted_and_end_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..25 {
+            fs::write(dir.path().join(format!("f{i:02}.txt")), b"").unwrap();
+        }
+        let folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        let names = |start| folder.check_list("", start).unwrap().run().unwrap().into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(0).len(), 25);
+        assert_eq!(names(20), ["f20.txt", "f21.txt", "f22.txt", "f23.txt", "f24.txt"]);
+        assert!(names(25).is_empty());
+        assert!(names(u32::MAX).is_empty());
     }
 
     pub(super) fn before_open(target: &Path) {

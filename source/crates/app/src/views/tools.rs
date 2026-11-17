@@ -107,7 +107,7 @@ impl Tool {
             Tool::UpdateTraefik => (n("Update Traefik"), n("The newest traefik:v3 image (Docker Hub)"), Icon::Swap),
             Tool::UpdateGitea => (n("Update Gitea"), n("The newest gitea/gitea:1 image; the repositories stay"), Icon::Git),
             Tool::UpdateCrowdSec => (n("Update CrowdSec"), n("The newest image and detection rules; bans and enrollment stay"), Icon::Shield),
-            Tool::GEarth => (n("G-Earth"), n("Install and start G-Earth, the packet logger, on this computer"), Icon::Download),
+            Tool::GEarth => (n("G-Earth"), n("Tools for G-Earth."), Icon::Download),
         }
     }
 
@@ -595,9 +595,9 @@ impl View for ToolsView {
             Page::GearthTool => {
                 egui::ScrollArea::vertical().id_salt("tools-gearth").auto_shrink([false, false]).show(ui, |ui| {
                     widgets::card(ui, palette, egui::Margin::symmetric(24, 20), |ui| {
-                        ui.label(widgets::title_text(t("G-Earth tool"), 15.0));
+                        ui.label(widgets::title_text(t("G-Earth"), 15.0));
                         ui.add_space(6.0);
-                        ui.label(RichText::new(t("Install and start G-Earth from here.")).size(12.5).color(palette.muted));
+                        ui.label(RichText::new(t("Tools for G-Earth.")).size(12.5).color(palette.muted));
                         ui.add_space(16.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| self.back_button(ui));
                     });

@@ -269,9 +269,10 @@ its name.
 | `Folder::write_str(&self, path: &str, text: &str) -> Result<()>` | The same with `text` as UTF-8. |
 | `Folder::append(&self, path: &str, data: &[u8]) -> Result<()>` | Appends `data` to a file this `Folder` created (with `write` or `append`), or creates it (and the folders it needs) when it does not exist yet: a large file in pieces, never whole in memory. |
 | `Folder::append_str(&self, path: &str, text: &str) -> Result<()>` | The same with `text` as UTF-8. |
-| `Folder::read(&self, path: &str, offset: u64, max: u32) -> Result<Vec<u8>>` | At most `max` bytes (at most `MAX_READ`, 4 MiB) of the data file `path` from byte `offset`: fewer at the end of the file, none at or past it. Any data file in the folder, not only this `Folder`'s own. |
+| `Folder::read(&self, path: &str, offset: u64, max: u32) -> Result<Vec<u8>>` | At most `max` bytes (at most `MAX_READ`, 4 MiB) of the data file `path` from byte `offset`: fewer at the end of the file, none at or past it. Any data file in the folder, not only this `Folder`'s own. A missing file is `NotFound` (`file not found`). |
 | `Folder::read_all(&self, path: &str) -> Result<Vec<u8>>` | The whole file, read with `read` in pieces of 4 MiB until one comes back short. It must fit in the plugin's 64 MiB. |
-| `Folder::list(&self, path: &str) -> Result<Vec<Entry>>` | The entries of the folder `path` (`""` for the picked folder itself), sorted by name, at most `MAX_ENTRIES`. Files of every type, with their sizes, and folders; links, hidden names and names a path cannot name are left out. |
+| `Folder::list(&self, path: &str, start: u32) -> Result<Vec<Entry>>` | A page of the entries of the folder `path` (`""` for the picked folder itself), sorted by name: at most `MAX_ENTRIES` from index `start`. The next page starts at `start` plus this page's length; a page past the last entry is empty. Files of every type, with their sizes, and folders; links, hidden names and names a path cannot name are left out. |
+| `Folder::list_all(&self, path: &str) -> Result<Vec<Entry>>` | Every entry of the folder, page after page of `list` until a short one. |
 | `struct Entry` | `name: String`, `is_folder: bool`, `size: u64` (0 for a folder). `#[non_exhaustive]`. |
 | `Folder::reveal(&self) -> Result<()>` | Opens the folder in the system's file manager. At most once every 2 s per `Folder`. |
 | `Folder::open_import_preview(&self, path: &str) -> Result<()>` | Hands a file this `Folder` wrote, of at most 32 MiB, to the Catalogue's import, like `host::open_import_preview`. |
@@ -280,10 +281,12 @@ its name.
 | `MAX_BYTES` | `2 * 1024 * 1024 * 1024`: most bytes one `Folder` writes in all (2 GiB, the current sizes of its files). |
 | `MAX_FILE` | `256 * 1024 * 1024`: the largest file (256 MiB). |
 | `MAX_READ` | `4 * 1024 * 1024`: most bytes one `read` returns (4 MiB). |
-| `MAX_ENTRIES` | `10_000`: most entries one `list` returns. |
+| `MAX_ENTRIES` | `10_000`: most entries one `list` returns (one page). |
+| `MAX_LISTED` | `1_000_000`: most entries a folder may have to be listed at all. |
 
 Before the dialog opens, the Manager says what the plugin wants ("The plugin wants you to choose a folder. It can
-create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.").
+list what is in it, read the data files already there (pictures, text, SQL, JSON …) and create new ones. It never
+changes or removes the files already there.").
 
 Rules:
 
@@ -301,9 +304,10 @@ Rules:
 - `read` reads any data file in the folder by the same path rules and file types, also one the `Folder` did not
   write, but never through a link, never a file that has other names (a hard link, which could be a file outside the
   folder) and never a file in a folder of the Manager. Read a large file in pieces and keep only what you need of each:
-  the plugin has 64 MiB of memory in all. The time spent reading does not count against the call's 5 s;
-- `list` shows files of every type (only data files can be read) and folders; a folder with more than `MAX_ENTRIES`
-  entries is refused;
+  the plugin has 64 MiB of memory in all. The time spent reading does not count against the call's 5 s. A missing
+  file is `NotFound` (`file not found`);
+- `list` shows files of every type (only data files can be read) and folders, a page of at most `MAX_ENTRIES` at a
+  time in name order; a folder with more than `MAX_LISTED` entries is refused;
 - a new `pick` of the same folder starts over: it cannot rewrite the files of an earlier `Folder`;
 - some folders cannot be picked: a drive's root, the home folder itself, a startup folder (or anything inside one), and
   the Manager's own install and configuration folders (or anything inside them). `pick` returns `None` and the plugin
@@ -311,7 +315,7 @@ Rules:
 
 | Kind | When |
 |---|---|
-| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: <path> has other names (hard links)` (`append` to, or `read` of, a file that is hard-linked); `permission denied: <path> is not a plain file` (`read`); `permission denied: at most 4 MiB can be read at once` (`read`); `permission denied: <path> has more than 10000 entries` (`list`; `the folder` for `""`); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
+| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: <path> has other names (hard links)` (`append` to, or `read` of, a file that is hard-linked); `permission denied: <path> is not a plain file` (`read`); `permission denied: at most 4 MiB can be read at once` (`read`); `permission denied: <path> has more than 1000000 entries` (`list`; `the folder` for `""`); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
 | `NotFound` | `file not found` (`read`, `list` or `open_import_preview` of a file or folder that is not there). |
 | `Other` | An invalid path (the [`files`](#files) message); `not a file` (`read` of a folder); `not a folder` (`list` of a file); `file larger than 32 MiB` (`open_import_preview`); `the file manager could not be opened (<kind>)`; other I/O errors. |
 
@@ -339,7 +343,7 @@ fn count_lines() -> aio_plugin_sdk::Result<usize> {
         return Ok(0);
     };
     let mut lines = 0;
-    for entry in folder.list("catalogue")? {
+    for entry in folder.list_all("catalogue")? {
         if entry.is_folder || !entry.name.ends_with(".sql") {
             continue;
         }
@@ -466,7 +470,7 @@ ask the user about other hosts.
 | Item | What it does |
 |---|---|
 | `get(url: &str) -> Result<Vec<u8>>` | GETs `url` and returns the response body. |
-| `get_many(urls: &[&str]) -> Vec<Result<Vec<u8>>>` | **API 1.1.** Up to `MAX_MANY` (8) GETs at once: one result per URL, in the order of `urls`. Each URL is checked like `get`; the bodies of one call add up to at most `MAX_MANY_BYTES` (32 MiB). |
+| `get_many(urls: &[&str]) -> Vec<Result<Vec<u8>>>` | **API 1.1.** Up to `MAX_MANY` (8) GETs at once: one result per URL, in the order of `urls`. Each URL is checked like `get`; the bodies of one call add up to at most `MAX_MANY_BYTES` (32 MiB). More than 8 URLs: every result is the same refusal and nothing is fetched. |
 | `MAX_MANY`, `MAX_MANY_BYTES` | `8` and `32 * 1024 * 1024`. |
 
 Rules:
@@ -487,9 +491,11 @@ Rules:
 - the response body has at most 32 MiB, and the whole request has 60 s;
 - `get_many` follows every rule above for each URL. Under `http:ask` it first asks about the hosts not answered yet,
   one question at a time and in order (each one of the call's 20 dialogs; a host is asked about once), and only then
-  fetches the allowed URLs, all together, each with its own 60 s. When a body does not fit in what is left of the
-  call's 32 MiB, that URL and every one not finished yet fail with `permission denied: response budget exceeded`.
-  More than 8 URLs: every result is `permission denied: at most 8 URLs per call` and nothing is fetched.
+  fetches the allowed URLs, all together, each with its own 60 s. The bodies share the call's 32 MiB and are
+  counted while they arrive: a URL whose body does not fit in what is left fails with `permission denied: response
+  budget exceeded`, and the others go on. More than 8 URLs: nothing is checked or fetched, and every result is
+  `permission denied: at most 8 URLs per call` (the Manager answers such a call with a single entry; the SDK repeats
+  it for each URL).
 
 | Kind | When |
 |---|---|

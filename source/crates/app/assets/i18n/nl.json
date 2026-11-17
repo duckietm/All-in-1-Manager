@@ -3945,9 +3945,7 @@
   "{plugin} could not be installed.": "{plugin} kon niet worden geïnstalleerd.",
   "· checked {age}": "· gecontroleerd {age}",
   "Choose a folder …": "Kies een map …",
-  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "De plugin vraagt je een map te kiezen. Hij kan daarin alleen databestanden maken (afbeeldingen, tekst, SQL, JSON), verder niets: bestanden die er al staan blijven zoals ze zijn.",
+  "The plugin wants you to choose a folder. It can list what is in it, read the data files already there (pictures, text, SQL, JSON …) and create new ones. It never changes or removes the files already there.": "De plugin vraagt je een map te kiezen. Hij kan zien wat erin staat, de databestanden die er al staan lezen (afbeeldingen, tekst, SQL, JSON …) en nieuwe maken. Bestanden die er al staan wijzigt of verwijdert hij nooit.",
   "G-Earth": "G-Earth",
-  "G-Earth tool": "G-Earth-tool",
-  "Install and start G-Earth from here.": "Installeer en start G-Earth vanaf hier.",
-  "Install and start G-Earth, the packet logger, on this computer": "G-Earth, de packet logger, op deze computer installeren en starten"
+  "Tools for G-Earth.": "Hulpmiddelen voor G-Earth."
 }

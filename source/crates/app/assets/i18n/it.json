@@ -3945,9 +3945,7 @@
   "{plugin} could not be installed.": "Non è stato possibile installare {plugin}.",
   "· checked {age}": "· controllato {age}",
   "Choose a folder …": "Scegli una cartella …",
-  "The plugin wants you to choose a folder. It can create data files in it (pictures, text, SQL, JSON), nothing else: files already there stay as they are.": "Il plugin ti chiede di scegliere una cartella. Potrà solo crearvi file di dati (immagini, testo, SQL, JSON), nient'altro: i file già presenti restano come sono.",
+  "The plugin wants you to choose a folder. It can list what is in it, read the data files already there (pictures, text, SQL, JSON …) and create new ones. It never changes or removes the files already there.": "Il plugin ti chiede di scegliere una cartella. Potrà vederne il contenuto, leggere i file di dati già presenti (immagini, testo, SQL, JSON …) e crearne di nuovi. Non modifica né elimina mai i file già presenti.",
   "G-Earth": "G-Earth",
-  "G-Earth tool": "Strumento G-Earth",
-  "Install and start G-Earth from here.": "Installa e avvia G-Earth da qui.",
-  "Install and start G-Earth, the packet logger, on this computer": "Installa e avvia G-Earth, il packet logger, su questo computer"
+  "Tools for G-Earth.": "Strumenti per G-Earth."
 }

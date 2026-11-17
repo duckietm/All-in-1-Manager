@@ -83,7 +83,7 @@ When the exports folder is full, the status line says so and the file is not sav
 | A file handed to `Folder::open_import_preview` | 32 MiB |
 | One `Folder::read` | 4 MiB (`folders::MAX_READ`); a larger `max` is refused |
 | Entries of one `Folder::list` | 10,000 (`folders::MAX_ENTRIES`), one page; the next page starts where it ended |
-| Entries of a folder that can be listed | 1,000,000 (`folders::MAX_LISTED`); a folder with more is refused |
+| Entries of a folder that can be listed | 100,000 (`folders::MAX_LISTED`); a folder with more is refused |
 | `Folder::reveal` | Once every 2 s per `Folder` |
 
 Past a size or count limit, the write (or append) fails with `permission denied: folder limit reached`. A file

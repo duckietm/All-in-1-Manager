@@ -52,8 +52,9 @@ pub const MAX_FOLDER_FILE: u64 = 256 * 1024 * 1024;
 pub const MAX_FOLDER_READ: u32 = 4 * 1024 * 1024;
 /// Most entries one `list` of a picked folder returns (one page; the next starts where it ended).
 pub const MAX_FOLDER_ENTRIES: usize = 10_000;
-/// Most entries a folder may have to be listed at all (they are all read and sorted for every page).
-pub const MAX_FOLDER_SCAN: usize = 1_000_000;
+/// Most entries a folder may have to be listed at all (they are all read and sorted for every page), as many as one
+/// handle may write ([`MAX_FOLDER_FILES`]).
+pub const MAX_FOLDER_SCAN: usize = 100_000;
 /// The refusal past a limit of [`FolderLimits`].
 pub const LIMIT_REACHED: &str = "permission denied: folder limit reached";
 /// The refusal of a folder that is (or leads into) one of the Manager's own folders.
@@ -495,17 +496,23 @@ impl ListJob {
             if name.starts_with('.') || check_relative(&name).is_err() {
                 continue;
             }
-            let Ok(meta) = fs::symlink_metadata(entry.path()) else { continue };
-            if is_link(&meta) {
+            // The kind from the directory listing itself (no call per entry on Windows, and none for a folder on
+            // Unix): links and anything but files and folders are left out.
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_symlink() || !(kind.is_file() || kind.is_dir()) {
                 continue;
             }
-            let (is_folder, size) = if meta.is_dir() {
-                (true, 0)
-            } else if meta.is_file() {
-                (false, meta.len())
+            // Sizes of files; on Windows also every other reparse point (from the listing's own data, no extra call).
+            let size = if kind.is_file() || cfg!(windows) {
+                let Ok(meta) = entry.metadata() else { continue };
+                if is_link(&meta) {
+                    continue;
+                }
+                if kind.is_file() { meta.len() } else { 0 }
             } else {
-                continue;
+                0
             };
+            let is_folder = kind.is_dir();
             if entries.len() == MAX_FOLDER_SCAN {
                 return Err(format!("permission denied: {shown} has more than {MAX_FOLDER_SCAN} entries"));
             }
@@ -962,6 +969,8 @@ mod tests {
         assert_eq!(names(20), ["f20.txt", "f21.txt", "f22.txt", "f23.txt", "f24.txt"]);
         assert!(names(25).is_empty());
         assert!(names(u32::MAX).is_empty());
+        // A folder may hold as many entries as one handle may write, and no more is listed.
+        assert_eq!(MAX_FOLDER_SCAN, MAX_FOLDER_FILES);
     }
 
     pub(super) fn before_open(target: &Path) {

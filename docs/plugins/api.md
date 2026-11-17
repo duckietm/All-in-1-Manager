@@ -282,7 +282,7 @@ its name.
 | `MAX_FILE` | `256 * 1024 * 1024`: the largest file (256 MiB). |
 | `MAX_READ` | `4 * 1024 * 1024`: most bytes one `read` returns (4 MiB). |
 | `MAX_ENTRIES` | `10_000`: most entries one `list` returns (one page). |
-| `MAX_LISTED` | `1_000_000`: most entries a folder may have to be listed at all. |
+| `MAX_LISTED` | `100_000`: most entries a folder may have to be listed at all. |
 
 Before the dialog opens, the Manager says what the plugin wants ("The plugin wants you to choose a folder. It can
 list what is in it, read the data files already there (pictures, text, SQL, JSON …) and create new ones. It never
@@ -315,7 +315,7 @@ Rules:
 
 | Kind | When |
 |---|---|
-| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: <path> has other names (hard links)` (`append` to, or `read` of, a file that is hard-linked); `permission denied: <path> is not a plain file` (`read`); `permission denied: at most 4 MiB can be read at once` (`read`); `permission denied: <path> has more than 1000000 entries` (`list`; `the folder` for `""`); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
+| `Denied` | `permission denied: <path> is not a data file`; `permission denied: <path> is hidden (a name starts with .)`; `permission denied: <path> already exists`; `permission denied: <path> leads through a link` (or `a file`); `permission denied: <path> has other names (hard links)` (`append` to, or `read` of, a file that is hard-linked); `permission denied: <path> is not a plain file` (`read`); `permission denied: at most 4 MiB can be read at once` (`read`); `permission denied: <path> has more than 100000 entries` (`list`; `the folder` for `""`); `permission denied: folder limit reached`; `permission denied: this folder belongs to the Manager`; `permission denied: the folder was replaced by a link`; `permission denied: <path> was not written through this folder` (`open_import_preview`); `permission denied: the folder was shown less than 2 s ago` (`reveal`). Every refusal starts with `permission denied: `. |
 | `NotFound` | `file not found` (`read`, `list` or `open_import_preview` of a file or folder that is not there). |
 | `Other` | An invalid path (the [`files`](#files) message); `not a file` (`read` of a folder); `not a folder` (`list` of a file); `file larger than 32 MiB` (`open_import_preview`); `the file manager could not be opened (<kind>)`; other I/O errors. |
 
@@ -492,7 +492,8 @@ Rules:
 - `get_many` follows every rule above for each URL. Under `http:ask` it first asks about the hosts not answered yet,
   one question at a time and in order (each one of the call's 20 dialogs; a host is asked about once), and only then
   fetches the allowed URLs, all together, each with its own 60 s. The bodies share the call's 32 MiB and are
-  counted while they arrive: a URL whose body does not fit in what is left fails with `permission denied: response
+  counted while they arrive (an announced `Content-Length` is reserved up front, so a large announced body can fail
+  before it is read): a URL whose body does not fit in what is left fails with `permission denied: response
   budget exceeded`, and the others go on. More than 8 URLs: nothing is checked or fetched, and every result is
   `permission denied: at most 8 URLs per call` (the Manager answers such a call with a single entry; the SDK repeats
   it for each URL).

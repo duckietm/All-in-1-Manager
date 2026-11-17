@@ -78,7 +78,7 @@ pub const MAX_READ: u32 = 4 * 1024 * 1024;
 pub const MAX_ENTRIES: usize = 10_000;
 
 /// Most entries a folder may have to be listed at all; a folder with more is [`Denied`](crate::ErrorKind::Denied).
-pub const MAX_LISTED: usize = 1_000_000;
+pub const MAX_LISTED: usize = 100_000;
 
 /// An entry of a picked folder, from [`Folder::list`].
 ///
@@ -291,7 +291,7 @@ mod tests {
         // folders.rs `MAX_FOLDER_READ`, `MAX_FOLDER_ENTRIES`.
         assert_eq!(MAX_READ, 4_194_304);
         assert_eq!(MAX_ENTRIES, 10_000);
-        assert_eq!(MAX_LISTED, 1_000_000);
+        assert_eq!(MAX_LISTED, 100_000);
     }
 
     #[test]

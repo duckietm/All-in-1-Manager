@@ -446,13 +446,26 @@ pub async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, Strin
 /// `permission denied: response budget exceeded`; any failure gives back what this fetch reserved, and a body shorter
 /// than reserved gives back the rest.
 pub async fn fetch_within(client: &reqwest::Client, url: &str, budget: Option<&BodyBudget>) -> Result<Vec<u8>, String> {
-    let mut reserved = 0usize;
-    let result = read_body(client, url, budget, &mut reserved).await;
-    if let Some(budget) = budget {
-        let kept = result.as_ref().map_or(0, Vec::len);
-        budget.release(reserved.saturating_sub(kept));
-    }
+    let mut held = Reserved { budget, reserved: 0, kept: 0 };
+    let result = read_body(client, url, budget, &mut held.reserved).await;
+    held.kept = result.as_ref().map_or(0, Vec::len);
     result
+}
+
+/// What one fetch took from its budget; on drop (also when the fetch is cancelled, by its timeout or with the call)
+/// everything but the body handed over goes back.
+struct Reserved<'a> {
+    budget: Option<&'a BodyBudget>,
+    reserved: usize,
+    kept: usize,
+}
+
+impl Drop for Reserved<'_> {
+    fn drop(&mut self) {
+        if let Some(budget) = self.budget {
+            budget.release(self.reserved.saturating_sub(self.kept));
+        }
+    }
 }
 
 /// The body of [`fetch_within`]; `reserved` counts what was taken from `budget`.
@@ -829,6 +842,30 @@ mod tests {
             assert_eq!(fetch_within(&client, &url, Some(&budget)).await.unwrap().len(), 300_000);
             assert_eq!(budget.left(), 700_000, "port {port}");
         }
+        // A fetch stopped part way (its timeout) gives its reservation back too.
+        let hanging = {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            tokio::spawn(async move {
+                while let Ok((mut stream, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let mut buf = vec![0u8; 4096];
+                        let _ = stream.read(&mut buf).await;
+                        let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n0123456789").await;
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    });
+                }
+            });
+            port
+        };
+        let budget = BodyBudget::new(5_000);
+        let stopped = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            fetch_within(&client, &format!("http://127.0.0.1:{hanging}/"), Some(&budget)),
+        )
+        .await;
+        assert!(stopped.is_err(), "the body never ends");
+        assert_eq!(budget.left(), 5_000, "the announced length was reserved, then given back");
         // A failed fetch gives its reservation back.
         let failing = serve(|_| b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".to_vec()).await;
         let budget = BodyBudget::new(10);

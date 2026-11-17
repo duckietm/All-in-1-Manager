@@ -187,12 +187,18 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 
 /// Downloads a published checksum file (`<asset>.sha256`) and reads the digest from it.
 pub(crate) async fn published_checksum(url: &str) -> Result<String> {
-    let published = client().get(url).send().await.context("Downloading the checksum failed")?.error_for_status()?;
-    // A checksum file is one line; anything big is not one.
-    if published.content_length().is_some_and(|n| n > 4096) {
-        bail!("The published checksum could not be read");
+    /// A checksum file is one line; anything bigger is not one.
+    const MAX: usize = 4096;
+    let mut published = client().get(url).send().await.context("Downloading the checksum failed")?.error_for_status()?;
+    let mut text = Vec::new();
+    // Read in chunks and stop at the limit, also when the server sends no Content-Length.
+    while let Some(chunk) = published.chunk().await.context("Downloading the checksum failed")? {
+        if text.len() + chunk.len() > MAX {
+            bail!("The published checksum could not be read (it is longer than {MAX} bytes)");
+        }
+        text.extend_from_slice(&chunk);
     }
-    checksum_in(&published.text().await.context("Downloading the checksum failed")?).context("The published checksum could not be read")
+    checksum_in(&String::from_utf8_lossy(&text)).context("The published checksum could not be read")
 }
 
 /// The digest from a published checksum file: "<hex>" or the `sha256sum` form "<hex>  <file name>".

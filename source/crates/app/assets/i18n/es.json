@@ -3985,5 +3985,11 @@
   "Yes, it listens on 127.0.0.1 (ports 9092-9101)": "Sí, escucha en 127.0.0.1 (puertos 9092-9101)",
   "version unknown": "versión desconocida",
   "{version} (not verified)": "{version} (sin verificar)",
-  "{version} (verified)": "{version} (verificado)"
+  "{version} (verified)": "{version} (verificado)",
+  "Close G-Earth to remove or update it.": "Cierra G-Earth para eliminarlo o actualizarlo.",
+  "G-Earth is running: close it first, or it cannot be replaced.": "G-Earth está en ejecución: ciérralo primero o no se podrá reemplazar.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again after {time}.": "GitHub permite pocas solicitudes sin iniciar sesión y se han agotado. Vuelve a intentarlo después de las {time}.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again later.": "GitHub permite pocas solicitudes sin iniciar sesión y se han agotado. Vuelve a intentarlo más tarde.",
+  "The G-Earth already in that folder is replaced.": "El G-Earth que ya está en esa carpeta se reemplaza.",
+  "There is no G-Earth build for this computer.": "No hay una versión de G-Earth para este ordenador."
 }

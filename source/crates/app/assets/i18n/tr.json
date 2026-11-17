@@ -3985,5 +3985,11 @@
   "Yes, it listens on 127.0.0.1 (ports 9092-9101)": "Evet, 127.0.0.1 üzerinde dinliyor (portlar 9092-9101)",
   "version unknown": "sürüm bilinmiyor",
   "{version} (not verified)": "{version} (doğrulanmadı)",
-  "{version} (verified)": "{version} (doğrulandı)"
+  "{version} (verified)": "{version} (doğrulandı)",
+  "Close G-Earth to remove or update it.": "Kaldırmak veya güncellemek için G-Earth'ü kapat.",
+  "G-Earth is running: close it first, or it cannot be replaced.": "G-Earth çalışıyor: önce kapat, yoksa değiştirilemez.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again after {time}.": "GitHub giriş yapmadan yalnızca birkaç isteğe izin veriyor ve bunlar tükendi. {time} sonrasında tekrar dene.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again later.": "GitHub giriş yapmadan yalnızca birkaç isteğe izin veriyor ve bunlar tükendi. Daha sonra tekrar dene.",
+  "The G-Earth already in that folder is replaced.": "O klasörde zaten bulunan G-Earth değiştirilir.",
+  "There is no G-Earth build for this computer.": "Bu bilgisayar için bir G-Earth sürümü yok."
 }

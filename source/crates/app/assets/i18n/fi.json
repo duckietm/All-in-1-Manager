@@ -3985,5 +3985,11 @@
   "Yes, it listens on 127.0.0.1 (ports 9092-9101)": "Kyllä, se kuuntelee osoitteessa 127.0.0.1 (portit 9092-9101)",
   "version unknown": "versio tuntematon",
   "{version} (not verified)": "{version} (ei tarkistettu)",
-  "{version} (verified)": "{version} (tarkistettu)"
+  "{version} (verified)": "{version} (tarkistettu)",
+  "Close G-Earth to remove or update it.": "Sulje G-Earth poistaaksesi tai päivittääksesi sen.",
+  "G-Earth is running: close it first, or it cannot be replaced.": "G-Earth on käynnissä: sulje se ensin, muuten sitä ei voi korvata.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again after {time}.": "GitHub sallii vain muutaman pyynnön ilman kirjautumista, ja ne on käytetty. Yritä uudelleen kello {time} jälkeen.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again later.": "GitHub sallii vain muutaman pyynnön ilman kirjautumista, ja ne on käytetty. Yritä myöhemmin uudelleen.",
+  "The G-Earth already in that folder is replaced.": "Kansiossa jo oleva G-Earth korvataan.",
+  "There is no G-Earth build for this computer.": "Tälle tietokoneelle ei ole G-Earth-versiota."
 }

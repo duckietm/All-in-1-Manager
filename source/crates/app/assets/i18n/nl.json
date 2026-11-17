@@ -3985,5 +3985,11 @@
   "Yes, it listens on 127.0.0.1 (ports 9092-9101)": "Ja, het luistert op 127.0.0.1 (poorten 9092-9101)",
   "version unknown": "versie onbekend",
   "{version} (not verified)": "{version} (niet gecontroleerd)",
-  "{version} (verified)": "{version} (gecontroleerd)"
+  "{version} (verified)": "{version} (gecontroleerd)",
+  "Close G-Earth to remove or update it.": "Sluit G-Earth om het te verwijderen of bij te werken.",
+  "G-Earth is running: close it first, or it cannot be replaced.": "G-Earth is actief: sluit het eerst, anders kan het niet worden vervangen.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again after {time}.": "GitHub staat zonder inloggen maar weinig verzoeken toe, en die zijn op. Probeer het opnieuw na {time}.",
+  "GitHub allows only a few requests without a login, and they are used up. Try again later.": "GitHub staat zonder inloggen maar weinig verzoeken toe, en die zijn op. Probeer het later opnieuw.",
+  "The G-Earth already in that folder is replaced.": "De G-Earth die al in die map staat, wordt vervangen.",
+  "There is no G-Earth build for this computer.": "Er is geen G-Earth-versie voor deze computer."
 }

@@ -15,16 +15,18 @@ use crate::gui::theme::Palette;
 use crate::gui::widgets::{self, ResultKind};
 use crate::gui::Shared;
 use crate::i18n::{t, tf};
-use crate::tools::gearth::{self, Installed, Release, Step};
+use crate::tools::gearth::{self, Installed, Release, Source, Step};
 
 /// How often the installed folder and the ports are looked at while the page is shown.
 const REFRESH: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum Job {
+pub(crate) enum Job {
     #[default]
     Idle,
     Checking,
+    /// The question before the download is open.
+    Asking,
     Downloading(u64, u64),
     Unpacking,
     Starting,
@@ -46,12 +48,16 @@ struct State {
 pub struct GearthToolView {
     state: Arc<Mutex<State>>,
     folder: PathBuf,
-    api: String,
+    source: Source,
 }
 
 /// What [`install_flow`] ended with.
 #[derive(Debug)]
 pub(crate) enum Outcome {
+    /// G-Earth publishes no build for this computer.
+    NoBuild,
+    /// GitHub's limit for requests without a login is used up (until this Unix time, when known).
+    RateLimited(Option<i64>),
     UpToDate(String),
     Declined,
     Installed(Installed),
@@ -64,45 +70,101 @@ fn megabytes(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
-/// The question before a download: source, version, size, and whether it can be verified.
-fn confirmation(release: &Release, folder: &Path) -> String {
+/// What [`install_flow`] works on.
+pub(crate) struct InstallRequest<'a> {
+    pub source: &'a Source,
+    /// The release file for this computer ([`gearth::asset`]).
+    pub asset: Option<&'static str>,
+    pub folder: &'a Path,
+    /// What is installed now.
+    pub current: Option<&'a Installed>,
+    /// Something listens on G-Earth's ports.
+    pub running: bool,
+}
+
+/// The question before a download: source, version, size, whether it can be verified, and what it replaces.
+fn confirmation(release: &Release, request: &InstallRequest) -> String {
     let mut text = tf(
         "Download G-Earth {version} ({size}) from github.com/G-Realm/G-Earth (MIT licence, Java included) into {folder}?",
-        &[("version", &release.version), ("size", &megabytes(release.size)), ("folder", &folder.display().to_string())],
+        &[("version", &release.version), ("size", &megabytes(release.size)), ("folder", &request.folder.display().to_string())],
     );
-    text.push_str("\n\n");
+    text.push_str("
+
+");
     text.push_str(if release.verifiable() {
         t("The download is checked against the SHA-256 checksum the release publishes before anything is unpacked.")
     } else {
         t("Not verified: this release publishes no SHA-256 checksum, so the download cannot be checked.")
     });
+    if request.current.is_some() || request.folder.exists() {
+        text.push_str("
+
+");
+        text.push_str(t("The G-Earth already in that folder is replaced."));
+    }
+    if request.running {
+        text.push_str("
+
+");
+        text.push_str(t("G-Earth is running: close it first, or it cannot be replaced."));
+    }
     text
 }
 
-/// Looks up the newest release and, after a "yes", installs it into `folder`.
-pub(crate) async fn install_flow(
-    dialogs: &Dialogs,
-    api: &str,
-    folder: &Path,
-    current: Option<&Installed>,
-    cancel: &CancellationToken,
-    progress: impl Fn(Step),
-) -> Outcome {
-    let release = match gearth::latest(api).await {
-        Ok(release) => release,
-        Err(error) => return Outcome::Failed(format!("{error:#}")),
+/// The text for GitHub's used-up request limit.
+pub(crate) fn rate_limited_text(reset: Option<i64>) -> String {
+    match reset.and_then(|r| chrono::DateTime::from_timestamp(r, 0)) {
+        Some(at) => tf(
+            "GitHub allows only a few requests without a login, and they are used up. Try again after {time}.",
+            &[("time", &at.with_timezone(&chrono::Local).format("%H:%M").to_string())],
+        ),
+        None => t("GitHub allows only a few requests without a login, and they are used up. Try again later.").to_string(),
+    }
+}
+
+/// Looks up the newest release and, after a "yes", installs it. Cancel before the question ends it without asking.
+pub(crate) async fn install_flow(dialogs: &Dialogs, request: InstallRequest<'_>, cancel: &CancellationToken, progress: impl Fn(Job)) -> Outcome {
+    let Some(asset) = request.asset else { return Outcome::NoBuild };
+    progress(Job::Checking);
+    let looked_up = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Outcome::Cancelled,
+        looked_up = gearth::latest(request.source, asset) => looked_up,
     };
-    if current.and_then(|c| c.version.as_deref()) == Some(release.version.as_str()) {
+    let release = match looked_up {
+        Ok(release) => release,
+        Err(error) => {
+            return match error.downcast_ref::<gearth::RateLimited>() {
+                Some(limit) => Outcome::RateLimited(limit.reset),
+                None => Outcome::Failed(format!("{error:#}")),
+            }
+        }
+    };
+    if request.current.and_then(|c| c.version.as_deref()) == Some(release.version.as_str()) {
         return Outcome::UpToDate(release.version);
+    }
+    if cancel.is_cancelled() {
+        return Outcome::Cancelled;
     }
     let options = vec![
         Choice::new(t("Download and install"), t("G-Earth does not start until you press Start."), true).primary(),
         Choice::new(t("Cancel"), t("Nothing is downloaded."), false),
     ];
-    if !dialogs.choose(t("G-Earth"), t("Download G-Earth?"), &confirmation(&release, folder), false, options).await {
+    progress(Job::Asking);
+    if !dialogs.choose(t("G-Earth"), t("Download G-Earth?"), &confirmation(&release, &request), false, options).await {
         return Outcome::Declined;
     }
-    match gearth::install(&release, folder, cancel, progress).await {
+    if cancel.is_cancelled() {
+        return Outcome::Cancelled;
+    }
+    progress(Job::Downloading(0, release.size));
+    let step = |step: Step| {
+        progress(match step {
+            Step::Downloading(done, total) => Job::Downloading(done, total),
+            Step::Unpacking => Job::Unpacking,
+        })
+    };
+    match gearth::install(&release, request.folder, cancel, step).await {
         Ok(installed) => Outcome::Installed(installed),
         Err(error) if error.is::<gearth::Cancelled>() => Outcome::Cancelled,
         Err(error) => Outcome::Failed(format!("{error:#}")),
@@ -124,7 +186,7 @@ impl GearthToolView {
     pub fn new(_shared: &Shared) -> Self {
         let folder = gearth::folder();
         gearth::recover(&folder);
-        Self { state: Arc::new(Mutex::new(State::default())), folder, api: crate::update::GITHUB_API.to_string() }
+        Self { state: Arc::new(Mutex::new(State::default())), folder, source: Source::github() }
     }
 
     /// Looks at the folder and the ports again, at most every few seconds and never during a job.
@@ -148,24 +210,24 @@ impl GearthToolView {
 
     fn install(&self, shared: &Shared) {
         let cancel = CancellationToken::new();
-        let current = {
+        let (current, running) = {
             let mut state = self.state.lock();
             state.job = Job::Checking;
             state.result = None;
             state.cancel = Some(cancel.clone());
-            state.installed.clone()
+            (state.installed.clone(), state.running == Some(true))
         };
-        let (state, dialogs, api, folder, ctx) = (self.state.clone(), shared.dialogs.clone(), self.api.clone(), self.folder.clone(), shared.ctx.clone());
+        let (state, dialogs, source, folder, ctx) = (self.state.clone(), shared.dialogs.clone(), self.source.clone(), self.folder.clone(), shared.ctx.clone());
         shared.spawn(async move {
-            let progress = |step: Step| {
-                state.lock().job = match step {
-                    Step::Downloading(done, total) => Job::Downloading(done, total),
-                    Step::Unpacking => Job::Unpacking,
-                };
+            let progress = |job: Job| {
+                state.lock().job = job;
                 ctx.request_repaint();
             };
-            let outcome = install_flow(&dialogs, &api, &folder, current.as_ref(), &cancel, progress).await;
+            let request = InstallRequest { source: &source, asset: gearth::asset(), folder: &folder, current: current.as_ref(), running };
+            let outcome = install_flow(&dialogs, request, &cancel, progress).await;
             let result = match outcome {
+                Outcome::NoBuild => Some((ResultKind::Warning, t("There is no G-Earth build for this computer.").into(), String::new())),
+                Outcome::RateLimited(reset) => Some((ResultKind::Warning, t("G-Earth could not be installed.").into(), rate_limited_text(reset))),
                 Outcome::UpToDate(version) => {
                     Some((ResultKind::Info, tf("G-Earth {version} is the newest release.", &[("version", &version)]), String::new()))
                 }
@@ -294,6 +356,7 @@ impl GearthToolView {
                 let text = match other {
                     Job::Checking => t("Looking up the newest release …"),
                     Job::Unpacking => t("Unpacking …"),
+                    Job::Asking => t("Waiting for your answer …"),
                     Job::Starting => t("Starting G-Earth …"),
                     _ => t("Waiting for your answer …"),
                 };
@@ -320,10 +383,15 @@ impl GearthToolView {
             if ui.add_enabled(self.folder.is_dir(), widgets::secondary_button(t("Open folder"))).clicked() {
                 open_folder(&self.folder);
             }
-            if ui.add_enabled(idle && self.folder.exists(), widgets::secondary_button(t("Remove"))).clicked() {
+            if ui.add_enabled(idle && self.folder.exists() && running != Some(true), widgets::secondary_button(t("Remove"))).clicked() {
                 self.remove(shared);
             }
         });
+
+        if running == Some(true) && self.folder.exists() {
+            ui.add_space(6.0);
+            widgets::muted(ui, palette, t("Close G-Earth to remove or update it."), 12.0);
+        }
 
         if let Some((kind, heading, message)) = result {
             ui.add_space(12.0);
@@ -342,7 +410,7 @@ fn open_folder(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::gearth::tests::{github, good_archive};
+    use crate::tools::gearth::tests::{download_path, github, good_archive, this_asset, RELEASE_PATH};
 
     /// Waits for the dialog the flow asks, returns its text, and answers it with choice `answer`.
     async fn answer(dialogs: &Dialogs, answer: usize) -> String {
@@ -356,17 +424,22 @@ mod tests {
         panic!("no question was asked");
     }
 
+    fn request<'a>(source: &'a Source, folder: &'a Path, current: Option<&'a Installed>, running: bool) -> InstallRequest<'a> {
+        InstallRequest { source, asset: Some(this_asset()), folder, current, running }
+    }
+
     #[tokio::test]
     async fn nothing_without_yes() {
         let dialogs = Dialogs::new(egui::Context::default());
         let root = tempfile::tempdir().unwrap();
         let folder = root.path().join("tools").join("G-Earth");
-        let download = format!("/download/{}", gearth::ASSET);
+        let download = download_path();
         let cancel = CancellationToken::new();
 
         for (digest, verified) in [(true, true), (false, false)] {
             let server = github(good_archive(), digest, false, false).await;
-            let flow = install_flow(&dialogs, &server.base, &folder, None, &cancel, |_| {});
+            let source = server.source();
+            let flow = install_flow(&dialogs, request(&source, &folder, None, false), &cancel, |_| {});
             let (outcome, question) = tokio::join!(flow, answer(&dialogs, 1));
             assert!(matches!(outcome, Outcome::Declined), "{outcome:?}");
             // The question names the source, the version and the size, and says when it cannot be verified.
@@ -374,21 +447,34 @@ mod tests {
             assert!(question.contains("1.5.4"), "{question}");
             assert!(question.contains(" MB"), "{question}");
             assert_eq!(question.contains("Not verified"), !verified, "{question}");
+            assert!(!question.contains("is replaced") && !question.contains("is running"), "{question}");
             assert!(!server.asked(&download), "downloaded without a yes");
             assert!(!root.path().join("tools").exists() || std::fs::read_dir(root.path().join("tools")).unwrap().next().is_none());
         }
 
         // With a yes it is installed; G-Earth is not started by it (Start is a separate button).
         let server = github(good_archive(), true, false, false).await;
-        let flow = install_flow(&dialogs, &server.base, &folder, None, &cancel, |_| {});
+        let source = server.source();
+        let jobs = Mutex::new(Vec::new());
+        let flow = install_flow(&dialogs, request(&source, &folder, None, false), &cancel, |job| jobs.lock().push(job));
         let (outcome, _) = tokio::join!(flow, answer(&dialogs, 0));
         let Outcome::Installed(installed) = outcome else { panic!("{outcome:?}") };
         assert!(installed.verified);
+        let jobs = jobs.into_inner();
+        assert_eq!(jobs[..2], [Job::Checking, Job::Asking]);
+        assert!(jobs.contains(&Job::Unpacking));
         // Already the newest: no question, no download.
         let before = server.hits.lock().len();
-        let outcome = install_flow(&dialogs, &server.base, &folder, Some(&installed), &CancellationToken::new(), |_| {}).await;
+        let outcome = install_flow(&dialogs, request(&source, &folder, Some(&installed), false), &cancel, |_| {}).await;
         assert!(matches!(outcome, Outcome::UpToDate(ref v) if v == "1.5.4"), "{outcome:?}");
         assert!(!server.hits.lock()[before..].iter().any(|p| p == &download));
+        // An older one there: the question says it is replaced, and warns while G-Earth runs.
+        let older = Installed { version: Some("1.5.3".into()), ..installed.clone() };
+        let flow = install_flow(&dialogs, request(&source, &folder, Some(&older), true), &cancel, |_| {});
+        let (outcome, question) = tokio::join!(flow, answer(&dialogs, 1));
+        assert!(matches!(outcome, Outcome::Declined), "{outcome:?}");
+        assert!(question.contains("already in that folder is replaced"), "{question}");
+        assert!(question.contains("G-Earth is running"), "{question}");
 
         // Remove: a no keeps it, a yes deletes it.
         let (removed, _) = tokio::join!(remove_flow(&dialogs, &folder), answer(&dialogs, 1));
@@ -397,5 +483,63 @@ mod tests {
         let (removed, _) = tokio::join!(remove_flow(&dialogs, &folder), answer(&dialogs, 0));
         removed.unwrap().unwrap();
         assert!(!folder.exists());
+    }
+
+    #[tokio::test]
+    async fn cancel_before_the_question_never_asks() {
+        let dialogs = Dialogs::new(egui::Context::default());
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("G-Earth");
+        let server = github(good_archive(), true, false, false).await;
+        let source = server.source();
+
+        // Cancelled before (or while) the release is looked up: no question, no download.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let outcome = install_flow(&dialogs, request(&source, &folder, None, false), &cancel, |_| {}).await;
+        assert!(matches!(outcome, Outcome::Cancelled), "{outcome:?}");
+        // Cancelled during a slow lookup.
+        let cancel = CancellationToken::new();
+        let slow = async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel.cancel();
+        };
+        // A server that takes the connection and never answers.
+        let silent = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let unreachable = Source { api: format!("http://{}", silent.local_addr().unwrap()), downloads: source.downloads.clone() };
+        let (outcome, _) = tokio::join!(install_flow(&dialogs, request(&unreachable, &folder, None, false), &cancel, |_| {}), slow);
+        assert!(matches!(outcome, Outcome::Cancelled), "{outcome:?}");
+        assert!(dialogs.newest_text_for_tests().is_none(), "asked after a cancel");
+        assert!(!server.asked(&download_path()));
+        assert!(!folder.exists());
+    }
+
+    #[tokio::test]
+    async fn no_build_and_rate_limit_are_told_without_a_download() {
+        let dialogs = Dialogs::new(egui::Context::default());
+        let root = tempfile::tempdir().unwrap();
+        let folder = root.path().join("G-Earth");
+        let server = github(good_archive(), true, false, false).await;
+        let source = server.source();
+        let cancel = CancellationToken::new();
+
+        let no_build = InstallRequest { asset: None, ..request(&source, &folder, None, false) };
+        assert!(matches!(install_flow(&dialogs, no_build, &cancel, |_| {}).await, Outcome::NoBuild));
+        assert!(server.hits.lock().is_empty(), "looked up without a build");
+
+        server.reply(
+            RELEASE_PATH,
+            gearth::fake::Reply {
+                status: "403 Forbidden",
+                headers: vec![("x-ratelimit-remaining", "0".into()), ("x-ratelimit-reset", "1900000000".into())],
+                body: b"{}".to_vec(),
+                length: true,
+            },
+        );
+        let outcome = install_flow(&dialogs, request(&source, &folder, None, false), &cancel, |_| {}).await;
+        assert!(matches!(outcome, Outcome::RateLimited(Some(1_900_000_000))), "{outcome:?}");
+        assert!(rate_limited_text(Some(1_900_000_000)).contains("Try again after"));
+        assert!(rate_limited_text(None).contains("Try again later"));
+        assert!(!server.asked(&download_path()));
     }
 }

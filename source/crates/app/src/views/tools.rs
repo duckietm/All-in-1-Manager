@@ -26,6 +26,7 @@ use crate::gui::widgets::{self, ResultKind};
 use crate::gui::{Page, Request, Shared, View};
 use crate::i18n::{n, t, tf};
 use crate::views::emulator_monitor::EmulatorMonitorView;
+use crate::views::gearth_tool::GearthToolView;
 use crate::views::server_status::ServerStatusView;
 use crate::views::terminal::TerminalView;
 
@@ -107,7 +108,7 @@ impl Tool {
             Tool::UpdateTraefik => (n("Update Traefik"), n("The newest traefik:v3 image (Docker Hub)"), Icon::Swap),
             Tool::UpdateGitea => (n("Update Gitea"), n("The newest gitea/gitea:1 image; the repositories stay"), Icon::Git),
             Tool::UpdateCrowdSec => (n("Update CrowdSec"), n("The newest image and detection rules; bans and enrollment stay"), Icon::Shield),
-            Tool::GEarth => (n("G-Earth"), n("Tools for G-Earth."), Icon::Download),
+            Tool::GEarth => (n("G-Earth"), n("Install, update and start G-Earth on this computer."), Icon::Download),
         }
     }
 
@@ -219,6 +220,7 @@ pub struct ToolsView {
     doctor: Option<crate::views::doctor::DoctorView>,
     emulator_monitor: Option<EmulatorMonitorView>,
     terminal: Option<TerminalView>,
+    gearth: Option<GearthToolView>,
     /// What the search field above the tiles filters on.
     search: String,
 }
@@ -231,7 +233,7 @@ fn matches(query: &str, texts: &[&str]) -> bool {
 
 impl ToolsView {
     pub fn new(_shared: &Shared) -> Self {
-        Self { page: Page::Tools, state: Arc::new(Mutex::new(State::default())), server_status: None, doctor: None, emulator_monitor: None, terminal: None, search: String::new() }
+        Self { page: Page::Tools, state: Arc::new(Mutex::new(State::default())), server_status: None, doctor: None, emulator_monitor: None, terminal: None, gearth: None, search: String::new() }
     }
 
     /// Starts the update check once per login (not while a tool runs). (ToolsView.Refresh)
@@ -595,9 +597,7 @@ impl View for ToolsView {
             Page::GearthTool => {
                 egui::ScrollArea::vertical().id_salt("tools-gearth").auto_shrink([false, false]).show(ui, |ui| {
                     widgets::card(ui, palette, egui::Margin::symmetric(24, 20), |ui| {
-                        ui.label(widgets::title_text(t("G-Earth"), 15.0));
-                        ui.add_space(6.0);
-                        ui.label(RichText::new(t("Tools for G-Earth.")).size(12.5).color(palette.muted));
+                        self.gearth.get_or_insert_with(|| GearthToolView::new(shared)).show(ui, palette, shared);
                         ui.add_space(16.0);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| self.back_button(ui));
                     });

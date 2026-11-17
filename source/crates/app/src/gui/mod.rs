@@ -692,7 +692,7 @@ impl App {
             Page::Tools => (t("Tools").into(), t("Restart services, back up and import the database, and update.").into()),
             Page::Doctor => (t("Health check").into(), tf("How {host} is doing: services, disk, certificate, backups, updates.", &[("host", &host)])),
             Page::ServerStatus => (t("Server status").into(), tf("Live figures of {host}, every 2 seconds.", &[("host", &host)])),
-            Page::GearthTool => (t("G-Earth").into(), t("Tools for G-Earth.").into()),
+            Page::GearthTool => (t("G-Earth").into(), t("Install, update and start G-Earth on this computer.").into()),
             Page::Terminal => (
                 t("SSH terminal").into(),
                 tf(

@@ -32,6 +32,7 @@ pub mod emulator;
 pub mod epicnext;
 pub mod external_plugin;
 pub mod fail2ban;
+pub mod gearth_tool;
 pub mod finished;
 pub mod gitea;
 pub mod harden;

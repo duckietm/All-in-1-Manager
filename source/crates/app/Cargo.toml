@@ -34,6 +34,8 @@ image.workspace = true
 rfd.workspace = true
 sys-locale.workspace = true
 zip.workspace = true
+flate2.workspace = true
+tar.workspace = true
 
 [build-dependencies]
 embed-resource = "3"

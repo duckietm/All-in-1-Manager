@@ -29,6 +29,7 @@ use crate::export::{
     numbered_pages, ItemsBase, RippedCatalog,
 };
 use crate::furnidata::Furnidata;
+use crate::packets::Offer;
 
 /// How catalog_manager.sql changes the hotel's catalogue.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -256,6 +257,107 @@ impl ManagerRow {
     }
 }
 
+/// The item_ids of an offer whose products all resolved: [`item_ids_sql_with`] wrote a MariaDB
+/// string; its text taken back out.
+pub(crate) fn literal_item_ids(sql: &str) -> String {
+    sql.trim_start_matches('\'').trim_end_matches('\'').to_string()
+}
+
+/// What a page row of catalog_manager.sql is made of.
+pub(crate) struct PageFields<'a> {
+    pub parent_id: i64,
+    pub name: &'a str,
+    pub localization: &'a str,
+    pub icon: i32,
+    pub order: usize,
+    pub visible: bool,
+    pub enabled: bool,
+    /// (layout code, images, texts), when the page answered.
+    pub content: Option<(&'a str, &'a [String], &'a [String])>,
+}
+
+/// The columns of a page row (every column but `id` and `catalog_type`).
+pub(crate) fn page_columns(
+    page: &PageFields,
+    kind: &str,
+    stats: &mut ManagerStats,
+) -> Vec<(&'static str, String)> {
+    let layout_code = page.content.map(|c| c.0).unwrap_or("");
+    let layout = arcturus_layout(layout_code).unwrap_or("default_3x3");
+    let content = page
+        .content
+        .map(|(layout, images, texts)| map_page_content(layout, images, texts))
+        .unwrap_or_default();
+    let a = &mut stats.adjusted_values;
+    let t = &mut stats.truncated_values;
+    vec![
+        ("parent_id", page.parent_id.to_string()),
+        ("caption_save", manager_str(&fit(page.name, 128, t), a)),
+        ("caption", manager_str(&fit(page.localization, 128, t), a)),
+        ("page_layout", format!("'{layout}'")),
+        ("icon_color", "1".into()),
+        ("icon_image", page.icon.to_string()),
+        ("min_rank", "1".into()),
+        ("order_num", page.order.to_string()),
+        ("visible", if page.visible { "1" } else { "0" }.into()),
+        ("enabled", if page.enabled { "1" } else { "0" }.into()),
+        ("club_only", "0".into()),
+        ("catalog_mode", format!("'{kind}'")),
+        ("vip_only", "0".into()),
+        ("page_headline", manager_str(&fit(&content.headline, 1024, t), a)),
+        ("page_teaser", manager_str(&fit(&content.teaser, 64, t), a)),
+        ("page_special", manager_str(&fit(&content.special, 2048, t), a)),
+        ("page_text1", manager_str(&content.text1, a)),
+        ("page_text2", manager_str(&content.text2, a)),
+        ("page_text_details", manager_str(&content.text_details, a)),
+        ("page_text_teaser", manager_str(&content.text_teaser, a)),
+        ("room_id", "0".into()),
+        ("includes", "''".into()),
+    ]
+}
+
+/// The columns of an offer row (every column but `id` and `catalog_type`) of an offer whose
+/// products all resolved (`literal`: [`literal_item_ids`]); `position`: 0-based on its page.
+pub(crate) fn offer_columns(
+    offer: &Offer,
+    literal: &str,
+    page_id: i64,
+    position: usize,
+    client_offer_id: i32,
+    stats: &mut ManagerStats,
+) -> Vec<(&'static str, String)> {
+    let first = &offer.products[0];
+    let amount = if offer.products.len() == 1 {
+        first.count.max(1)
+    } else {
+        1
+    };
+    let stack = offer
+        .products
+        .iter()
+        .find(|p| p.limited)
+        .map(|p| p.limited_series_size)
+        .unwrap_or(0);
+    let a = &mut stats.adjusted_values;
+    let t = &mut stats.truncated_values;
+    vec![
+        ("item_ids", manager_str(literal, a)),
+        ("page_id", page_id.to_string()),
+        ("catalog_name", manager_str(&fit(&offer.localization_id, 100, t), a)),
+        ("cost_credits", offer.price_credits.to_string()),
+        ("cost_points", offer.price_activity_points.to_string()),
+        ("points_type", offer.activity_point_type.to_string()),
+        ("amount", amount.to_string()),
+        ("limited_stack", stack.to_string()),
+        ("order_number", (position + 1).to_string()),
+        ("offer_id", client_offer_id.to_string()),
+        ("song_id", "0".into()),
+        ("extradata", manager_str(&fit(&first.extra_param, 500, t), a)),
+        ("have_offer", if offer.bundle_purchase_allowed { "1" } else { "0" }.into()),
+        ("club_only", if offer.club_level > 0 { "1" } else { "0" }.into()),
+    ]
+}
+
 /// The rows of catalog_manager.sql, pages before offers (catalogue by catalogue), with the stats
 /// and the `-- skipped:` notes of the offers left out. The DELETE lines of the mode are not rows.
 pub fn manager_rows(
@@ -278,7 +380,7 @@ pub fn manager_rows(
 /// its offers), handed to `emit`: the page rows when `want_pages`, the offer rows when
 /// `want_offers`. The stats count what is made (the synthetic page ids always); the notes are
 /// those of the offers.
-fn visit_manager_rows(
+pub(crate) fn visit_manager_rows(
     catalog: &RippedCatalog,
     export: &ManagerExport,
     want_pages: bool,
@@ -324,38 +426,22 @@ fn visit_manager_rows(
         for row in pages.iter().filter(|r| seen_pages.insert(r.id)) {
             if want_pages {
                 let node = row.node;
-                let layout_code = row.page.map(|p| p.layout.as_str()).unwrap_or("");
-                let layout = arcturus_layout(layout_code).unwrap_or("default_3x3");
-                let content = row
-                    .page
-                    .map(|p| map_page_content(&p.layout, &p.images, &p.texts))
-                    .unwrap_or_default();
-                let a = &mut stats.adjusted_values;
-                let t = &mut stats.truncated_values;
-                let columns = vec![
-                    ("parent_id", page_id(row.parent_id).to_string()),
-                    ("caption_save", manager_str(&fit(&node.name, 128, t), a)),
-                    ("caption", manager_str(&fit(&node.localization, 128, t), a)),
-                    ("page_layout", format!("'{layout}'")),
-                    ("icon_color", "1".into()),
-                    ("icon_image", node.icon.to_string()),
-                    ("min_rank", "1".into()),
-                    ("order_num", row.order.to_string()),
-                    ("visible", if node.visible { "1" } else { "0" }.into()),
-                    ("enabled", if node.page_id > 0 { "1" } else { "0" }.into()),
-                    ("club_only", "0".into()),
-                    ("catalog_mode", format!("'{kind}'")),
-                    ("vip_only", "0".into()),
-                    ("page_headline", manager_str(&fit(&content.headline, 1024, t), a)),
-                    ("page_teaser", manager_str(&fit(&content.teaser, 64, t), a)),
-                    ("page_special", manager_str(&fit(&content.special, 2048, t), a)),
-                    ("page_text1", manager_str(&content.text1, a)),
-                    ("page_text2", manager_str(&content.text2, a)),
-                    ("page_text_details", manager_str(&content.text_details, a)),
-                    ("page_text_teaser", manager_str(&content.text_teaser, a)),
-                    ("room_id", "0".into()),
-                    ("includes", "''".into()),
-                ];
+                let columns = page_columns(
+                    &PageFields {
+                        parent_id: page_id(row.parent_id),
+                        name: &node.name,
+                        localization: &node.localization,
+                        icon: node.icon,
+                        order: row.order,
+                        visible: node.visible,
+                        enabled: node.page_id > 0,
+                        content: row
+                            .page
+                            .map(|p| (p.layout.as_str(), &p.images[..], &p.texts[..])),
+                    },
+                    kind,
+                    &mut stats,
+                );
                 emit(ManagerRow {
                     page: true,
                     kind,
@@ -411,12 +497,7 @@ fn visit_manager_rows(
                     }
                     continue;
                 }
-                // All literal: item_ids_sql wrote a MariaDB string; take its text back out.
-                let literal = ids
-                    .sql
-                    .trim_start_matches('\'')
-                    .trim_end_matches('\'')
-                    .to_string();
+                let literal = literal_item_ids(&ids.sql);
                 let id = if offer.offer_id > 0 && seen_offers.insert(offer.offer_id) {
                     offer.offer_id
                 } else {
@@ -425,42 +506,20 @@ fn visit_manager_rows(
                     next_offer - 1
                 } as i64
                     + offer_offset;
-                let first = &offer.products[0];
-                let amount = if offer.products.len() == 1 {
-                    first.count.max(1)
-                } else {
-                    1
-                };
-                let stack = offer
-                    .products
-                    .iter()
-                    .find(|p| p.limited)
-                    .map(|p| p.limited_series_size)
-                    .unwrap_or(0);
                 // Added offers keep no client offer id: it could be one the hotel already uses.
                 let client_offer_id = if mode == ManagerMode::Add {
                     -1
                 } else {
                     offer.offer_id
                 };
-                let a = &mut stats.adjusted_values;
-                let t = &mut stats.truncated_values;
-                let columns = vec![
-                    ("item_ids", manager_str(&literal, a)),
-                    ("page_id", page_id(row.id).to_string()),
-                    ("catalog_name", manager_str(&fit(&offer.localization_id, 100, t), a)),
-                    ("cost_credits", offer.price_credits.to_string()),
-                    ("cost_points", offer.price_activity_points.to_string()),
-                    ("points_type", offer.activity_point_type.to_string()),
-                    ("amount", amount.to_string()),
-                    ("limited_stack", stack.to_string()),
-                    ("order_number", (position + 1).to_string()),
-                    ("offer_id", client_offer_id.to_string()),
-                    ("song_id", "0".into()),
-                    ("extradata", manager_str(&fit(&first.extra_param, 500, t), a)),
-                    ("have_offer", if offer.bundle_purchase_allowed { "1" } else { "0" }.into()),
-                    ("club_only", if offer.club_level > 0 { "1" } else { "0" }.into()),
-                ];
+                let columns = offer_columns(
+                    offer,
+                    &literal,
+                    page_id(row.id),
+                    position,
+                    client_offer_id,
+                    &mut stats,
+                );
                 emit(ManagerRow {
                     page: false,
                     kind,

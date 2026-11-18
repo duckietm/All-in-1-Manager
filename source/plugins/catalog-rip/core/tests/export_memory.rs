@@ -10,21 +10,33 @@
 //!
 //! catalog.json is ~40 MiB at this size (pretty-printed, byte for byte the built-in's): like
 //! every data file it is streamed to the sink in pieces of 1 MiB (`Sink::append`, the picked
-//! folder's `append`), so no step holds a whole file.
+//! folder's `append`), so no step holds a whole file. The packets are recorded (`packets/`, a
+//! file per page).
 //!
-//! A counting global allocator, so this file is its own test binary with a single test. Slow in
-//! a debug build: run it with
+//! `diff_memory_at_habbo_size` then stops a second rip after 2,000 pages and goes on with it
+//! from its recording ([`Job::resume`]), compared with the first rip (its 40 MiB catalog.json
+//! read in pieces into the rows the comparison needs) after the hotel changed some prices.
+//!
+//! A counting global allocator, so this file is its own test binary (its tests take turns).
+//! What the test itself keeps (the files of the earlier rips, read back through a `Source`) is
+//! not counted. Slow in a debug build: run it with
 //! `cargo test -p catalog-rip-core --release --test export_memory -- --ignored --nocapture`.
 
 mod support;
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use catalog_rip_core::job::{Fetch, FetchError, Job, JobIo, Phase, RipOptions, Sink, Step};
+use catalog_rip_core::job::{
+    Fetch, FetchError, Job, JobIo, Phase, RipOptions, Sink, Step, Summary,
+};
 use catalog_rip_core::output::items_base;
+use catalog_rip_core::source::{MemSource, Source};
 use catalog_rip_core::transport::{Closed, Transport};
 use catalog_rip_core::wire::{Packet, Writer};
 use catalog_rip_core::ItemsBaseRow;
@@ -38,6 +50,31 @@ struct Counting;
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 static PEAK: AtomicUsize = AtomicUsize::new(0);
 
+// Set while the test handles what it keeps (not counted: see `hidden`). (The lint does not see
+// the `const` initializer it asks for.)
+#[allow(clippy::missing_const_for_thread_local)]
+mod hidden_flag {
+    use std::cell::Cell;
+    thread_local!(pub static HIDDEN: Cell<bool> = const { Cell::new(false) });
+}
+use hidden_flag::HIDDEN;
+
+fn counted() -> bool {
+    !HIDDEN.with(Cell::get)
+}
+
+/// Runs `f` without counting what it allocates or frees: only for what the test keeps (made,
+/// grown and dropped in here), never for what the job sees.
+fn hidden<R>(f: impl FnOnce() -> R) -> R {
+    HIDDEN.with(|h| h.set(true));
+    let r = f();
+    HIDDEN.with(|h| h.set(false));
+    r
+}
+
+/// The tests take turns (one counter).
+static TURN: Mutex<()> = Mutex::new(());
+
 fn grew(bytes: usize) {
     let now = LIVE.fetch_add(bytes, Ordering::Relaxed) + bytes;
     PEAK.fetch_max(now, Ordering::Relaxed);
@@ -46,7 +83,7 @@ fn grew(bytes: usize) {
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc(layout) };
-        if !p.is_null() {
+        if !p.is_null() && counted() {
             grew(layout.size());
         }
         p
@@ -54,7 +91,7 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         let p = unsafe { System.alloc_zeroed(layout) };
-        if !p.is_null() {
+        if !p.is_null() && counted() {
             grew(layout.size());
         }
         p
@@ -62,10 +99,15 @@ unsafe impl GlobalAlloc for Counting {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         unsafe { System.dealloc(ptr, layout) };
-        LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        if counted() {
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+        }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        if !counted() {
+            return unsafe { System.realloc(ptr, layout, new_size) };
+        }
         // Counted as the worst case of a moving realloc: old and new block both live at once.
         grew(new_size);
         let p = unsafe { System.realloc(ptr, layout, new_size) };
@@ -165,7 +207,8 @@ fn index_packet() -> Packet {
     w.bool(false).string("NORMAL").packet()
 }
 
-fn page_packet(id: i32) -> Packet {
+/// A page; `raised`: every 50th offer costs a credit more (the hotel changed its prices).
+fn page_packet_priced(id: i32, raised: bool) -> Packet {
     let mut w = Writer::new(PAGE)
         .i32(id)
         .string("NORMAL")
@@ -191,7 +234,7 @@ fn page_packet(id: i32) -> Packet {
             .i32(offer)
             .string(&name)
             .bool(false)
-            .i32(3 + n % 23)
+            .i32(3 + n % 23 + i32::from(raised && n % 50 == 0))
             .i32(if n % 11 == 0 { 5 } else { 0 })
             .i32(if n % 11 == 0 { 5 } else { 0 })
             .bool(true);
@@ -368,25 +411,61 @@ impl Transport for Chunked {
     }
 }
 
-/// Counts what was written (a streamed file once, with its whole size).
+/// Counts what was written (a streamed file once, with its whole size), and keeps the files
+/// `keep` names (not counted: the test's, not the job's).
 #[derive(Default)]
 struct CountingSink {
     files: Vec<(String, usize)>,
+    keep: Option<fn(&str) -> bool>,
+    kept: BTreeMap<String, Vec<u8>>,
+}
+
+impl CountingSink {
+    fn keeping(keep: fn(&str) -> bool) -> CountingSink {
+        CountingSink {
+            keep: Some(keep),
+            ..CountingSink::default()
+        }
+    }
+
+    fn put(&mut self, path: &str, data: &[u8], replace: bool) {
+        if self.keep.is_some_and(|keep| keep(path)) {
+            hidden(|| {
+                let file = self.kept.entry(path.to_string()).or_default();
+                if replace {
+                    file.clear();
+                }
+                file.extend_from_slice(data);
+            });
+        }
+    }
+
+    /// The kept files as a source (moved, not counted).
+    fn into_source(mut self, into: &mut MemSource) {
+        hidden(|| {
+            into.files.append(&mut self.kept);
+            drop(self);
+        });
+    }
 }
 
 impl Sink for CountingSink {
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
-        if !path.contains("/images/") {
+        if !path.contains("/images/") && !path.contains("/packets/") {
             self.files.push((path.to_string(), data.len()));
         }
+        self.put(path, data, true);
         Ok(())
     }
 
     fn append(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
-        match self.files.last_mut() {
-            Some((last, len)) if last == path => *len += data.len(),
-            _ => self.files.push((path.to_string(), data.len())),
+        if !path.contains("/packets/") {
+            match self.files.last_mut() {
+                Some((last, len)) if last == path => *len += data.len(),
+                _ => self.files.push((path.to_string(), data.len())),
+            }
         }
+        self.put(path, data, false);
         Ok(())
     }
 }
@@ -400,16 +479,41 @@ struct StepStat {
     time: Duration,
 }
 
-#[test]
-#[ignore = "slow in a debug build; run with --release (see the module docs)"]
-fn habbo_sized_rip_fits_in_the_plugins_memory() {
+/// The Habbo-sized test hotel (`raised`: with the changed prices); `end_at`: the hotel
+/// connection ends at that page request.
+fn habbo(raised: bool, end_at: Option<usize>) -> SimHotel {
+    SimHotel {
+        index: Box::new(|mode| (mode == "NORMAL").then(index_packet)),
+        page: Box::new(move |id, mode| {
+            (mode == "NORMAL" && (1..=PAGES).contains(&id)).then(|| page_packet_priced(id, raised))
+        }),
+        end_at_page_request: end_at,
+        ..official_hotel()
+    }
+}
+
+fn habbo_options() -> RipOptions {
+    RipOptions {
+        delay_ms: 50,
+        timeout_ms: 2_000,
+        hotel_wait_ms: 60_000,
+        resend_every_ms: 5_000,
+        ..RipOptions::default()
+    }
+}
+
+/// Steps `job` to its end as the plugin does (budget 200 per tick, G-Earth closed and items_base
+/// dropped once the job is done with them), measuring every step: the end and the steps.
+fn measure(
+    mut job: Job,
+    hotel: SimHotel,
+    start_ms: u64,
+    sink: &mut CountingSink,
+    mut source: Option<&mut MemSource>,
+) -> (Step, Vec<StepStat>) {
     let base = live();
     let clock = SimClock::default();
-    let hotel = SimHotel {
-        index: Box::new(|mode| (mode == "NORMAL").then(index_packet)),
-        page: Box::new(|id, mode| (mode == "NORMAL" && (1..=PAGES).contains(&id)).then(|| page_packet(id))),
-        ..official_hotel()
-    };
+    clock.0.set(start_ms);
     let mut sim = Some(Chunked {
         sim: SimGEarth::new(clock.clone(), hotel),
         pending: Vec::new(),
@@ -418,18 +522,8 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
         let rows = items_rows();
         items_base(&rows)
     });
-    let items_heap = live() - base;
-    let mut job = Job::new(RipOptions {
-        delay_ms: 50,
-        timeout_ms: 2_000,
-        hotel_wait_ms: 60_000,
-        resend_every_ms: 5_000,
-        ..RipOptions::default()
-    });
     let mut fetch = BigFetch::default();
-    let mut sink = CountingSink::default();
     let mut steps: Vec<StepStat> = Vec::new();
-    let mut overall = 0;
     let end = loop {
         let files_before = sink.files.len();
         fetch.last = None;
@@ -441,18 +535,21 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
         let mut io = JobIo {
             transport,
             fetch: &mut fetch,
-            sink: &mut sink,
+            sink: &mut *sink,
             clock: &clock,
             items: items.as_ref(),
             existing: None,
+            source: match source.as_mut() {
+                Some(s) => Some(&mut **s as &mut dyn Source),
+                None => None,
+            },
         };
         let phase = job.progress().phase;
         reset_peak();
         let started = Instant::now();
         let step = job.step(&mut io, 200);
         let time = started.elapsed();
-        let step_peak = peak() - base;
-        overall = overall.max(step_peak);
+        let step_peak = peak().saturating_sub(base);
         let mut what: Vec<String> = sink.files[files_before..]
             .iter()
             .map(|(name, _)| name.rsplit('/').next().unwrap_or(name).to_string())
@@ -466,47 +563,96 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
         });
         job.take_log();
         job.take_events();
-        // As the plugin does: G-Earth is closed, and items_base dropped, once the job is done
-        // with them.
         if !job.uses_gearth() {
             sim = None;
         }
         if !job.uses_items_base() {
             items = None;
         }
-        match step {
-            Step::Done(summary) => break summary,
-            Step::Failed(failure) => panic!("{}", failure.message),
-            _ => {}
+        if matches!(step, Step::Done(_) | Step::Failed(_)) {
+            break step;
         }
         assert!(steps.len() < 2_000_000, "the job never ends");
     };
+    (end, steps)
+}
 
-    assert_eq!(end.pages, PAGES as usize);
-    assert_eq!(end.items, ((PAGES - ROOTS) * OFFERS_PER_PAGE) as usize);
-    assert!(end.furnidata_names >= FURNI as usize);
-    assert!(!end.missing_furni.is_empty());
-
-    println!("steps: {}", steps.len());
+/// Prints the steps that took the most memory and time, and checks every step's.
+fn report(name: &str, steps: &[StepStat]) {
+    let overall = steps.iter().map(|s| s.peak).max().unwrap_or(0);
     println!(
-        "items_base: {:.1} MiB; peak live heap of the rip (with items_base): {:.1} MiB",
-        mib(items_heap),
+        "{name}: {} steps; peak live heap {:.1} MiB",
+        steps.len(),
         mib(overall)
     );
-    for (name, len) in &sink.files {
-        println!("  {name}: {:.2} MiB", mib(*len));
-    }
     let mut by_peak: Vec<&StepStat> = steps.iter().collect();
     by_peak.sort_by_key(|s| std::cmp::Reverse(s.peak));
-    for s in by_peak.iter().take(12) {
+    for s in by_peak.iter().take(8) {
         println!("  peak {:.1} MiB in a {:?} step [{}] ({:?})", mib(s.peak), s.phase, s.what, s.time);
     }
     let mut by_time: Vec<&StepStat> = steps.iter().collect();
     by_time.sort_by_key(|s| std::cmp::Reverse(s.time));
-    for s in by_time.iter().take(8) {
+    for s in by_time.iter().take(5) {
         println!("  {:?} in a {:?} step [{}] (peak {:.1} MiB)", s.time, s.phase, s.what, mib(s.peak));
     }
+    // Every step, the data files' included, stays under 40 MiB.
+    for s in steps {
+        assert!(
+            s.peak <= 40 * 1024 * 1024,
+            "{name}: peak live heap {:.1} MiB > 40 MiB in a {:?} step [{}]",
+            mib(s.peak),
+            s.phase,
+            s.what
+        );
+    }
     let slowest = by_time[0];
+    assert!(
+        slowest.time < Duration::from_millis(800),
+        "{name}: slowest step {:?} ({:?})",
+        slowest.time,
+        slowest.phase
+    );
+}
+
+fn summary(step: Step) -> Summary {
+    match step {
+        Step::Done(summary) => summary,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+#[ignore = "slow in a debug build; run with --release (see the module docs)"]
+fn habbo_sized_rip_fits_in_the_plugins_memory() {
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let items_heap = {
+        let rows = items_rows();
+        let before = live();
+        let items = items_base(&rows);
+        let heap = live() - before;
+        drop(items);
+        heap
+    };
+    let mut sink = CountingSink::default();
+    let (end, steps) = measure(
+        Job::new(habbo_options()),
+        habbo(false, None),
+        0,
+        &mut sink,
+        None,
+    );
+    let end = summary(end);
+    assert_eq!(end.pages, PAGES as usize);
+    assert_eq!(end.items, ((PAGES - ROOTS) * OFFERS_PER_PAGE) as usize);
+    assert!(end.furnidata_names >= FURNI as usize);
+    assert!(!end.missing_furni.is_empty());
+    assert!(end.files.contains(&"catalog.json".to_string()));
+
+    println!("items_base: {:.1} MiB", mib(items_heap));
+    for (name, len) in &sink.files {
+        println!("  {name}: {:.2} MiB", mib(*len));
+    }
+    report("rip", &steps);
     // catalog.json is bigger than any step's heap may be: it is streamed.
     let catalog_json = sink
         .files
@@ -515,20 +661,84 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
         .map(|(_, len)| *len)
         .expect("catalog.json");
     assert!(catalog_json > 30 * 1024 * 1024, "catalog.json is {:.1} MiB", mib(catalog_json));
-    // Every step, the data files' included, stays under 40 MiB.
-    for s in &steps {
-        assert!(
-            s.peak <= 40 * 1024 * 1024,
-            "peak live heap {:.1} MiB > 40 MiB in a {:?} step [{}]",
-            mib(s.peak),
-            s.phase,
-            s.what
-        );
-    }
-    assert!(
-        slowest.time < Duration::from_millis(800),
-        "slowest step {:?} ({:?})",
-        slowest.time,
-        slowest.phase
+}
+
+/// A rip stopped after 2,000 pages goes on from its recording (copied into the new rip folder,
+/// the rest asked) and is compared with an earlier whole rip (its catalog.json streamed into the
+/// rows of the comparison) after the hotel changed some prices: every step within 40 MiB.
+#[test]
+#[ignore = "slow in a debug build; run with --release (see the module docs)"]
+fn diff_memory_at_habbo_size() {
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut source = hidden(MemSource::new);
+
+    // The earlier rip: its catalog.json is kept.
+    let mut sink = CountingSink::keeping(|path| path.ends_with("/catalog.json"));
+    let (end, _) = measure(
+        Job::new(habbo_options()),
+        habbo(false, None),
+        0,
+        &mut sink,
+        None,
     );
+    let earlier = summary(end).folder;
+    sink.into_source(&mut source);
+    let earlier_json = source.files[&format!("{earlier}/catalog.json")].len();
+    assert!(earlier_json > 30 * 1024 * 1024);
+
+    // A rip that stops after 2,000 pages: its packets are kept.
+    let mut sink = CountingSink::keeping(|path| path.contains("/packets/"));
+    let (end, steps) = measure(
+        Job::new(habbo_options()),
+        habbo(true, Some(2_001)),
+        3_600_000,
+        &mut sink,
+        None,
+    );
+    let Step::Failed(failure) = end else {
+        panic!("{end:?}")
+    };
+    let stopped = failure.partial.expect("partial").folder;
+    report("stopped rip", &steps);
+    sink.into_source(&mut source);
+
+    // It goes on, compared with the earlier rip.
+    let options = RipOptions {
+        diff_against: Some(earlier.clone()),
+        ..habbo_options()
+    };
+    let mut sink = CountingSink::default();
+    let (end, steps) = measure(
+        Job::resume(options, &stopped),
+        habbo(true, None),
+        7_200_000,
+        &mut sink,
+        Some(&mut source),
+    );
+    let end = summary(end);
+    for (name, len) in &sink.files {
+        println!("  {name}: {:.2} MiB", mib(*len));
+    }
+    report("resumed and compared", &steps);
+    assert!(end.complete);
+    assert_eq!(end.pages, PAGES as usize);
+    assert_eq!(end.resumed_pages, 2_000);
+    let changes = end.changes.expect("compared");
+    assert_eq!(changes.since.as_deref(), Some(earlier.as_str()));
+    // Every 50th offer that is a row of catalog_manager.sql (its products are in items_base).
+    assert!(changes.changed.len() > 100, "{}", changes.summary());
+    assert!(changes.added.is_empty() && changes.removed.is_empty(), "{}", changes.summary());
+    assert!(changes.changed.iter().all(|e| e.changed.keys().copied().eq(["cost_credits"])));
+    assert!(sink
+        .files
+        .iter()
+        .any(|(name, _)| name.ends_with("/catalog_manager_changes.sql")));
+    println!(
+        "earlier catalog.json: {:.1} MiB, read in {} pieces of at most {:.1} MiB",
+        mib(earlier_json),
+        source.reads,
+        mib(source.largest_read as usize)
+    );
+    assert!(source.largest_read <= 4 * 1024 * 1024);
+    hidden(|| drop(source));
 }

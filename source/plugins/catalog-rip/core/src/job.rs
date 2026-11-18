@@ -11,9 +11,17 @@
 //!
 //! Output: `<hotel>_<YYYY-mm-dd_HH-MM-SS>/` (UTC) with catalog.json, catalog_pages.sql,
 //! catalog_items.sql (+ the `_bc` pair), catalog_manager.sql, missing_furni.json,
-//! missing_furnidata.json, catalog_extras.json, README.txt, `images/`, `images/icons/`,
-//! `images/frontpage/`, written through the sink with paths that start with that folder name.
-//! Not in this version: `packets/`, catalog_changes.json, catalog_manager_changes.sql.
+//! missing_furnidata.json, catalog_changes.json and catalog_manager_changes.sql (compared with an
+//! earlier rip), catalog_extras.json, README.txt, `packets/` (the recorded packets), `images/`,
+//! `images/icons/`, `images/frontpage/`, written through the sink with paths that start with that
+//! folder name.
+//!
+//! Besides a rip ([`Job::new`]): [`Job::resume`] goes on with a stopped rip from its recorded
+//! packets, [`Job::reexport`] writes a recorded rip again without the hotel, and
+//! [`Job::import_log`] makes a rip from a G-Earth Packet Logger export. They read through
+//! [`JobIo::source`], a piece per call, step by step. Unlike the built-in, which wrote a resumed
+//! or re-exported rip into its own folder, they write a new rip folder (the plugin may not
+//! rewrite files it did not write) and carry the recording over into its `packets/`.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
@@ -21,10 +29,12 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::conn::ConnectionInfo;
+use crate::diff::{self, CatalogDiff, Changes, Digest, OldRows, PreviousRip};
 use crate::export::{ItemsBase, RippedCatalog, SqlStats};
 use crate::extras;
 use crate::furnidata::{self, Furnidata};
 use crate::gearth::{self, ExtensionInfo, GEarth, GEarthEvent};
+use crate::gearth_log::{self, LogScan};
 use crate::images::{self, ImageJob, ImageStats};
 use crate::learn::Learner;
 use crate::manager::{ExistingCatalogue, ManagerMode, ManagerStats};
@@ -34,7 +44,9 @@ use crate::output::{self, n0, DataExport};
 use crate::packets::{self, CatalogIndex, CatalogPage, Headers};
 use crate::productdata::{self, Productdata};
 use crate::profiles::{self, builtin_profiles, DetectedBy, HeaderMap, HotelKind, HotelProfile};
+use crate::recording::{self, Loader, Recorded, Recorder, SessionInfo};
 use crate::site_config;
+use crate::source::Source;
 use crate::time::Timestamp;
 use crate::transport::Transport;
 use crate::wire::Packet;
@@ -62,7 +74,9 @@ pub trait Fetch {
 /// Where the output goes. `path` is relative to the folder the rips are made in and starts with
 /// the rip folder (`habbo.nl_2026-11-15_12-00-00/images/icons/icon_3.png`), `/`-separated.
 pub trait Sink {
-    /// Creates the file `path` with `data` (an image: each file is written once).
+    /// Creates the file `path` with `data` (an image: each file is written once). In `packets/`
+    /// a file is written again (session.json as the rip goes on, a packet the hotel sent
+    /// twice): the call replaces the file this sink wrote.
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String>;
     /// Appends `data` to the file `path`, creating it on the first call (the data files are
     /// streamed through it in pieces, so none is held whole in memory).
@@ -91,6 +105,10 @@ pub struct JobIo<'a> {
     /// The page and offer ids already in the hotel's catalogue, for
     /// [`ManagerMode::ReplaceRipped`] and [`ManagerMode::Add`]. `None`: not known.
     pub existing: Option<&'a ExistingCatalogue>,
+    /// What the job may read (the folder the rips are made in): the recording of
+    /// [`Job::resume`] / [`Job::reexport`], the log of [`Job::import_log`], the earlier rip to
+    /// compare with. `None`: nothing (then there is no comparison).
+    pub source: Option<&'a mut dyn Source>,
 }
 
 // ---------------------------------------------------------------- options
@@ -114,9 +132,9 @@ impl Default for ProfileChoice {
 }
 
 /// The ripper's settings (every field has a default): the built-in's, without what the plugin
-/// does itself (waiting for G-Earth to start, the ports, the output folder) and without what
-/// this version does not do (recorded packets, resuming, index-only, branches, comparing with an
-/// earlier rip).
+/// does itself (waiting for G-Earth to start, the ports, the output folder), without what is a
+/// kind of job here (`resume_from`: [`Job::resume`]) and without what this version does not do
+/// (index-only, branches).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RipOptions {
@@ -179,6 +197,17 @@ pub struct RipOptions {
     /// [`DEFAULT_GENERATOR`].
     #[serde(skip)]
     pub generator: String,
+    /// Keep the raw packets in `<folder>/packets/` (needed to resume and re-export). A resumed
+    /// rip always records.
+    pub record_packets: bool,
+    /// Compare with the newest earlier rip of the same hotel in the folder the rips are made in
+    /// (one with a catalog.json, through [`JobIo::source`]): catalog_changes.json and
+    /// catalog_manager_changes.sql.
+    pub diff_with_previous: bool,
+    /// Compare with this earlier rip folder instead (a [`Source`] path).
+    pub diff_against: Option<String>,
+    /// The changes file also deletes the pages and offers the hotel removed.
+    pub diff_delete_removed: bool,
 }
 
 /// The maker named in the file headers when the options name none.
@@ -212,7 +241,37 @@ impl Default for RipOptions {
             handshake_timeout_ms: 3_000,
             readme_crlf: true,
             generator: DEFAULT_GENERATOR.into(),
+            record_packets: true,
+            diff_with_previous: true,
+            diff_against: None,
+            diff_delete_removed: false,
         }
+    }
+}
+
+/// A G-Earth Packet Logger export to rip from ([`Job::import_log`]).
+#[derive(Debug, Clone, Default)]
+pub struct ImportLog {
+    /// The .txt file (a [`Source`] path).
+    pub path: String,
+    /// The hotel's game host (the output folder's name); empty: "gearth-log".
+    pub host: String,
+    /// The hotel's profile, for its ids and image URLs, if known.
+    pub profile: Option<HotelProfile>,
+}
+
+/// The pieces a Packet Logger export and an earlier catalog.json are read in.
+const READ_PIECE: u32 = 1024 * 1024;
+/// The most a step reads or writes of them, whatever its budget: pieces, recorded files.
+const PIECES_PER_STEP: usize = 4;
+const FILES_PER_STEP: usize = 200;
+
+/// Goes on while the step has time, `max` times at most.
+fn within(clock: &dyn Clock, end: u64, max: usize) -> impl FnMut() -> bool + '_ {
+    let mut n = 1;
+    move || {
+        n += 1;
+        n <= max && clock.now_ms() < end
     }
 }
 
@@ -252,6 +311,8 @@ impl Timing {
 /// Where the job is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum Phase {
+    /// Reading a recording or a Packet Logger export.
+    Load,
     /// Answering G-Earth's InfoRequest.
     Connect,
     /// Waiting for G-Earth to accept the extension and for the hotel connection.
@@ -324,6 +385,10 @@ pub struct Summary {
     pub missing_furni: Vec<MissingFurni>,
     /// The user cancelled (during the export or the images: the rip itself was whole).
     pub cancelled: bool,
+    /// Pages that came from the recording of a stopped rip (not asked again).
+    pub resumed_pages: usize,
+    /// What changed since the earlier rip it was compared with.
+    pub changes: Option<CatalogDiff>,
 }
 
 /// Why the job stopped early.
@@ -461,9 +526,25 @@ enum Poll<T> {
     Pending,
 }
 
+/// Comparing with an earlier rip.
+enum DiffStage {
+    Start,
+    Find(PreviousRip),
+    Read {
+        earlier: String,
+        offset: u64,
+        digest: Box<Digest>,
+    },
+    Compare {
+        earlier: String,
+        rows: OldRows,
+    },
+}
+
 enum ExportStage {
     Furnidata,
     Productdata,
+    Diff(DiffStage),
     /// The data files, one per step.
     Data,
     SiteConfig {
@@ -473,8 +554,25 @@ enum ExportStage {
     },
 }
 
+/// What kind of job.
+#[derive(Debug, Clone)]
+enum Begin {
+    Rip,
+    Resume(String),
+    Reexport(String),
+    Import(Box<ImportLog>),
+}
+
 enum State {
     Start,
+    /// Reading a recording ([`Job::resume`], [`Job::reexport`]).
+    Load(Box<Loader>),
+    /// Reading a Packet Logger export.
+    Import(Box<LogScan>),
+    /// Writing the recording's files into the new rip folder's `packets/`.
+    Copy {
+        next: usize,
+    },
     Connect {
         deadline: Option<u64>,
     },
@@ -519,6 +617,8 @@ struct Out {
     productdata_names: usize,
     /// The data files, one per step.
     data: DataExport,
+    /// What changed since an earlier rip (made before the data files).
+    changes: Option<Changes>,
     files: Vec<String>,
     catalog_url: String,
     icon_url: String,
@@ -536,6 +636,7 @@ struct Out {
 pub struct Job {
     options: RipOptions,
     timing: Timing,
+    begin: Begin,
     state: State,
     cancel: bool,
     finished: Option<Step>,
@@ -587,6 +688,15 @@ pub struct Job {
     extra_answers: BTreeMap<String, Vec<u8>>,
     aborted: Option<Abort>,
     out: Option<Out>,
+
+    /// The packets of this rip (`packets/`).
+    recorder: Recorder,
+    record_warned: bool,
+    /// session.json as it is now.
+    session: Option<SessionInfo>,
+    /// The recording being carried over (resume, re-export, import).
+    recorded: Option<Recorded>,
+    resumed_pages: usize,
 }
 
 fn progress_label(text: &str) -> String {
@@ -599,10 +709,37 @@ fn secs(ms: u64) -> u64 {
 
 impl Job {
     pub fn new(options: RipOptions) -> Job {
+        Job::with(options, Begin::Rip)
+    }
+
+    /// Goes on with a stopped rip: `folder` (a [`Source`] path) is its rip folder, with the
+    /// `packets/` the built-in ripper or this one recorded. Only what the recording lacks is
+    /// asked (G-Earth must be connected to the same hotel); the whole rip is written into a new
+    /// rip folder, with the recording carried over and completed.
+    pub fn resume(options: RipOptions, folder: &str) -> Job {
+        Job::with(options, Begin::Resume(folder.to_string()))
+    }
+
+    /// Writes a recorded rip again without the hotel (the built-in's `reexport`): with other
+    /// settings (Manager export mode, images, furnidata) or a newer items_base, into a new rip
+    /// folder (with the recording).
+    pub fn reexport(options: RipOptions, folder: &str) -> Job {
+        Job::with(options, Begin::Reexport(folder.to_string()))
+    }
+
+    /// A rip from a G-Earth Packet Logger export (the built-in's `import_log`): the catalogue it
+    /// holds is written as a rip of `log.host` (recorded packets, every file); only the pages
+    /// that were opened while logging are in it.
+    pub fn import_log(options: RipOptions, log: ImportLog) -> Job {
+        Job::with(options, Begin::Import(Box::new(log)))
+    }
+
+    fn with(options: RipOptions, begin: Begin) -> Job {
         let timing = Timing::of(&options);
         Job {
             options,
             timing,
+            begin,
             state: State::Start,
             cancel: false,
             finished: None,
@@ -648,6 +785,11 @@ impl Job {
             extra_answers: BTreeMap::new(),
             aborted: None,
             out: None,
+            recorder: Recorder::default(),
+            record_warned: false,
+            session: None,
+            recorded: None,
+            resumed_pages: 0,
         }
     }
 
@@ -683,9 +825,13 @@ impl Job {
     /// Whether the job still needs the G-Earth connection. False once it is done with G-Earth
     /// (after the requests, as the built-in drops its session before writing the output), after
     /// any G-Earth error, and once the job ended: then the plugin closes the connection, so
-    /// G-Earth stops holding game packets for the extension.
+    /// G-Earth stops holding game packets for the extension. True while a resumed rip reads its
+    /// recording (it connects next); never for [`Job::reexport`] and [`Job::import_log`], which
+    /// need no G-Earth.
     pub fn uses_gearth(&self) -> bool {
         self.gearth.is_some()
+            || (matches!(self.state, State::Start | State::Load(_))
+                && matches!(self.begin, Begin::Rip | Begin::Resume(_)))
     }
 
     /// Whether the job still reads [`JobIo::items`]. False once the data files that use it are
@@ -746,6 +892,9 @@ impl Job {
         loop {
             let ctl = match self.state {
                 State::Start => self.start(),
+                State::Load(_) => self.load(io, end),
+                State::Import(_) => self.import(io, end),
+                State::Copy { .. } => self.copy(io, end),
                 State::Connect { .. } => self.connect(io, end),
                 State::WaitHotel { .. } => self.wait_hotel(io, end),
                 State::Learn { .. } => self.learn(io, end),
@@ -805,10 +954,19 @@ impl Job {
     fn on_cancel(&mut self, io: &mut JobIo) -> Option<Ctl> {
         match self.state {
             State::Start
+            | State::Load(_)
+            | State::Import(_)
             | State::Connect { .. }
             | State::WaitHotel { .. }
             | State::Learn { .. } => Some(Ctl::End(Step::Failed(Abort::cancelled().failure()))),
-            State::Index { .. } | State::Pages { .. } | State::Extras { .. } => {
+            // A re-export or an import: nothing was written but packets/.
+            State::Copy { .. } if self.gearth.is_none() => {
+                Some(Ctl::End(Step::Failed(Abort::cancelled().failure())))
+            }
+            State::Copy { .. }
+            | State::Index { .. }
+            | State::Pages { .. }
+            | State::Extras { .. } => {
                 if self.aborted.is_none() {
                     self.aborted = Some(Abort::cancelled());
                 }
@@ -868,19 +1026,308 @@ impl Job {
     // ------------------------------------------------------------ connecting
 
     fn start(&mut self) -> Ctl {
-        if !self.options.normal && !self.options.builders_club {
-            return Ctl::End(Step::Failed(
-                Abort::new(
-                    "Nothing to rip: turn on the normal and/or the Builders Club catalogue.",
-                )
-                .failure(),
-            ));
+        match self.begin.clone() {
+            Begin::Rip | Begin::Resume(_) => {
+                if !self.options.normal && !self.options.builders_club {
+                    return Ctl::End(Step::Failed(
+                        Abort::new(
+                            "Nothing to rip: turn on the normal and/or the Builders Club catalogue.",
+                        )
+                        .failure(),
+                    ));
+                }
+            }
+            Begin::Reexport(_) | Begin::Import(_) => {}
         }
+        match self.begin.clone() {
+            Begin::Rip => self.start_gearth(),
+            Begin::Resume(folder) | Begin::Reexport(folder) => {
+                self.set_phase(Phase::Load);
+                self.state = State::Load(Box::new(Loader::new(&folder)));
+                Ctl::Continue
+            }
+            Begin::Import(log) => {
+                self.set_phase(Phase::Load);
+                let known = log
+                    .profile
+                    .as_ref()
+                    .map(|p| p.headers.clone())
+                    .unwrap_or_default();
+                self.state = State::Import(Box::new(LogScan::new(&log.path, known, READ_PIECE)));
+                Ctl::Continue
+            }
+        }
+    }
+
+    fn start_gearth(&mut self) -> Ctl {
         self.log_instructions();
         self.gearth = Some(GEarth::start(&self.options.extension));
         self.set_phase(Phase::Connect);
         self.state = State::Connect { deadline: None };
         Ctl::Continue
+    }
+
+    /// A failure that names nothing to read from.
+    fn no_source() -> Ctl {
+        Ctl::End(Step::Failed(
+            Abort::new("There is no folder to read the earlier rip or the log from.").failure(),
+        ))
+    }
+
+    // ------------------------------------------------------------ recordings
+
+    /// Reads the recording of a resume or a re-export.
+    fn load(&mut self, io: &mut JobIo, end: u64) -> Ctl {
+        let clock = io.clock;
+        let Some(source) = io.source.as_deref_mut() else {
+            return Self::no_source();
+        };
+        let State::Load(loader) = &mut self.state else {
+            unreachable!()
+        };
+        let result = loader.step(source, &mut within(clock, end, FILES_PER_STEP));
+        let (done, total) = loader.progress();
+        self.progress.done = done as u64;
+        self.progress.total = total as u64;
+        match result {
+            Err(e) => Ctl::End(Step::Failed(Abort::new(e).failure())),
+            Ok(None) => Ctl::Yield,
+            Ok(Some(recorded)) => match self.begin {
+                Begin::Resume(_) => {
+                    self.recorded = Some(recorded);
+                    self.start_gearth()
+                }
+                _ => {
+                    self.say(format!(
+                        "Writing {} again from its recorded packets ({} catalogues, {} pages).",
+                        recorded.folder,
+                        recorded
+                            .session
+                            .modes
+                            .iter()
+                            .filter(|m| recorded.indexes.contains_key(*m))
+                            .count(),
+                        n0(recorded.pages.len())
+                    ));
+                    self.offline(recorded, io)
+                }
+            },
+        }
+    }
+
+    /// Reads the Packet Logger export of an import.
+    fn import(&mut self, io: &mut JobIo, end: u64) -> Ctl {
+        let clock = io.clock;
+        let Some(source) = io.source.as_deref_mut() else {
+            return Self::no_source();
+        };
+        let State::Import(scan) = &mut self.state else {
+            unreachable!()
+        };
+        let result = scan.step(source, &mut within(clock, end, PIECES_PER_STEP));
+        let packets = scan.packets;
+        self.progress.done = scan.progress().0;
+        let found = match result {
+            Err(e) => return Ctl::End(Step::Failed(Abort::new(e).failure())),
+            Ok(None) => return Ctl::Yield,
+            Ok(Some(found)) => found,
+        };
+        let Begin::Import(log) = self.begin.clone() else {
+            unreachable!()
+        };
+        let Some(headers) = found.headers else {
+            return Ctl::End(Step::Failed(Abort::new("no ids").failure()));
+        };
+        self.say(format!(
+            "{}: {} packets, {} catalogue indexes and {} pages.",
+            log.path,
+            packets,
+            found.indexes.len(),
+            found.pages.len()
+        ));
+        let host = if log.host.trim().is_empty() {
+            "gearth-log".to_string()
+        } else {
+            log.host.trim().to_string()
+        };
+        let profile = log.profile.unwrap_or_else(|| HotelProfile {
+            name: format!("{host} (G-Earth log)"),
+            kind: HotelKind::FlashRetro,
+            hosts: Vec::new(),
+            revisions: Vec::new(),
+            headers: HeaderMap::new(headers.get_index, headers.get_page, headers.index, headers.page),
+            catalog_url: None,
+            icon_url: None,
+            furnidata_url: None,
+            productdata_url: None,
+            site_config_url: None,
+            extra_headers: Default::default(),
+            builders_club: true,
+            notes: String::new(),
+            builtin: false,
+            file: None,
+        });
+        let session = SessionInfo {
+            format: recording::FORMAT,
+            host: host.clone(),
+            port: 0,
+            hotel_version: String::new(),
+            client_type: "G-Earth log".into(),
+            profile,
+            headers: Some(headers),
+            modes: gearth_log::mode_order(found.indexes.keys().cloned()),
+            failed: Default::default(),
+            complete: false,
+            ripped_at: Timestamp::new(io.clock.unix_secs()).date_time(),
+        };
+        let folder = self.new_folder(&host, io);
+        let mut recorded = Recorded::new(&folder, session);
+        for (name, body) in gearth_log::recorded_files(&found) {
+            if let Err(e) = recorded.add(&name, body) {
+                return Ctl::End(Step::Failed(Abort::new(e).failure()));
+            }
+        }
+        drop(found);
+        self.say(format!(
+            "Writing {folder} again from its recorded packets ({} catalogues, {} pages).",
+            recorded
+                .session
+                .modes
+                .iter()
+                .filter(|m| recorded.indexes.contains_key(*m))
+                .count(),
+            n0(recorded.pages.len())
+        ));
+        self.offline(recorded, io)
+    }
+
+    /// `<hotel>_<stamp>` for a new rip folder of `host`.
+    fn new_folder(&self, host: &str, io: &JobIo) -> String {
+        format!(
+            "{}_{}",
+            hotel_name(host),
+            Timestamp::new(io.clock.unix_secs()).folder_stamp()
+        )
+    }
+
+    /// A recording to write out without the hotel (re-export, import): it is carried over into
+    /// a new rip folder, then written as a rip.
+    fn offline(&mut self, recorded: Recorded, io: &mut JobIo) -> Ctl {
+        if !recorded.unreadable.is_empty() {
+            let text = format!(
+                "{} recorded pages cannot be read and are left out.",
+                recorded.unreadable.len()
+            );
+            self.warn(&text);
+        }
+        let session = recorded.session.clone();
+        self.folder = match self.begin {
+            Begin::Import(_) => recorded.folder.clone(),
+            _ => self.new_folder(&session.host, io),
+        };
+        self.connection = Some(ConnectionInfo {
+            host: session.host.clone(),
+            port: session.port,
+            hotel_version: session.hotel_version.clone(),
+            client_identifier: String::new(),
+            client_type: session.client_type.clone(),
+            packets: Vec::new(),
+        });
+        self.profile = Some(session.profile.clone());
+        self.headers = session.headers;
+        self.delay = self.options.delay_ms;
+        self.recorder = Recorder::new(&self.folder, true);
+        let written = match self.begin {
+            Begin::Import(_) => self.recorder.session(&mut *io.sink, &session),
+            _ => self.recorder.session_bytes(&mut *io.sink, &recorded.session_raw),
+        };
+        self.record_result(written);
+        self.session = Some(session);
+        self.recorded = Some(recorded);
+        self.state = State::Copy { next: 0 };
+        Ctl::Continue
+    }
+
+    /// The recording is carried over: the output, as a re-export writes it.
+    fn offline_output(&mut self, io: &mut JobIo) -> Ctl {
+        let Some(recorded) = self.recorded.take() else {
+            unreachable!()
+        };
+        let session = recorded.session;
+        self.extra_answers = recorded.extras;
+        let catalog = output::assemble(
+            &output::Source {
+                host: &session.host,
+                hotel_version: &session.hotel_version,
+                client_type: &session.client_type,
+                ripped_at: &session.ripped_at,
+                generator: &self.options.generator,
+            },
+            &session.modes,
+            recorded.indexes,
+            recorded.pages,
+            &session.failed,
+            session.complete,
+        );
+        self.begin_output(catalog, io)
+    }
+
+    /// Carries the recording over into this rip's `packets/`, a few files per step. A resumed
+    /// rip keeps answering G-Earth meanwhile.
+    fn copy(&mut self, io: &mut JobIo, end: u64) -> Ctl {
+        if self.gearth.is_some() && !self.pumped {
+            if let Err(abort) = self.pump_handle(io, 0) {
+                self.aborted = Some(abort);
+                return self.after_requests(io);
+            }
+        }
+        loop {
+            let State::Copy { next } = &mut self.state else {
+                unreachable!()
+            };
+            let n = *next;
+            let recorded = self.recorded.as_mut().expect("recording");
+            let Some((name, body)) = recorded.files.get_mut(n) else {
+                recorded.files = Vec::new();
+                if self.gearth.is_some() {
+                    self.recorded = None;
+                    self.set_phase(Phase::Index);
+                    self.state = State::Index { i: 0 };
+                    return Ctl::Continue;
+                }
+                return self.offline_output(io);
+            };
+            *next += 1;
+            let (name, body) = (std::mem::take(name), std::mem::take(body));
+            let written = self.recorder.copy(&mut *io.sink, &name, &body);
+            self.record_result(written);
+            if io.clock.now_ms() >= end || (n + 1) % FILES_PER_STEP == 0 {
+                return Ctl::Yield;
+            }
+        }
+    }
+
+    /// A packet file that could not be written: said once (the rip goes on without it, as the
+    /// built-in's recorder did silently).
+    fn record_result<T>(&mut self, result: Result<T, String>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(e) => {
+                if !self.record_warned {
+                    self.record_warned = true;
+                    self.warn(&format!("the packets could not be recorded ({e})."));
+                }
+                None
+            }
+        }
+    }
+
+    /// Writes session.json as it is now.
+    fn write_session(&mut self, sink: &mut dyn Sink) {
+        if let Some(session) = &self.session {
+            let written = self.recorder.session(sink, session);
+            self.record_result(written);
+        }
     }
 
     fn log_instructions(&mut self) {
@@ -1063,8 +1510,38 @@ impl Job {
             "UNITY" => self.warn("the Unity client is not tested; trying with the Flash structures."),
             _ => {}
         }
+        if let Some(recorded) = &self.recorded {
+            if !recorded.session.host.eq_ignore_ascii_case(&connection.host) {
+                return Ctl::End(Step::Failed(
+                    Abort::new(format!(
+                        "{} was ripped from {}, but G-Earth is connected to {}: connect to the same hotel to go on with it.",
+                        recorded.folder, recorded.session.host, connection.host
+                    ))
+                    .failure(),
+                ));
+            }
+        }
         let choice = std::mem::take(&mut self.options.profile);
-        let profile = self.choose_profile(choice, &connection);
+        let profile = match (&self.recorded, choice) {
+            // Go on with what worked: the recorded profile and ids.
+            (Some(recorded), ProfileChoice::Detect(_)) => {
+                let mut profile = recorded.session.profile.clone();
+                if let Some(h) = recorded.session.headers {
+                    profile.headers = HeaderMap::new(h.get_index, h.get_page, h.index, h.page);
+                }
+                self.say(format!(
+                    "Hotel profile: {} (from the stopped rip).",
+                    profile.name
+                ));
+                self.emit(RipEvent::ProfileChosen {
+                    name: profile.name.clone(),
+                    kind: profile.kind,
+                    detected_by: None,
+                });
+                profile
+            }
+            (_, choice) => self.choose_profile(choice, &connection),
+        };
         let (partial, sources) = packets::resolve_partial(
             &connection.packets,
             &profile.headers,
@@ -1343,13 +1820,68 @@ impl Job {
             return Ctl::End(Step::Failed(self.gearth_lost(e).failure()));
         }
         let connection = self.connection.as_ref().expect("connection");
-        self.folder = format!(
-            "{}_{}",
-            hotel_name(&connection.host),
-            Timestamp::new(io.clock.unix_secs()).folder_stamp()
-        );
+        self.folder = self.new_folder(&connection.host, io);
+        // The packets are recorded as they come.
+        let resumed = self.recorded.is_some();
+        self.recorder = Recorder::new(&self.folder, self.options.record_packets || resumed);
+        let profile = self.profile.as_ref().expect("profile");
+        self.session = Some(SessionInfo {
+            format: recording::FORMAT,
+            host: connection.host.clone(),
+            port: connection.port,
+            hotel_version: connection.hotel_version.clone(),
+            client_type: connection.client_type.clone(),
+            profile: HotelProfile {
+                builtin: false,
+                file: None,
+                ..profile.clone()
+            },
+            headers: Some(headers),
+            modes: Vec::new(),
+            failed: BTreeMap::new(),
+            complete: false,
+            ripped_at: Timestamp::new(io.clock.unix_secs()).date_time(),
+        });
+        self.write_session(&mut *io.sink);
         self.rip_started = io.clock.now_ms();
         self.set_phase(Phase::Index);
+        if let Some(recorded) = self.recorded.as_mut() {
+            for mode in &self.mode_list {
+                if let Some(index) = recorded.indexes.remove(mode) {
+                    self.indexes.insert(mode.clone(), index);
+                }
+            }
+            for (key, page) in recorded.pages.drain() {
+                if self.mode_list.contains(&key.0) {
+                    self.pages.insert(key, page);
+                    self.resumed_pages += 1;
+                }
+            }
+            self.extra_answers = std::mem::take(&mut recorded.extras);
+            // What the recording has was answered: a request kind it holds is not one the hotel
+            // never answered (the built-in would wait for a first answer of the next catalogue's
+            // index the whole hotel wait, then stop).
+            if !self.indexes.is_empty() {
+                self.answered.insert(headers.get_index);
+            }
+            if self.resumed_pages > 0 {
+                self.answered.insert(headers.get_page);
+            }
+            let folder = recorded.folder.clone();
+            let indexes = self.indexes.len();
+            self.say(format!(
+                "Going on with {folder}: {} catalogue indexes and {} pages are already there; the rest is asked.",
+                indexes,
+                n0(self.resumed_pages)
+            ));
+            self.emit(RipEvent::Resumed {
+                folder: PathBuf::from(folder),
+                indexes,
+                pages: self.resumed_pages,
+            });
+            self.state = State::Copy { next: 0 };
+            return Ctl::Continue;
+        }
         self.state = State::Index { i: 0 };
         Ctl::Continue
     }
@@ -1368,7 +1900,7 @@ impl Job {
     }
 
     /// What G-Earth reported, while asking the hotel.
-    fn handle(&mut self, event: GEarthEvent) -> Result<(), Abort> {
+    fn handle(&mut self, sink: &mut dyn Sink, event: GEarthEvent) -> Result<(), Abort> {
         let headers = self.headers.expect("headers");
         match event {
             GEarthEvent::Packet(p) if !p.to_server && self.raw_watch.contains(&p.packet.header) => {
@@ -1383,6 +1915,8 @@ impl Job {
                         let mode = index.mode.to_ascii_uppercase();
                         // An answer to the client's own request before any of ours: no mode.
                         if !mode.is_empty() {
+                            let written = self.recorder.index(sink, &mode, &p.packet.body);
+                            self.record_result(written);
                             self.indexes.insert(mode, index);
                         }
                     }
@@ -1397,6 +1931,9 @@ impl Job {
                         }
                         let mode = page.mode.to_ascii_uppercase();
                         if !mode.is_empty() {
+                            let written =
+                                self.recorder.page(sink, &mode, page.page_id, &p.packet.body, false);
+                            self.record_result(written);
                             self.pages.insert((mode, page.page_id), page);
                         }
                     }
@@ -1406,6 +1943,11 @@ impl Job {
                                 mode = self.page_mode.clone();
                             }
                             let mode = mode.to_ascii_uppercase();
+                            // Keep the raw packet so the layout can be worked out from real data.
+                            let written = self.recorder.page(sink, &mode, id, &p.packet.body, true);
+                            if let Some(Some(file)) = self.record_result(written) {
+                                self.say(format!("  raw page saved: {file}"));
+                            }
                             self.unreadable.insert((mode, id), format!("{e:#}"));
                         } else {
                             self.warn(&format!("a catalogue page could not be read: {e:#}"));
@@ -1429,7 +1971,7 @@ impl Job {
     fn pump_handle(&mut self, io: &mut JobIo, ms: u64) -> Result<bool, Abort> {
         let (events, progressed) = self.pump(io, ms)?;
         for event in events {
-            self.handle(event)?;
+            self.handle(&mut *io.sink, event)?;
         }
         Ok(progressed)
     }
@@ -1715,7 +2257,11 @@ impl Job {
     }
 
     /// After the indexes: the page list (depth first, mode by mode).
-    fn begin_pages(&mut self) -> Ctl {
+    fn begin_pages(&mut self, sink: &mut dyn Sink) -> Ctl {
+        if let Some(session) = self.session.as_mut() {
+            session.modes = self.accepted.clone();
+        }
+        self.write_session(sink);
         let mut jobs = Vec::new();
         for (m, mode) in self.accepted.iter().enumerate() {
             let mut seen = HashSet::new();
@@ -1871,6 +2417,8 @@ impl Job {
         match result {
             Ok(true) => {
                 let body = self.raw.remove(&answer_id).unwrap_or_default();
+                let written = self.recorder.extra(&mut *io.sink, extra.key, &body);
+                self.record_result(written);
                 self.say(format!("{}: read.", extra.answer));
                 self.extra_answers.insert(extra.key.to_string(), body);
             }
@@ -1895,7 +2443,7 @@ impl Job {
                         Abort::new("no catalogue index was received").failure(),
                     ))
                 } else {
-                    self.begin_pages()
+                    self.begin_pages(&mut *io.sink)
                 };
             }
         }
@@ -1911,8 +2459,15 @@ impl Job {
         let now = io.clock.now_ms();
         self.elapsed_ms = now.saturating_sub(self.rip_started);
         let whole = self.aborted.is_none();
-        let connection = self.connection.as_ref().expect("connection");
         let ripped_at = Timestamp::new(io.clock.unix_secs()).date_time();
+        if let Some(session) = self.session.as_mut() {
+            session.modes = self.accepted.clone();
+            session.failed = self.failed.clone();
+            session.complete = whole;
+            session.ripped_at = ripped_at.clone();
+        }
+        self.write_session(&mut *io.sink);
+        let connection = self.connection.as_ref().expect("connection");
         let catalog = output::assemble(
             &output::Source {
                 host: &connection.host,
@@ -1927,6 +2482,11 @@ impl Job {
             &self.failed,
             whole,
         );
+        self.begin_output(catalog, io)
+    }
+
+    /// The catalogue is read: on to the output (the built-in's `Output::write`).
+    fn begin_output(&mut self, catalog: RippedCatalog, io: &mut JobIo) -> Ctl {
         let (database_note, items_line) = match io.items {
             None => ("No items_base was given: item_ids are subqueries on items_base, resolved when the SQL is imported.".to_string(), None),
             Some(_) => ("item_ids were matched against the hotel's items_base; products it lacked are looked up again on import (subqueries).".to_string(), Some("Using the hotel's items_base.")),
@@ -1943,6 +2503,7 @@ impl Job {
             furnidata_names: None,
             productdata_names: 0,
             data: DataExport::new(),
+            changes: None,
             files: Vec::new(),
             catalog_url: String::new(),
             icon_url: String::new(),
@@ -2052,7 +2613,7 @@ impl Job {
             }
             ExportStage::Productdata => {
                 if !self.options.use_furnidata {
-                    self.state = State::Export(ExportStage::Data);
+                    self.state = State::Export(ExportStage::Diff(DiffStage::Start));
                     return Ctl::Continue;
                 }
                 let profile_url = self
@@ -2064,13 +2625,13 @@ impl Job {
                     &profile_url,
                     productdata::official_url,
                 ) else {
-                    self.state = State::Export(ExportStage::Data);
+                    self.state = State::Export(ExportStage::Diff(DiffStage::Start));
                     return Ctl::Continue;
                 };
                 if !can_fetch {
                     return Ctl::Yield;
                 }
-                self.state = State::Export(ExportStage::Data);
+                self.state = State::Export(ExportStage::Diff(DiffStage::Start));
                 self.fetched = true;
                 let loaded = Self::fetch_source(io, &source).and_then(|bytes| {
                     productdata::load(&source, &bytes).map_err(|e| format!("{e:#}"))
@@ -2086,6 +2647,7 @@ impl Job {
                 }
                 Ctl::Yield
             }
+            ExportStage::Diff(_) => self.diff(io, end),
             ExportStage::Data => self.write_data(io),
             ExportStage::SiteConfig {
                 urls,
@@ -2151,6 +2713,124 @@ impl Job {
             .filter(|s| !s.trim().is_empty())
     }
 
+    /// Compares with an earlier rip (before the data files, while the items_base and the
+    /// furnidata are there): finds it, reads its catalog.json in pieces into the rows it had,
+    /// then compares (a step of its own).
+    fn diff(&mut self, io: &mut JobIo, end: u64) -> Ctl {
+        let State::Export(ExportStage::Diff(stage)) =
+            std::mem::replace(&mut self.state, State::Export(ExportStage::Data))
+        else {
+            unreachable!()
+        };
+        let mut stage = stage;
+        let mut more = within(io.clock, end, PIECES_PER_STEP);
+        let mut first = true;
+        loop {
+            if !first && !more() {
+                self.state = State::Export(ExportStage::Diff(stage));
+                return Ctl::Yield;
+            }
+            first = false;
+            let has_source = io.source.is_some();
+            stage = match stage {
+                DiffStage::Start => match (&self.options.diff_against, has_source) {
+                    (Some(earlier), true) => DiffStage::Read {
+                        earlier: earlier.trim_end_matches('/').to_string(),
+                        offset: 0,
+                        digest: Box::default(),
+                    },
+                    (Some(earlier), false) => {
+                        let text = format!(
+                            "the earlier rip {earlier} cannot be compared: there is no folder to read it from"
+                        );
+                        self.warn(&text);
+                        return Ctl::Continue;
+                    }
+                    (None, true) if self.options.diff_with_previous => {
+                        let hotel = &self.out.as_ref().expect("out").catalog.hotel;
+                        let mut skip = vec![self.folder.clone()];
+                        if let Begin::Resume(folder) | Begin::Reexport(folder) = &self.begin {
+                            skip.push(folder.trim_end_matches('/').to_string());
+                        }
+                        DiffStage::Find(PreviousRip::new(hotel, skip))
+                    }
+                    _ => return Ctl::Continue,
+                },
+                DiffStage::Find(mut find) => {
+                    let source = io.source.as_deref_mut().expect("source");
+                    match find.step(source) {
+                        Ok(None) => DiffStage::Find(find),
+                        Ok(Some(Some(earlier))) => DiffStage::Read {
+                            earlier,
+                            offset: 0,
+                            digest: Box::default(),
+                        },
+                        // None there (or the folder cannot be listed): nothing to compare.
+                        Ok(Some(None)) | Err(_) => return Ctl::Continue,
+                    }
+                }
+                DiffStage::Read {
+                    earlier,
+                    offset,
+                    mut digest,
+                } => {
+                    let source = io.source.as_deref_mut().expect("source");
+                    let path = diff::catalog_json_path(&earlier);
+                    let furnidata = self.out.as_ref().and_then(|out| out.furnidata.as_ref());
+                    let read = source
+                        .read(&path, offset, READ_PIECE)
+                        .map_err(|e| format!("reading {path}: {e}"))
+                        .and_then(|data| {
+                            let eof = data.is_empty();
+                            digest
+                                .feed(&data, eof, io.items, furnidata)
+                                .map_err(|e| format!("{path}: {e}"))
+                                .map(|()| (data.len() as u64, eof))
+                        });
+                    match read {
+                        Ok((_, true)) => match digest.finish() {
+                            Ok(rows) => {
+                                // The comparison in a step of its own.
+                                self.state = State::Export(ExportStage::Diff(DiffStage::Compare {
+                                    earlier,
+                                    rows,
+                                }));
+                                return Ctl::Yield;
+                            }
+                            Err(e) => {
+                                self.warn(&format!(
+                                    "the earlier rip {earlier} cannot be compared: {e}"
+                                ));
+                                return Ctl::Continue;
+                            }
+                        },
+                        Ok((n, false)) => DiffStage::Read {
+                            earlier,
+                            offset: offset + n,
+                            digest,
+                        },
+                        Err(e) => {
+                            self.warn(&format!("the earlier rip {earlier} cannot be compared: {e}"));
+                            return Ctl::Continue;
+                        }
+                    }
+                }
+                DiffStage::Compare { earlier, rows } => {
+                    let out = self.out.as_mut().expect("out");
+                    out.changes = Some(diff::compare(
+                        rows,
+                        &earlier,
+                        &out.catalog,
+                        io.items,
+                        out.furnidata.as_ref(),
+                        self.options.diff_delete_removed,
+                    ));
+                    return Ctl::Yield;
+                }
+            };
+        }
+    }
+
     /// The next data file (one per step: each is streamed straight from the catalogue to the
     /// sink in pieces of about 1 MiB, but the biggest take a good part of a tick's time); once
     /// all are written, on to the images.
@@ -2167,6 +2847,7 @@ impl Job {
                 manager_mode: self.options.manager_mode,
                 existing: io.existing,
                 extra_answers: &self.extra_answers,
+                changes: out.changes.as_ref(),
             },
             &mut |name, data| sink.append(&format!("{folder}/{name}"), data),
         );
@@ -2182,8 +2863,24 @@ impl Job {
                     furnidata.entries.clear();
                 }
             }
+            let event = match (&out.changes, made.file) {
+                (Some(changes), output::DataFile::Changes) => {
+                    let report = &changes.report;
+                    Some(RipEvent::CatalogChanged {
+                        since: PathBuf::from(report.since.clone().unwrap_or_default()),
+                        summary: report.summary(),
+                        added: report.added.len(),
+                        changed: report.changed.len(),
+                        removed: report.removed.len(),
+                    })
+                }
+                _ => None,
+            };
             for line in made.log {
                 self.say(line);
+            }
+            if let Some(event) = event {
+                self.emit(event);
             }
             return Ctl::Yield;
         }
@@ -2338,6 +3035,9 @@ impl Job {
             profile,
             missing_furni: data.missing_furni.len(),
             furnidata_names: out.furnidata_names,
+            changes: out.changes.as_ref().map(|c| &c.report),
+            diff_delete_removed: self.options.diff_delete_removed,
+            packets: self.recorder.any,
             cancelled,
             crlf: self.options.readme_crlf,
         });
@@ -2385,7 +3085,12 @@ impl Job {
             hotel_version: catalog.hotel_version.clone(),
             profile: profile.name.clone(),
             kind: profile.kind,
-            headers: self.headers.expect("headers"),
+            headers: self.headers.unwrap_or(Headers {
+                get_index: 0,
+                get_page: 0,
+                index: 0,
+                page: 0,
+            }),
             pages: 0,
             pages_failed: 0,
             items: 0,
@@ -2403,6 +3108,8 @@ impl Job {
             delay_ms: self.delay,
             missing_furni: data.missing_furni.clone(),
             cancelled: self.cancel,
+            resumed_pages: self.resumed_pages,
+            changes: out.changes.as_ref().map(|c| c.report.clone()),
         };
         for mode in &catalog.modes {
             summary.pages += mode.pages.len();
@@ -2429,6 +3136,9 @@ impl Job {
             ),
             format!("  Pages:               {}", n0(s.pages)),
         ];
+        if s.resumed_pages > 0 {
+            lines.push(format!("  From the stopped rip: {}", n0(s.resumed_pages)));
+        }
         if s.pages_failed > 0 {
             lines.push(format!("  Pages without answer: {}", n0(s.pages_failed)));
         }
@@ -2457,7 +3167,12 @@ impl Job {
         lines.push(format!("  Images:              {}", s.images.describe()));
         lines.push(format!("  Output folder:       {}", s.folder));
         if !s.complete {
-            lines.push("  INCOMPLETE: the rip stopped early (see README.txt).".to_string());
+            lines.push(if self.recorder.any {
+                "  INCOMPLETE: the rip stopped early (see README.txt); it can go on from this folder."
+            } else {
+                "  INCOMPLETE: the rip stopped early (see README.txt)."
+            }
+            .to_string());
         }
         self.log.extend(lines);
     }

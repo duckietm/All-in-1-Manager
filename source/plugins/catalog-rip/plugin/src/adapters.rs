@@ -868,6 +868,7 @@ mod tests {
                 clock: &clock,
                 items: None,
                 existing: None,
+                source: None,
             };
             let step = job.step(&mut io, 10);
             if matches!(step, Step::Failed(_)) {

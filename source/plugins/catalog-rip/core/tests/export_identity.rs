@@ -277,6 +277,7 @@ fn check(
         manager_mode,
         existing,
         extra_answers,
+        changes: None,
     };
     let reference = output::data_files(&input);
     let input = ExportInput {

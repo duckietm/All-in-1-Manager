@@ -130,6 +130,7 @@ impl ItemsSource for SqlItems {
 
 fn phase_text(phase: Phase) -> String {
     match phase {
+        Phase::Load => tr("Reading the recorded packets"),
         Phase::Connect => tr("Connecting to G-Earth"),
         Phase::WaitHotel => tr("Waiting for the hotel connection"),
         Phase::Learn => tr("Learning the packet ids from the client"),
@@ -227,6 +228,9 @@ impl Run {
                     clock,
                     items: self.items.as_ref(),
                     existing: None,
+                    // Resuming, importing a Packet Logger export and the comparison with an
+                    // earlier rip read the picked folder (wired with the settings for them).
+                    source: None,
                 };
                 let step = job.step(&mut io, JOB_BUDGET_MS);
                 for line in job.take_log() {

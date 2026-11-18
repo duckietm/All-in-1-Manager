@@ -107,12 +107,47 @@ fn run_tcp(
 
 const FOLDER: &str = "habbo.nl_2025-11-15_12-00-00";
 
+/// The built-in's session.json of a rip of the official test hotel (over TCP: port 30000), at
+/// [`UNIX_SECS`].
+fn official_session(
+    modes: Vec<String>,
+    failed: BTreeMap<String, Vec<i32>>,
+    complete: bool,
+) -> builtin::SessionInfo {
+    builtin::SessionInfo {
+        format: 1,
+        host: "game-nl.habbo.com".into(),
+        port: 30000,
+        hotel_version: "WIN63-202501011200-123".into(),
+        client_type: "FLASH".into(),
+        profile: profiles::HotelProfile {
+            builtin: false,
+            ..builtin_profiles()
+                .into_iter()
+                .find(|p| p.name == profiles::OFFICIAL)
+                .unwrap()
+        },
+        headers: Some(packets::Headers {
+            get_index: GET_INDEX,
+            get_page: GET_PAGE,
+            index: INDEX,
+            page: PAGE,
+        }),
+        modes,
+        failed,
+        complete,
+        ripped_at: Timestamp::new(UNIX_SECS).date_time(),
+    }
+}
+
 /// The output the built-in writes for the official test hotel: the catalogue assembled from
 /// the same packets (parsed by the core's parsers), written by the exporters that are byte for
 /// byte the built-in's (`export.rs`, `manager.rs`), with README.txt put together as the
-/// built-in's `Output::write` does (its text copied here, not taken from the job's code), and
-/// the images the fake CDN serves.
+/// built-in's `Output::write` does (its text copied here, not taken from the job's code), the
+/// recorded packets as the built-in's `Recorder` writes them (`support::builtin`), and the
+/// images the fake CDN serves.
 fn builtin_output(images_downloaded: usize) -> BTreeMap<String, Vec<u8>> {
+    let mut recorder = builtin::Recorder::default();
     let mut modes = Vec::new();
     for (mode, roots, with_parent, page_ids, failed) in [
         (
@@ -130,14 +165,15 @@ fn builtin_output(images_downloaded: usize) -> BTreeMap<String, Vec<u8>> {
             vec![],
         ),
     ] {
-        let index =
-            packets::parse_index(&index_packet(INDEX, mode, &roots, with_parent, false).body)
-                .unwrap();
+        let index_body = index_packet(INDEX, mode, &roots, with_parent, false).body;
+        recorder.index(mode, &index_body);
+        let index = packets::parse_index(&index_body).unwrap();
         let pages = page_ids
             .into_iter()
             .map(|id| {
-                let page = packets::parse_page(&page_answer(id, mode).unwrap().body).unwrap();
-                (id, page)
+                let body = page_answer(id, mode).unwrap().body;
+                recorder.page(mode, id, &body);
+                (id, packets::parse_page(&body).unwrap())
             })
             .collect::<HashMap<_, _>>();
         modes.push(RippedMode {
@@ -184,6 +220,12 @@ fn builtin_output(images_downloaded: usize) -> BTreeMap<String, Vec<u8>> {
     assert!(missing::missing_furni(&catalog, None, None, None).is_empty());
     let answers: BTreeMap<String, Vec<u8>> =
         [("club_offers".to_string(), extra_answer(3285).unwrap().body)].into();
+    recorder.extra("club_offers", &answers["club_offers"]);
+    recorder.session(&official_session(
+        vec!["NORMAL".into(), "BUILDERS_CLUB".into()],
+        [("NORMAL".to_string(), vec![7])].into(),
+        true,
+    ));
     put(
         "catalog_extras.json",
         serde_json::to_string_pretty(&extras::extras_json(&answers))
@@ -199,7 +241,11 @@ fn builtin_output(images_downloaded: usize) -> BTreeMap<String, Vec<u8>> {
     );
     readme.push_str(&manager::readme_section(&manager.stats, false));
     readme.push_str("\nHOTEL PROFILE\n  Habbo (official) (official Habbo)\n");
+    readme.push_str(builtin::PACKETS_SECTION);
     put("README.txt", readme.replace('\n', "\r\n").into_bytes());
+    for (name, data) in recorder.files {
+        put(&name, data);
+    }
 
     // The images: page images (gif for the catalog_header ones, else png), icons, promos.
     let names = [
@@ -955,6 +1001,7 @@ fn cancel_stops_within_one_tick() {
             clock: &sim.clock,
             items: None,
             existing: None,
+            source: None,
         },
         10,
     );

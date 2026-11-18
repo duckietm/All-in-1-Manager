@@ -7,6 +7,7 @@ use std::time::Instant;
 use catalog_rip_core::export::ItemsBase;
 use catalog_rip_core::job::{Clock, Fetch, FetchError, Job, JobIo, Sink, Step};
 use catalog_rip_core::manager::ExistingCatalogue;
+use catalog_rip_core::source::Source;
 use catalog_rip_core::transport::{Closed, Transport};
 
 /// 2025-11-15 12:00:00 UTC: the time every test rip is made at.
@@ -14,7 +15,8 @@ pub const UNIX_SECS: i64 = 1_763_208_000;
 
 /// The files a job wrote, by sink path. A file is written once: either whole (`write`) or
 /// streamed (`append`s, the first creates it); a `write` of a file already there, or an
-/// `append` to a file that was written whole, fails the test. `fail_append`: `append`s of
+/// `append` to a file that was written whole, fails the test, except in `packets/` (session.json
+/// is rewritten, a packet that came again replaces its file). `fail_append`: `append`s of
 /// that path fail from the n-th (0-based) on.
 #[derive(Default, Debug)]
 pub struct MemSink {
@@ -26,7 +28,11 @@ pub struct MemSink {
 
 impl Sink for MemSink {
     fn write(&mut self, path: &str, data: &[u8]) -> Result<(), String> {
-        assert!(!self.files.contains_key(path), "{path} written twice");
+        assert!(
+            !self.files.contains_key(path) || path.contains("/packets/"),
+            "{path} written twice"
+        );
+        self.streamed.remove(path);
         self.files.insert(path.to_string(), data.to_vec());
         Ok(())
     }
@@ -67,6 +73,17 @@ impl MemSink {
 
     pub fn text(&self, path: &str) -> String {
         String::from_utf8(self.files[path].clone()).unwrap()
+    }
+
+    /// The rip folders it wrote (the first part of every path).
+    pub fn folders(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .files
+            .keys()
+            .map(|p| p.split('/').next().unwrap().to_string())
+            .collect();
+        out.dedup();
+        out
     }
 }
 
@@ -167,6 +184,23 @@ pub fn run_job<T: Transport>(
     clock: &dyn Clock,
     db: (Option<&ItemsBase>, Option<&ExistingCatalogue>),
     budget: impl Fn(usize) -> u32,
+    each: impl FnMut(&mut Job, &Step),
+) -> Run {
+    run_job_from(job, transport, close, fetch, sink, clock, db, None, budget, each)
+}
+
+/// [`run_job`] with a [`Source`] (an earlier rip, a log).
+#[allow(clippy::too_many_arguments)]
+pub fn run_job_from<T: Transport>(
+    job: &mut Job,
+    transport: T,
+    close: impl FnOnce(T),
+    fetch: &mut dyn Fetch,
+    sink: &mut dyn Sink,
+    clock: &dyn Clock,
+    db: (Option<&ItemsBase>, Option<&ExistingCatalogue>),
+    mut source: Option<&mut dyn Source>,
+    budget: impl Fn(usize) -> u32,
     mut each: impl FnMut(&mut Job, &Step),
 ) -> Run {
     let mut transport = Some(transport);
@@ -187,6 +221,10 @@ pub fn run_job<T: Transport>(
             clock,
             items: db.0,
             existing: db.1,
+            source: match source.as_mut() {
+                Some(s) => Some(&mut **s),
+                None => None,
+            },
         };
         let step = job.step(&mut io, budget(steps));
         steps += 1;

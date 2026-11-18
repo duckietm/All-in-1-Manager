@@ -8,16 +8,19 @@
 //!
 //! [`job::Job`] is the rip itself, stepped by the plugin: the built-in's `rip` as a state
 //! machine over the plugin's I/O ([`job::JobIo`]); [`output`] and [`images`] are what it
-//! writes and downloads.
+//! writes and downloads, [`recording`] the raw packets it keeps (to go on with a stopped rip or
+//! write it again), [`diff`] the changes since an earlier rip, [`gearth_log`] a rip from a
+//! G-Earth Packet Logger export; [`source::Source`] reads what an earlier rip left.
 //!
-//! Not in the core: `recording` (packets/), `diff` (catalog_changes), `gearth_log`,
-//! `gearth_install`, `translations`, `http`.
+//! Not in the core: `gearth_install` (the Manager's G-Earth tool), `translations`, `http`.
 
 pub mod conn;
+pub mod diff;
 pub mod export;
 pub mod extras;
 pub mod furnidata;
 pub mod gearth;
+pub mod gearth_log;
 pub mod images;
 pub mod job;
 pub mod learn;
@@ -28,7 +31,9 @@ pub mod output;
 pub mod packets;
 pub mod productdata;
 pub mod profiles;
+pub mod recording;
 pub mod site_config;
+pub mod source;
 pub mod time;
 pub mod transport;
 pub mod wire;
@@ -37,9 +42,10 @@ use std::path::PathBuf;
 
 pub use conn::{ConnectionInfo, PacketInfo};
 pub use export::ItemsBase;
+pub use diff::CatalogDiff;
 pub use job::{
-    Clock, Failure, Fetch, FetchError, Job, JobIo, Phase, ProfileChoice, Progress, RipOptions, Sink,
-    Step, Summary,
+    Clock, Failure, Fetch, FetchError, ImportLog, Job, JobIo, Phase, ProfileChoice, Progress,
+    RipOptions, Sink, Step, Summary,
 };
 pub use manager::{ExistingCatalogue, ManagerMode};
 pub use missing::MissingFurni;
@@ -47,6 +53,7 @@ pub use packets::Headers;
 pub use profiles::{
     load_profiles, profiles, save_profile, DetectedBy, HeaderMap, HotelKind, HotelProfile,
 };
+pub use source::{MemSource, Source, SourceEntry};
 pub use time::Timestamp;
 
 /// Pages done out of the total, with the label of the last page.
@@ -134,9 +141,8 @@ pub enum RipEvent {
 #[error("The catalogue rip was cancelled.")]
 pub struct Cancelled;
 
-/// The rip stopped early (hotel disconnected, cancelled, ...) after writing what it had read:
-/// the outer context of the returned error. Find it with
-/// `error.downcast_ref::<PartialOutput>()`; [`RipOptions::resume_from`] with its folder goes on.
+/// The rip stopped early (hotel disconnected, cancelled, ...) after writing what it had read
+/// (the message of [`job::Failure`]); [`job::Job::resume`] with its folder goes on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartialOutput {
     pub folder: PathBuf,

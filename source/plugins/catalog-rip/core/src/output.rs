@@ -1,15 +1,14 @@
 //! What a rip writes, as bytes: the catalogue assembled from the answers, the data files
 //! (catalog.json, the Arcturus SQL, catalog_manager.sql, missing_furni.json,
-//! missing_furnidata.json, catalog_extras.json) and README.txt. The job hands them to its
-//! `Sink`; nothing here does I/O.
-//!
-//! (`Output::write` and `recording::assemble` of the built-in crate. Not in this version:
-//! `packets/`, catalog_changes.json and catalog_manager_changes.sql, so the README never has
-//! their PACKETS and CHANGES sections.)
+//! missing_furnidata.json, catalog_changes.json, catalog_manager_changes.sql,
+//! catalog_extras.json) and README.txt. The job hands them to its `Sink`; nothing here does I/O.
+//! (`Output::write` and `recording::assemble` of the built-in crate; the recorded packets are
+//! [`crate::recording`]'s.)
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::{fmt, io};
 
+use crate::diff::{self, CatalogDiff, Changes};
 use crate::export::{self, ItemsBase, RippedCatalog, RippedMode, SqlFile, SqlStats};
 use crate::extras;
 use crate::furnidata::Furnidata;
@@ -104,6 +103,9 @@ pub struct ExportInput<'a> {
     pub existing: Option<&'a ExistingCatalogue>,
     /// The answers of the extra messages, by [`extras::Extra::key`].
     pub extra_answers: &'a BTreeMap<String, Vec<u8>>,
+    /// What changed since an earlier rip (catalog_changes.json and
+    /// catalog_manager_changes.sql); [`data_files`] does not write them.
+    pub changes: Option<&'a Changes>,
 }
 
 /// The data files, in the order the built-in writes them, with what the README and the summary
@@ -132,7 +134,7 @@ fn pretty(value: &impl serde::Serialize) -> Vec<u8> {
 ///
 /// All at once, through the built-in's JSON trees and lists of rows: the reference for
 /// [`DataExport`], which the job uses (one file at a time, the same bytes, a fraction of the
-/// memory).
+/// memory). Without the changes files (their reference is [`diff::diff`]).
 pub fn data_files(input: &ExportInput) -> DataFiles {
     let catalog = input.catalog;
     let mut files = Vec::new();
@@ -220,6 +222,10 @@ pub enum DataFile {
     Manager,
     MissingFurni,
     MissingFurnidata,
+    /// catalog_changes.json.
+    Changes,
+    /// catalog_manager_changes.sql.
+    ManagerChanges,
     Extras,
 }
 
@@ -231,13 +237,15 @@ impl DataFile {
             DataFile::Manager => "catalog_manager.sql",
             DataFile::MissingFurni => "missing_furni.json",
             DataFile::MissingFurnidata => "missing_furnidata.json",
+            DataFile::Changes => "catalog_changes.json",
+            DataFile::ManagerChanges => "catalog_manager_changes.sql",
             DataFile::Extras => "catalog_extras.json",
         }
     }
 }
 
 /// The data files in the built-in's order (as [`data_files`] lists them).
-const LISTED: [DataFile; 9] = [
+const LISTED: [DataFile; 11] = [
     DataFile::Catalog,
     DataFile::Sql(SqlFile::Pages),
     DataFile::Sql(SqlFile::Items),
@@ -246,12 +254,14 @@ const LISTED: [DataFile; 9] = [
     DataFile::Manager,
     DataFile::MissingFurni,
     DataFile::MissingFurnidata,
+    DataFile::Changes,
+    DataFile::ManagerChanges,
     DataFile::Extras,
 ];
 
 /// The order [`DataExport`] makes them in: catalog.json, the biggest file, last, once the
 /// furnidata entries are no longer needed.
-const MADE: [DataFile; 9] = [
+const MADE: [DataFile; 11] = [
     DataFile::Sql(SqlFile::Pages),
     DataFile::Sql(SqlFile::Items),
     DataFile::Sql(SqlFile::PagesBc),
@@ -259,6 +269,8 @@ const MADE: [DataFile; 9] = [
     DataFile::Manager,
     DataFile::MissingFurni,
     DataFile::MissingFurnidata,
+    DataFile::Changes,
+    DataFile::ManagerChanges,
     DataFile::Extras,
     DataFile::Catalog,
 ];
@@ -519,6 +531,25 @@ impl DataExport {
                     let wanted = missing::missing_keys(&self.missing_furni);
                     write_json(&mut out, &data.subset_json(&wanted));
                 }
+                DataFile::Changes => {
+                    let Some(changes) = input.changes else {
+                        continue;
+                    };
+                    log.push(changes.log_line());
+                    write_json(&mut out, &changes.report);
+                }
+                DataFile::ManagerChanges => {
+                    let Some(changes) = input.changes else {
+                        continue;
+                    };
+                    diff::write_changes_sql(
+                        &mut out,
+                        changes,
+                        catalog,
+                        input.items,
+                        input.furnidata,
+                    );
+                }
                 DataFile::Extras => {
                     if input.extra_answers.is_empty() {
                         continue;
@@ -552,12 +583,15 @@ impl DataExport {
     }
 
     /// Whether a file still to make reads the hotel's items_base (the item SQL files,
-    /// catalog_manager.sql, missing_furni.json).
+    /// catalog_manager.sql, missing_furni.json, catalog_manager_changes.sql).
     pub fn needs_items_base(&self) -> bool {
         MADE[self.next.min(MADE.len())..].iter().any(|f| {
             matches!(
                 f,
-                DataFile::Sql(_) | DataFile::Manager | DataFile::MissingFurni
+                DataFile::Sql(_)
+                    | DataFile::Manager
+                    | DataFile::MissingFurni
+                    | DataFile::ManagerChanges
             )
         })
     }
@@ -662,6 +696,12 @@ pub struct ReadmeInput<'a> {
     pub missing_furni: usize,
     /// Class names in the furnidata used (None: no furnidata).
     pub furnidata_names: Option<usize>,
+    /// What changed since an earlier rip (the CHANGES section), and whether the changes file
+    /// deletes the removed pages and offers.
+    pub changes: Option<&'a CatalogDiff>,
+    pub diff_delete_removed: bool,
+    /// Something was written into `packets/` (the PACKETS section).
+    pub packets: bool,
     /// The user cancelled the rip: a CANCELLED section says so (not in the built-in).
     pub cancelled: bool,
     /// Windows line ends (the built-in writes them on Windows).
@@ -671,6 +711,13 @@ pub struct ReadmeInput<'a> {
 /// The CANCELLED section (the built-in has none; see [`ReadmeInput::cancelled`]).
 pub const CANCELLED_SECTION: &str =
     "\nCANCELLED\n  The rip was cancelled: the files hold what was read until then.\n";
+
+/// The PACKETS section (the built-in's text).
+pub const PACKETS_SECTION: &str = "
+PACKETS
+  packets/ holds the raw catalogue packets: the Manager can go on with a stopped rip or
+  write these files again from them without the hotel.
+";
 
 /// README.txt.
 pub fn readme(input: &ReadmeInput) -> String {
@@ -684,6 +731,9 @@ pub fn readme(input: &ReadmeInput) -> String {
         input.profile.name,
         input.profile.kind.label()
     ));
+    if let Some(report) = input.changes {
+        readme.push_str(&diff::readme_section(report, input.diff_delete_removed));
+    }
     if input.missing_furni > 0 {
         readme.push_str(&format!(
             "\nMISSING FURNI (missing_furni.json)\n  {} products are not in the hotel's items_base, so their offers are not in catalog_manager.sql.\n  {}\n",
@@ -699,6 +749,9 @@ pub fn readme(input: &ReadmeInput) -> String {
         readme.push_str(&format!(
             "\nFURNIDATA\n  {names} class names of the source hotel: floor and wall products are matched by\n  class name (items_base.item_name), not by sprite id.\n",
         ));
+    }
+    if input.packets {
+        readme.push_str(PACKETS_SECTION);
     }
     if input.cancelled {
         readme.push_str(CANCELLED_SECTION);

@@ -341,7 +341,7 @@ pub fn parse_index(body: &[u8]) -> Result<CatalogIndex> {
 
 // ---------------------------------------------------------------- page
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Product {
     /// s (floor), i (wall), e (effect), b (badge), r (bot), h (club), ... as sent, lower case.
     pub product_type: String,
@@ -355,7 +355,8 @@ pub struct Product {
     pub limited_items_left: i32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+// Deserialize: an earlier rip's catalog.json is read back for the diff (`diff::Digest`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Offer {
     pub offer_id: i32,
     pub localization_id: String,
@@ -364,7 +365,7 @@ pub struct Offer {
     pub price_activity_points: i32,
     pub activity_point_type: i32,
     /// The int the current client sends after the points type (not in the Arcturus layout).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_int: Option<i32>,
     pub giftable: bool,
     pub products: Vec<Product>,
@@ -374,9 +375,9 @@ pub struct Offer {
     pub is_pet: bool,
     pub preview_image: String,
     /// Only in the extended offer layout.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item_ids: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub have_offer: Option<bool>,
 }
 

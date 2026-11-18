@@ -485,14 +485,53 @@ pub fn start(launcher: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Unpacks the archive (zip, else tar.gz) into `target` (created; must not exist).
+/// A symbolic link of the archive, checked by [`check_link`], created only after every other entry.
+type PendingLink = (PathBuf, PathBuf);
+
+/// Unpacks the archive (zip, else tar.gz) into `target` (created; must not exist), in two phases: first every folder,
+/// file and hard-link copy (no link exists yet, so nothing can be written through one, whatever the file system
+/// thinks of upper and lower case), then the links (Unix), each checked again and all resolved at the end.
 fn extract(archive: &Path, target: &Path, cancel: &CancellationToken, zip: bool) -> Result<()> {
     std::fs::create_dir(target).with_context(|| format!("Could not create {}", target.display()))?;
     let links = if zip { extract_zip(archive, target, cancel)? } else { extract_tar_gz(archive, target, cancel)? };
+    create_links(target, &links)
+}
+
+/// Phase two: the links, after every other entry (Unix; Windows leaves them out).
+fn create_links(target: &Path, links: &[PendingLink]) -> Result<()> {
     #[cfg(unix)]
-    links_resolve_inside(target, &links)?;
+    {
+        for (relative, to) in links {
+            check_link(relative, to)?;
+            no_link_on_way(target, relative)?;
+            let out = target.join(relative);
+            if let Some(parent) = out.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::os::unix::fs::symlink(to, &out).with_context(|| format!("Could not create the link {}", out.display()))?;
+        }
+        links_resolve_inside(target, links.iter().map(|(relative, _)| relative.as_path()))?;
+    }
     #[cfg(not(unix))]
-    let _ = links;
+    let _ = (target, links);
+    Ok(())
+}
+
+/// Refuses `relative` when it, or a folder on the way to it from `target`, is a symbolic link on disk (case
+/// insensitive file systems included: the file system itself is asked).
+fn no_link_on_way(target: &Path, relative: &Path) -> Result<()> {
+    let mut path = target.to_path_buf();
+    for component in relative.components() {
+        path.push(component);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                bail!("The archive writes through a link ({}); nothing was installed.", relative.display())
+            }
+            Ok(_) => {}
+            // Not there yet: nothing further down is either.
+            Err(_) => break,
+        }
+    }
     Ok(())
 }
 
@@ -543,7 +582,7 @@ fn check_link(at: &Path, to: &Path) -> Result<()> {
 /// After unpacking (Unix): every link created must resolve inside `target`, else the archive is refused. A second
 /// line behind [`check_link`].
 #[cfg(unix)]
-fn links_resolve_inside(target: &Path, links: &HashSet<PathBuf>) -> Result<()> {
+fn links_resolve_inside<'a>(target: &Path, links: impl IntoIterator<Item = &'a Path>) -> Result<()> {
     let root = std::fs::canonicalize(target)?;
     for link in links {
         let resolved = std::fs::canonicalize(target.join(link));
@@ -561,6 +600,8 @@ struct Budget {
     entries: usize,
     /// The links accepted so far (paths inside the folder): nothing is written through one.
     links: HashSet<PathBuf>,
+    /// The same links with their targets, in archive order, created in phase two.
+    pending: Vec<PendingLink>,
 }
 
 impl Budget {
@@ -579,7 +620,17 @@ impl Budget {
         Ok(())
     }
 
-    fn write(&mut self, reader: &mut impl Read, out: &Path) -> Result<()> {
+    /// A folder at `relative`.
+    fn dir(&self, target: &Path, relative: &Path) -> Result<()> {
+        no_link_on_way(target, relative)?;
+        std::fs::create_dir_all(target.join(relative))?;
+        Ok(())
+    }
+
+    /// A file at `relative`, with what `reader` gives (within the unpacked size limit).
+    fn write(&mut self, reader: &mut impl Read, target: &Path, relative: &Path) -> Result<()> {
+        no_link_on_way(target, relative)?;
+        let out = target.join(relative);
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -587,7 +638,7 @@ impl Budget {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .open(out)
+            .open(&out)
             .with_context(|| format!("Could not write {}", out.display()))?;
         let left = MAX_UNPACKED - self.bytes;
         self.bytes += std::io::copy(&mut reader.take(left + 1), &mut file)?;
@@ -597,20 +648,11 @@ impl Budget {
         Ok(())
     }
 
-    /// A symbolic link at `relative` to `to`, after [`check_link`]: created on Unix, left out on Windows.
-    fn link(&mut self, target: &Path, relative: &Path, to: &Path) -> Result<()> {
+    /// A symbolic link at `relative` to `to`, after [`check_link`]: kept for phase two ([`create_links`]).
+    fn link(&mut self, relative: &Path, to: &Path) -> Result<()> {
         check_link(relative, to)?;
         self.links.insert(relative.to_path_buf());
-        #[cfg(unix)]
-        {
-            let out = target.join(relative);
-            if let Some(parent) = out.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::os::unix::fs::symlink(to, &out).with_context(|| format!("Could not create the link {}", out.display()))?;
-        }
-        #[cfg(not(unix))]
-        let _ = target;
+        self.pending.push((relative.to_path_buf(), to.to_path_buf()));
         Ok(())
     }
 }
@@ -622,8 +664,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
-/// Returns the links accepted (paths inside `target`).
-fn extract_zip(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<HashSet<PathBuf>> {
+/// Phase one of a zip; returns its links, not created yet.
+fn extract_zip(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<Vec<PendingLink>> {
     let mut zip = zip::ZipArchive::new(BufReader::new(std::fs::File::open(archive)?)).context("The download is not a zip file")?;
     let mut budget = Budget::default();
     for index in 0..zip.len() {
@@ -642,25 +684,24 @@ fn extract_zip(archive: &Path, target: &Path, cancel: &CancellationToken) -> Res
                 bail!("The archive holds a link with a too long target ({}); nothing was installed.", name.display());
             }
             let to = String::from_utf8(to).with_context(|| format!("The link {} has an unreadable target", name.display()))?;
-            budget.link(target, &relative, Path::new(&to))?;
+            budget.link(&relative, Path::new(&to))?;
             continue;
         }
-        let out = target.join(&relative);
         if entry.is_dir() {
-            std::fs::create_dir_all(&out)?;
+            budget.dir(target, &relative)?;
             continue;
         }
-        budget.write(&mut entry, &out)?;
+        budget.write(&mut entry, target, &relative)?;
         #[cfg(unix)]
         if let Some(mode) = entry.unix_mode() {
-            set_mode(&out, mode)?;
+            set_mode(&target.join(&relative), mode)?;
         }
     }
-    Ok(budget.links)
+    Ok(budget.pending)
 }
 
-/// Returns the links accepted (paths inside `target`).
-fn extract_tar_gz(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<HashSet<PathBuf>> {
+/// Phase one of a tar.gz; returns its links, not created yet.
+fn extract_tar_gz(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<Vec<PendingLink>> {
     let gz = flate2::read::GzDecoder::new(BufReader::new(std::fs::File::open(archive)?));
     let mut tar = tar::Archive::new(gz);
     let mut budget = Budget::default();
@@ -670,7 +711,6 @@ fn extract_tar_gz(archive: &Path, target: &Path, cancel: &CancellationToken) -> 
         let path = entry.path()?.into_owned();
         let relative = inside(&path)?;
         budget.entry(cancel, &relative)?;
-        let out = target.join(&relative);
         let link_name = match kind {
             tar::EntryType::Symlink | tar::EntryType::Link => {
                 Some(entry.link_name()?.map(|p| p.into_owned()).with_context(|| format!("The link {} has no target", path.display()))?)
@@ -678,36 +718,38 @@ fn extract_tar_gz(archive: &Path, target: &Path, cancel: &CancellationToken) -> 
             _ => None,
         };
         match kind {
-            tar::EntryType::Directory => std::fs::create_dir_all(&out)?,
+            tar::EntryType::Directory => budget.dir(target, &relative)?,
             tar::EntryType::Regular | tar::EntryType::Continuous => {
-                budget.write(&mut entry, &out)?;
+                budget.write(&mut entry, target, &relative)?;
                 #[cfg(unix)]
-                set_mode(&out, entry.header().mode().unwrap_or(0o644))?;
+                set_mode(&target.join(&relative), entry.header().mode().unwrap_or(0o644))?;
             }
             tar::EntryType::Symlink => {
-                budget.link(target, &relative, link_name.as_deref().unwrap_or(Path::new("")))?;
+                budget.link(&relative, link_name.as_deref().unwrap_or(Path::new("")))?;
             }
             tar::EntryType::Link => {
-                // A hard link names another entry of the archive (from its root): a copy of that file, inside.
+                // A hard link names an earlier entry of the archive (from its root): a copy of that file, made in phase
+                // one, so never of or through a (pending) symbolic link.
                 let source = inside(link_name.as_deref().unwrap_or(Path::new("")))?;
                 if source.ancestors().any(|a| budget.links.contains(a)) {
                     bail!("The archive holds a link through a link ({}); nothing was installed.", path.display());
                 }
+                no_link_on_way(target, &source)?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
                     let mut file = std::fs::File::open(target.join(&source))
                         .with_context(|| format!("The link {} points to a file that is not there", path.display()))?;
                     let mode = file.metadata()?.permissions().mode();
-                    budget.write(&mut file, &out)?;
-                    set_mode(&out, mode)?;
+                    budget.write(&mut file, target, &relative)?;
+                    set_mode(&target.join(&relative), mode)?;
                 }
             }
             // Devices, FIFOs and the like: never created.
             _ => {}
         }
     }
-    Ok(budget.links)
+    Ok(budget.pending)
 }
 
 #[cfg(test)]
@@ -1197,16 +1239,16 @@ pub(crate) mod tests {
             }
             // A link whose `..` comes after a name may leave through another link (`s -> .`, then `t -> s/..` is
             // `<root>/..`): refused in either order, also one folder down. Leading `..`s that stay inside are fine.
-            for entries in [
-                vec![Entry::Link("s", "."), Entry::Link("t", "s/..")],
-                vec![Entry::Link("t", "s/.."), Entry::Link("s", ".")],
-                vec![Entry::Link("a/s", ".."), Entry::Link("a/t", "s/../..")],
-                vec![Entry::Link("a/t", "s/../.."), Entry::Link("a/s", "..")],
+            for (escaping, entries) in [
+                ("t", vec![Entry::Link("s", "."), Entry::Link("t", "s/..")]),
+                ("t", vec![Entry::Link("t", "s/.."), Entry::Link("s", ".")]),
+                ("a/t", vec![Entry::Link("a/s", ".."), Entry::Link("a/t", "s/../..")]),
+                ("a/t", vec![Entry::Link("a/t", "s/../.."), Entry::Link("a/s", "..")]),
             ] {
                 let (work, result) = unpack(&make(&entries));
                 let error = result.expect_err("a link through a link was accepted");
                 assert!(format!("{error:#}").contains("outside the G-Earth folder"), "{error:#}");
-                assert!(std::fs::symlink_metadata(work.path().join("out").join("t")).is_err());
+                assert!(std::fs::symlink_metadata(work.path().join("out").join(escaping)).is_err(), "{escaping} created");
             }
             let jdk = make(&[
                 Entry::File("G-Earth.app/Contents/Home/lib/libjli.dylib", b"jli"),
@@ -1227,6 +1269,78 @@ pub(crate) mod tests {
                 assert!(format!("{:#}", result.unwrap_err()).contains("through a link"));
             }
         }
+    }
+
+    /// Every path under `dir` that is a symbolic link.
+    fn links_under(dir: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let kind = entry.file_type().unwrap();
+            if kind.is_symlink() {
+                found.push(entry.path());
+            } else if kind.is_dir() {
+                found.extend(links_under(&entry.path()));
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn links_are_created_after_every_file() {
+        // Phase one writes every file and folder while no link exists, and hands the links over in archive order.
+        for (make, zip) in [(tar_gz_of as fn(&[Entry]) -> Vec<u8>, false), (zip_of, true)] {
+            let work = tempfile::tempdir().unwrap();
+            let file = work.path().join("archive");
+            std::fs::write(&file, make(&[Entry::Link("lib/b.so", "a.so"), Entry::File("lib/a.so", b"a"), Entry::Link("bin/x", "../lib/a.so"), Entry::File("bin/run", b"r")])).unwrap();
+            let out = work.path().join("out");
+            std::fs::create_dir(&out).unwrap();
+            let pending = if zip { extract_zip(&file, &out, &CancellationToken::new()) } else { extract_tar_gz(&file, &out, &CancellationToken::new()) }.unwrap();
+            assert!(out.join("lib").join("a.so").is_file() && out.join("bin").join("run").is_file());
+            assert!(links_under(&out).is_empty(), "a link exists before phase two");
+            let expected: Vec<PendingLink> = vec![(Path::new("lib").join("b.so"), "a.so".into()), (Path::new("bin").join("x"), "../lib/a.so".into())];
+            assert_eq!(pending, expected);
+        }
+    }
+
+    #[test]
+    fn a_case_variant_link_writes_nothing_outside() {
+        // On a case-insensitive file system (macOS) `a/s` is `a/S`: with links created as they came, `a/s/t` would be
+        // `<root>/t -> ../..` and `T/evil` would land outside. Files come first now, links after (each checked on disk).
+        for make in [tar_gz_of as fn(&[Entry]) -> Vec<u8>, zip_of] {
+            let (work, result) = unpack(&make(&[Entry::Link("a/S", ".."), Entry::Link("a/s/t", "../.."), Entry::File("T/evil", b"evil")]));
+            // Refused where the file system folds case; elsewhere harmless (two links inside): either way nothing is
+            // outside the folder.
+            assert!(!work.path().join("T").exists() && !work.path().join("evil").exists());
+            assert!(!work.path().parent().unwrap().join("T").join("evil").exists());
+            if result.is_ok() {
+                assert_eq!(std::fs::read(work.path().join("out").join("T").join("evil")).unwrap(), b"evil");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_resolve_inside_catches_what_resolves_outside() {
+        // Unix only: Windows creates no links (and needs a privilege to). Crafted on disk, past check_link.
+        let work = tempfile::tempdir().unwrap();
+        let out = work.path().join("out");
+        std::fs::create_dir_all(out.join("lib")).unwrap();
+        std::fs::write(out.join("lib").join("a.so"), b"a").unwrap();
+        std::os::unix::fs::symlink("a.so", out.join("lib").join("good")).unwrap();
+        std::os::unix::fs::symlink("../..", out.join("lib").join("bad")).unwrap();
+        std::os::unix::fs::symlink("missing", out.join("lib").join("dangling")).unwrap();
+        // A link that is fine as text but escapes through a folder link made after it.
+        std::os::unix::fs::symlink("..", out.join("up")).unwrap();
+        std::fs::create_dir(out.join("d")).unwrap();
+        std::os::unix::fs::symlink("../up/x", out.join("d").join("via")).unwrap();
+        let good = Path::new("lib/good");
+        assert!(links_resolve_inside(&out, [good]).is_ok());
+        for bad in ["lib/bad", "lib/dangling", "d/via"] {
+            assert!(links_resolve_inside(&out, [good, Path::new(bad)]).is_err(), "{bad} accepted");
+        }
+        // And the phase-two check refuses writing through an existing link on disk.
+        assert!(no_link_on_way(&out, Path::new("up/x")).is_err());
+        assert!(no_link_on_way(&out, Path::new("lib/new")).is_ok());
     }
 
     #[tokio::test]

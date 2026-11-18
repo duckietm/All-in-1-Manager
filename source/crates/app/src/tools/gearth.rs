@@ -11,7 +11,6 @@
 //! other link, and any entry written through a link, refuses the whole archive.
 
 use std::collections::HashSet;
-use std::ffi::OsString;
 use std::io::{BufReader, Read};
 use std::path::{Component, Path, PathBuf};
 use std::time::Duration;
@@ -489,11 +488,12 @@ pub fn start(launcher: &Path) -> Result<()> {
 /// Unpacks the archive (zip, else tar.gz) into `target` (created; must not exist).
 fn extract(archive: &Path, target: &Path, cancel: &CancellationToken, zip: bool) -> Result<()> {
     std::fs::create_dir(target).with_context(|| format!("Could not create {}", target.display()))?;
-    if zip {
-        extract_zip(archive, target, cancel)
-    } else {
-        extract_tar_gz(archive, target, cancel)
-    }
+    let links = if zip { extract_zip(archive, target, cancel)? } else { extract_tar_gz(archive, target, cancel)? };
+    #[cfg(unix)]
+    links_resolve_inside(target, &links)?;
+    #[cfg(not(unix))]
+    let _ = links;
+    Ok(())
 }
 
 /// A plain file or folder name: not `..`, no drive, no stream (`:`).
@@ -518,22 +518,37 @@ fn inside(path: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Checks a symbolic link at `at` (a path [`inside`] the folder) pointing to `to`: the target has to be relative and,
-/// read from the link's own folder, stay inside the folder.
+/// Checks a symbolic link at `at` (a path [`inside`] the folder) pointing to `to`: the target has to be relative, its
+/// `..`s may only come first (`../../lib/x`, never `s/../x`: `s` could itself be a link, and then `..` would leave
+/// from wherever `s` points), and those leading `..`s, counted from the link's own folder (which holds no link: nothing
+/// is written through one), must not climb above the folder.
 fn check_link(at: &Path, to: &Path) -> Result<()> {
     let refuse = || anyhow::anyhow!("The archive holds a link that points outside the G-Earth folder ({} -> {}); nothing was installed.", at.display(), to.display());
-    let mut folder: Vec<OsString> = at.parent().map(|p| p.components().map(|c| c.as_os_str().to_os_string()).collect()).unwrap_or_default();
+    let mut depth = at.parent().map(|p| p.components().count()).unwrap_or(0);
     if to.as_os_str().is_empty() {
         return Err(refuse());
     }
+    let mut named = false;
     for component in to.components() {
         match component {
-            Component::Normal(name) if plain(name) => folder.push(name.to_os_string()),
+            Component::Normal(name) if plain(name) => named = true,
             Component::CurDir => {}
-            Component::ParentDir => {
-                folder.pop().ok_or_else(refuse)?;
-            }
+            Component::ParentDir if !named => depth = depth.checked_sub(1).ok_or_else(refuse)?,
             _ => return Err(refuse()),
+        }
+    }
+    Ok(())
+}
+
+/// After unpacking (Unix): every link created must resolve inside `target`, else the archive is refused. A second
+/// line behind [`check_link`].
+#[cfg(unix)]
+fn links_resolve_inside(target: &Path, links: &HashSet<PathBuf>) -> Result<()> {
+    let root = std::fs::canonicalize(target)?;
+    for link in links {
+        let resolved = std::fs::canonicalize(target.join(link));
+        if !resolved.as_ref().is_ok_and(|r| r.starts_with(&root)) {
+            bail!("The archive holds a link that points outside the G-Earth folder ({}); nothing was installed.", link.display());
         }
     }
     Ok(())
@@ -607,7 +622,8 @@ fn set_mode(path: &Path, mode: u32) -> Result<()> {
     Ok(())
 }
 
-fn extract_zip(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<()> {
+/// Returns the links accepted (paths inside `target`).
+fn extract_zip(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<HashSet<PathBuf>> {
     let mut zip = zip::ZipArchive::new(BufReader::new(std::fs::File::open(archive)?)).context("The download is not a zip file")?;
     let mut budget = Budget::default();
     for index in 0..zip.len() {
@@ -640,10 +656,11 @@ fn extract_zip(archive: &Path, target: &Path, cancel: &CancellationToken) -> Res
             set_mode(&out, mode)?;
         }
     }
-    Ok(())
+    Ok(budget.links)
 }
 
-fn extract_tar_gz(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<()> {
+/// Returns the links accepted (paths inside `target`).
+fn extract_tar_gz(archive: &Path, target: &Path, cancel: &CancellationToken) -> Result<HashSet<PathBuf>> {
     let gz = flate2::read::GzDecoder::new(BufReader::new(std::fs::File::open(archive)?));
     let mut tar = tar::Archive::new(gz);
     let mut budget = Budget::default();
@@ -678,16 +695,19 @@ fn extract_tar_gz(archive: &Path, target: &Path, cancel: &CancellationToken) -> 
                 }
                 #[cfg(unix)]
                 {
+                    use std::os::unix::fs::PermissionsExt;
                     let mut file = std::fs::File::open(target.join(&source))
                         .with_context(|| format!("The link {} points to a file that is not there", path.display()))?;
+                    let mode = file.metadata()?.permissions().mode();
                     budget.write(&mut file, &out)?;
+                    set_mode(&out, mode)?;
                 }
             }
             // Devices, FIFOs and the like: never created.
             _ => {}
         }
     }
-    Ok(())
+    Ok(budget.links)
 }
 
 #[cfg(test)]
@@ -873,8 +893,26 @@ pub(crate) mod tests {
         .unwrap()
     }
 
+    /// The launcher file inside `folder` of an archive: `G-Earth.app/Contents/MacOS/G-Earth` on macOS.
+    pub(crate) fn launcher_entry(folder: &str) -> String {
+        if cfg!(target_os = "macos") {
+            format!("{folder}/G-Earth.app/Contents/MacOS/G-Earth")
+        } else {
+            format!("{folder}/{LAUNCHER}")
+        }
+    }
+
+    /// What [`installed_launcher`] finds for a launcher unpacked into `dir/folder`.
+    pub(crate) fn launcher_path(dir: &Path, folder: &str) -> PathBuf {
+        if cfg!(target_os = "macos") {
+            dir.join(folder).join("G-Earth.app")
+        } else {
+            dir.join(folder).join(LAUNCHER)
+        }
+    }
+
     pub(crate) fn good_archive() -> Vec<u8> {
-        archive_of(&[Entry::File(&format!("G-Earth-1.5.4/{LAUNCHER}"), b"MZ"), Entry::File("G-Earth-1.5.4/G-Earth.jar", b"jar")])
+        archive_of(&[Entry::File(&launcher_entry("G-Earth-1.5.4"), b"MZ"), Entry::File("G-Earth-1.5.4/G-Earth.jar", b"jar")])
     }
 
     pub(crate) const RELEASE_PATH: &str = "/repos/G-Realm/G-Earth/releases/latest";
@@ -975,7 +1013,7 @@ pub(crate) mod tests {
             assert_eq!(done.version.as_deref(), Some("1.5.4"));
             assert_eq!(done.verified, verified, "digest {digest}, file {file}");
             assert_eq!(installed(&dir), Some(done.clone()));
-            assert_eq!(done.launcher, dir.join("G-Earth-1.5.4").join(LAUNCHER));
+            assert_eq!(done.launcher, launcher_path(&dir, "G-Earth-1.5.4"));
             assert!(steps.lock().contains(&Step::Unpacking));
             assert_nothing_left(&dir);
         }
@@ -1059,8 +1097,9 @@ pub(crate) mod tests {
     async fn extract_is_crash_safe() {
         let root = tempfile::tempdir().unwrap();
         let dir = root.path().join("G-Earth");
-        std::fs::create_dir_all(dir.join("G-Earth-1.5.3")).unwrap();
-        std::fs::write(dir.join("G-Earth-1.5.3").join(LAUNCHER), b"old").unwrap();
+        let old_launcher = dir.join(launcher_entry("G-Earth-1.5.3"));
+        std::fs::create_dir_all(old_launcher.parent().unwrap()).unwrap();
+        std::fs::write(&old_launcher, b"old").unwrap();
 
         // Unsafe paths refuse the whole archive.
         for name in [format!("../{LAUNCHER}"), "a/../../evil.txt".to_string()] {
@@ -1076,11 +1115,11 @@ pub(crate) mod tests {
         assert_eq!(inside(Path::new("./G-Earth/x.jar")).unwrap(), Path::new("G-Earth").join("x.jar"));
 
         // An install from an archive with an unsafe path changes nothing.
-        let bad = archive_of(&[Entry::File(&format!("G-Earth-1.5.4/{LAUNCHER}"), b"new"), Entry::File("../evil.txt", b"evil")]);
+        let bad = archive_of(&[Entry::File(&launcher_entry("G-Earth-1.5.4"), b"new"), Entry::File("../evil.txt", b"evil")]);
         let server = github(bad, true, false, false).await;
         let release = latest(&server.source(), this_asset()).await.unwrap();
         assert!(install(&release, &dir, &CancellationToken::new(), |_| {}).await.is_err());
-        assert_eq!(std::fs::read(dir.join("G-Earth-1.5.3").join(LAUNCHER)).unwrap(), b"old");
+        assert_eq!(std::fs::read(&old_launcher).unwrap(), b"old");
         assert!(!root.path().join("evil.txt").exists());
         assert_nothing_left(&dir);
 
@@ -1092,7 +1131,7 @@ pub(crate) mod tests {
         let error = install(&release, &dir, &cancel, |_| {}).await.unwrap_err();
         assert!(error.is::<Cancelled>());
         assert!(!server.asked(&download_path()));
-        assert_eq!(std::fs::read(dir.join("G-Earth-1.5.3").join(LAUNCHER)).unwrap(), b"old");
+        assert_eq!(std::fs::read(&old_launcher).unwrap(), b"old");
         assert_nothing_left(&dir);
 
         // The program stopped between the two renames of an update: the previous G-Earth comes back.
@@ -1108,7 +1147,7 @@ pub(crate) mod tests {
 
         // A good update replaces the old folder as a whole.
         let installed_now = install(&release, &dir, &CancellationToken::new(), |_| {}).await.unwrap();
-        assert_eq!(installed_now.launcher, dir.join("G-Earth-1.5.4").join(LAUNCHER));
+        assert_eq!(installed_now.launcher, launcher_path(&dir, "G-Earth-1.5.4"));
         assert!(!dir.join("G-Earth-1.5.3").exists());
         assert_nothing_left(&dir);
 
@@ -1155,6 +1194,29 @@ pub(crate) mod tests {
                 let error = result.expect_err(&format!("{at} -> {to} accepted"));
                 assert!(format!("{error:#}").contains("link"), "{error:#}");
                 assert!(std::fs::symlink_metadata(work.path().join("out").join(at)).is_err());
+            }
+            // A link whose `..` comes after a name may leave through another link (`s -> .`, then `t -> s/..` is
+            // `<root>/..`): refused in either order, also one folder down. Leading `..`s that stay inside are fine.
+            for entries in [
+                vec![Entry::Link("s", "."), Entry::Link("t", "s/..")],
+                vec![Entry::Link("t", "s/.."), Entry::Link("s", ".")],
+                vec![Entry::Link("a/s", ".."), Entry::Link("a/t", "s/../..")],
+                vec![Entry::Link("a/t", "s/../.."), Entry::Link("a/s", "..")],
+            ] {
+                let (work, result) = unpack(&make(&entries));
+                let error = result.expect_err("a link through a link was accepted");
+                assert!(format!("{error:#}").contains("outside the G-Earth folder"), "{error:#}");
+                assert!(std::fs::symlink_metadata(work.path().join("out").join("t")).is_err());
+            }
+            let jdk = make(&[
+                Entry::File("G-Earth.app/Contents/Home/lib/libjli.dylib", b"jli"),
+                Entry::Link("G-Earth.app/Contents/MacOS/libjli.dylib", "../Home/lib/libjli.dylib"),
+            ]);
+            let (work, result) = unpack(&jdk);
+            result.unwrap();
+            if cfg!(unix) {
+                let link = work.path().join("out").join("G-Earth.app").join("Contents").join("MacOS").join("libjli.dylib");
+                assert_eq!(std::fs::read(link).unwrap(), b"jli");
             }
             // Nothing is written through a link, even one that points inside.
             for entries in [

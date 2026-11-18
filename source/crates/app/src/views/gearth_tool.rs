@@ -88,24 +88,18 @@ fn confirmation(release: &Release, request: &InstallRequest) -> String {
         "Download G-Earth {version} ({size}) from github.com/G-Realm/G-Earth (MIT licence, Java included) into {folder}?",
         &[("version", &release.version), ("size", &megabytes(release.size)), ("folder", &request.folder.display().to_string())],
     );
-    text.push_str("
-
-");
+    text.push_str("\n\n");
     text.push_str(if release.verifiable() {
         t("The download is checked against the SHA-256 checksum the release publishes before anything is unpacked.")
     } else {
         t("Not verified: this release publishes no SHA-256 checksum, so the download cannot be checked.")
     });
     if request.current.is_some() || request.folder.exists() {
-        text.push_str("
-
-");
+        text.push_str("\n\n");
         text.push_str(t("The G-Earth already in that folder is replaced."));
     }
     if request.running {
-        text.push_str("
-
-");
+        text.push_str("\n\n");
         text.push_str(t("G-Earth is running: close it first, or it cannot be replaced."));
     }
     text

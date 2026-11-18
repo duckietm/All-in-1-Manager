@@ -48,10 +48,6 @@ pub struct DiffEntry {
 }
 
 impl DiffEntry {
-    fn key(&self) -> (bool, &'static str, i64) {
-        (self.what == "page", self.catalog_type, self.id)
-    }
-
     /// `DELETE FROM ... WHERE id = .. AND catalog_type = ..;` ([`ManagerRow::delete`]).
     fn delete(&self) -> String {
         let table = if self.what == "page" {
@@ -88,32 +84,7 @@ impl CatalogDiff {
 
     /// "3 pages and 12 offers added, 4 offers changed, 1 page removed".
     pub fn summary(&self) -> String {
-        if self.is_empty() {
-            return "no changes".into();
-        }
-        let mut parts = Vec::new();
-        for (list, verb) in [
-            (&self.added, "added"),
-            (&self.changed, "changed"),
-            (&self.removed, "removed"),
-        ] {
-            let pages = Self::count(list, "page");
-            let offers = Self::count(list, "offer");
-            let mut items = Vec::new();
-            if pages > 0 {
-                items.push(format!("{pages} page{}", if pages == 1 { "" } else { "s" }));
-            }
-            if offers > 0 {
-                items.push(format!(
-                    "{offers} offer{}",
-                    if offers == 1 { "" } else { "s" }
-                ));
-            }
-            if !items.is_empty() {
-                parts.push(format!("{} {verb}", items.join(" and ")));
-            }
-        }
-        parts.join(", ")
+        Counts::of(self).summary()
     }
 }
 
@@ -143,7 +114,9 @@ fn replace_export<'a>(
 /// The first lines of catalog_manager_changes.sql.
 fn write_head(
     out: &mut dyn fmt::Write,
-    report: &CatalogDiff,
+    since_ripped_at: &str,
+    summary: &str,
+    removed: usize,
     new: &RippedCatalog,
     delete_removed: bool,
 ) {
@@ -152,16 +125,15 @@ fn write_head(
         "-- Catalog Studio restricted SQL export.\n-- Changes in the catalogue of {} ({}) since the rip of {}, ripped on {} by {}.\n-- For a hotel whose catalogue holds the earlier rip with the ripped ids. Summary: {}.",
         comment(&new.hotel),
         comment(&new.host),
-        comment(&report.since_ripped_at),
+        comment(since_ripped_at),
         comment(&new.ripped_at),
         comment(&new.generator),
-        report.summary(),
+        summary,
     );
-    if !delete_removed && !report.removed.is_empty() {
+    if !delete_removed && removed > 0 {
         let _ = writeln!(
             out,
-            "-- {} removed pages/offers are kept in the hotel (removing was not asked).",
-            report.removed.len()
+            "-- {removed} removed pages/offers are kept in the hotel (removing was not asked)."
         );
     }
 }
@@ -250,7 +222,14 @@ pub fn diff(
     }
 
     let mut text = String::new();
-    write_head(&mut text, &report, new, delete_removed);
+    write_head(
+        &mut text,
+        &report.since_ripped_at,
+        &report.summary(),
+        report.removed.len(),
+        new,
+        delete_removed,
+    );
     for line in deletes.iter().chain(&inserts).chain(&updates) {
         text.push_str(line);
         text.push('\n');
@@ -275,7 +254,8 @@ impl Num {
     fn id(self) -> i64 {
         match self {
             Num::Id(id) => id,
-            _ => unreachable!("resolved at the end of the catalogue"),
+            // Resolved at the end of its catalogue; a row is used only after that.
+            Num::Synthetic(k) | Num::Renumbered(k) => -1 - k as i64,
         }
     }
 }
@@ -362,9 +342,28 @@ enum Tok {
     Raw(Vec<u8>),
 }
 
+/// The deepest a catalog.json nests: the top, the catalogues, a catalogue, then two levels per
+/// level of the page tree (the index parser reads at most 64), with room for an offer inside.
+pub const MAX_DEPTH: usize = 2 * 64 + 16;
+
+/// The longest token or captured value (a string, an offer, a page's texts).
+pub const MAX_TOKEN: usize = 4 * 1024 * 1024;
+
+/// How far the scan of a cut token got (kept between pieces, so a long token is scanned once).
+#[derive(Debug, Default, Clone, Copy)]
+struct Scan {
+    /// Bytes from the token's start scanned so far.
+    at: usize,
+    depth: usize,
+    in_string: bool,
+    escape: bool,
+}
+
 /// JSON tokens from bytes that come in pieces: a token cut by the end of the bytes so far waits
-/// for the next piece ([`Lexer::feed`]). Commas and colons are only separators (the structure is
-/// known from the brackets), so this reads well-formed JSON and does not check it.
+/// for the next piece ([`Lexer::feed`]), its scan going on where it stopped. Commas and colons
+/// are only separators (the structure is known from the brackets), so this reads well-formed
+/// JSON and does not check it; it refuses nesting deeper than [`MAX_DEPTH`] and tokens longer
+/// than [`MAX_TOKEN`].
 #[derive(Debug, Default)]
 struct Lexer {
     buf: Vec<u8>,
@@ -373,13 +372,15 @@ struct Lexer {
     /// Open containers: true for an object.
     stack: Vec<bool>,
     want_key: bool,
+    /// The scan of the token at `pos`, when it was cut.
+    scan: Option<Scan>,
 }
 
 impl Lexer {
     fn feed(&mut self, data: &[u8], eof: bool) {
         self.buf.drain(..self.pos);
         self.pos = 0;
-        self.buf.reserve_exact(data.len());
+        self.buf.reserve(data.len());
         self.buf.extend_from_slice(data);
         self.eof |= eof;
     }
@@ -394,20 +395,54 @@ impl Lexer {
         }
     }
 
-    /// The end of the string that starts at `start` (its closing quote), if it is all here.
-    fn string_end(&self, start: usize) -> Option<usize> {
-        let mut i = start + 1;
+    /// The end (inclusive) of the string or container that starts at `pos`, if it is all here;
+    /// the scan stops where the bytes end and goes on from there next time.
+    fn value_end(&mut self) -> Result<Option<usize>, String> {
+        let mut scan = self.scan.take().unwrap_or_default();
+        let mut i = self.pos + scan.at;
         while i < self.buf.len() {
-            match self.buf[i] {
-                b'\\' => i += 2,
-                b'"' => return Some(i),
-                _ => i += 1,
+            let b = self.buf[i];
+            if scan.in_string {
+                if scan.escape {
+                    scan.escape = false;
+                } else if b == b'\\' {
+                    scan.escape = true;
+                } else if b == b'"' {
+                    scan.in_string = false;
+                    if scan.depth == 0 {
+                        return Ok(Some(i));
+                    }
+                }
+            } else {
+                match b {
+                    b'"' => scan.in_string = true,
+                    b'{' | b'[' => {
+                        scan.depth += 1;
+                        if self.stack.len() + scan.depth > MAX_DEPTH {
+                            return Err(format!("nested deeper than {MAX_DEPTH}"));
+                        }
+                    }
+                    b'}' | b']' => {
+                        scan.depth = scan.depth.saturating_sub(1);
+                        if scan.depth == 0 {
+                            return Ok(Some(i));
+                        }
+                    }
+                    _ => {}
+                }
             }
+            i += 1;
         }
-        None
+        scan.at = i - self.pos;
+        if scan.at > MAX_TOKEN {
+            return Err(format!("a value is longer than {MAX_TOKEN} bytes"));
+        }
+        self.scan = Some(scan);
+        Ok(None)
     }
 
     fn value_done(&mut self) {
+        self.scan = None;
         self.want_key = self.stack.last() == Some(&true);
     }
 
@@ -430,7 +465,9 @@ impl Lexer {
 
     /// The next token; `Ok(None)`: more bytes are needed (or the end, after the last token).
     fn next(&mut self) -> Result<Option<Tok>, String> {
-        self.skip_separators();
+        if self.scan.is_none() {
+            self.skip_separators();
+        }
         let Some(&b) = self.buf.get(self.pos) else {
             return if self.eof && !self.stack.is_empty() {
                 Err("the file ends early".into())
@@ -440,17 +477,18 @@ impl Lexer {
         };
         let start = self.pos;
         let tok = match b {
-            b'{' => {
+            b'{' | b'[' => {
+                if self.stack.len() >= MAX_DEPTH {
+                    return Err(format!("nested deeper than {MAX_DEPTH}"));
+                }
                 self.pos += 1;
-                self.stack.push(true);
-                self.want_key = true;
-                return Ok(Some(Tok::BeginObject));
-            }
-            b'[' => {
-                self.pos += 1;
-                self.stack.push(false);
-                self.want_key = false;
-                return Ok(Some(Tok::BeginArray));
+                self.stack.push(b == b'{');
+                self.want_key = b == b'{';
+                return Ok(Some(if b == b'{' {
+                    Tok::BeginObject
+                } else {
+                    Tok::BeginArray
+                }));
             }
             b'}' | b']' => {
                 self.pos += 1;
@@ -466,12 +504,13 @@ impl Lexer {
                 }));
             }
             b'"' => {
-                let Some(end) = self.string_end(start) else {
+                let Some(end) = self.value_end()? else {
                     return self.more("a string");
                 };
                 let text = self.string_at(start, end)?;
                 self.pos = end + 1;
                 if self.want_key {
+                    self.scan = None;
                     self.want_key = false;
                     return Ok(Some(Tok::Key(text)));
                 }
@@ -503,6 +542,9 @@ impl Lexer {
                 {
                     i += 1;
                 }
+                if i - start > 64 {
+                    return Err("a number is longer than 64 characters".into());
+                }
                 if i == self.buf.len() && !self.eof {
                     return Ok(None);
                 }
@@ -517,7 +559,9 @@ impl Lexer {
 
     /// The next value whole, as written (`Raw`), or the end of the container it would be in.
     fn capture(&mut self) -> Result<Option<Tok>, String> {
-        self.skip_separators();
+        if self.scan.is_none() {
+            self.skip_separators();
+        }
         let Some(&b) = self.buf.get(self.pos) else {
             return self.next();
         };
@@ -531,28 +575,14 @@ impl Lexer {
             });
         }
         let start = self.pos;
-        let mut depth = 0usize;
-        let mut i = start;
-        while i < self.buf.len() {
-            match self.buf[i] {
-                b'"' => match self.string_end(i) {
-                    Some(end) => i = end,
-                    None => return self.more("a value"),
-                },
-                b'{' | b'[' => depth += 1,
-                b'}' | b']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        self.pos = i + 1;
-                        self.value_done();
-                        return Ok(Some(Tok::Raw(self.buf[start..=i].to_vec())));
-                    }
-                }
-                _ => {}
+        match self.value_end()? {
+            Some(end) => {
+                self.pos = end + 1;
+                self.value_done();
+                Ok(Some(Tok::Raw(self.buf[start..=end].to_vec())))
             }
-            i += 1;
+            None => self.more("a value"),
         }
-        self.more("a value")
     }
 }
 
@@ -654,6 +684,15 @@ pub struct OldRows {
     pub ripped_at: String,
     pages: Vec<OldRow>,
     offers: Vec<OldRow>,
+}
+
+impl std::fmt::Debug for OldRows {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OldRows")
+            .field("pages", &self.pages.len())
+            .field("offers", &self.offers.len())
+            .finish()
+    }
 }
 
 impl OldRows {
@@ -918,7 +957,9 @@ impl Digest {
         node.numbered = Some(id);
         // A page id that is in the tree twice: only the first makes rows.
         let first = node.page_id <= 0 || mode.seen_pages.insert(node.page_id);
-        node.offers_count = first && node.layout.is_some();
+        // As the export: only a page with an id has content, so offers (a crafted file may give a
+        // disabled page some; they are no rows).
+        node.offers_count = first && node.layout.is_some() && node.page_id > 0;
         if first {
             let columns = page_columns(
                 &PageFields {
@@ -974,7 +1015,7 @@ impl Digest {
         if ids.unresolved > 0 {
             return Ok(());
         }
-        let page_id = node.numbered.map(Num::id).unwrap_or_default();
+        let page_id = node.page_id as i64;
         let id = if offer.offer_id > 0 && mode.seen_offers.insert(offer.offer_id) {
             Num::Id(offer.offer_id as i64)
         } else {
@@ -1021,25 +1062,158 @@ impl Digest {
     }
 }
 
-/// What the new rip changed, and how to write catalog_manager_changes.sql from it.
-#[derive(Debug, Clone)]
-pub struct Changes {
-    pub report: CatalogDiff,
-    pub delete_removed: bool,
-    /// Per row of the new rip (in catalog_manager.sql's order): 1 inserted, 2 updated, 0 neither.
-    decisions: Vec<u8>,
+/// How many pages and offers were added, changed and removed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Counts {
+    /// (pages, offers).
+    pub added: (usize, usize),
+    pub changed: (usize, usize),
+    pub removed: (usize, usize),
 }
 
-impl Changes {
+impl Counts {
+    fn of(report: &CatalogDiff) -> Counts {
+        let count = |list: &[DiffEntry]| {
+            (
+                CatalogDiff::count(list, "page"),
+                CatalogDiff::count(list, "offer"),
+            )
+        };
+        Counts {
+            added: count(&report.added),
+            changed: count(&report.changed),
+            removed: count(&report.removed),
+        }
+    }
+
+    fn add(slot: &mut (usize, usize), page: bool) {
+        if page {
+            slot.0 += 1;
+        } else {
+            slot.1 += 1;
+        }
+    }
+
+    /// "3 pages and 12 offers added, 4 offers changed, 1 page removed" ([`CatalogDiff::summary`]).
+    pub fn summary(&self) -> String {
+        let total = |(p, o): (usize, usize)| p + o;
+        if total(self.added) + total(self.changed) + total(self.removed) == 0 {
+            return "no changes".into();
+        }
+        let mut parts = Vec::new();
+        for ((pages, offers), verb) in [
+            (self.added, "added"),
+            (self.changed, "changed"),
+            (self.removed, "removed"),
+        ] {
+            let mut items = Vec::new();
+            if pages > 0 {
+                items.push(format!("{pages} page{}", if pages == 1 { "" } else { "s" }));
+            }
+            if offers > 0 {
+                items.push(format!(
+                    "{offers} offer{}",
+                    if offers == 1 { "" } else { "s" }
+                ));
+            }
+            if !items.is_empty() {
+                parts.push(format!("{} {verb}", items.join(" and ")));
+            }
+        }
+        parts.join(", ")
+    }
+}
+
+/// What the summary, the README and the event say of a comparison.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChangesSummary {
+    /// The earlier rip's folder (a [`Source`] path) and when it was ripped.
+    pub since: String,
+    pub since_ripped_at: String,
+    pub counts: Counts,
+}
+
+impl ChangesSummary {
+    pub fn summary(&self) -> String {
+        self.counts.summary()
+    }
+
+    pub fn added(&self) -> usize {
+        self.counts.added.0 + self.counts.added.1
+    }
+
+    pub fn changed(&self) -> usize {
+        self.counts.changed.0 + self.counts.changed.1
+    }
+
+    pub fn removed(&self) -> usize {
+        self.counts.removed.0 + self.counts.removed.1
+    }
+
     /// `Since the rip of <date> (<folder>): <summary>.`
     pub fn log_line(&self) -> String {
         format!(
             "Since the rip of {} ({}): {}.",
-            self.report.since_ripped_at,
-            self.report.since.as_deref().unwrap_or_default(),
-            self.report.summary()
+            self.since_ripped_at,
+            self.since,
+            self.summary()
         )
     }
+}
+
+/// What the new rip changed: the earlier rows and, per row of the new rip, what became of it.
+/// The report and the changes file are written from it by visiting the new rows again
+/// ([`ChangesJson`], [`write_changes_sql`]), so no list of entries or lines is held.
+#[derive(Debug)]
+pub struct Changes {
+    pub summary: ChangesSummary,
+    pub delete_removed: bool,
+    old: OldRows,
+    /// Per row of the new rip (in catalog_manager.sql's order): 1 added, 2 changed, 0 neither.
+    decisions: Vec<u8>,
+    /// The earlier row of each changed one, in order: (page, index).
+    matched: Vec<(bool, u32)>,
+    /// The removed earlier rows, in the report's order (offers first).
+    removed: Vec<(bool, u32)>,
+}
+
+impl Changes {
+    pub fn log_line(&self) -> String {
+        self.summary.log_line()
+    }
+
+    fn old_row(&self, (page, i): (bool, u32)) -> &OldRow {
+        if page {
+            &self.old.pages[i as usize]
+        } else {
+            &self.old.offers[i as usize]
+        }
+    }
+
+    /// The report entry of a removed earlier row.
+    fn removed_entry(&self, at: (bool, u32)) -> DiffEntry {
+        let row = self.old_row(at);
+        let (_, label) = row.values(at.0);
+        DiffEntry {
+            what: if at.0 { "page" } else { "offer" },
+            catalog_type: row.kind,
+            id: row.id.id(),
+            label,
+            changed: BTreeMap::new(),
+        }
+    }
+}
+
+/// The columns of `row` that differ from the earlier row's: (before, after).
+fn changed_columns(row: &ManagerRow, before: &OldRow) -> BTreeMap<&'static str, (String, String)> {
+    let (values, _) = before.values(row.page);
+    let mut changed = BTreeMap::new();
+    for ((column, after), was) in row.columns.iter().zip(values) {
+        if *after != was {
+            changed.insert(*column, (was, after.clone()));
+        }
+    }
+    changed
 }
 
 /// The new rip's rows in catalog_manager.sql's order (pages, then offers), one by one.
@@ -1048,7 +1222,7 @@ fn visit_new(catalog: &RippedCatalog, export: &ManagerExport, emit: &mut dyn FnM
     visit_manager_rows(catalog, export, false, true, emit);
 }
 
-/// Compares the new rip with the earlier one's rows: the report of [`diff`] (with `since`).
+/// Compares the new rip with the earlier one's rows (what [`diff`] finds).
 pub fn compare(
     old: OldRows,
     since: &str,
@@ -1058,20 +1232,16 @@ pub fn compare(
     delete_removed: bool,
 ) -> Changes {
     let export = replace_export(items, furnidata);
-    let mut by_key: HashMap<(bool, &'static str, i64), (bool, usize)> =
-        HashMap::with_capacity(old.len());
+    let mut by_key: HashMap<(bool, &'static str, i64), u32> = HashMap::with_capacity(old.len());
     for (page, rows) in [(true, &old.pages), (false, &old.offers)] {
         for (i, row) in rows.iter().enumerate() {
-            by_key.insert((page, row.kind, row.id.id()), (page, i));
+            by_key.insert((page, row.kind, row.id.id()), i as u32);
         }
     }
     let ripped_now: Vec<&str> = new.modes.iter().map(|m| catalog_type(&m.mode)).collect();
-    let mut report = CatalogDiff {
-        since: Some(since.to_string()),
-        since_ripped_at: old.ripped_at.clone(),
-        ..CatalogDiff::default()
-    };
+    let mut counts = Counts::default();
     let mut decisions = Vec::new();
+    let mut matched = Vec::new();
     let mut new_keys: HashSet<(bool, &'static str, i64)> = HashSet::with_capacity(old.len());
     let mut read: HashSet<(&'static str, i64)> = HashSet::new();
     visit_new(new, &export, &mut |row| {
@@ -1084,40 +1254,36 @@ pub fn compare(
             Some(_) if row.page && !row.has_content => {}
             None => {
                 decision = 1;
-                report.added.push(entry(&row));
+                Counts::add(&mut counts.added, row.page);
             }
-            Some(&(page, i)) => {
-                let before = if page { &old.pages[i] } else { &old.offers[i] };
-                let (values, _) = before.values(page);
-                let mut changed = BTreeMap::new();
-                for ((column, after), was) in row.columns.iter().zip(values) {
-                    if *after != was {
-                        changed.insert(*column, (was, after.clone()));
-                    }
-                }
-                if !changed.is_empty() {
+            Some(&i) => {
+                let before = if row.page {
+                    &old.pages[i as usize]
+                } else {
+                    &old.offers[i as usize]
+                };
+                if !changed_columns(&row, before).is_empty() {
                     decision = 2;
-                    report.changed.push(DiffEntry {
-                        changed,
-                        ..entry(&row)
-                    });
+                    matched.push((row.page, i));
+                    Counts::add(&mut counts.changed, row.page);
                 }
             }
         }
         decisions.push(decision);
     });
-    let mut removed: Vec<DiffEntry> = Vec::new();
+    drop(by_key);
+    let mut removed = Vec::new();
     // Offers before pages, so no offer is left on a deleted page.
     for page in [false, true] {
         let rows = if page { &old.pages } else { &old.offers };
-        for row in rows {
-            let id = row.id.id();
-            if !ripped_now.contains(&row.kind) || new_keys.contains(&(page, row.kind, id)) {
+        for (i, row) in rows.iter().enumerate() {
+            if !ripped_now.contains(&row.kind) || new_keys.contains(&(page, row.kind, row.id.id()))
+            {
                 continue;
             }
-            let (values, label) = row.values(page);
             // An offer is gone only from a page that was read this time.
             if !page {
+                let (values, _) = row.values(false);
                 let on_read_page = values
                     .get(1)
                     .and_then(|p| p.parse::<i64>().ok())
@@ -1126,26 +1292,103 @@ pub fn compare(
                     continue;
                 }
             }
-            removed.push(DiffEntry {
-                what: if page { "page" } else { "offer" },
-                catalog_type: row.kind,
-                id,
-                label,
-                changed: BTreeMap::new(),
-            });
+            removed.push((page, i as u32));
+            Counts::add(&mut counts.removed, page);
         }
     }
-    report.removed = removed;
     Changes {
-        report,
+        summary: ChangesSummary {
+            since: since.to_string(),
+            since_ripped_at: old.ripped_at.clone(),
+            counts,
+        },
         delete_removed,
+        old,
         decisions,
+        matched,
+        removed,
+    }
+}
+
+/// catalog_changes.json as it serializes (the [`CatalogDiff`] of [`diff`], byte for byte when
+/// pretty-printed): the entries are made while the new rows are visited again.
+pub struct ChangesJson<'a> {
+    pub changes: &'a Changes,
+    pub new: &'a RippedCatalog,
+    pub items: Option<&'a ItemsBase>,
+    pub furnidata: Option<&'a Furnidata>,
+}
+
+/// One list of the report.
+struct EntriesJson<'a> {
+    of: &'a ChangesJson<'a>,
+    /// 1 added, 2 changed, 3 removed.
+    which: u8,
+}
+
+impl Serialize for EntriesJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let c = self.of.changes;
+        let n = |(p, o): (usize, usize)| p + o;
+        let len = match self.which {
+            1 => n(c.summary.counts.added),
+            2 => n(c.summary.counts.changed),
+            _ => n(c.summary.counts.removed),
+        };
+        let mut seq = serializer.serialize_seq(Some(len))?;
+        if self.which == 3 {
+            for &at in &c.removed {
+                seq.serialize_element(&c.removed_entry(at))?;
+            }
+            return seq.end();
+        }
+        let export = replace_export(self.of.items, self.of.furnidata);
+        let mut error = None;
+        let (mut n, mut k) = (0, 0);
+        visit_new(self.of.new, &export, &mut |row| {
+            let decision = c.decisions.get(n).copied().unwrap_or(0);
+            n += 1;
+            if error.is_some() || decision != self.which {
+                return;
+            }
+            let entry = if decision == 2 {
+                let before = c.old_row(c.matched[k]);
+                k += 1;
+                DiffEntry {
+                    changed: changed_columns(&row, before),
+                    ..entry(&row)
+                }
+            } else {
+                entry(&row)
+            };
+            if let Err(e) = seq.serialize_element(&entry) {
+                error = Some(e);
+            }
+        });
+        if let Some(e) = error {
+            return Err(e);
+        }
+        seq.end()
+    }
+}
+
+impl Serialize for ChangesJson<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let summary = &self.changes.summary;
+        let mut s = serializer.serialize_struct("CatalogDiff", 5)?;
+        s.serialize_field("since", &Some(&summary.since))?;
+        s.serialize_field("since_ripped_at", &summary.since_ripped_at)?;
+        s.serialize_field("added", &EntriesJson { of: self, which: 1 })?;
+        s.serialize_field("changed", &EntriesJson { of: self, which: 2 })?;
+        s.serialize_field("removed", &EntriesJson { of: self, which: 3 })?;
+        s.end()
     }
 }
 
 /// catalog_manager_changes.sql into `out`, the bytes [`diff`] makes: the head, the DELETEs (when
-/// asked), the INSERTs, the UPDATEs. The new rows are made again (once); the UPDATE lines wait in
-/// memory until the INSERTs are written.
+/// asked), the INSERTs, the UPDATEs, each written as it is made (the new rows are visited twice).
 pub fn write_changes_sql(
     out: &mut dyn fmt::Write,
     changes: &Changes,
@@ -1153,36 +1396,39 @@ pub fn write_changes_sql(
     items: Option<&ItemsBase>,
     furnidata: Option<&Furnidata>,
 ) {
-    let report = &changes.report;
-    write_head(out, report, new, changes.delete_removed);
+    let summary = &changes.summary;
+    write_head(
+        out,
+        &summary.since_ripped_at,
+        &summary.summary(),
+        summary.removed(),
+        new,
+        changes.delete_removed,
+    );
     if changes.delete_removed {
-        for removed in &report.removed {
-            let _ = writeln!(out, "{}", removed.delete());
+        for &at in &changes.removed {
+            let _ = writeln!(out, "{}", changes.removed_entry(at).delete());
         }
     }
     let export = replace_export(items, furnidata);
-    let mut updates = Vec::new();
-    let mut changed = report.changed.iter();
     let mut n = 0;
     visit_new(new, &export, &mut |row| {
-        match changes.decisions.get(n) {
-            Some(1) => {
-                let _ = writeln!(out, "{}", row.insert());
-            }
-            Some(2) => {
-                if let Some(entry) = changed.next() {
-                    debug_assert_eq!(entry.key(), row.key());
-                    let columns: Vec<&str> = entry.changed.keys().copied().collect();
-                    updates.push(row.update(&columns));
-                }
-            }
-            _ => {}
+        if changes.decisions.get(n) == Some(&1) {
+            let _ = writeln!(out, "{}", row.insert());
         }
         n += 1;
     });
-    for line in updates {
-        let _ = writeln!(out, "{line}");
-    }
+    let (mut n, mut k) = (0, 0);
+    visit_new(new, &export, &mut |row| {
+        if changes.decisions.get(n) == Some(&2) {
+            let before = changes.old_row(changes.matched[k]);
+            k += 1;
+            let changed = changed_columns(&row, before);
+            let columns: Vec<&str> = changed.keys().copied().collect();
+            let _ = writeln!(out, "{}", row.update(&columns));
+        }
+        n += 1;
+    });
 }
 
 // ---------------------------------------------------------------- the earlier rip
@@ -1248,11 +1494,11 @@ impl PreviousRip {
 }
 
 /// The README section about the changes files (the built-in's text).
-pub fn readme_section(report: &CatalogDiff, delete_removed: bool) -> String {
+pub fn readme_section(summary: &ChangesSummary, delete_removed: bool) -> String {
     format!(
         "\nCHANGES (catalog_changes.json, catalog_manager_changes.sql)\n  Since the rip of {}: {}.\n  catalog_manager_changes.sql brings a hotel that holds that earlier rip (imported with its ids)\n  up to date: it adds the new pages and offers and updates the changed ones{}.\n",
-        report.since_ripped_at,
-        report.summary(),
+        summary.since_ripped_at,
+        summary.summary(),
         if delete_removed {
             ", and deletes the removed ones"
         } else {

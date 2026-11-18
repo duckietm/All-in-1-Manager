@@ -49,23 +49,23 @@ pub fn decode_packet_text(text: &str) -> Vec<u8> {
             .filter_map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
             .collect();
     }
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = Vec::with_capacity(chars.len());
+    // By byte offsets (the built-in collected the characters first: 4 bytes each).
+    let mut out = Vec::with_capacity(text.len());
     let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '[' {
-            if let Some(len) = chars[i + 1..].iter().take(4).position(|c| *c == ']') {
-                let digits: String = chars[i + 1..i + 1 + len].iter().collect();
-                if let Ok(byte) = digits.parse::<u8>() {
+    while let Some(c) = text[i..].chars().next() {
+        if c == '[' {
+            let rest = &text[i + 1..];
+            if let Some((end, _)) = rest.char_indices().take(4).find(|(_, c)| *c == ']') {
+                if let Ok(byte) = rest[..end].parse::<u8>() {
                     out.push(byte);
-                    i += len + 2;
+                    i += end + 2;
                     continue;
                 }
             }
         }
-        let c = chars[i] as u32;
-        out.push(if c < 256 { c as u8 } else { b'?' });
-        i += 1;
+        let code = c as u32;
+        out.push(if code < 256 { code as u8 } else { b'?' });
+        i += c.len_utf8();
     }
     out
 }
@@ -303,8 +303,20 @@ struct Lines {
     tail: Vec<u8>,
 }
 
+/// The longest line read (a catalogue index in G-Earth's text form, `[n]` for most bytes, is a
+/// few MB at most).
+pub const MAX_LINE: usize = 8 * 1024 * 1024;
+
 impl Lines {
-    fn feed(&mut self, data: &[u8], eof: bool, each: &mut dyn FnMut(&str) -> bool) -> bool {
+    /// `Ok(false)`: `each` stopped it.
+    fn feed(
+        &mut self,
+        data: &[u8],
+        eof: bool,
+        each: &mut dyn FnMut(&str) -> bool,
+    ) -> Result<bool, String> {
+        let too_long =
+            || format!("a line is longer than {MAX_LINE} bytes: not a Packet Logger export");
         let mut rest = data;
         while let Some(at) = rest.iter().position(|&b| b == b'\n') {
             let line: std::borrow::Cow<str> = if self.tail.is_empty() {
@@ -315,17 +327,23 @@ impl Lines {
                     String::from_utf8_lossy(&std::mem::take(&mut self.tail)).into_owned(),
                 )
             };
+            if line.len() > MAX_LINE {
+                return Err(too_long());
+            }
             rest = &rest[at + 1..];
             if !each(&line) {
-                return false;
+                return Ok(false);
             }
+        }
+        if self.tail.len() + rest.len() > MAX_LINE {
+            return Err(too_long());
         }
         self.tail.extend_from_slice(rest);
         if eof && !self.tail.is_empty() {
             let line = String::from_utf8_lossy(&std::mem::take(&mut self.tail)).into_owned();
-            return each(&line);
+            return Ok(each(&line));
         }
-        true
+        Ok(true)
     }
 }
 
@@ -408,7 +426,7 @@ impl LogScan {
             self.offset += data.len() as u64;
             let (reader, pass, count) = (&mut self.reader, &mut self.pass, &mut self.packets);
             let mut stop = false;
-            self.lines.feed(&data, eof, &mut |line| {
+            let fed = self.lines.feed(&data, eof, &mut |line| {
                 let Some(p) = reader.line(line) else {
                     return true;
                 };
@@ -433,6 +451,7 @@ impl LogScan {
                 }
                 true
             });
+            fed.map_err(|e| format!("{}: {e}", self.path))?;
             if eof || stop {
                 match std::mem::replace(&mut self.pass, Pass::Learn(Learner::new([None; 4]))) {
                     Pass::Names { names, .. } => {
@@ -477,14 +496,14 @@ pub fn mode_order(modes: impl IntoIterator<Item = String>) -> Vec<String> {
 }
 
 /// The packet files the built-in's import records for what was found (name -> body; a later
-/// one of the same name wins, as the second `fs::write` did).
-pub fn recorded_files(found: &LoggedCatalogue) -> BTreeMap<String, Vec<u8>> {
+/// one of the same name wins, as the second `fs::write` did). The bodies are moved.
+pub fn recorded_files(found: LoggedCatalogue) -> BTreeMap<String, Vec<u8>> {
     let mut files = BTreeMap::new();
-    for (mode, body) in &found.indexes {
-        files.insert(crate::recording::index_file(mode), body.clone());
+    for (mode, body) in found.indexes {
+        files.insert(crate::recording::index_file(&mode), body);
     }
-    for ((mode, id), body) in &found.pages {
-        files.insert(crate::recording::page_file(mode, *id), body.clone());
+    for ((mode, id), body) in found.pages {
+        files.insert(crate::recording::page_file(&mode, id), body);
     }
     files
 }

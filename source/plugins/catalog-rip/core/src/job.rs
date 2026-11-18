@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::conn::ConnectionInfo;
-use crate::diff::{self, CatalogDiff, Changes, Digest, OldRows, PreviousRip};
+use crate::diff::{self, Changes, ChangesSummary, Digest, OldRows, PreviousRip};
 use crate::export::{ItemsBase, RippedCatalog, SqlStats};
 use crate::extras;
 use crate::furnidata::{self, Furnidata};
@@ -388,7 +388,7 @@ pub struct Summary {
     /// Pages that came from the recording of a stopped rip (not asked again).
     pub resumed_pages: usize,
     /// What changed since the earlier rip it was compared with.
-    pub changes: Option<CatalogDiff>,
+    pub changes: Option<ChangesSummary>,
 }
 
 /// Why the job stopped early.
@@ -534,6 +534,8 @@ enum DiffStage {
         earlier: String,
         offset: u64,
         digest: Box<Digest>,
+        /// Found by looking (the next earlier rip is tried when this one cannot be read).
+        found: Option<PreviousRip>,
     },
     Compare {
         earlier: String,
@@ -569,6 +571,8 @@ enum State {
     Load(Box<Loader>),
     /// Reading a Packet Logger export.
     Import(Box<LogScan>),
+    /// Taking what it found as a recording.
+    Adding(Box<std::collections::btree_map::IntoIter<String, Vec<u8>>>),
     /// Writing the recording's files into the new rip folder's `packets/`.
     Copy {
         next: usize,
@@ -619,6 +623,8 @@ struct Out {
     data: DataExport,
     /// What changed since an earlier rip (made before the data files).
     changes: Option<Changes>,
+    /// What it says (kept once the changes files are written and `changes` dropped).
+    changes_summary: Option<ChangesSummary>,
     files: Vec<String>,
     catalog_url: String,
     icon_url: String,
@@ -894,6 +900,7 @@ impl Job {
                 State::Start => self.start(),
                 State::Load(_) => self.load(io, end),
                 State::Import(_) => self.import(io, end),
+                State::Adding(_) => self.adding(io, end),
                 State::Copy { .. } => self.copy(io, end),
                 State::Connect { .. } => self.connect(io, end),
                 State::WaitHotel { .. } => self.wait_hotel(io, end),
@@ -956,6 +963,7 @@ impl Job {
             State::Start
             | State::Load(_)
             | State::Import(_)
+            | State::Adding(_)
             | State::Connect { .. }
             | State::WaitHotel { .. }
             | State::Learn { .. } => Some(Ctl::End(Step::Failed(Abort::cancelled().failure()))),
@@ -1181,15 +1189,32 @@ impl Job {
             ripped_at: Timestamp::new(io.clock.unix_secs()).date_time(),
         };
         let folder = self.new_folder(&host, io);
-        let mut recorded = Recorded::new(&folder, session);
-        for (name, body) in gearth_log::recorded_files(&found) {
+        self.recorded = Some(Recorded::new(&folder, session));
+        // The packets are read as a recording, a few per step (the bodies are moved).
+        self.state = State::Adding(Box::new(gearth_log::recorded_files(found).into_iter()));
+        Ctl::Yield
+    }
+
+    /// Takes the packets an import found as a recording read back (the built-in wrote them,
+    /// then read them back), a few per step.
+    fn adding(&mut self, io: &mut JobIo, end: u64) -> Ctl {
+        let State::Adding(files) = &mut self.state else {
+            unreachable!()
+        };
+        let recorded = self.recorded.as_mut().expect("recording");
+        let mut more = within(io.clock, end, FILES_PER_STEP);
+        for (name, body) in files.by_ref() {
             if let Err(e) = recorded.add(&name, body) {
                 return Ctl::End(Step::Failed(Abort::new(e).failure()));
             }
+            if !more() {
+                return Ctl::Yield;
+            }
         }
-        drop(found);
+        let recorded = self.recorded.take().expect("recording");
         self.say(format!(
-            "Writing {folder} again from its recorded packets ({} catalogues, {} pages).",
+            "Writing {} again from its recorded packets ({} catalogues, {} pages).",
+            recorded.folder,
             recorded
                 .session
                 .modes
@@ -2504,6 +2529,7 @@ impl Job {
             productdata_names: 0,
             data: DataExport::new(),
             changes: None,
+            changes_summary: None,
             files: Vec::new(),
             catalog_url: String::new(),
             icon_url: String::new(),
@@ -2723,6 +2749,10 @@ impl Job {
             unreachable!()
         };
         let mut stage = stage;
+        if self.cancel {
+            // Cancelled: the files are written without the comparison.
+            return Ctl::Continue;
+        }
         let mut more = within(io.clock, end, PIECES_PER_STEP);
         let mut first = true;
         loop {
@@ -2738,6 +2768,7 @@ impl Job {
                         earlier: earlier.trim_end_matches('/').to_string(),
                         offset: 0,
                         digest: Box::default(),
+                        found: None,
                     },
                     (Some(earlier), false) => {
                         let text = format!(
@@ -2764,6 +2795,7 @@ impl Job {
                             earlier,
                             offset: 0,
                             digest: Box::default(),
+                            found: Some(find),
                         },
                         // None there (or the folder cannot be listed): nothing to compare.
                         Ok(Some(None)) | Err(_) => return Ctl::Continue,
@@ -2773,6 +2805,7 @@ impl Job {
                     earlier,
                     offset,
                     mut digest,
+                    found,
                 } => {
                     let source = io.source.as_deref_mut().expect("source");
                     let path = diff::catalog_json_path(&earlier);
@@ -2787,31 +2820,42 @@ impl Job {
                                 .map_err(|e| format!("{path}: {e}"))
                                 .map(|()| (data.len() as u64, eof))
                         });
+                    let (read, digest) = match read {
+                        Ok((_, true)) => (digest.finish().map(Ok), None),
+                        Ok((n, false)) => (Ok(Err(n)), Some(digest)),
+                        Err(e) => (Err(e), None),
+                    };
                     match read {
-                        Ok((_, true)) => match digest.finish() {
-                            Ok(rows) => {
-                                // The comparison in a step of its own.
-                                self.state = State::Export(ExportStage::Diff(DiffStage::Compare {
-                                    earlier,
-                                    rows,
-                                }));
-                                return Ctl::Yield;
-                            }
-                            Err(e) => {
-                                self.warn(&format!(
-                                    "the earlier rip {earlier} cannot be compared: {e}"
-                                ));
-                                return Ctl::Continue;
-                            }
-                        },
-                        Ok((n, false)) => DiffStage::Read {
+                        Ok(Ok(rows)) => {
+                            // The comparison in a step of its own.
+                            self.state = State::Export(ExportStage::Diff(DiffStage::Compare {
+                                earlier,
+                                rows,
+                            }));
+                            return Ctl::Yield;
+                        }
+                        Ok(Err(n)) => DiffStage::Read {
                             earlier,
                             offset: offset + n,
-                            digest,
+                            digest: digest.expect("reading on"),
+                            found,
                         },
                         Err(e) => {
-                            self.warn(&format!("the earlier rip {earlier} cannot be compared: {e}"));
-                            return Ctl::Continue;
+                            match found {
+                                // Found by looking: the next earlier one, if any.
+                                Some(find) => {
+                                    self.warn(&format!(
+                                        "the earlier rip {earlier} cannot be compared ({e}); looking for an earlier one."
+                                    ));
+                                    DiffStage::Find(find)
+                                }
+                                None => {
+                                    self.warn(&format!(
+                                        "the earlier rip {earlier} cannot be compared: {e}"
+                                    ));
+                                    return Ctl::Continue;
+                                }
+                            }
                         }
                     }
                 }
@@ -2865,17 +2909,23 @@ impl Job {
             }
             let event = match (&out.changes, made.file) {
                 (Some(changes), output::DataFile::Changes) => {
-                    let report = &changes.report;
+                    let s = &changes.summary;
                     Some(RipEvent::CatalogChanged {
-                        since: PathBuf::from(report.since.clone().unwrap_or_default()),
-                        summary: report.summary(),
-                        added: report.added.len(),
-                        changed: report.changed.len(),
-                        removed: report.removed.len(),
+                        since: PathBuf::from(&s.since),
+                        summary: s.summary(),
+                        added: s.added(),
+                        changed: s.changed(),
+                        removed: s.removed(),
                     })
                 }
                 _ => None,
             };
+            if made.file == output::DataFile::ManagerChanges {
+                // Both changes files are written: the earlier rip's rows go.
+                if let Some(changes) = out.changes.take() {
+                    out.changes_summary = Some(changes.summary);
+                }
+            }
             for line in made.log {
                 self.say(line);
             }
@@ -3035,7 +3085,7 @@ impl Job {
             profile,
             missing_furni: data.missing_furni.len(),
             furnidata_names: out.furnidata_names,
-            changes: out.changes.as_ref().map(|c| &c.report),
+            changes: out.changes_summary.as_ref(),
             diff_delete_removed: self.options.diff_delete_removed,
             packets: self.recorder.any,
             cancelled,
@@ -3109,7 +3159,7 @@ impl Job {
             missing_furni: data.missing_furni.clone(),
             cancelled: self.cancel,
             resumed_pages: self.resumed_pages,
-            changes: out.changes.as_ref().map(|c| c.report.clone()),
+            changes: out.changes_summary.clone(),
         };
         for mode in &catalog.modes {
             summary.pages += mode.pages.len();

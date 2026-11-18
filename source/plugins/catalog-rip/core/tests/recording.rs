@@ -891,7 +891,7 @@ fn diff_matches_builtin() {
         let report = done(&run);
         assert_ne!(report.folder, earlier);
         let changes = report.changes.clone().expect("compared");
-        assert_eq!(changes.since.as_deref(), Some(earlier.as_str()));
+        assert_eq!(changes.since, earlier);
 
         let old = recorded_catalog(&first.files, &earlier);
         let new = recorded_catalog(&second.files, &report.folder);
@@ -906,7 +906,8 @@ fn diff_matches_builtin() {
             delete_removed,
         );
         want.since = Some(earlier.clone());
-        assert_eq!(changes, want);
+        assert_eq!(changes.summary(), want.summary());
+        assert_eq!(changes.since_ripped_at, want.since_ripped_at);
         let files = second.under(&report.folder);
         assert_eq!(
             String::from_utf8_lossy(&files["catalog_changes.json"]),
@@ -935,7 +936,7 @@ fn diff_matches_builtin() {
         );
         assert!(run.events.iter().any(|e| matches!(e, RipEvent::CatalogChanged { added: 5, .. })));
         let readme = String::from_utf8_lossy(&files["README.txt"]).replace("\r\n", "\n");
-        assert!(readme.contains(&diff::readme_section(&want, delete_removed)), "{readme}");
+        assert!(readme.contains(&diff::readme_section(&changes, delete_removed)), "{readme}");
         assert!(run.log_text().contains(&format!("Since the rip of {} ({earlier}): ", want.since_ripped_at)));
         assert!(report.files.contains(&"catalog_manager_changes.sql".to_string()));
     }
@@ -956,9 +957,14 @@ fn diff_matches_builtin() {
     let report = done(&run);
     let old = recorded_catalog(&first.files, &earlier);
     let new = recorded_catalog(&second.files, &report.folder);
-    let (mut want, _) = diff::diff(&old, &new, &ManagerExport::default(), false);
+    let (mut want, want_sql) = diff::diff(&old, &new, &ManagerExport::default(), false);
     want.since = Some(earlier.clone());
-    assert_eq!(report.changes.as_ref(), Some(&want));
+    let files_out = second.under(&report.folder);
+    assert_eq!(
+        String::from_utf8_lossy(&files_out["catalog_changes.json"]),
+        serde_json::to_string_pretty(&want).unwrap()
+    );
+    assert_eq!(String::from_utf8_lossy(&files_out["catalog_manager_changes.sql"]), want_sql);
 
     // An earlier rip that cannot be read: a warning, no changes files.
     let mut broken = MemSource::new();
@@ -976,6 +982,80 @@ fn diff_matches_builtin() {
     let _: Option<CatalogDiff> = None;
 }
 
+/// When the newest earlier rip's catalog.json cannot be read, the one before it is used (and the
+/// log says which was skipped); a cancel during the comparison skips it.
+#[test]
+fn diff_falls_back_to_the_next_earlier_rip_and_a_cancel_skips_it() {
+    let items = items_base(&items_rows());
+    let (run, first) = sim_rip(hotel(false), 0, sim_options(), Some(&items), None);
+    let earlier = done(&run).folder.clone();
+    let newer = "habbo.nl_2025-11-15_12-30-00";
+    let mut files = first.files.clone();
+    files.insert(format!("{newer}/catalog.json"), b"{\"catalogs\": [{\"pages\": [".to_vec());
+    let mut source = MemSource::with_files(files.iter());
+    let (run, _) = sim_rip(hotel(true), 3_600_000, sim_options(), Some(&items), Some(&mut source));
+    let report = done(&run);
+    assert_eq!(report.changes.as_ref().unwrap().since, earlier);
+    let log = run.log_text();
+    assert!(log.contains(&format!("the earlier rip {newer} cannot be compared (")), "{log}");
+    assert!(log.contains("looking for an earlier one"), "{log}");
+
+    // Cancelled once the export began: the files are written, without the comparison.
+    let clock = SimClock::default();
+    clock.0.set(3_600_000);
+    let link = Link(Rc::new(RefCell::new(SimGEarth::new(clock.clone(), hotel(true)))));
+    let mut sink = MemSink::default();
+    let mut job = Job::new(sim_options());
+    let mut source = MemSource::with_files(files.iter());
+    let run = run_job_from(
+        &mut job,
+        link,
+        drop,
+        &mut MemFetch::none(),
+        &mut sink,
+        &clock,
+        (Some(&items), None),
+        Some(&mut source),
+        |_| 50,
+        |job, _| {
+            if job.progress().phase == Phase::Export {
+                job.cancel();
+            }
+        },
+    );
+    let report = done(&run);
+    assert!(report.cancelled);
+    assert!(report.changes.is_none());
+    assert!(!sink.under(&report.folder).contains_key("catalog_changes.json"));
+}
+
+/// The comparison's outputs from a digest of `json` fed in pieces of `piece` bytes.
+fn digest_outputs(
+    json: &[u8],
+    piece: usize,
+    earlier: &str,
+    new: &RippedCatalog,
+    items: &ItemsBase,
+) -> (String, String) {
+    let mut digest = diff::Digest::new();
+    for chunk in json.chunks(piece) {
+        digest.feed(chunk, false, Some(items), None).unwrap();
+    }
+    digest.feed(&[], true, Some(items), None).unwrap();
+    let rows = digest.finish().unwrap();
+    let changes = diff::compare(rows, earlier, new, Some(items), None, true);
+    let json = serde_json::to_string_pretty(&diff::ChangesJson {
+        changes: &changes,
+        new,
+        items: Some(items),
+        furnidata: None,
+    })
+    .unwrap();
+    let mut sql = String::new();
+    diff::write_changes_sql(&mut sql, &changes, new, Some(items), None);
+    (json, sql)
+}
+
 /// The earlier catalog.json read in pieces of any size (a token cut anywhere) gives the same
 /// rows: the comparison with the new rip is the same.
 #[test]
@@ -986,19 +1066,10 @@ fn digest_reads_catalog_json_in_any_pieces() {
     let json = first.files[&format!("{earlier}/catalog.json")].clone();
     let (run, second) = sim_rip(hotel(true), 3_600_000, sim_options(), Some(&items), None);
     let new = recorded_catalog(&second.files, &done(&run).folder);
-    let compare = |piece: usize| {
-        let mut digest = diff::Digest::new();
-        for chunk in json.chunks(piece) {
-            digest.feed(chunk, false, Some(&items), None).unwrap();
-        }
-        digest.feed(&[], true, Some(&items), None).unwrap();
-        let rows = digest.finish().unwrap();
-        diff::compare(rows, &earlier, &new, Some(&items), None, true).report
-    };
-    let whole = compare(json.len());
-    assert!(!whole.is_empty());
+    let whole = digest_outputs(&json, json.len(), &earlier, &new, &items);
+    assert!(whole.0.contains("\"added\": [\n    {"));
     for piece in [1, 2, 3, 7, 64, 1000, 4096] {
-        assert_eq!(compare(piece), whole, "pieces of {piece}");
+        assert_eq!(digest_outputs(&json, piece, &earlier, &new, &items), whole, "pieces of {piece}");
     }
     // Cut short, or not a rip's catalog.json.
     let mut digest = diff::Digest::new();
@@ -1006,4 +1077,116 @@ fn digest_reads_catalog_json_in_any_pieces() {
     assert!(digest.feed(&[], true, None, None).is_err());
     let mut digest = diff::Digest::new();
     assert!(digest.feed(b"[1, 2]", true, None, None).is_err());
+}
+
+/// An earlier catalog.json is not trusted: a disabled page (id -1) given content and offers that
+/// resolve (no export writes that) makes no offer rows and no crash; too deep nesting, a value
+/// larger than 4 MiB and an endless number are refused with a clear error; a long value cut in
+/// many pieces is scanned once (the time stays linear).
+#[test]
+fn digest_refuses_crafted_catalog_json() {
+    let items = items_base(&items_rows());
+    let offer = r#"{"offer_id": 77, "localization_id": "x", "rent": false, "price_credits": 1, "price_activity_points": 0, "activity_point_type": 0, "giftable": true, "products": [{"product_type": "s", "class_id": 4001, "extra_param": "", "count": 1, "limited": false, "limited_series_size": 0, "limited_items_left": 0}], "club_level": 0, "bundle_purchase_allowed": true, "is_pet": false, "preview_image": ""}"#;
+    let crafted = format!(
+        r#"{{"ripped_at": "then", "catalogs": [{{"mode": "NORMAL", "pages": [{{"id": -1, "name": "n", "localization": "", "icon": 1, "visible": true, "layout": "default_3x3", "images": [], "texts": [], "offers": [{offer}], "children": [{{"id": 3, "name": "c", "localization": "", "icon": 1, "visible": true, "page_status": "not ripped", "children": []}}]}}]}}]}}"#
+    );
+    let mut digest = diff::Digest::new();
+    digest.feed(crafted.as_bytes(), true, Some(&items), None).unwrap();
+    let rows = digest.finish().unwrap();
+    assert_eq!(rows.len(), 2, "the two pages, no offer");
+    let new = recorded_catalog(&whole_rip_files(), FOLDER);
+    let changes = diff::compare(rows, "x", &new, Some(&items), None, true);
+    assert!(!changes.summary.summary().is_empty());
+
+    let err = |text: &[u8], piece: usize| {
+        let mut digest = diff::Digest::new();
+        for chunk in text.chunks(piece.max(1)) {
+            digest.feed(chunk, false, None, None)?;
+        }
+        digest.feed(&[], true, None, None)
+    };
+    let deep = format!(r#"{{"zz": {}{}}}"#, "[".repeat(200), "]".repeat(200));
+    assert!(err(deep.as_bytes(), 7).unwrap_err().contains("nested deeper"));
+    let mut big = br#"{"ripped_at": ""#.to_vec();
+    big.extend(std::iter::repeat_n(b'a', 5 * 1024 * 1024));
+    big.extend_from_slice(br#""}"#);
+    assert!(err(&big, 64 * 1024).unwrap_err().contains("longer than"));
+    let number = format!(r#"{{"zz": [{}]}}"#, "1".repeat(100));
+    assert!(err(number.as_bytes(), 1000).unwrap_err().contains("number"));
+    // 3 MiB in 1 KiB pieces: 3,072 pieces; scanning from the start of the value each time would
+    // go over ~4.5 GB.
+    let mut long = br#"{"ripped_at": ""#.to_vec();
+    long.extend(std::iter::repeat_n(b'a', 3 * 1024 * 1024));
+    long.extend_from_slice(br#"", "catalogs": []}"#);
+    let started = std::time::Instant::now();
+    err(&long, 1024).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+}
+
+/// The files of [`whole_rip`], in a map with the folder.
+fn whole_rip_files() -> BTreeMap<String, Vec<u8>> {
+    whole_rip()
+        .into_iter()
+        .map(|(k, v)| (format!("{FOLDER}/{k}"), v))
+        .collect()
+}
+
+/// A recording is not trusted either: session.json and the packet files have size limits (by
+/// the folder listing first), and a packet file larger than one read is read across calls.
+#[test]
+fn recordings_have_size_limits_and_big_files_are_read_in_pieces() {
+    let mut files = whole_rip_files();
+    let load = |files: &BTreeMap<String, Vec<u8>>| -> Result<(Recorded, usize), String> {
+        let mut source = MemSource::with_files(files.iter());
+        let mut loader = Loader::new(FOLDER);
+        let mut calls = 0;
+        loop {
+            calls += 1;
+            if let Some(r) = loader.step(&mut source, &mut || false)? {
+                return Ok((r, calls));
+            }
+        }
+    };
+    let (_, calls) = load(&files).unwrap();
+    // A big extra answer: read in pieces of at most 4 MiB, over more calls.
+    let extra: Vec<u8> = (0..9 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    files.insert(format!("{FOLDER}/packets/extra_big.bin"), extra.clone());
+    let (recorded, more_calls) = load(&files).unwrap();
+    assert_eq!(recorded.extras["big"], extra);
+    assert!(more_calls >= calls + 3, "{calls} -> {more_calls}");
+    // Too big, by the listing.
+    files.insert(format!("{FOLDER}/packets/page_NORMAL_99.bin"), vec![0; 17 * 1024 * 1024]);
+    let e = load(&files).unwrap_err();
+    assert!(e.contains("not a recorded packet"), "{e}");
+    files.remove(&format!("{FOLDER}/packets/page_NORMAL_99.bin"));
+    // A session.json of 2 MiB.
+    let mut session = files[&format!("{FOLDER}/packets/session.json")].clone();
+    session.extend(std::iter::repeat_n(b' ', 2 * 1024 * 1024));
+    files.insert(format!("{FOLDER}/packets/session.json"), session);
+    let e = load(&files).unwrap_err();
+    assert!(e.contains("larger than"), "{e}");
+}
+
+/// A Packet Logger export with a line that never ends is refused (not held whole).
+#[test]
+fn packet_logger_lines_have_a_limit() {
+    let mut source = MemSource::new();
+    let mut text = logger_export().into_bytes();
+    text.extend(std::iter::repeat_n(b'x', 9 * 1024 * 1024));
+    source.files.insert("log.txt".into(), text);
+    let run = run_tcp(
+        Job::import_log(
+            options(1),
+            ImportLog {
+                path: "log.txt".into(),
+                ..ImportLog::default()
+            },
+        ),
+        0,
+        &mut MemSink::default(),
+        Some(&mut source),
+        None,
+    );
+    let message = &failed(&run).message;
+    assert!(message.contains("a line is longer than"), "{message}");
 }

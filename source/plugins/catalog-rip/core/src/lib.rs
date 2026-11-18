@@ -42,7 +42,7 @@ use std::path::PathBuf;
 
 pub use conn::{ConnectionInfo, PacketInfo};
 pub use export::ItemsBase;
-pub use diff::CatalogDiff;
+pub use diff::{CatalogDiff, ChangesSummary};
 pub use job::{
     Clock, Failure, Fetch, FetchError, ImportLog, Job, JobIo, Phase, ProfileChoice, Progress,
     RipOptions, Sink, Step, Summary,

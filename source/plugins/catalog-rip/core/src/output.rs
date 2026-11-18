@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::{fmt, io};
 
-use crate::diff::{self, CatalogDiff, Changes};
+use crate::diff::{self, Changes, ChangesJson, ChangesSummary};
 use crate::export::{self, ItemsBase, RippedCatalog, RippedMode, SqlFile, SqlStats};
 use crate::extras;
 use crate::furnidata::Furnidata;
@@ -259,9 +259,12 @@ const LISTED: [DataFile; 11] = [
     DataFile::Extras,
 ];
 
-/// The order [`DataExport`] makes them in: catalog.json, the biggest file, last, once the
-/// furnidata entries are no longer needed.
+/// The order [`DataExport`] makes them in: the changes files first (the earlier rip's rows they
+/// need are dropped then), catalog.json, the biggest file, last, once the furnidata entries are
+/// no longer needed.
 const MADE: [DataFile; 11] = [
+    DataFile::Changes,
+    DataFile::ManagerChanges,
     DataFile::Sql(SqlFile::Pages),
     DataFile::Sql(SqlFile::Items),
     DataFile::Sql(SqlFile::PagesBc),
@@ -269,8 +272,6 @@ const MADE: [DataFile; 11] = [
     DataFile::Manager,
     DataFile::MissingFurni,
     DataFile::MissingFurnidata,
-    DataFile::Changes,
-    DataFile::ManagerChanges,
     DataFile::Extras,
     DataFile::Catalog,
 ];
@@ -536,7 +537,15 @@ impl DataExport {
                         continue;
                     };
                     log.push(changes.log_line());
-                    write_json(&mut out, &changes.report);
+                    write_json(
+                        &mut out,
+                        &ChangesJson {
+                            changes,
+                            new: catalog,
+                            items: input.items,
+                            furnidata: input.furnidata,
+                        },
+                    );
                 }
                 DataFile::ManagerChanges => {
                     let Some(changes) = input.changes else {
@@ -583,7 +592,7 @@ impl DataExport {
     }
 
     /// Whether a file still to make reads the hotel's items_base (the item SQL files,
-    /// catalog_manager.sql, missing_furni.json, catalog_manager_changes.sql).
+    /// catalog_manager.sql, missing_furni.json, the changes files).
     pub fn needs_items_base(&self) -> bool {
         MADE[self.next.min(MADE.len())..].iter().any(|f| {
             matches!(
@@ -591,6 +600,7 @@ impl DataExport {
                 DataFile::Sql(_)
                     | DataFile::Manager
                     | DataFile::MissingFurni
+                    | DataFile::Changes
                     | DataFile::ManagerChanges
             )
         })
@@ -698,7 +708,7 @@ pub struct ReadmeInput<'a> {
     pub furnidata_names: Option<usize>,
     /// What changed since an earlier rip (the CHANGES section), and whether the changes file
     /// deletes the removed pages and offers.
-    pub changes: Option<&'a CatalogDiff>,
+    pub changes: Option<&'a ChangesSummary>,
     pub diff_delete_removed: bool,
     /// Something was written into `packets/` (the PACKETS section).
     pub packets: bool,
@@ -731,8 +741,8 @@ pub fn readme(input: &ReadmeInput) -> String {
         input.profile.name,
         input.profile.kind.label()
     ));
-    if let Some(report) = input.changes {
-        readme.push_str(&diff::readme_section(report, input.diff_delete_removed));
+    if let Some(summary) = input.changes {
+        readme.push_str(&diff::readme_section(summary, input.diff_delete_removed));
     }
     if input.missing_furni > 0 {
         readme.push_str(&format!(

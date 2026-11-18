@@ -21,12 +21,17 @@ use crate::job::Sink;
 use crate::names::safe_file_name;
 use crate::packets::{self, CatalogIndex, CatalogPage, Headers};
 use crate::profiles::HotelProfile;
-use crate::source::{self, Source};
+use crate::source::{self, Source, MAX_READ};
 
 pub const PACKETS_DIR: &str = "packets";
 pub const SESSION_FILE: &str = "session.json";
 /// The `format` of session.json this version writes and reads.
 pub const FORMAT: u32 = 1;
+/// The largest session.json read back.
+pub const MAX_SESSION: usize = 1024 * 1024;
+/// The largest recorded packet read back (a packet's length is an i32, but no catalogue answer
+/// comes near this).
+pub const MAX_PACKET_FILE: u64 = 16 * 1024 * 1024;
 
 /// `packets/session.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -256,8 +261,11 @@ impl Recorded {
 #[derive(Debug)]
 pub struct Loader {
     folder: String,
-    names: Option<Vec<String>>,
-    listed: Vec<String>,
+    /// The packet files: (name, size as listed).
+    names: Option<Vec<(String, u64)>>,
+    listed: Vec<(String, u64)>,
+    /// The file being read, in pieces: its bytes so far.
+    reading: Option<Vec<u8>>,
     list_done: bool,
     next: usize,
     out: Option<Recorded>,
@@ -269,6 +277,7 @@ impl Loader {
             folder: folder.trim_end_matches('/').to_string(),
             names: None,
             listed: Vec::new(),
+            reading: None,
             list_done: false,
             next: 0,
             out: None,
@@ -288,7 +297,8 @@ impl Loader {
         source::join(&self.folder, PACKETS_DIR)
     }
 
-    /// Reads on while `more()` says so (at least one read per call). `Ok(Some(_))`: all read.
+    /// Reads on while `more()` says so (at least one read per call; a file larger than a read is
+    /// read across calls). `Ok(Some(_))`: all read.
     pub fn step(
         &mut self,
         source: &mut dyn Source,
@@ -298,7 +308,7 @@ impl Loader {
         loop {
             if self.out.is_none() {
                 let path = format!("{dir}/{SESSION_FILE}");
-                let text = source::read_all(source, &path).map_err(|e| {
+                let text = source::read_capped(source, &path, MAX_SESSION).map_err(|e| {
                     format!(
                         "{} has no recorded packets ({path} is missing): it was ripped without recording, or is not a rip folder: {e}",
                         self.folder
@@ -321,31 +331,54 @@ impl Loader {
                     .map_err(|e| format!("listing {dir}: {e}"))?;
                 if page.is_empty() {
                     self.list_done = true;
-                    let mut names: Vec<String> = std::mem::take(&mut self.listed)
+                    let mut names: Vec<(String, u64)> = std::mem::take(&mut self.listed)
                         .into_iter()
-                        .filter(|n| n.ends_with(".bin"))
+                        .filter(|(n, _)| n.ends_with(".bin"))
                         .collect();
                     names.sort();
+                    if let Some((name, size)) =
+                        names.iter().find(|(_, size)| *size > MAX_PACKET_FILE)
+                    {
+                        return Err(format!(
+                            "{dir}/{name} is {size} bytes: not a recorded packet (at most {MAX_PACKET_FILE})"
+                        ));
+                    }
                     self.names = Some(names);
                 } else {
                     // Folders too: the paging counts every entry.
                     self.listed.extend(page.into_iter().map(|e| {
                         if e.is_folder {
-                            String::new()
+                            (String::new(), 0)
                         } else {
-                            e.name
+                            (e.name, e.size)
                         }
                     }));
                 }
             } else {
                 let names = self.names.as_ref().expect("listed");
-                let Some(name) = names.get(self.next).cloned() else {
+                let Some((name, size)) = names.get(self.next).cloned() else {
                     return Ok(self.out.take());
                 };
-                self.next += 1;
-                let body = source::read_all(source, &format!("{dir}/{name}"))
-                    .map_err(|e| format!("reading {dir}/{name}: {e}"))?;
-                self.out.as_mut().expect("session").add(&name, body)?;
+                let path = format!("{dir}/{name}");
+                let mut body = self.reading.take().unwrap_or_default();
+                // One piece per call; the piece that would pass the listed size shows the end.
+                let want = (size.saturating_sub(body.len() as u64) + 1).min(MAX_READ as u64) as u32;
+                let piece = source
+                    .read(&path, body.len() as u64, want)
+                    .map_err(|e| format!("reading {path}: {e}"))?;
+                body.extend_from_slice(&piece);
+                if body.len() as u64 > MAX_PACKET_FILE {
+                    return Err(format!(
+                        "{path} is larger than {MAX_PACKET_FILE} bytes: not a recorded packet"
+                    ));
+                }
+                if !piece.is_empty() && piece.len() as u32 == want {
+                    // More may follow (a big file, or one that grew): the next call goes on.
+                    self.reading = Some(body);
+                } else {
+                    self.next += 1;
+                    self.out.as_mut().expect("session").add(&name, body)?;
+                }
             }
             if !more() {
                 return Ok(None);

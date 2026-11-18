@@ -33,7 +33,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use catalog_rip_core::job::{
-    Fetch, FetchError, Job, JobIo, Phase, RipOptions, Sink, Step, Summary,
+    Fetch, FetchError, ImportLog, Job, JobIo, Phase, RipOptions, Sink, Step, Summary,
 };
 use catalog_rip_core::output::items_base;
 use catalog_rip_core::source::{MemSource, Source};
@@ -207,8 +207,20 @@ fn index_packet() -> Packet {
     w.bool(false).string("NORMAL").packet()
 }
 
-/// A page; `raised`: every 50th offer costs a credit more (the hotel changed its prices).
-fn page_packet_priced(id: i32, raised: bool) -> Packet {
+/// How the hotel's catalogue changed since the earlier rip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Change {
+    None,
+    /// Every 50th offer costs a credit more.
+    SomePrices,
+    /// Every offer costs a credit more.
+    AllPrices,
+    /// Every offer has another id.
+    NewIds,
+}
+
+/// A page of the hotel after `change`.
+fn page_packet_priced(id: i32, change: Change) -> Packet {
     let mut w = Writer::new(PAGE)
         .i32(id)
         .string("NORMAL")
@@ -226,7 +238,7 @@ fn page_packet_priced(id: i32, raised: bool) -> Packet {
     let offers = if id <= ROOTS { 0 } else { OFFERS_PER_PAGE };
     w = w.i32(offers);
     for k in 0..offers {
-        let offer = id * 10 + k;
+        let offer = id * 10 + k + if change == Change::NewIds { 1_000_000 } else { 0 };
         let n = (id - ROOTS - 1) * OFFERS_PER_PAGE + k;
         let class = n % FURNI + 1;
         let name = classname(class).replace('*', "_");
@@ -234,7 +246,12 @@ fn page_packet_priced(id: i32, raised: bool) -> Packet {
             .i32(offer)
             .string(&name)
             .bool(false)
-            .i32(3 + n % 23 + i32::from(raised && n % 50 == 0))
+            .i32(
+                3 + n % 23
+                    + i32::from(
+                        change == Change::AllPrices || (change == Change::SomePrices && n % 50 == 0),
+                    ),
+            )
             .i32(if n % 11 == 0 { 5 } else { 0 })
             .i32(if n % 11 == 0 { 5 } else { 0 })
             .bool(true);
@@ -479,13 +496,13 @@ struct StepStat {
     time: Duration,
 }
 
-/// The Habbo-sized test hotel (`raised`: with the changed prices); `end_at`: the hotel
-/// connection ends at that page request.
-fn habbo(raised: bool, end_at: Option<usize>) -> SimHotel {
+/// The Habbo-sized test hotel after `change`; `end_at`: the hotel connection ends at that page
+/// request.
+fn habbo(change: Change, end_at: Option<usize>) -> SimHotel {
     SimHotel {
         index: Box::new(|mode| (mode == "NORMAL").then(index_packet)),
         page: Box::new(move |id, mode| {
-            (mode == "NORMAL" && (1..=PAGES).contains(&id)).then(|| page_packet_priced(id, raised))
+            (mode == "NORMAL" && (1..=PAGES).contains(&id)).then(|| page_packet_priced(id, change))
         }),
         end_at_page_request: end_at,
         ..official_hotel()
@@ -636,7 +653,7 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
     let mut sink = CountingSink::default();
     let (end, steps) = measure(
         Job::new(habbo_options()),
-        habbo(false, None),
+        habbo(Change::None, None),
         0,
         &mut sink,
         None,
@@ -663,34 +680,69 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
     assert!(catalog_json > 30 * 1024 * 1024, "catalog.json is {:.1} MiB", mib(catalog_json));
 }
 
-/// A rip stopped after 2,000 pages goes on from its recording (copied into the new rip folder,
-/// the rest asked) and is compared with an earlier whole rip (its catalog.json streamed into the
-/// rows of the comparison) after the hotel changed some prices: every step within 40 MiB.
-#[test]
-#[ignore = "slow in a debug build; run with --release (see the module docs)"]
-fn diff_memory_at_habbo_size() {
-    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    let mut source = hidden(MemSource::new);
-
-    // The earlier rip: its catalog.json is kept.
-    let mut sink = CountingSink::keeping(|path| path.ends_with("/catalog.json"));
+/// The earlier rip of the diff and re-export cases: a whole rip whose catalog.json and packets/
+/// are kept (not counted) in `source`. Returns its folder.
+fn earlier_rip(source: &mut MemSource) -> String {
+    let mut sink = CountingSink::keeping(|path| {
+        path.ends_with("/catalog.json") || path.contains("/packets/")
+    });
     let (end, _) = measure(
         Job::new(habbo_options()),
-        habbo(false, None),
+        habbo(Change::None, None),
         0,
         &mut sink,
         None,
     );
     let earlier = summary(end).folder;
-    sink.into_source(&mut source);
-    let earlier_json = source.files[&format!("{earlier}/catalog.json")].len();
-    assert!(earlier_json > 30 * 1024 * 1024);
+    sink.into_source(source);
+    assert!(source.files[&format!("{earlier}/catalog.json")].len() > 30 * 1024 * 1024);
+    earlier
+}
+
+/// A rip of the hotel after `change`, compared with `earlier` (in `source`).
+fn compared(
+    name: &str,
+    change: Change,
+    earlier: &str,
+    start_ms: u64,
+    source: &mut MemSource,
+) -> Summary {
+    let options = RipOptions {
+        diff_against: Some(earlier.to_string()),
+        ..habbo_options()
+    };
+    let mut sink = CountingSink::default();
+    let (end, steps) = measure(
+        Job::new(options),
+        habbo(change, None),
+        start_ms,
+        &mut sink,
+        Some(source),
+    );
+    for (file, len) in sink.files.iter().filter(|(f, _)| f.contains("changes")) {
+        println!("  {file}: {:.2} MiB", mib(*len));
+    }
+    report(name, &steps);
+    summary(end)
+}
+
+/// A rip stopped after 2,000 pages goes on from its recording (copied into the new rip folder,
+/// the rest asked) and is compared with an earlier whole rip (its catalog.json streamed into the
+/// rows of the comparison) after the hotel changed some prices; then the worst cases of the
+/// comparison: every price changed, and every offer under a new id (all removed and added).
+/// Every step within 40 MiB.
+#[test]
+#[ignore = "slow in a debug build; run with --release (see the module docs)"]
+fn diff_memory_at_habbo_size() {
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut source = hidden(MemSource::new);
+    let earlier = earlier_rip(&mut source);
 
     // A rip that stops after 2,000 pages: its packets are kept.
     let mut sink = CountingSink::keeping(|path| path.contains("/packets/"));
     let (end, steps) = measure(
         Job::new(habbo_options()),
-        habbo(true, Some(2_001)),
+        habbo(Change::SomePrices, Some(2_001)),
         3_600_000,
         &mut sink,
         None,
@@ -710,7 +762,7 @@ fn diff_memory_at_habbo_size() {
     let mut sink = CountingSink::default();
     let (end, steps) = measure(
         Job::resume(options, &stopped),
-        habbo(true, None),
+        habbo(Change::SomePrices, None),
         7_200_000,
         &mut sink,
         Some(&mut source),
@@ -724,21 +776,115 @@ fn diff_memory_at_habbo_size() {
     assert_eq!(end.pages, PAGES as usize);
     assert_eq!(end.resumed_pages, 2_000);
     let changes = end.changes.expect("compared");
-    assert_eq!(changes.since.as_deref(), Some(earlier.as_str()));
+    assert_eq!(changes.since, earlier);
     // Every 50th offer that is a row of catalog_manager.sql (its products are in items_base).
-    assert!(changes.changed.len() > 100, "{}", changes.summary());
-    assert!(changes.added.is_empty() && changes.removed.is_empty(), "{}", changes.summary());
-    assert!(changes.changed.iter().all(|e| e.changed.keys().copied().eq(["cost_credits"])));
+    assert!(changes.changed() > 100, "{}", changes.summary());
+    assert_eq!(changes.added() + changes.removed(), 0, "{}", changes.summary());
     assert!(sink
         .files
         .iter()
         .any(|(name, _)| name.ends_with("/catalog_manager_changes.sql")));
+
+    let all = compared("every price changed", Change::AllPrices, &earlier, 10_800_000, &mut source);
+    let all = all.changes.expect("compared");
+    println!("  {}", all.summary());
+    assert!(all.changed() > 15_000, "{}", all.summary());
+
+    let ids = compared("every offer under a new id", Change::NewIds, &earlier, 14_400_000, &mut source);
+    let ids = ids.changes.expect("compared");
+    println!("  {}", ids.summary());
+    assert!(ids.added() > 15_000 && ids.removed() > 15_000, "{}", ids.summary());
+
     println!(
-        "earlier catalog.json: {:.1} MiB, read in {} pieces of at most {:.1} MiB",
-        mib(earlier_json),
+        "earlier catalog.json read in {} reads of at most {:.1} MiB",
         source.reads,
         mib(source.largest_read as usize)
     );
     assert!(source.largest_read <= 4 * 1024 * 1024);
+    hidden(|| drop(source));
+}
+
+/// G-Earth's text form of a packet (PacketStringUtils.toString).
+fn packet_text(p: &Packet) -> String {
+    p.to_bytes()
+        .iter()
+        .map(|&b| {
+            if !(32..=160).contains(&b) || b == 127 || matches!(b, b'[' | b']' | b'{' | b'}') {
+                format!("[{b}]")
+            } else {
+                (b as char).to_string()
+            }
+        })
+        .collect()
+}
+
+/// A recorded Habbo-sized rip written again without the hotel, and the same catalogue imported
+/// from a G-Earth Packet Logger export of someone opening every page: every step within 40 MiB.
+#[test]
+#[ignore = "slow in a debug build; run with --release (see the module docs)"]
+fn reexport_and_import_memory_at_habbo_size() {
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let mut source = hidden(MemSource::new);
+    let earlier = earlier_rip(&mut source);
+
+    let options = RipOptions {
+        diff_with_previous: false,
+        ..habbo_options()
+    };
+    let mut sink = CountingSink::default();
+    let (end, steps) = measure(
+        Job::reexport(options.clone(), &earlier),
+        habbo(Change::None, None),
+        3_600_000,
+        &mut sink,
+        Some(&mut source),
+    );
+    report("re-export", &steps);
+    let end = summary(end);
+    assert_eq!(end.pages, PAGES as usize);
+
+    // The log: the index, then every page asked and answered, with a game packet between.
+    let log = hidden(|| {
+        let mut log = String::new();
+        let entry = |log: &mut String, out: bool, p: &Packet| {
+            let _ = write!(
+                log,
+                "{}[{}] -> {}\n--------------------\n",
+                if out { "Outgoing" } else { "Incoming" },
+                p.header,
+                packet_text(p)
+            );
+        };
+        let noise = Writer::new(2000).i32(7).string("hello").packet();
+        entry(&mut log, true, &catalog_rip_core::packets::get_catalog_index(support::GET_INDEX, "NORMAL"));
+        entry(&mut log, false, &index_packet());
+        for id in 1..=PAGES {
+            entry(&mut log, true, &catalog_rip_core::packets::get_catalog_page(support::GET_PAGE, id, "NORMAL"));
+            entry(&mut log, false, &noise);
+            entry(&mut log, false, &page_packet_priced(id, Change::None));
+        }
+        log.into_bytes()
+    });
+    println!("Packet Logger export: {:.1} MiB", mib(log.len()));
+    hidden(|| source.files.insert("packets.txt".into(), log));
+    let mut sink = CountingSink::default();
+    let (end, steps) = measure(
+        Job::import_log(
+            options,
+            ImportLog {
+                path: "packets.txt".into(),
+                host: "game-nl.habbo.com".into(),
+                profile: None,
+            },
+        ),
+        habbo(Change::None, None),
+        7_200_000,
+        &mut sink,
+        Some(&mut source),
+    );
+    report("Packet Logger import", &steps);
+    let end = summary(end);
+    assert_eq!(end.pages, PAGES as usize);
+    assert_eq!(end.items, ((PAGES - ROOTS) * OFFERS_PER_PAGE) as usize);
     hidden(|| drop(source));
 }

@@ -48,6 +48,23 @@ pub fn read_all(source: &mut dyn Source, path: &str) -> Result<Vec<u8>, String> 
     }
 }
 
+/// Reads the whole file `path`, refusing one larger than `cap` bytes (what it holds is not
+/// trusted: a file of that name may be anything).
+pub fn read_capped(source: &mut dyn Source, path: &str, cap: usize) -> Result<Vec<u8>, String> {
+    let mut out = Vec::new();
+    loop {
+        let want = (cap + 1 - out.len()).min(MAX_READ as usize) as u32;
+        let piece = source.read(path, out.len() as u64, want)?;
+        if piece.is_empty() {
+            return Ok(out);
+        }
+        out.extend_from_slice(&piece);
+        if out.len() > cap {
+            return Err(format!("{path} is larger than {cap} bytes"));
+        }
+    }
+}
+
 /// Every entry of the folder `path`, page by page.
 pub fn list_all(source: &mut dyn Source, path: &str) -> Result<Vec<SourceEntry>, String> {
     let mut out = Vec::new();

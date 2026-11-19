@@ -377,6 +377,17 @@ fn items_rows() -> Vec<ItemsBaseRow> {
 #[derive(Default)]
 struct BigFetch {
     last: Option<String>,
+    /// The images' size (0: 4 KiB).
+    image_size: usize,
+    /// URLs per [`Fetch::get_many`] (0: one at a time, the default), as the plugin's
+    /// `http::get_many` (8); and the largest batch asked.
+    max_batch: usize,
+    largest_batch: usize,
+    /// Images downloaded.
+    images: usize,
+    /// The simulated clock, moved 100 ms per image call (a download takes time: the job
+    /// spreads the images over its steps).
+    clock: Option<SimClock>,
 }
 
 impl Fetch for BigFetch {
@@ -396,10 +407,25 @@ impl Fetch for BigFetch {
         } else if url.contains("/gamedata/productdata_json/") {
             response(productdata_json)
         } else if url.ends_with(".png") {
-            Ok(vec![0x89; 4096])
+            self.images += 1;
+            Ok(vec![0x89; if self.image_size == 0 { 4096 } else { self.image_size }])
         } else {
             Err(FetchError::NotFound)
         }
+    }
+
+    fn get_many(&mut self, urls: &[&str]) -> Vec<Result<Vec<u8>, FetchError>> {
+        assert!(urls.len() <= self.max_batch(), "{} URLs", urls.len());
+        self.largest_batch = self.largest_batch.max(urls.len());
+        if let Some(clock) = &self.clock {
+            clock.0.set(clock.0.get() + 100);
+        }
+        // Every body is held until the call returns (as `http::get_many` returns them all).
+        urls.iter().map(|url| self.get(url)).collect()
+    }
+
+    fn max_batch(&self) -> usize {
+        self.max_batch.max(1)
     }
 }
 
@@ -522,15 +548,28 @@ fn habbo_options() -> RipOptions {
 /// Steps `job` to its end as the plugin does (budget 200 per tick, G-Earth closed and items_base
 /// dropped once the job is done with them), measuring every step: the end and the steps.
 fn measure(
+    job: Job,
+    hotel: SimHotel,
+    start_ms: u64,
+    sink: &mut CountingSink,
+    source: Option<&mut MemSource>,
+) -> (Step, Vec<StepStat>) {
+    measure_with(job, hotel, start_ms, sink, source, &mut BigFetch::default())
+}
+
+/// [`measure`] with this getter.
+fn measure_with(
     mut job: Job,
     hotel: SimHotel,
     start_ms: u64,
     sink: &mut CountingSink,
     mut source: Option<&mut MemSource>,
+    fetch: &mut BigFetch,
 ) -> (Step, Vec<StepStat>) {
     let base = live();
     let clock = SimClock::default();
     clock.0.set(start_ms);
+    fetch.clock = Some(clock.clone());
     let mut sim = Some(Chunked {
         sim: SimGEarth::new(clock.clone(), hotel),
         pending: Vec::new(),
@@ -539,7 +578,6 @@ fn measure(
         let rows = items_rows();
         items_base(&rows)
     });
-    let mut fetch = BigFetch::default();
     let mut steps: Vec<StepStat> = Vec::new();
     let end = loop {
         let files_before = sink.files.len();
@@ -551,7 +589,7 @@ fn measure(
         };
         let mut io = JobIo {
             transport,
-            fetch: &mut fetch,
+            fetch: &mut *fetch,
             sink: &mut *sink,
             clock: &clock,
             items: items.as_ref(),
@@ -678,6 +716,44 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
         .map(|(_, len)| *len)
         .expect("catalog.json");
     assert!(catalog_json > 30 * 1024 * 1024, "catalog.json is {:.1} MiB", mib(catalog_json));
+}
+
+/// The images 8 at a time, as the plugin fetches them (`http::get_many`): with images of
+/// 4 KiB a batch is 8; with images of 1 and 3 MiB the batches shrink (about 8 MiB of bodies per
+/// step) so every images step stays within 40 MiB.
+#[test]
+#[ignore = "slow in a debug build; run with --release (see the module docs)"]
+fn images_in_batches_fit_in_the_plugins_memory() {
+    let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+    for (image_size, batch) in [(0, 8), (1024 * 1024, 8), (3 * 1024 * 1024, 2)] {
+        let mut fetch = BigFetch {
+            image_size,
+            max_batch: 8,
+            ..BigFetch::default()
+        };
+        let mut sink = CountingSink::default();
+        let (end, steps) = measure_with(
+            Job::new(habbo_options()),
+            habbo(Change::None, None),
+            0,
+            &mut sink,
+            None,
+            &mut fetch,
+        );
+        let end = summary(end);
+        assert_eq!(end.images.downloaded, fetch.images, "every image fetched once");
+        assert!(fetch.images > 100, "{} images", fetch.images);
+        assert_eq!(fetch.largest_batch, batch, "images of {image_size} bytes");
+        let images = steps.iter().filter(|s| s.phase == Phase::Images).map(|s| s.peak).max().unwrap_or(0);
+        println!(
+            "images of {} KiB, {} per batch: {} images, peak live heap of an images step {:.1} MiB",
+            image_size.max(4096) / 1024,
+            fetch.largest_batch,
+            fetch.images,
+            mib(images)
+        );
+        report(&format!("images of {} KiB", image_size.max(4096) / 1024), &steps);
+    }
 }
 
 /// The earlier rip of the diff and re-export cases: a whole rip whose catalog.json and packets/
@@ -866,6 +942,7 @@ fn reexport_and_import_memory_at_habbo_size() {
         log.into_bytes()
     });
     println!("Packet Logger export: {:.1} MiB", mib(log.len()));
+    let log_len = log.len();
     hidden(|| source.files.insert("packets.txt".into(), log));
     let mut sink = CountingSink::default();
     let (end, steps) = measure(
@@ -883,6 +960,21 @@ fn reexport_and_import_memory_at_habbo_size() {
         Some(&mut source),
     );
     report("Packet Logger import", &steps);
+    // The plugin holds a picked log whole (a picked file is read at once) until the job has
+    // read it (`Job::reads_import_log`, false once the Load steps are over): with it, the Load
+    // steps stay within 40 MiB too.
+    let load = steps
+        .iter()
+        // The first one starts in Connect.
+        .filter(|s| matches!(s.phase, Phase::Connect | Phase::Load))
+        .map(|s| s.peak)
+        .max()
+        .expect("Load steps");
+    println!(
+        "  Load steps with the log held: {:.1} MiB",
+        mib(load + log_len)
+    );
+    assert!(load + log_len <= 40 * 1024 * 1024);
     let end = summary(end);
     assert_eq!(end.pages, PAGES as usize);
     assert_eq!(end.items, ((PAGES - ROOTS) * OFFERS_PER_PAGE) as usize);

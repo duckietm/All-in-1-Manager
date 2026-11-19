@@ -1888,3 +1888,93 @@ fn no_fetch_in_the_step_that_lets_gearth_go() {
     assert!(failed(&run).gearth_error.is_some());
     assert_eq!(released, 1);
 }
+
+/// A getter that fetches up to `max` URLs per call, as the plugin's `http::get_many`, and keeps
+/// the size of every call.
+struct Batched {
+    inner: MemFetch,
+    max: usize,
+    calls: Vec<usize>,
+}
+
+impl catalog_rip_core::Fetch for Batched {
+    fn get(&mut self, url: &str) -> Result<Vec<u8>, catalog_rip_core::FetchError> {
+        self.calls.push(1);
+        self.inner.get(url)
+    }
+
+    fn get_many(&mut self, urls: &[&str]) -> Vec<Result<Vec<u8>, catalog_rip_core::FetchError>> {
+        assert!(urls.len() <= self.max, "{} URLs in one call", urls.len());
+        self.calls.push(urls.len());
+        urls.iter().map(|url| self.inner.get(url)).collect()
+    }
+
+    fn max_batch(&self) -> usize {
+        self.max
+    }
+}
+
+#[test]
+fn images_in_batches_give_the_same_files_counts_and_log() {
+    // The CDN lacks cr_infopic3 (Habbo's image host has it), front_teaser (nobody has it), and
+    // its catalog_header gif host is dead (an error, then the next URL).
+    let cdn = || {
+        let mut cdn = fake_cdn();
+        MemFetch {
+            answer: Box::new(move |url| {
+                if url == "https://images.habbo.com/c_images/catalogue/cr_infopic3.png" {
+                    return Ok(b"habbo".to_vec());
+                }
+                if url.contains("cr_infopic3") || url.contains("front_teaser") {
+                    return Err(catalog_rip_core::FetchError::NotFound);
+                }
+                if url.contains("icon_3") {
+                    return Err(catalog_rip_core::FetchError::Failed("connection reset".into()));
+                }
+                (cdn.answer)(url)
+            }),
+            asked: Vec::new(),
+        }
+    };
+    let rip = |max: usize| {
+        let sim = Sim::new(official_hotel());
+        let mut opts = sim_options();
+        opts.download_images = true;
+        opts.catalog_url = Some(format!("{CDN}/c_images/catalogue"));
+        opts.icon_url = Some(format!("{CDN}/icons/icon_"));
+        let mut job = Job::new(opts);
+        let mut fetch = Batched {
+            inner: cdn(),
+            max,
+            calls: Vec::new(),
+        };
+        let mut sink = MemSink::default();
+        let run = run_job(
+            &mut job,
+            sim.link.clone(),
+            drop,
+            &mut fetch,
+            &mut sink,
+            &sim.clock,
+            (None, None),
+            |_| 50,
+            |_, _| {},
+        );
+        let report = done(&run).clone();
+        let mut asked = fetch.inner.asked.clone();
+        asked.sort();
+        (report, sink.under(&done(&run).folder), run.log, asked, fetch.calls)
+    };
+    let (one, one_files, one_log, one_asked, one_calls) = rip(1);
+    let (many, many_files, many_log, many_asked, many_calls) = rip(8);
+    assert!(one_calls.iter().all(|n| *n == 1));
+    // One at a time until an image's size is known, then 8 at a time.
+    assert!(many_calls.contains(&8), "{many_calls:?}");
+    assert!(many_calls.len() < one_calls.len() / 2, "{many_calls:?}");
+    assert_eq!(many.images, one.images);
+    assert_eq!(many.images.failed, 1, "{:?}", many.images);
+    assert_eq!(many.images.missing_names, ["front_teaser"]);
+    assert_eq!(many_files, one_files, "{}", show_diff(&many_files, &one_files));
+    assert_eq!(many_log, one_log);
+    assert_eq!(many_asked, one_asked, "the same URLs, each once");
+}

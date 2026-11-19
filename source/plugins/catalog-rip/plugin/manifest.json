@@ -19,6 +19,7 @@
     "http:www.habbo.com.tr",
     "http:ask",
     "sql:read:items_base",
+    "sql:read:catalog_pages,catalog_items,catalog_pages_bc,catalog_items_bc",
     "files"
   ],
   "page_title": "Catalogue ripper",

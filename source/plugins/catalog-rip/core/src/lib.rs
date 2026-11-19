@@ -137,31 +137,6 @@ pub enum RipEvent {
     },
 }
 
-/// The rip was stopped by the user. Find it with
-/// `error.is::<Cancelled>()`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("The catalogue rip was cancelled.")]
-pub struct Cancelled;
-
-/// The rip stopped early (hotel disconnected, cancelled, ...) after writing what it had read
-/// (the message of [`job::Failure`]); [`job::Job::resume`] with its folder goes on.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PartialOutput {
-    pub folder: PathBuf,
-    pub reason: String,
-}
-
-impl std::fmt::Display for PartialOutput {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{}\nThe catalogue read so far was saved in {}.",
-            self.reason,
-            self.folder.display()
-        )
-    }
-}
-
 /// One items_base row, to turn product class ids into item ids.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemsBaseRow {

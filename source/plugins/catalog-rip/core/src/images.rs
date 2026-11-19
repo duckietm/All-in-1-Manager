@@ -1,10 +1,11 @@
 //! The images a rip refers to: page images from the catalogue image URL (`<name>.gif`, else
 //! `<name>.png`), page icons from the icon URL (`icon_<n>.png`) and the frontpage promo images
 //! (relative to c_images). Planning only: [`plan`] lists what to download from where and where
-//! it goes; the job downloads one at a time through its `Fetch`.
+//! it goes; the job downloads them through its `Fetch`, up to `Fetch::max_batch` at a time
+//! (`Fetch::get_many`: 8 in the plugin, as the built-in ran 8 downloads at a time).
 //!
-//! (`images.rs` of the built-in crate, without the download loop: that one ran 8 downloads at a
-//! time with its own HTTP client.)
+//! (`images.rs` of the built-in crate, without the download loop, which had its own HTTP
+//! client.)
 
 use std::collections::BTreeSet;
 

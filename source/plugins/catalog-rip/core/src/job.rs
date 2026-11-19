@@ -23,7 +23,7 @@
 //! or re-exported rip into its own folder, they write a new rip folder (the plugin may not
 //! rewrite files it did not write) and carry the recording over into its `packets/`.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -70,6 +70,20 @@ pub enum FetchError {
 /// can read). Blocking: the job calls it at most once in a row before it looks at its budget.
 pub trait Fetch {
     fn get(&mut self, url: &str) -> Result<Vec<u8>, FetchError>;
+
+    /// Gets every URL of `urls` (at most [`Fetch::max_batch`]), one result per URL in the same
+    /// order. Default: one [`Fetch::get`] after the other. The image downloads use it; a getter
+    /// that fetches several URLs at once (the plugin's `http::get_many`) overrides it and
+    /// [`Fetch::max_batch`].
+    fn get_many(&mut self, urls: &[&str]) -> Vec<Result<Vec<u8>, FetchError>> {
+        urls.iter().map(|url| self.get(url)).collect()
+    }
+
+    /// The most URLs one [`Fetch::get_many`] takes. Default 1: the images are fetched one at a
+    /// time, as with [`Fetch::get`].
+    fn max_batch(&self) -> usize {
+        1
+    }
 }
 
 /// Where the output goes. `path` is relative to the folder the rips are made in and starts with
@@ -263,6 +277,23 @@ pub struct ImportLog {
 
 /// The pieces a Packet Logger export and an earlier catalog.json are read in.
 const READ_PIECE: u32 = 1024 * 1024;
+
+/// What the images of one [`Fetch::get_many`] may add up to, about: a batch holds
+/// `IMAGE_BATCH_BYTES / <largest image so far>` images (1 to [`Fetch::max_batch`]), starting at
+/// one, so the bodies a step holds stay near 8 MiB on top of the catalogue (a step's heap
+/// stays under 40 MiB at Habbo size; see `tests/export_memory.rs`).
+pub const IMAGE_BATCH_BYTES: usize = 8 * 1024 * 1024;
+
+/// One image being downloaded.
+#[derive(Debug, Clone)]
+struct ImageSlot {
+    /// Its index in the plan.
+    image: usize,
+    /// The URL it tries now.
+    url: usize,
+    /// `Some` once it is done: `Ok(true)` there, `Ok(false)` on no URL, `Err` failed.
+    done: Option<Result<bool, String>>,
+}
 /// The most a step reads or writes of them, whatever its budget: pieces, recorded files.
 const PIECES_PER_STEP: usize = 4;
 const FILES_PER_STEP: usize = 200;
@@ -410,7 +441,7 @@ pub struct Failure {
     /// [`RipOptions::handshake_timeout_ms`], another first message, or it closed): it is not
     /// G-Earth's extension port, and G-Earth may be on another port.
     pub not_gearth: bool,
-    /// What was written before stopping (the built-in's `PartialOutput`).
+    /// What was written before stopping (the built-in's `PartialOutput` error).
     pub partial: Option<Box<Summary>>,
 }
 
@@ -630,8 +661,14 @@ struct Out {
     catalog_url: String,
     icon_url: String,
     plan: Vec<ImageJob>,
+    /// The next image of `plan` not in `slots` yet.
     next_image: usize,
-    next_url: usize,
+    /// The images being downloaded, in plan order (one per [`Fetch::get_many`] URL).
+    slots: VecDeque<ImageSlot>,
+    /// Images per [`Fetch::get_many`] now (see [`IMAGE_BATCH_BYTES`]).
+    batch: usize,
+    /// The largest image body so far.
+    largest_image: usize,
     stats: ImageStats,
     /// Image files written (a second name for the same file is not fetched again).
     written: HashSet<String>,
@@ -839,6 +876,12 @@ impl Job {
         self.gearth.is_some()
             || (matches!(self.state, State::Start | State::Load(_))
                 && matches!(self.begin, Begin::Rip | Begin::Resume(_)))
+    }
+
+    /// Whether the job still reads the Packet Logger export of [`Job::import_log`]: false once
+    /// it has read it (the plugin may drop a copy it holds in memory then).
+    pub fn reads_import_log(&self) -> bool {
+        matches!(self.begin, Begin::Import(_)) && matches!(self.state, State::Start | State::Import(_))
     }
 
     /// Whether the job still reads [`JobIo::items`]. False once the data files that use it are
@@ -2655,7 +2698,9 @@ impl Job {
             icon_url: String::new(),
             plan: Vec::new(),
             next_image: 0,
-            next_url: 0,
+            slots: VecDeque::new(),
+            batch: 1,
+            largest_image: 0,
             stats: ImageStats::default(),
             written: HashSet::new(),
             images_text: None,
@@ -3149,8 +3194,14 @@ impl Job {
         Ctl::Continue
     }
 
+    /// Downloads the images, [`Out::batch`] at a time through [`Fetch::get_many`]. What comes
+    /// out is what one image after the other gives (the built-in's order): an image is counted,
+    /// logged and shown in the progress in plan order, and a file is fetched only by the first
+    /// image (in plan order) that can still come to it, so a later image never takes a file
+    /// name from an earlier one that has not tried it yet.
     fn images(&mut self, io: &mut JobIo, end: u64) -> Ctl {
         let folder = self.folder.clone();
+        let max_batch = io.fetch.max_batch().max(1);
         loop {
             let cancelled = self.cancel;
             let can_fetch = self.may_fetch(io.clock.now_ms(), end);
@@ -3158,7 +3209,17 @@ impl Job {
             if out.images_text.is_some() {
                 return self.finish(io);
             }
-            if cancelled || out.next_image >= out.plan.len() {
+            if cancelled {
+                // What was fetched is counted; the rest stops.
+                let done: Vec<ImageSlot> = out.slots.drain(..).filter(|s| s.done.is_some()).collect();
+                for slot in done {
+                    self.count_image(slot);
+                }
+                let out = self.out.as_mut().expect("out");
+                out.next_image = out.plan.len();
+            }
+            let out = self.out.as_mut().expect("out");
+            if out.slots.is_empty() && out.next_image >= out.plan.len() {
                 // For README.txt: English.
                 let mut text = out.stats.describe().to_string();
                 if cancelled {
@@ -3172,64 +3233,118 @@ impl Job {
             if !out.files.iter().any(|f| f == "images") {
                 out.files.push("images".into());
             }
-            let job = &out.plan[out.next_image];
-            let url = job.urls[out.next_url].clone();
-            let last_url = out.next_url + 1 == job.urls.len();
-            let dest = job.dest(&url);
-            let label = job.label.clone();
-            // Ok(Some(true)): there; Ok(Some(false)): on no URL; Ok(None): try the next URL.
-            let outcome: Result<Option<bool>, String> = if out.written.contains(&dest) {
-                Ok(Some(true))
-            } else if !can_fetch {
+            let batch = out.batch.clamp(1, max_batch);
+            while out.slots.len() < batch && out.next_image < out.plan.len() {
+                out.slots.push_back(ImageSlot {
+                    image: out.next_image,
+                    url: 0,
+                    done: None,
+                });
+                out.next_image += 1;
+            }
+            // A file already written (by an earlier image) is there without a download.
+            for slot in out.slots.iter_mut().filter(|s| s.done.is_none()) {
+                let job = &out.plan[slot.image];
+                if out.written.contains(&job.dest(&job.urls[slot.url])) {
+                    slot.done = Some(Ok(true));
+                }
+            }
+            // The images done, in plan order.
+            if out.slots.front().is_some_and(|s| s.done.is_some()) {
+                loop {
+                    let slots = &mut self.out.as_mut().expect("out").slots;
+                    if !slots.front().is_some_and(|s| s.done.is_some()) {
+                        break;
+                    }
+                    let slot = slots.pop_front().expect("a slot");
+                    self.count_image(slot);
+                }
+                continue;
+            }
+            // What to fetch: every image not done, unless an earlier one may still come to the
+            // same file (it fetches it first).
+            let mut fetch: Vec<usize> = Vec::new();
+            let mut reachable: HashSet<String> = HashSet::new();
+            for (i, slot) in out.slots.iter().enumerate() {
+                if slot.done.is_some() {
+                    continue;
+                }
+                let job = &out.plan[slot.image];
+                if !reachable.contains(&job.dest(&job.urls[slot.url])) {
+                    fetch.push(i);
+                }
+                reachable.extend(job.urls[slot.url..].iter().map(|u| job.dest(u)));
+            }
+            if !can_fetch {
                 return Ctl::Yield;
-            } else {
-                self.fetched = true;
-                match io.fetch.get(&url) {
+            }
+            self.fetched = true;
+            let urls: Vec<String> = fetch
+                .iter()
+                .map(|&i| {
+                    let slot = &out.slots[i];
+                    out.plan[slot.image].urls[slot.url].clone()
+                })
+                .collect();
+            let asked: Vec<&str> = urls.iter().map(String::as_str).collect();
+            let mut results = io.fetch.get_many(&asked).into_iter();
+            for (&i, url) in fetch.iter().zip(&urls) {
+                let result = results
+                    .next()
+                    .unwrap_or_else(|| Err(FetchError::Failed("no answer".into())));
+                let slot = &mut out.slots[i];
+                let job = &out.plan[slot.image];
+                let last_url = slot.url + 1 == job.urls.len();
+                let dest = job.dest(url);
+                match result {
                     Ok(bytes) => {
+                        out.largest_image = out.largest_image.max(bytes.len());
                         let path = format!("{folder}/{dest}");
-                        match io.sink.write(&path, &bytes) {
+                        slot.done = Some(match io.sink.write(&path, &bytes) {
                             Ok(()) => {
                                 out.written.insert(dest);
-                                Ok(Some(true))
+                                Ok(true)
                             }
                             Err(e) => Err(format!("{path}: {e}")),
-                        }
+                        });
                     }
-                    Err(FetchError::NotFound) if last_url => Ok(Some(false)),
-                    Err(FetchError::NotFound) => Ok(None),
-                    // A dead host: try the next URL before giving up on the image.
-                    Err(FetchError::Failed(_)) if !last_url => Ok(None),
-                    Err(FetchError::Failed(e)) => Err(format!("GET {url}: {e}")),
-                }
-            };
-            let mut line = None;
-            match outcome {
-                Ok(None) => out.next_url += 1,
-                done => {
-                    match done {
-                        Ok(Some(true)) => out.stats.downloaded += 1,
-                        Ok(_) => {
-                            out.stats.missing += 1;
-                            out.stats.missing_names.push(label.clone());
-                        }
-                        Err(e) => {
-                            out.stats.failed += 1;
-                            line = Some(
-                                Message::new("Image {label}: {error}")
-                                    .with("label", &label)
-                                    .with("error", e),
-                            );
-                        }
-                    }
-                    out.next_image += 1;
-                    out.next_url = 0;
-                    self.progress.done = out.next_image as u64;
-                    self.progress.label = label;
+                    // Not there, or a dead host: try the next URL before giving up on the image.
+                    Err(_) if !last_url => slot.url += 1,
+                    Err(FetchError::NotFound) => slot.done = Some(Ok(false)),
+                    Err(FetchError::Failed(e)) => slot.done = Some(Err(format!("GET {url}: {e}"))),
                 }
             }
-            if let Some(line) = line {
-                self.say(line);
+            // One at a time until an image's size is known.
+            if let Some(fits) = IMAGE_BATCH_BYTES.checked_div(out.largest_image) {
+                out.batch = fits.clamp(1, max_batch);
             }
+        }
+    }
+
+    /// Counts a downloaded (or missing, or failed) image: the next one in plan order.
+    fn count_image(&mut self, slot: ImageSlot) {
+        let out = self.out.as_mut().expect("out");
+        let label = out.plan[slot.image].label.clone();
+        let mut line = None;
+        match slot.done.expect("done") {
+            Ok(true) => out.stats.downloaded += 1,
+            Ok(false) => {
+                out.stats.missing += 1;
+                out.stats.missing_names.push(label.clone());
+            }
+            Err(e) => {
+                out.stats.failed += 1;
+                line = Some(
+                    Message::new("Image {label}: {error}")
+                        .with("label", &label)
+                        .with("error", e),
+                );
+            }
+        }
+        self.progress.done = slot.image as u64 + 1;
+        self.progress.label = label;
+        if let Some(line) = line {
+            self.say(line);
         }
     }
 

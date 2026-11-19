@@ -1895,6 +1895,10 @@ struct Batched {
     inner: MemFetch,
     max: usize,
     calls: Vec<usize>,
+    /// The bodies one call may bring (as the plugin's 32 MiB): a body past it is
+    /// `FetchError::Retry`, unless it is alone in the call.
+    budget: usize,
+    retried: usize,
 }
 
 impl catalog_rip_core::Fetch for Batched {
@@ -1906,7 +1910,21 @@ impl catalog_rip_core::Fetch for Batched {
     fn get_many(&mut self, urls: &[&str]) -> Vec<Result<Vec<u8>, catalog_rip_core::FetchError>> {
         assert!(urls.len() <= self.max, "{} URLs in one call", urls.len());
         self.calls.push(urls.len());
-        urls.iter().map(|url| self.inner.get(url)).collect()
+        let mut left = self.budget;
+        let alone = urls.len() == 1;
+        urls.iter()
+            .map(|url| match self.inner.get(url) {
+                Ok(body) if body.len() > left && !alone => {
+                    self.retried += 1;
+                    Err(catalog_rip_core::FetchError::Retry)
+                }
+                Ok(body) => {
+                    left = left.saturating_sub(body.len());
+                    Ok(body)
+                }
+                other => other,
+            })
+            .collect()
     }
 
     fn max_batch(&self) -> usize {
@@ -1936,7 +1954,7 @@ fn images_in_batches_give_the_same_files_counts_and_log() {
             asked: Vec::new(),
         }
     };
-    let rip = |max: usize| {
+    let rip = |max: usize, budget: usize| {
         let sim = Sim::new(official_hotel());
         let mut opts = sim_options();
         opts.download_images = true;
@@ -1947,6 +1965,8 @@ fn images_in_batches_give_the_same_files_counts_and_log() {
             inner: cdn(),
             max,
             calls: Vec::new(),
+            budget,
+            retried: 0,
         };
         let mut sink = MemSink::default();
         let run = run_job(
@@ -1963,10 +1983,11 @@ fn images_in_batches_give_the_same_files_counts_and_log() {
         let report = done(&run).clone();
         let mut asked = fetch.inner.asked.clone();
         asked.sort();
-        (report, sink.under(&done(&run).folder), run.log, asked, fetch.calls)
+        (report, sink.under(&done(&run).folder), run.log, asked, fetch.calls, fetch.retried)
     };
-    let (one, one_files, one_log, one_asked, one_calls) = rip(1);
-    let (many, many_files, many_log, many_asked, many_calls) = rip(8);
+    let (one, one_files, one_log, one_asked, one_calls, _) = rip(1, usize::MAX);
+    let (many, many_files, many_log, many_asked, many_calls, retried) = rip(8, usize::MAX);
+    assert_eq!(retried, 0);
     assert!(one_calls.iter().all(|n| *n == 1));
     // One at a time until an image's size is known, then 8 at a time.
     assert!(many_calls.contains(&8), "{many_calls:?}");
@@ -1977,4 +1998,14 @@ fn images_in_batches_give_the_same_files_counts_and_log() {
     assert_eq!(many_files, one_files, "{}", show_diff(&many_files, &one_files));
     assert_eq!(many_log, one_log);
     assert_eq!(many_asked, one_asked, "the same URLs, each once");
+
+    // A call brings at most about two bodies: the rest are asked again (the next call has one
+    // URL), and the output is still the same.
+    let (budget, budget_files, budget_log, _, budget_calls, retried) = rip(8, 100);
+    assert!(retried > 0, "{budget_calls:?}");
+    let after_retry = budget_calls.windows(2).any(|w| w[0] > 1 && w[1] == 1);
+    assert!(after_retry, "{budget_calls:?}");
+    assert_eq!(budget.images, one.images);
+    assert_eq!(budget_files, one_files, "{}", show_diff(&budget_files, &one_files));
+    assert_eq!(budget_log, one_log);
 }

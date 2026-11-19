@@ -54,7 +54,6 @@
 
   "Choose the normal catalogue, the Builders Club one, or both.": "Scegli il catalogo normale, quello Builders Club, o entrambi.",
   "Where to save the catalogue": "Dove salvare il catalogo",
-  "{pages} pages ({failed} failed) and {offers} offers saved in {folder}/{path}. Images: {images}.": "{pages} pagine ({failed} non riuscite) e {offers} offerte salvate in {folder}/{path}. Immagini: {images}.",
   "{downloaded} downloaded, {missing} not on the server": "{downloaded} scaricate, {missing} non presenti sul server",
   "{downloaded} downloaded, {missing} not on the server, {failed} failed": "{downloaded} scaricate, {missing} non presenti sul server, {failed} non riuscite",
   "Cancelled while writing: the catalogue is whole, some images are missing.": "Annullato durante la scrittura: il catalogo è completo, mancano alcune immagini.",
@@ -307,5 +306,20 @@
   "{name} header id (empty: from the hotel profile or G-Earth)": "Id dell'header {name} (vuoto: dal profilo hotel o da G-Earth)",
   "{table} cannot be read ({why}): the hotel has no Builders Club catalogue there.": "{table} non può essere letta ({why}): l'hotel non ha lì un catalogo Builders Club.",
   "{text} is not a number from {min} to {max}.": "{text} non è un numero da {min} a {max}.",
-  "{url} is not an http or https address.": "{url} non è un indirizzo http o https."
+  "{url} is not an http or https address.": "{url} non è un indirizzo http o https.",
+  "A hotel profile (.json)": "Un profilo hotel (.json)",
+  "Add a hotel profile (.json)": "Aggiungi un profilo hotel (.json)",
+  "For the import: {pages} pages and {offers} offers; {left} offers left out (their furni is not in items_base).": "Per l'importazione: {pages} pagine e {offers} offerte; {left} offerte escluse (il loro furni non è in items_base).",
+  "G-Earth tool": "Strumento G-Earth",
+  "Hotel profile added: {names}.": "Profilo hotel aggiunto: {names}.",
+  "Images: {images}.": "Immagini: {images}.",
+  "Reload profiles": "Ricarica i profili",
+  "Saved in {folder}/{path}.": "Salvato in {folder}/{path}.",
+  "The catalogue of {hotel} is copied": "Il catalogo di {hotel} è stato copiato",
+  "The catalogue of {hotel} is copied, with gaps": "Il catalogo di {hotel} è stato copiato, con delle lacune",
+  "This folder has no name: pick a folder inside it.": "Questa cartella non ha un nome: scegli una cartella al suo interno.",
+  "it is not UTF-8 text": "non è testo UTF-8",
+  "{count} hotel profiles.": "{count} profili hotel.",
+  "{file} cannot be added: {error}": "{file} non può essere aggiunto: {error}",
+  "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.": "{pages} pagine e {items} offerte ({profile}); {failed} pagine non sono state lette."
 }

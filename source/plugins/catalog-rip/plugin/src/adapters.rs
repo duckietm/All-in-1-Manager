@@ -50,11 +50,7 @@ impl Fetch for HttpFetch {
 
     /// The images, up to 8 at a time ([`http::get_many`]).
     fn get_many(&mut self, urls: &[&str]) -> Vec<Result<Vec<u8>, FetchError>> {
-        fetch_many(
-            urls,
-            |urls| http::get_many(urls).into_iter().map(|r| r.map_err(|e| e.message().to_string())).collect(),
-            |url| http::get(url).map_err(|e| e.message().to_string()),
-        )
+        fetch_many(urls, |urls| http::get_many(urls).into_iter().map(|r| r.map_err(|e| e.message().to_string())).collect())
     }
 
     fn max_batch(&self) -> usize {
@@ -65,14 +61,14 @@ impl Fetch for HttpFetch {
 /// The Manager's refusal of a body that did not fit in what was left of one `get_many` call's 32 MiB.
 const BUDGET_EXCEEDED: &str = "response budget exceeded";
 
-/// [`Fetch::get_many`] over the Manager's `get_many` (`many`, at most [`http::MAX_MANY`] URLs per call) and `get`
-/// (`one`): one result per URL, in order. A URL that is not http(s) is refused without asking the Manager; a body that
-/// did not fit in a call's budget is fetched again on its own, as one `get` would have fetched it (so the files are the
-/// same as with one image after the other).
+/// [`Fetch::get_many`] over the Manager's `get_many` (`many`): one call of at most [`http::MAX_MANY`] URLs, one result
+/// per URL, in order. A URL that is not http(s) is refused without asking the Manager. A body that did not fit in the
+/// call's 32 MiB is [`FetchError::Retry`] (the job asks for it again in a smaller call; refetching it here would hold
+/// it on top of the call's bodies), unless it was alone in the call (then it is too large for any call: failed). URLs
+/// past the first [`http::MAX_MANY`] are [`FetchError::Retry`] too, so one call's bodies are all this holds.
 pub fn fetch_many(
     urls: &[&str],
-    mut many: impl FnMut(&[&str]) -> Vec<Result<Vec<u8>, String>>,
-    mut one: impl FnMut(&str) -> Result<Vec<u8>, String>,
+    many: impl FnOnce(&[&str]) -> Vec<Result<Vec<u8>, String>>,
 ) -> Vec<Result<Vec<u8>, FetchError>> {
     let mut out: Vec<Option<Result<Vec<u8>, FetchError>>> = urls
         .iter()
@@ -85,20 +81,20 @@ pub fn fetch_many(
             })
         })
         .collect();
-    let asked: Vec<usize> = (0..urls.len()).filter(|i| out[*i].is_none()).collect();
-    for chunk in asked.chunks(http::MAX_MANY) {
-        let batch: Vec<&str> = chunk.iter().map(|i| urls[*i]).collect();
+    let asked: Vec<usize> = (0..urls.len()).filter(|i| out[*i].is_none()).take(http::MAX_MANY).collect();
+    if !asked.is_empty() {
+        let batch: Vec<&str> = asked.iter().map(|i| urls[*i]).collect();
+        let alone = batch.len() == 1;
         let mut results = many(&batch).into_iter();
-        for &i in chunk {
-            let result = results.next().unwrap_or_else(|| Err("no answer".to_string()));
-            let result = match result {
-                Err(e) if e.contains(BUDGET_EXCEEDED) => one(urls[i]),
-                other => other,
-            };
-            out[i] = Some(result.map_err(|e| fetch_error(&e)));
+        for &i in &asked {
+            out[i] = Some(match results.next().unwrap_or_else(|| Err("no answer".to_string())) {
+                Ok(bytes) => Ok(bytes),
+                Err(e) if e.contains(BUDGET_EXCEEDED) && !alone => Err(FetchError::Retry),
+                Err(e) => Err(fetch_error(&e)),
+            });
         }
     }
-    out.into_iter().map(|r| r.expect("every URL answered")).collect()
+    out.into_iter().map(|r| r.unwrap_or(Err(FetchError::Retry))).collect()
 }
 
 /// `http://` or `https://` (any case). A profile's furnidata may name a local file, which the plugin cannot read.
@@ -263,12 +259,11 @@ pub fn list_rips(source: &mut dyn Source, need: RipNeed) -> Result<RipList, Stri
     if has(source, "") {
         return Ok(RipList { top: true, rips: Vec::new() });
     }
-    let folders: Vec<String> =
-        source::list_all(source, "")?.into_iter().filter(|e| e.is_folder).take(MAX_RIP_FOLDERS).map(|e| e.name).collect();
-    let mut rips: Vec<String> = folders.into_iter().filter(|name| has(source, name)).collect();
-    // `<hotel>_<YYYY-mm-dd_HH-MM-SS>`: newest first, whatever the hotel.
+    let mut folders: Vec<String> = source::list_all(source, "")?.into_iter().filter(|e| e.is_folder).map(|e| e.name).collect();
+    // `<hotel>_<YYYY-mm-dd_HH-MM-SS>`: newest first, whatever the hotel; the newest are looked at.
     let stamp = |name: &String| name.len().checked_sub(19).and_then(|at| name.get(at..)).unwrap_or("").to_string();
-    rips.sort_by(|a, b| stamp(b).cmp(&stamp(a)).then_with(|| a.cmp(b)));
+    folders.sort_by(|a, b| stamp(b).cmp(&stamp(a)).then_with(|| a.cmp(b)));
+    let rips = folders.into_iter().take(MAX_RIP_FOLDERS).filter(|name| has(source, name)).collect();
     Ok(RipList { top: false, rips })
 }
 
@@ -659,6 +654,12 @@ pub trait IdSource {
     fn any_from(&mut self, table: &str, from: i64) -> Result<bool, SourceError>;
 }
 
+/// Whether a read failed because the table does not exist (MariaDB/MySQL error 1146, "Table '...' doesn't exist").
+pub fn table_missing(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("1146") || lower.contains("doesn't exist") || lower.contains("does not exist")
+}
+
 /// The id of a row (`value`: its `id` column).
 pub fn id_value(value: Option<&Value>) -> Result<i64, String> {
     match value {
@@ -670,7 +671,8 @@ pub fn id_value(value: Option<&Value>) -> Result<i64, String> {
 
 /// Reads the page and offer ids of the hotel's catalogue ([`CATALOGUE_TABLES`]), one query per step, in id windows
 /// like the [`ItemsLoader`] (a read returns at most 10,000 rows). For [`ManagerMode::ReplaceRipped`] and
-/// [`ManagerMode::Add`]. A Builders Club table that cannot be read counts as empty (a hotel without the warehouse).
+/// [`ManagerMode::Add`]. A Builders Club table that does not exist counts as empty (a hotel without the warehouse);
+/// any other failure makes the ids unknown.
 #[derive(Debug, Clone)]
 pub struct ExistingLoader {
     table: usize,
@@ -727,7 +729,7 @@ impl ExistingLoader {
     /// A read of the current table failed.
     fn failed(&mut self, e: SourceError) -> Load {
         let (table, kind, _) = CATALOGUE_TABLES[self.table];
-        if kind == "BUILDER" && !e.denied {
+        if kind == "BUILDER" && !e.denied && table_missing(&e.message) {
             self.notes.push(tr_with(
                 "{table} cannot be read ({why}): the hotel has no Builders Club catalogue there.",
                 &[("table", table), ("why", &e.message)],
@@ -796,6 +798,14 @@ pub fn all_profiles(text: Option<&str>) -> (Vec<HotelProfile>, Vec<String>) {
         Some(text) => load_profiles(&[(PROFILES_FILE.to_string(), text.to_string())]),
         None => load_profiles(&[]),
     }
+}
+
+/// [`PROFILES_FILE`]'s new text with the profiles of a hand-made file (`file_name`, `json`: the built-in ripper's
+/// format, one profile or a list; a UTF-8 byte order mark is allowed), and their names.
+pub fn import_profiles(existing: Option<&str>, file_name: &str, json: &str) -> Result<(String, Vec<String>), String> {
+    let json = json.trim_start_matches('\u{feff}');
+    let names = read_profile_file(file_name, json).map_err(|e| format!("{e:#}"))?.into_iter().map(|p| p.name).collect();
+    Ok((add_profile(existing, file_name, json)?, names))
 }
 
 /// [`PROFILES_FILE`]'s new text with the profile `(file_name, json)` (a job's learned profile) added; a saved
@@ -1343,6 +1353,51 @@ mod tests {
         assert_eq!(by_name["other.example (learned)"], Some(300));
     }
 
+    /// A profile file as the built-in ripper reads it from its profiles folder (with a byte order mark, as Windows
+    /// editors save it): host patterns, client revisions, extra header ids, no Builders Club.
+    const BUILTIN_FORMAT: &str = "\u{feff}{
+  \"name\": \"My retro\",
+  \"kind\": \"flash_retro\",
+  \"hosts\": [\"game.myretro.test\", \"*.myretro.test\"],
+  \"revisions\": [\"PRODUCTION-201611291003-338511768\"],
+  \"headers\": { \"GetCatalogIndex\": 1195, \"GetCatalogPage\": 412, \"CatalogIndex\": 1032, \"CatalogPage\": 804 },
+  \"catalog_url\": \"https://myretro.test/c_images/catalogue\",
+  \"icon_url\": \"https://myretro.test/c_images/catalogue/icon_\",
+  \"furnidata_url\": \"https://myretro.test/gamedata/furnidata.xml\",
+  \"extra_headers\": { \"GetClubOffers\": 3285, \"ClubOffers\": 2405 },
+  \"builders_club\": false,
+  \"notes\": \"made by hand\"
+}";
+
+    #[test]
+    fn hand_made_profiles_in_the_builtin_format_are_added() {
+        let (text, names) = import_profiles(None, "myretro.json", BUILTIN_FORMAT).unwrap();
+        assert_eq!(names, ["My retro"]);
+        let (all, errors) = all_profiles(Some(&text));
+        assert!(errors.is_empty(), "{errors:?}");
+        let p = all.iter().find(|p| p.name == "My retro").unwrap();
+        assert!(!p.builtin);
+        assert_eq!(p.kind, catalog_rip_core::HotelKind::FlashRetro);
+        assert_eq!(p.hosts, ["game.myretro.test", "*.myretro.test"]);
+        assert_eq!(p.revisions, ["PRODUCTION-201611291003-338511768"]);
+        assert_eq!(p.headers.catalog_page, Some(804));
+        assert_eq!(p.extra_headers["GetClubOffers"], 3285);
+        assert!(!p.builders_club);
+        assert_eq!(p.notes, "made by hand");
+        assert!(catalog_rip_core::profiles::host_matches(&p.hosts[1], "game.myretro.test"));
+
+        // A list of profiles; one with a built-in's name replaces it; broken files are refused.
+        let list = r#"[{"name": "Nitro (Arcturus Morningstar + Nitro websockets)", "kind": "nitro_retro"},
+                       {"name": "Other", "kind": "nitro_retro"}]"#;
+        let (text, names) = import_profiles(Some(&text), "list.json", list).unwrap();
+        assert_eq!(names, ["Nitro (Arcturus Morningstar + Nitro websockets)", "Other"]);
+        let (all, _) = all_profiles(Some(&text));
+        assert_eq!(all.len(), all_profiles(None).0.len() + 2, "the built-in Nitro one is replaced");
+        assert!(all.iter().any(|p| p.name == "My retro"));
+        assert!(import_profiles(None, "x.json", "{ \"kind\": \"nitro_retro\" }").is_err());
+        assert!(import_profiles(None, "x.json", "not json").is_err());
+    }
+
     #[test]
     fn a_broken_profiles_file_is_reported_and_kept() {
         let (all, errors) = all_profiles(Some("{ not json"));
@@ -1509,6 +1564,32 @@ mod tests {
         assert!(!loader.existing.pages.contains_key("BUILDER"));
         assert_eq!(loader.take_notes().len(), 2);
 
+        // Another failure of a Builders Club table: the ids are unknown, not "no warehouse".
+        struct Flaky(Catalogue);
+        impl IdSource for Flaky {
+            fn ids(&mut self, table: &str, from: i64, to: i64) -> Result<Vec<Result<i64, String>>, SourceError> {
+                if table == "catalog_pages_bc" {
+                    return Err(SourceError { denied: false, message: "Lost connection to server".into() });
+                }
+                self.0.ids(table, from, to)
+            }
+            fn any_from(&mut self, table: &str, from: i64) -> Result<bool, SourceError> {
+                self.0.any_from(table, from)
+            }
+        }
+        let mut flaky = Flaky(Catalogue { ids: db.ids.clone(), missing: Vec::new(), denied: false, reads: 0 });
+        let mut loader = ExistingLoader::new();
+        let end = loop {
+            match loader.step(&mut flaky) {
+                Load::More => {}
+                end => break end,
+            }
+        };
+        assert_eq!(end, Load::Unavailable("Lost connection to server".into()));
+        assert!(table_missing("Table 'hotel.catalog_pages_bc' doesn't exist"));
+        assert!(table_missing("error 1146 (42S02)"));
+        assert!(!table_missing("Lost connection to server"));
+
         db.missing = vec!["catalog_items"];
         let (end, _) = load_existing(&mut db);
         assert_eq!(end, Load::Unavailable("Table 'catalog_items' doesn't exist".into()));
@@ -1532,55 +1613,47 @@ mod tests {
     // ------------------------------------------------------------ http::get_many
 
     #[test]
-    fn get_many_keeps_the_order_refuses_files_and_refetches_what_did_not_fit() {
+    fn get_many_keeps_the_order_refuses_files_and_asks_again_for_what_did_not_fit() {
         let urls = ["https://a.test/1.png", "C:/x.png", "https://a.test/2.png", "https://a.test/3.png", "https://a.test/4.png"];
         let mut calls: Vec<Vec<String>> = Vec::new();
-        let mut singles: Vec<String> = Vec::new();
-        let got = fetch_many(
-            &urls,
-            |batch| {
-                calls.push(batch.iter().map(|u| u.to_string()).collect());
-                batch
-                    .iter()
-                    .map(|u| match *u {
-                        "https://a.test/2.png" => Err("HTTP 404".to_string()),
-                        "https://a.test/3.png" => Err("permission denied: response budget exceeded".to_string()),
-                        "https://a.test/4.png" => Err("HTTP 500".to_string()),
-                        u => Ok(u.as_bytes().to_vec()),
-                    })
-                    .collect()
-            },
-            |u| {
-                singles.push(u.to_string());
-                Ok(b"alone".to_vec())
-            },
-        );
+        let got = fetch_many(&urls, |batch| {
+            calls.push(batch.iter().map(|u| u.to_string()).collect());
+            batch
+                .iter()
+                .map(|u| match *u {
+                    "https://a.test/2.png" => Err("HTTP 404".to_string()),
+                    "https://a.test/3.png" => Err("permission denied: response budget exceeded".to_string()),
+                    "https://a.test/4.png" => Err("HTTP 500".to_string()),
+                    u => Ok(u.as_bytes().to_vec()),
+                })
+                .collect()
+        });
         assert_eq!(calls, [vec!["https://a.test/1.png", "https://a.test/2.png", "https://a.test/3.png", "https://a.test/4.png"]]);
-        assert_eq!(singles, ["https://a.test/3.png"], "the body that did not fit is fetched on its own");
         assert_eq!(got[0], Ok(b"https://a.test/1.png".to_vec()));
         assert!(matches!(&got[1], Err(FetchError::Failed(m)) if m.contains("only read http and https")));
         assert_eq!(got[2], Err(FetchError::NotFound));
-        assert_eq!(got[3], Ok(b"alone".to_vec()));
+        assert_eq!(got[3], Err(FetchError::Retry), "not refetched here: the job asks again in a smaller call");
         assert_eq!(got[4], Err(FetchError::Failed("HTTP 500".into())));
 
-        // More than 8: several calls of at most 8.
-        let many: Vec<String> = (0..19).map(|n| format!("http://b.test/{n}")).collect();
+        // Alone in its call, a body over the budget is too large for any call.
+        let got = fetch_many(&urls[3..4], |_| vec![Err("permission denied: response budget exceeded".into())]);
+        assert!(matches!(&got[0], Err(FetchError::Failed(m)) if m.contains("budget")));
+
+        // More than 8: one call of 8, the rest asked again.
+        let many: Vec<String> = (0..11).map(|n| format!("http://b.test/{n}")).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
         let mut sizes = Vec::new();
-        let got = fetch_many(
-            &many,
-            |batch| {
-                sizes.push(batch.len());
-                batch.iter().map(|u| Ok(u.as_bytes().to_vec())).collect()
-            },
-            |_| unreachable!(),
-        );
-        assert_eq!(sizes, [8, 8, 3]);
-        assert!(got.iter().zip(&many).all(|(r, u)| r.as_deref() == Ok(u.as_bytes())));
+        let got = fetch_many(&many, |batch| {
+            sizes.push(batch.len());
+            batch.iter().map(|u| Ok(u.as_bytes().to_vec())).collect()
+        });
+        assert_eq!(sizes, [8]);
+        assert!(got[..8].iter().zip(&many).all(|(r, u)| r.as_deref() == Ok(u.as_bytes())));
+        assert!(got[8..].iter().all(|r| *r == Err(FetchError::Retry)));
         // A short answer fails the URLs it left out.
-        let got = fetch_many(&many[..2], |_| vec![Ok(vec![1])], |_| unreachable!());
+        let got = fetch_many(&many[..2], |_| vec![Ok(vec![1])]);
         assert_eq!(got[0], Ok(vec![1]));
-        assert!(got[1].is_err());
+        assert!(matches!(got[1], Err(FetchError::Failed(_))));
     }
 
     // ------------------------------------------------------------ picked folders
@@ -1636,6 +1709,16 @@ mod tests {
         );
         let stopped = list_rips(&mut folder, RipNeed::Packets).unwrap();
         assert_eq!(stopped.rips, ["stopped_2026-02-01_00-00-00", "habbo.nl_2026-01-02_10-00-00"]);
+
+        // Many folders: the newest are looked at first (the cap takes the newest).
+        let mut lots = MemSource::new();
+        for n in 0..MAX_RIP_FOLDERS + 20 {
+            let day = n % 28 + 1;
+            let name = format!("{:04}-{:02}-{:02}_00-00-00", 2000 + n / 336, n / 28 % 12 + 1, day);
+            lots.files.insert(format!("hotel_{name}/x.txt"), Vec::new());
+        }
+        lots.files.insert("hotel_2099-01-01_00-00-00/catalog.json".into(), b"{}".to_vec());
+        assert_eq!(list_rips(&mut lots, RipNeed::Catalog).unwrap().rips, ["hotel_2099-01-01_00-00-00"]);
 
         // The picked folder is the rip itself.
         let mut rip = MemSource::new();

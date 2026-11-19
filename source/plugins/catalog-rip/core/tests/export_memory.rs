@@ -385,9 +385,31 @@ struct BigFetch {
     largest_batch: usize,
     /// Images downloaded.
     images: usize,
+    /// The images of the image calls `first..first + count` are `size` bytes: large images
+    /// after small ones (a whole call of them).
+    large: Option<(usize, usize, usize)>,
+    /// Image calls so far.
+    calls: usize,
+    /// Images asked again because a call's 32 MiB was used up.
+    retried: usize,
+    /// The most bytes one call brought.
+    largest_call: usize,
+    /// The .gif images are there too (else only the .png ones): every URL of a call is an image.
+    gifs: bool,
     /// The simulated clock, moved 100 ms per image call (a download takes time: the job
     /// spreads the images over its steps).
     clock: Option<SimClock>,
+}
+
+impl BigFetch {
+    /// The size of the next image downloaded.
+    fn next_image_size(&self) -> usize {
+        match self.large {
+            Some((first, count, size)) if (first..first + count).contains(&self.calls) => size,
+            _ if self.image_size == 0 => 4096,
+            _ => self.image_size,
+        }
+    }
 }
 
 impl Fetch for BigFetch {
@@ -406,9 +428,10 @@ impl Fetch for BigFetch {
             response(furnidata_json)
         } else if url.contains("/gamedata/productdata_json/") {
             response(productdata_json)
-        } else if url.ends_with(".png") {
+        } else if url.ends_with(".png") || (self.gifs && url.ends_with(".gif")) {
+            let size = self.next_image_size();
             self.images += 1;
-            Ok(vec![0x89; if self.image_size == 0 { 4096 } else { self.image_size }])
+            Ok(vec![0x89; size])
         } else {
             Err(FetchError::NotFound)
         }
@@ -420,8 +443,27 @@ impl Fetch for BigFetch {
         if let Some(clock) = &self.clock {
             clock.0.set(clock.0.get() + 100);
         }
-        // Every body is held until the call returns (as `http::get_many` returns them all).
-        urls.iter().map(|url| self.get(url)).collect()
+        // Every body is held until the call returns (as `http::get_many` returns them all), and
+        // they add up to at most 32 MiB: a body past that is not fetched (`Retry`), unless alone.
+        let mut left = 32 * 1024 * 1024;
+        let alone = urls.len() == 1;
+        self.calls += 1;
+        let results = urls
+            .iter()
+            .map(|url| {
+                let image = url.ends_with(".png") || (self.gifs && url.ends_with(".gif"));
+                let size = if image { self.next_image_size() } else { 0 };
+                if size > left && !alone {
+                    self.retried += 1;
+                    return Err(FetchError::Retry);
+                }
+                left = left.saturating_sub(size);
+                self.get(url)
+            })
+            .collect::<Vec<_>>();
+        let brought = results.iter().map(|r| r.as_ref().map_or(0, Vec::len)).sum();
+        self.largest_call = self.largest_call.max(brought);
+        results
     }
 
     fn max_batch(&self) -> usize {
@@ -725,9 +767,26 @@ fn habbo_sized_rip_fits_in_the_plugins_memory() {
 #[ignore = "slow in a debug build; run with --release (see the module docs)"]
 fn images_in_batches_fit_in_the_plugins_memory() {
     let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    for (image_size, batch) in [(0, 8), (1024 * 1024, 8), (3 * 1024 * 1024, 2)] {
+    const MIB: usize = 1024 * 1024;
+    // (all images' size, large images after 200 calls of small ones, the largest batch, the
+    // limit of an images step's heap)
+    let cases = [
+        ("4 KiB images", 0, None, 8, 40 * MIB),
+        ("1 MiB images", MIB, None, 8, 40 * MIB),
+        ("3 MiB images", 3 * MIB, None, 2, 40 * MIB),
+        ("10 calls of 2 MiB images after 200 of 4 KiB", 0, Some((200, 10, 2 * MIB)), 8, 40 * MIB),
+        ("10 calls of 2.5 MiB images after 200 of 4 KiB", 0, Some((200, 10, 5 * MIB / 2)), 8, 40 * MIB),
+        // A batch of 8 small images meets 6 MiB ones: the call brings what fits in 32 MiB (the
+        // Manager's budget, as one `http::get` brings a body of up to 32 MiB), the rest is asked
+        // again one at a time. Above 40 MiB for that step, within the 64 MiB of the plugin.
+        ("10 calls of 6 MiB images after 200 of 4 KiB", 0, Some((200, 10, 6 * MIB)), 8, 52 * MIB),
+    ];
+    for (name, image_size, large, batch, limit) in cases {
         let mut fetch = BigFetch {
             image_size,
+            large,
+            // Every URL an image, so a call of 8 can be 8 large images.
+            gifs: large.is_some(),
             max_batch: 8,
             ..BigFetch::default()
         };
@@ -741,18 +800,27 @@ fn images_in_batches_fit_in_the_plugins_memory() {
             &mut fetch,
         );
         let end = summary(end);
-        assert_eq!(end.images.downloaded, fetch.images, "every image fetched once");
+        assert_eq!(end.images.downloaded, fetch.images, "{name}: every image fetched once");
         assert!(fetch.images > 100, "{} images", fetch.images);
-        assert_eq!(fetch.largest_batch, batch, "images of {image_size} bytes");
-        let images = steps.iter().filter(|s| s.phase == Phase::Images).map(|s| s.peak).max().unwrap_or(0);
+        assert_eq!(fetch.largest_batch, batch, "{name}");
+        let images = steps
+            .iter()
+            .filter(|s| s.phase == Phase::Images)
+            .map(|s| s.peak)
+            .max()
+            .unwrap_or(0);
         println!(
-            "images of {} KiB, {} per batch: {} images, peak live heap of an images step {:.1} MiB",
-            image_size.max(4096) / 1024,
+            "{name}: at most {} per call and {:.1} MiB, {} asked again: {} images, peak live heap of an images step {:.1} MiB",
             fetch.largest_batch,
+            mib(fetch.largest_call),
+            fetch.retried,
             fetch.images,
             mib(images)
         );
-        report(&format!("images of {} KiB", image_size.max(4096) / 1024), &steps);
+        assert!(images <= limit, "{name}: {:.1} MiB", mib(images));
+        if limit <= 40 * MIB {
+            report(name, &steps);
+        }
     }
 }
 

@@ -64,6 +64,10 @@ pub enum FetchError {
     /// Anything else: the host cannot be reached, another HTTP status, ...
     #[error("{0}")]
     Failed(String),
+    /// Only from [`Fetch::get_many`]: not fetched because the bodies of the other URLs of the
+    /// call used up what one call may bring (the plugin's 32 MiB): ask again, in a smaller call.
+    #[error("not fetched in this call: ask again")]
+    Retry,
 }
 
 /// Gets a URL (the plugin's HTTP; a furnidata/productdata source may also be a file the plugin
@@ -2726,6 +2730,7 @@ impl Job {
             Ok(bytes) => Ok(bytes),
             Err(FetchError::NotFound) => Err(format!("{source} is not there")),
             Err(FetchError::Failed(e)) => Err(format!("GET {source}: {e}")),
+            Err(FetchError::Retry) => Err(format!("GET {source}: {}", FetchError::Retry)),
         }
     }
 
@@ -2877,7 +2882,7 @@ impl Job {
                             fetched.push((url, bytes));
                         }
                         Err(FetchError::NotFound) => {}
-                        Err(FetchError::Failed(e)) => {
+                        Err(e @ (FetchError::Failed(_) | FetchError::Retry)) => {
                             self.warn(
                                 Message::new(
                                     "the client configuration could not be read (GET {url}: {error}); the image URLs of the profile are used.",
@@ -3270,7 +3275,7 @@ impl Job {
                     continue;
                 }
                 let job = &out.plan[slot.image];
-                if !reachable.contains(&job.dest(&job.urls[slot.url])) {
+                if fetch.len() < batch && !reachable.contains(&job.dest(&job.urls[slot.url])) {
                     fetch.push(i);
                 }
                 reachable.extend(job.urls[slot.url..].iter().map(|u| job.dest(u)));
@@ -3288,6 +3293,7 @@ impl Job {
                 .collect();
             let asked: Vec<&str> = urls.iter().map(String::as_str).collect();
             let mut results = io.fetch.get_many(&asked).into_iter();
+            let mut retry = false;
             for (&i, url) in fetch.iter().zip(&urls) {
                 let result = results
                     .next()
@@ -3308,14 +3314,19 @@ impl Job {
                             Err(e) => Err(format!("{path}: {e}")),
                         });
                     }
+                    // The call's budget was used up: the same URL again, in a smaller call.
+                    Err(FetchError::Retry) => retry = true,
                     // Not there, or a dead host: try the next URL before giving up on the image.
                     Err(_) if !last_url => slot.url += 1,
                     Err(FetchError::NotFound) => slot.done = Some(Ok(false)),
                     Err(FetchError::Failed(e)) => slot.done = Some(Err(format!("GET {url}: {e}"))),
                 }
             }
-            // One at a time until an image's size is known.
-            if let Some(fits) = IMAGE_BATCH_BYTES.checked_div(out.largest_image) {
+            if retry {
+                // Big bodies came: the next call asks for one image.
+                out.batch = 1;
+            } else if let Some(fits) = IMAGE_BATCH_BYTES.checked_div(out.largest_image) {
+                // One at a time until an image's size is known.
                 out.batch = fits.clamp(1, max_batch);
             }
         }

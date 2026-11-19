@@ -20,7 +20,7 @@
 mod adapters;
 
 use adapters::{
-    add_profile, after_failure, all_profiles, drop_items_base, extension_info, generator, id_value, items_row, list_rips,
+    after_failure, import_profiles, add_profile, all_profiles, drop_items_base, extension_info, generator, id_value, items_row, list_rips,
     log_host, needs_existing, parse_delay, Advanced, AfterFailure, ConnTransport, ExistingLoader, FolderSource,
     HttpFetch, IdSource, ItemsLoader, ItemsSource, Load, Probe, RipList, RipNeed, RipsSource, Route, SourceError,
     SysClock, ADVANCED_CHECKBOXES, FIRST_PORT, HEADER_INPUTS, LAST_PORT, MANAGER_MODES, MAX_LOG, NUMBER_INPUTS,
@@ -43,7 +43,7 @@ use catalog_rip_core::{
 /// What one tick gives the job; the rest of the tick's 5 s is margin (the job's G-Earth waits are host I/O).
 const JOB_BUDGET_MS: u32 = 200;
 /// Log lines the page keeps.
-const MAX_LOG_LINES: usize = 400;
+const MAX_LOG_LINES: usize = 5_000;
 const MANAGER_SQL: &str = "catalog_manager.sql";
 
 /// What kind of job a run makes.
@@ -231,6 +231,11 @@ fn phase_text(phase: Phase) -> String {
 
 /// A message of the core in the Manager's language: its English template is the key, `it.json` has the
 /// translation (the drift test reads the core's `Message::new("...")` literals), the values are filled after.
+/// Bytes as MiB with one decimal.
+fn mib_text(bytes: usize) -> String {
+    format!("{:.1}", bytes as f64 / (1024.0 * 1024.0))
+}
+
 fn text(message: &Message) -> String {
     message.render(&|english| tr(english)) // scan:dynamic (the core's templates, checked in the core's sources)
 }
@@ -512,6 +517,31 @@ impl Ripper {
         self.load_profiles();
     }
 
+    /// "Add a hotel profile (.json)": a profile file in the built-in ripper's format (one profile or a list) joins
+    /// the saved profiles (a saved profile of the same name is replaced).
+    fn add_profile_file(&mut self) {
+        let Some(file) = host::pick_open_file(&tr("A hotel profile (.json)"), ["json"]) else { return };
+        let name = file.name();
+        let added = file
+            .read()
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| tr("it is not UTF-8 text")))
+            .and_then(|json| {
+                let old = files::read_to_string_if_exists(PROFILES_FILE).map_err(|e| e.to_string())?;
+                let (text, names) = import_profiles(old.as_deref(), &name, &json)?;
+                files::write_str(PROFILES_FILE, &text).map_err(|e| e.to_string())?;
+                Ok(names)
+            });
+        self.load_profiles();
+        match added {
+            Ok(names) => self.say(
+                BannerKind::Success,
+                tr_with("Hotel profile added: {names}.", &[("names", &names.join(", "))]),
+            ),
+            Err(e) => self.say(BannerKind::Error, tr_with("{file} cannot be added: {error}", &[("file", &name), ("error", &e)])),
+        }
+    }
+
     fn fixed_profile(&self) -> Option<&HotelProfile> {
         self.profile.checked_sub(1).and_then(|n| self.profiles.get(n))
     }
@@ -584,6 +614,10 @@ impl Ripper {
     fn pick_rips(&mut self, title: &str, need: RipNeed) -> Option<Picked> {
         let folder = folders::pick(title)?;
         let name = folder.name();
+        if name.trim().is_empty() {
+            self.say(BannerKind::Error, tr("This folder has no name: pick a folder inside it."));
+            return None;
+        }
         match list_rips(&mut FolderSource(&folder), need) {
             Ok(list) if list.top || !list.rips.is_empty() => Some(Picked { folder, name, list, choice: 0 }),
             Ok(_) => {
@@ -660,7 +694,7 @@ impl Ripper {
                 BannerKind::Error,
                 tr_with(
                     "{file} is {size} MiB: the plugin reads Packet Logger files of at most {max} MiB.",
-                    &[("file", &name), ("size", &(data.len() >> 20).to_string()), ("max", &(MAX_LOG >> 20).to_string())],
+                    &[("file", &name), ("size", &mib_text(data.len())), ("max", &(MAX_LOG >> 20).to_string())],
                 ),
             );
             return;
@@ -719,34 +753,51 @@ impl Ripper {
         match &ended {
             Ended::Done(summary) => {
                 self.save_learned(&summary.learned_profile);
-                let mut said = tr_with(
-                    "{pages} pages ({failed} failed) and {offers} offers saved in {folder}/{path}. Images: {images}.",
+                // As the built-in's result card: a heading, then one line each (translated whole).
+                let hotel = [("hotel", summary.hotel.as_str())];
+                let mut lines = vec![if summary.complete {
+                    tr_with("The catalogue of {hotel} is copied", &hotel)
+                } else {
+                    tr_with("The catalogue of {hotel} is copied, with gaps", &hotel)
+                }];
+                lines.push(tr_with(
+                    "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.",
                     &[
                         ("pages", &summary.pages.to_string()),
+                        ("items", &summary.items.to_string()),
+                        ("profile", &summary.profile),
                         ("failed", &summary.pages_failed.to_string()),
-                        ("offers", &summary.items.to_string()),
-                        ("folder", &run.folder.name()),
-                        ("path", &summary.folder),
-                        ("images", &text(&summary.images.describe())),
                     ],
-                );
-                // Each sentence is translated whole and the sentences are joined with a space.
+                ));
+                lines.push(tr_with("Images: {images}.", &[("images", &text(&summary.images.describe()))]));
+                let manager = &summary.manager;
+                lines.push(tr_with(
+                    "For the import: {pages} pages and {offers} offers; {left} offers left out (their furni is not in \
+                     items_base).",
+                    &[
+                        ("pages", &manager.pages.to_string()),
+                        ("offers", &manager.offers.to_string()),
+                        ("left", &(manager.offers_unresolved + manager.offers_without_products).to_string()),
+                    ],
+                ));
+                lines.push(tr_with(
+                    "Saved in {folder}/{path}.",
+                    &[("folder", &run.folder.name()), ("path", &summary.folder)],
+                ));
                 if summary.cancelled {
-                    said.push(' ');
-                    said.push_str(&tr("Cancelled while writing: the catalogue is whole, some images are missing."));
+                    lines.push(tr("Cancelled while writing: the catalogue is whole, some images are missing."));
                 }
                 if let Some(changes) = &summary.changes {
-                    said.push(' ');
-                    said.push_str(&text(&changes.log_line()));
+                    lines.push(text(&changes.log_line()));
                 }
                 if !summary.missing_furni.is_empty() {
-                    said.push(' ');
-                    said.push_str(&tr_with(
+                    lines.push(tr_with(
                         "{count} products are not in this hotel's items_base (missing_furni.json).",
                         &[("count", &summary.missing_furni.len().to_string())],
                     ));
                 }
-                self.say(BannerKind::Success, said);
+                let kind = if summary.complete { BannerKind::Success } else { BannerKind::Warning };
+                self.say(kind, lines.join("\n"));
             }
             Ended::Failed(failure) => {
                 if let Some(partial) = &failure.partial {
@@ -851,6 +902,8 @@ impl Ripper {
                 }
                 if self.probe.found().is_none() {
                     ui.button("gearth_tool", tr("Install or start G-Earth"));
+                } else {
+                    ui.button("gearth_tool", tr("G-Earth tool"));
                 }
             });
         });
@@ -868,6 +921,10 @@ impl Ripper {
                 }
             }));
             ui.select("profile", options, self.profile);
+            ui.row(|ui| {
+                ui.button("profile_add", tr("Add a hotel profile (.json)"));
+                ui.button("profile_reload", tr("Reload profiles"));
+            });
             ui.checkbox("normal", tr("Normal catalogue"), self.normal);
             ui.checkbox("builders_club", tr("Builders Club catalogue"), self.builders_club);
             ui.checkbox("images", tr("Download the images"), self.images);
@@ -1125,6 +1182,11 @@ impl Plugin for Ripper {
                 "resume_start" if !running => self.start_resume(),
                 "resume_close" if !running => self.resume = None,
                 "import_log" if !running => self.import_log(),
+                "profile_add" if !running => self.add_profile_file(),
+                "profile_reload" if !running => {
+                    self.load_profiles();
+                    self.say(BannerKind::Info, tr_with("{count} hotel profiles.", &[("count", &self.profiles.len().to_string())]));
+                }
                 // Switching pages stops a rip: only while idle.
                 "gearth_tool" if !running => host::open_manager_page(ManagerPage::GearthTool),
                 "cancel" => self.cancel(),

@@ -22,6 +22,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::conn::PacketInfo;
 use crate::learn::Learner;
+use crate::message::Message;
 use crate::packets::{self, Headers};
 use crate::profiles::HeaderMap;
 use crate::source::Source;
@@ -147,11 +148,16 @@ impl LineReader {
     }
 }
 
-const HEXDUMP: &str = "the log is in G-Earth's hexdump view, which cannot be read back: export it again with the normal (or raw hex) view";
-const NO_PACKETS: &str = "no packets in the log (lines like \"Incoming[804] -> ...\" from G-Earth's Packet Logger \"Export all\")";
+fn no_packets(hexdump: bool) -> Message {
+    if hexdump {
+        Message::new("the log is in G-Earth's hexdump view, which cannot be read back: export it again with the normal (or raw hex) view")
+    } else {
+        Message::new("no packets in the log (lines like \"Incoming[804] -> ...\" from G-Earth's Packet Logger \"Export all\")")
+    }
+}
 
 /// The packets of a Packet Logger export (the whole text at once, as the built-in reads it).
-pub fn parse_log(text: &str) -> Result<Vec<LoggedPacket>, String> {
+pub fn parse_log(text: &str) -> Result<Vec<LoggedPacket>, Message> {
     let mut reader = LineReader::default();
     let mut out = Vec::new();
     for line in text.lines() {
@@ -164,7 +170,7 @@ pub fn parse_log(text: &str) -> Result<Vec<LoggedPacket>, String> {
         }
     }
     if out.is_empty() {
-        return Err(if reader.hexdump { HEXDUMP } else { NO_PACKETS }.into());
+        return Err(no_packets(reader.hexdump));
     }
     Ok(out)
 }
@@ -179,14 +185,16 @@ pub struct LoggedCatalogue {
     pub pages: HashMap<(String, i32), Vec<u8>>,
 }
 
-fn missing_error(learner: &Learner) -> String {
-    format!(
-        "the log does not show which packets are the catalogue's (missing: {}): open the catalogue and a page while logging, or give the ids",
-        learner.missing().join(", ")
+fn missing_error(learner: &Learner) -> Message {
+    Message::new(
+        "the log does not show which packets are the catalogue's (missing: {missing}): open the catalogue and a page while logging, or give the ids",
     )
+    .with("missing", learner.missing().join(", "))
 }
 
-const NO_INDEX: &str = "the log has no catalogue index: open the catalogue while logging";
+fn no_index() -> Message {
+    Message::new("the log has no catalogue index: open the catalogue while logging")
+}
 
 /// Takes the catalogue's packets, once the ids are known.
 #[derive(Debug)]
@@ -246,9 +254,9 @@ impl Collector {
         }
     }
 
-    fn finish(self) -> Result<LoggedCatalogue, String> {
+    fn finish(self) -> Result<LoggedCatalogue, Message> {
         if self.found.indexes.is_empty() {
-            return Err(NO_INDEX.into());
+            return Err(no_index());
         }
         Ok(self.found)
     }
@@ -273,7 +281,7 @@ fn named_infos(names: impl IntoIterator<Item = (u16, String, bool)>) -> Vec<Pack
 pub fn catalogue_of(
     packets_in: &[LoggedPacket],
     known: &HeaderMap,
-) -> Result<LoggedCatalogue, String> {
+) -> Result<LoggedCatalogue, Message> {
     let infos = named_infos(
         packets_in
             .iter()
@@ -314,9 +322,11 @@ impl Lines {
         data: &[u8],
         eof: bool,
         each: &mut dyn FnMut(&str) -> bool,
-    ) -> Result<bool, String> {
-        let too_long =
-            || format!("a line is longer than {MAX_LINE} bytes: not a Packet Logger export");
+    ) -> Result<bool, Message> {
+        let too_long = || {
+            Message::new("a line is longer than {max} bytes: not a Packet Logger export")
+                .with("max", MAX_LINE)
+        };
         let mut rest = data;
         while let Some(at) = rest.iter().position(|&b| b == b'\n') {
             let line: std::borrow::Cow<str> = if self.tail.is_empty() {
@@ -417,11 +427,15 @@ impl LogScan {
         &mut self,
         source: &mut dyn Source,
         more: &mut dyn FnMut() -> bool,
-    ) -> Result<Option<LoggedCatalogue>, String> {
+    ) -> Result<Option<LoggedCatalogue>, Message> {
         loop {
             let data = source
                 .read(&self.path, self.offset, self.piece)
-                .map_err(|e| format!("reading {}: {e}", self.path))?;
+                .map_err(|e| {
+                    Message::new("reading {path}: {error}")
+                        .with("path", &self.path)
+                        .with("error", e)
+                })?;
             let eof = data.is_empty();
             self.offset += data.len() as u64;
             let (reader, pass, count) = (&mut self.reader, &mut self.pass, &mut self.packets);
@@ -451,17 +465,16 @@ impl LogScan {
                 }
                 true
             });
-            fed.map_err(|e| format!("{}: {e}", self.path))?;
+            fed.map_err(|e| {
+                Message::new("{path}: {error}")
+                    .with("path", &self.path)
+                    .with_message("error", e)
+            })?;
             if eof || stop {
                 match std::mem::replace(&mut self.pass, Pass::Learn(Learner::new([None; 4]))) {
                     Pass::Names { names, .. } => {
                         if self.packets == 0 {
-                            return Err(if self.reader.hexdump {
-                                HEXDUMP
-                            } else {
-                                NO_PACKETS
-                            }
-                            .into());
+                            return Err(no_packets(self.reader.hexdump));
                         }
                         let (partial, _) = packets::resolve_partial(
                             &named_infos(names),
@@ -537,7 +550,7 @@ mod tests {
         assert_eq!(decode_packet_text(&hex), p.to_bytes());
     }
 
-    fn scan(text: &str, known: HeaderMap, piece: u32) -> Result<LoggedCatalogue, String> {
+    fn scan(text: &str, known: HeaderMap, piece: u32) -> Result<LoggedCatalogue, Message> {
         let mut source = MemSource::new();
         source
             .files
@@ -583,17 +596,17 @@ mod tests {
         assert_eq!(logged[1].packet, index);
         assert!(parse_log("0000  00 01 |..|")
             .unwrap_err()
-            .contains("hexdump"));
+            .to_string().contains("hexdump"));
         // Two of four ids from the names; no page in the log, so it stops clearly.
         let err = catalogue_of(&logged, &HeaderMap::default()).unwrap_err();
-        assert!(err.contains("GetCatalogPage"), "{err}");
+        assert!(err.to_string().contains("GetCatalogPage"), "{err}");
         let found = catalogue_of(&logged, &HeaderMap::new(1195, 412, 1032, 804)).unwrap();
         assert!(found.indexes.contains_key("NORMAL"));
 
         // The same, read in pieces of every size (with CRLF line ends too).
         for piece in [1, 7, 64, 4096] {
             let err = scan(&text, HeaderMap::default(), piece).unwrap_err();
-            assert!(err.contains("GetCatalogPage"), "{err}");
+            assert!(err.to_string().contains("GetCatalogPage"), "{err}");
             let got = scan(
                 &text.replace('\n', "\r\n"),
                 HeaderMap::new(1195, 412, 1032, 804),
@@ -604,9 +617,9 @@ mod tests {
         }
         assert!(scan("0000  00 01 |..|", HeaderMap::default(), 3)
             .unwrap_err()
-            .contains("hexdump"));
+            .to_string().contains("hexdump"));
         assert!(scan("nothing\n", HeaderMap::default(), 3)
             .unwrap_err()
-            .contains("no packets"));
+            .to_string().contains("no packets"));
     }
 }

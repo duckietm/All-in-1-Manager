@@ -621,7 +621,7 @@ mod tests {
     #[test]
     fn a_port_that_is_not_gearth_does_not_end_the_rip() {
         let failure = |not_gearth: bool, cancelled: bool| Failure {
-            message: "G-Earth did not answer on port 9092 within 3 s".into(),
+            message: catalog_rip_core::Message::verbatim("G-Earth did not answer on port 9092 within 3 s"),
             cancelled,
             gearth_error: Some(catalog_rip_core::gearth::Error::NoInfoRequest),
             reconnect: false,
@@ -894,7 +894,7 @@ mod tests {
         // While it runs, and once it is done, the job's own answer decides.
         assert!(!drop_items_base(&Step::Running, true));
         assert!(drop_items_base(&Step::Running, false));
-        assert!(drop_items_base(&Step::Waiting("x".into()), false));
+        assert!(drop_items_base(&Step::Waiting(catalog_rip_core::Message::verbatim("x")), false));
     }
 
     #[test]

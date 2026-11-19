@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 use crate::export::RippedCatalog;
+use crate::message::Message;
 use crate::names::safe_file_name;
 
 /// What the image downloads came to.
@@ -21,15 +22,18 @@ pub struct ImageStats {
 }
 
 impl ImageStats {
-    pub fn describe(&self) -> String {
-        let mut text = format!(
-            "{} downloaded, {} not on the server",
-            self.downloaded, self.missing
-        );
+    pub fn describe(&self) -> Message {
         if self.failed > 0 {
-            text.push_str(&format!(", {} failed", self.failed));
+            return Message::new(
+                "{downloaded} downloaded, {missing} not on the server, {failed} failed",
+            )
+            .with("downloaded", self.downloaded)
+            .with("missing", self.missing)
+            .with("failed", self.failed);
         }
-        text
+        Message::new("{downloaded} downloaded, {missing} not on the server")
+            .with("downloaded", self.downloaded)
+            .with("missing", self.missing)
     }
 }
 

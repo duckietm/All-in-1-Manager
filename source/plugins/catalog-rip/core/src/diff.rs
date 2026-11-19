@@ -26,6 +26,7 @@ use serde::Serialize;
 
 use crate::export::{comment, item_ids_sql_with, ItemsBase, RippedCatalog};
 use crate::furnidata::Furnidata;
+use crate::message::Message;
 use crate::manager::{
     catalog_type, literal_item_ids, manager_rows, offer_columns, page_columns, visit_manager_rows,
     ManagerExport, ManagerMode, ManagerRow, ManagerStats, PageFields,
@@ -1096,31 +1097,59 @@ impl Counts {
 
     /// "3 pages and 12 offers added, 4 offers changed, 1 page removed" ([`CatalogDiff::summary`]).
     pub fn summary(&self) -> String {
+        self.summary_message().to_string()
+    }
+
+    /// [`Counts::summary`] as a translatable message.
+    pub fn summary_message(&self) -> Message {
         let total = |(p, o): (usize, usize)| p + o;
         if total(self.added) + total(self.changed) + total(self.removed) == 0 {
-            return "no changes".into();
+            return Message::new("no changes");
         }
-        let mut parts = Vec::new();
+        let mut parts: Vec<Message> = Vec::new();
         for ((pages, offers), verb) in [
-            (self.added, "added"),
-            (self.changed, "changed"),
-            (self.removed, "removed"),
+            (self.added, 0),
+            (self.changed, 1),
+            (self.removed, 2),
         ] {
-            let mut items = Vec::new();
-            if pages > 0 {
-                items.push(format!("{pages} page{}", if pages == 1 { "" } else { "s" }));
-            }
-            if offers > 0 {
-                items.push(format!(
-                    "{offers} offer{}",
-                    if offers == 1 { "" } else { "s" }
-                ));
-            }
-            if !items.is_empty() {
-                parts.push(format!("{} {verb}", items.join(" and ")));
-            }
+            let pages_text = (pages > 0).then(|| {
+                if pages == 1 {
+                    Message::new("{count} page").with("count", pages)
+                } else {
+                    Message::new("{count} pages").with("count", pages)
+                }
+            });
+            let offers_text = (offers > 0).then(|| {
+                if offers == 1 {
+                    Message::new("{count} offer").with("count", offers)
+                } else {
+                    Message::new("{count} offers").with("count", offers)
+                }
+            });
+            let items = match (pages_text, offers_text) {
+                (Some(p), Some(o)) => Message::new("{first} and {second}")
+                    .with_message("first", p)
+                    .with_message("second", o),
+                (Some(one), None) | (None, Some(one)) => one,
+                (None, None) => continue,
+            };
+            parts.push(
+                match verb {
+                    0 => Message::new("{items} added"),
+                    1 => Message::new("{items} changed"),
+                    _ => Message::new("{items} removed"),
+                }
+                .with_message("items", items),
+            );
         }
-        parts.join(", ")
+        let mut parts = parts.into_iter();
+        let mut text = parts.next().unwrap_or_default();
+        for next in parts {
+            text = Message::new("{first}, {second}")
+                .with_message("first", text)
+                .with_message("second", next);
+        }
+        text
     }
 }
 
@@ -1151,13 +1180,11 @@ impl ChangesSummary {
     }
 
     /// `Since the rip of <date> (<folder>): <summary>.`
-    pub fn log_line(&self) -> String {
-        format!(
-            "Since the rip of {} ({}): {}.",
-            self.since_ripped_at,
-            self.since,
-            self.summary()
-        )
+    pub fn log_line(&self) -> Message {
+        Message::new("Since the rip of {date} ({folder}): {summary}.")
+            .with("date", &self.since_ripped_at)
+            .with("folder", &self.since)
+            .with_message("summary", self.counts.summary_message())
     }
 }
 
@@ -1178,7 +1205,7 @@ pub struct Changes {
 }
 
 impl Changes {
-    pub fn log_line(&self) -> String {
+    pub fn log_line(&self) -> Message {
         self.summary.log_line()
     }
 

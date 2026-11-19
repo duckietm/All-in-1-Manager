@@ -228,7 +228,7 @@ pub fn run_job_from<T: Transport>(
         };
         let step = job.step(&mut io, budget(steps));
         steps += 1;
-        log.extend(job.take_log());
+        log.extend(job.take_log().iter().map(|m| m.to_string()));
         events.extend(job.take_events());
         if !job.uses_gearth() {
             if let (Some(t), Some(close)) = (transport.take(), close.take()) {

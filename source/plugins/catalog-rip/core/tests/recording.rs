@@ -9,6 +9,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
+use catalog_rip_core::Message;
 use catalog_rip_core::diff::{self, CatalogDiff};
 use catalog_rip_core::export::{self, ItemsBase, RippedCatalog, RippedMode};
 use catalog_rip_core::job::{Failure, ImportLog, Job, Phase, RipOptions, Step, Summary};
@@ -357,7 +358,7 @@ fn resume_equals_uninterrupted_rip() {
     );
     fake.join().unwrap();
     let message = &failed(&run).message;
-    assert!(message.contains("was ripped from game-nl.habbo.com"), "{message}");
+    assert!(message.to_string().contains("was ripped from game-nl.habbo.com"), "{message}");
 
     // A folder without a recording.
     let run = run_tcp(
@@ -367,7 +368,7 @@ fn resume_equals_uninterrupted_rip() {
         Some(&mut MemSource::new()),
         None,
     );
-    assert!(failed(&run).message.contains("has no recorded packets"));
+    assert!(failed(&run).message.to_string().contains("has no recorded packets"));
 }
 
 /// A recording the built-in ripper made (written here by a copy of its `Recorder`,
@@ -663,7 +664,7 @@ fn packet_logger_import_matches_builtin() {
         Some(&mut source),
         None,
     );
-    assert!(failed(&run).message.contains("hexdump"));
+    assert!(failed(&run).message.to_string().contains("hexdump"));
 }
 
 // ------------------------------------------------------------------ diff
@@ -1136,7 +1137,7 @@ fn whole_rip_files() -> BTreeMap<String, Vec<u8>> {
 #[test]
 fn recordings_have_size_limits_and_big_files_are_read_in_pieces() {
     let mut files = whole_rip_files();
-    let load = |files: &BTreeMap<String, Vec<u8>>| -> Result<(Recorded, usize), String> {
+    let load = |files: &BTreeMap<String, Vec<u8>>| -> Result<(Recorded, usize), Message> {
         let mut source = MemSource::with_files(files.iter());
         let mut loader = Loader::new(FOLDER);
         let mut calls = 0;
@@ -1157,14 +1158,14 @@ fn recordings_have_size_limits_and_big_files_are_read_in_pieces() {
     // Too big, by the listing.
     files.insert(format!("{FOLDER}/packets/page_NORMAL_99.bin"), vec![0; 17 * 1024 * 1024]);
     let e = load(&files).unwrap_err();
-    assert!(e.contains("not a recorded packet"), "{e}");
+    assert!(e.to_string().contains("not a recorded packet"), "{e}");
     files.remove(&format!("{FOLDER}/packets/page_NORMAL_99.bin"));
     // A session.json of 2 MiB.
     let mut session = files[&format!("{FOLDER}/packets/session.json")].clone();
     session.extend(std::iter::repeat_n(b' ', 2 * 1024 * 1024));
     files.insert(format!("{FOLDER}/packets/session.json"), session);
     let e = load(&files).unwrap_err();
-    assert!(e.contains("larger than"), "{e}");
+    assert!(e.to_string().contains("larger than"), "{e}");
 }
 
 /// A Packet Logger export with a line that never ends is refused (not held whole).
@@ -1188,5 +1189,44 @@ fn packet_logger_lines_have_a_limit() {
         None,
     );
     let message = &failed(&run).message;
-    assert!(message.contains("a line is longer than"), "{message}");
+    assert!(message.to_string().contains("a line is longer than"), "{message}");
+}
+
+/// A source that lists every file as 1 byte long (a listing that understates the size).
+struct Understating(MemSource);
+
+impl Source for Understating {
+    fn read(&mut self, path: &str, offset: u64, max: u32) -> Result<Vec<u8>, String> {
+        self.0.read(path, offset, max)
+    }
+
+    fn list(&mut self, path: &str, start: u32) -> Result<Vec<catalog_rip_core::source::SourceEntry>, String> {
+        let mut entries = self.0.list(path, start)?;
+        for entry in &mut entries {
+            if !entry.is_folder {
+                entry.size = 1;
+            }
+        }
+        Ok(entries)
+    }
+}
+
+/// A packet file larger than the listing said is read in whole pieces once it passes the listed
+/// size, not a byte at a time.
+#[test]
+fn a_file_larger_than_listed_is_read_in_pieces() {
+    let mut files = whole_rip_files();
+    let extra: Vec<u8> = (0..3 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+    files.insert(format!("{FOLDER}/packets/extra_big.bin"), extra.clone());
+    let mut source = Understating(MemSource::with_files(files.iter()));
+    let mut loader = Loader::new(FOLDER);
+    let recorded = loop {
+        if let Some(r) = loader.step(&mut source, &mut || false).unwrap() {
+            break r;
+        }
+    };
+    assert_eq!(recorded.extras["big"], extra);
+    // One piece for the first byte and the check past it, then whole pieces: far fewer reads
+    // than the 3 million a byte-at-a-time read would make.
+    assert!(source.0.reads < 200, "{} reads", source.0.reads);
 }

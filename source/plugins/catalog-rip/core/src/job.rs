@@ -38,6 +38,7 @@ use crate::gearth_log::{self, LogScan};
 use crate::images::{self, ImageJob, ImageStats};
 use crate::learn::Learner;
 use crate::manager::{ExistingCatalogue, ManagerMode, ManagerStats};
+use crate::message::Message;
 use crate::missing::{self, MissingFurni};
 use crate::names::hotel_name;
 use crate::output::{self, n0, DataExport};
@@ -50,7 +51,7 @@ use crate::source::Source;
 use crate::time::Timestamp;
 use crate::transport::Transport;
 use crate::wire::Packet;
-use crate::{PartialOutput, RipEvent};
+use crate::RipEvent;
 
 // ---------------------------------------------------------------- the I/O a step gets
 
@@ -396,7 +397,7 @@ pub struct Summary {
 pub struct Failure {
     /// What to tell the user (with "The catalogue read so far was saved in ..." when
     /// [`Failure::partial`] is set).
-    pub message: String,
+    pub message: Message,
     /// The user cancelled.
     pub cancelled: bool,
     /// The G-Earth connection failed or closed: the G-Earth session is over (it always is once
@@ -421,7 +422,7 @@ pub enum Step {
     /// Working; step again.
     Running,
     /// Waiting for the user (the text says what to do); step again.
-    Waiting(String),
+    Waiting(Message),
     Done(Summary),
     Failed(Failure),
 }
@@ -431,15 +432,15 @@ pub enum Step {
 /// The job stopped what it was doing (a request phase ends with what it has).
 #[derive(Debug, Clone)]
 struct Abort {
-    message: String,
+    message: Message,
     cancelled: bool,
     gearth: Option<gearth::Error>,
 }
 
 impl Abort {
-    fn new(message: impl Into<String>) -> Abort {
+    fn new(message: Message) -> Abort {
         Abort {
-            message: message.into(),
+            message,
             cancelled: false,
             gearth: None,
         }
@@ -447,7 +448,7 @@ impl Abort {
 
     fn cancelled() -> Abort {
         Abort {
-            message: crate::Cancelled.to_string(),
+            message: Message::new("The catalogue rip was cancelled."),
             cancelled: true,
             gearth: None,
         }
@@ -502,7 +503,7 @@ enum Stage {
 struct Request {
     want: Want,
     packet: Packet,
-    label: String,
+    label: Message,
     stage: Stage,
     /// Whether the answer was already there was looked at (once, before the first send: an
     /// answer that comes while the request waits for the delay is counted after sending, as
@@ -646,7 +647,7 @@ pub struct Job {
     state: State,
     cancel: bool,
     finished: Option<Step>,
-    log: Vec<String>,
+    log: Vec<Message>,
     events: Vec<RipEvent>,
     progress: Progress,
 
@@ -819,7 +820,7 @@ impl Job {
     }
 
     /// The log lines since the last call.
-    pub fn take_log(&mut self) -> Vec<String> {
+    pub fn take_log(&mut self) -> Vec<Message> {
         std::mem::take(&mut self.log)
     }
 
@@ -855,17 +856,17 @@ impl Job {
         }
     }
 
-    fn say(&mut self, text: impl Into<String>) {
-        self.log.push(text.into());
+    fn say(&mut self, message: Message) {
+        self.log.push(message);
     }
 
     fn emit(&mut self, event: RipEvent) {
         self.events.push(event);
     }
 
-    fn warn(&mut self, text: &str) {
-        self.say(format!("Warning: {text}"));
-        self.emit(RipEvent::Warning(text.to_string()));
+    fn warn(&mut self, message: Message) {
+        self.emit(RipEvent::Warning(message.to_string()));
+        self.say(Message::new("Warning: {text}").with_message("text", message));
     }
 
     fn set_phase(&mut self, phase: Phase) {
@@ -931,23 +932,24 @@ impl Job {
     /// Running, or Waiting with what the user should do.
     fn pending(&self) -> Step {
         let text = match &self.state {
-            State::Connect { .. } => Some("Waiting for G-Earth to accept the extension.".into()),
-            State::WaitHotel { .. } => Some(
-                "Waiting for the hotel connection: connect G-Earth, then open your client and log in."
-                    .into(),
-            ),
-            State::Learn { .. } => Some(
-                "Open the catalogue in your client and click any page: the ripper learns the header ids from it."
-                    .into(),
-            ),
+            State::Connect { .. } => Some(Message::new("Waiting for G-Earth to accept the extension.")),
+            State::WaitHotel { .. } => Some(Message::new(
+                "Waiting for the hotel connection: connect G-Earth, then open your client and log in.",
+            )),
+            State::Learn { .. } => Some(Message::new(
+                "Open the catalogue in your client and click any page: the ripper learns the header ids from it.",
+            )),
             _ => match &self.req {
                 Some(Request {
                     stage: Stage::Patient { .. },
                     label,
                     ..
-                }) => Some(format!(
-                    "The hotel did not answer the {label} request yet: make sure your client is logged in."
-                )),
+                }) => Some(
+                    Message::new(
+                        "The hotel did not answer the {label} request yet: make sure your client is logged in.",
+                    )
+                    .with_message("label", label.clone()),
+                ),
                 _ => None,
             },
         };
@@ -994,7 +996,7 @@ impl Job {
             return Ok((std::mem::take(&mut self.backlog), true));
         }
         let Some(g) = self.gearth.as_mut() else {
-            return Err(Abort::new("the connection to G-Earth ended"));
+            return Err(Abort::new(Message::new("the connection to G-Earth ended")));
         };
         self.pumped = true;
         let before = io.clock.now_ms();
@@ -1025,7 +1027,7 @@ impl Job {
     fn gearth_lost(&mut self, e: gearth::Error) -> Abort {
         self.gearth = None;
         Abort {
-            message: e.to_string(),
+            message: Message::verbatim(e.to_string()),
             cancelled: false,
             gearth: Some(e),
         }
@@ -1038,9 +1040,9 @@ impl Job {
             Begin::Rip | Begin::Resume(_) => {
                 if !self.options.normal && !self.options.builders_club {
                     return Ctl::End(Step::Failed(
-                        Abort::new(
+                        Abort::new(Message::new(
                             "Nothing to rip: turn on the normal and/or the Builders Club catalogue.",
-                        )
+                        ))
                         .failure(),
                     ));
                 }
@@ -1078,7 +1080,10 @@ impl Job {
     /// A failure that names nothing to read from.
     fn no_source() -> Ctl {
         Ctl::End(Step::Failed(
-            Abort::new("There is no folder to read the earlier rip or the log from.").failure(),
+            Abort::new(Message::new(
+                "There is no folder to read the earlier rip or the log from.",
+            ))
+            .failure(),
         ))
     }
 
@@ -1106,17 +1111,7 @@ impl Job {
                     self.start_gearth()
                 }
                 _ => {
-                    self.say(format!(
-                        "Writing {} again from its recorded packets ({} catalogues, {} pages).",
-                        recorded.folder,
-                        recorded
-                            .session
-                            .modes
-                            .iter()
-                            .filter(|m| recorded.indexes.contains_key(*m))
-                            .count(),
-                        n0(recorded.pages.len())
-                    ));
+                    self.say(Self::writing_again(&recorded));
                     self.offline(recorded, io)
                 }
             },
@@ -1144,15 +1139,15 @@ impl Job {
             unreachable!()
         };
         let Some(headers) = found.headers else {
-            return Ctl::End(Step::Failed(Abort::new("no ids").failure()));
+            return Ctl::End(Step::Failed(Abort::new(Message::new("no ids")).failure()));
         };
-        self.say(format!(
-            "{}: {} packets, {} catalogue indexes and {} pages.",
-            log.path,
-            packets,
-            found.indexes.len(),
-            found.pages.len()
-        ));
+        self.say(
+            Message::new("{path}: {packets} packets, {indexes} catalogue indexes and {pages} pages.")
+                .with("path", &log.path)
+                .with("packets", packets)
+                .with("indexes", found.indexes.len())
+                .with("pages", found.pages.len()),
+        );
         let host = if log.host.trim().is_empty() {
             "gearth-log".to_string()
         } else {
@@ -1212,18 +1207,23 @@ impl Job {
             }
         }
         let recorded = self.recorded.take().expect("recording");
-        self.say(format!(
-            "Writing {} again from its recorded packets ({} catalogues, {} pages).",
-            recorded.folder,
-            recorded
-                .session
-                .modes
-                .iter()
-                .filter(|m| recorded.indexes.contains_key(*m))
-                .count(),
-            n0(recorded.pages.len())
-        ));
+        self.say(Self::writing_again(&recorded));
         self.offline(recorded, io)
+    }
+
+    fn writing_again(recorded: &Recorded) -> Message {
+        Message::new("Writing {folder} again from its recorded packets ({catalogues} catalogues, {pages} pages).")
+            .with("folder", &recorded.folder)
+            .with(
+                "catalogues",
+                recorded
+                    .session
+                    .modes
+                    .iter()
+                    .filter(|m| recorded.indexes.contains_key(*m))
+                    .count(),
+            )
+            .with("pages", n0(recorded.pages.len()))
     }
 
     /// `<hotel>_<stamp>` for a new rip folder of `host`.
@@ -1239,11 +1239,10 @@ impl Job {
     /// a new rip folder, then written as a rip.
     fn offline(&mut self, recorded: Recorded, io: &mut JobIo) -> Ctl {
         if !recorded.unreadable.is_empty() {
-            let text = format!(
-                "{} recorded pages cannot be read and are left out.",
-                recorded.unreadable.len()
+            self.warn(
+                Message::new("{count} recorded pages cannot be read and are left out.")
+                    .with("count", recorded.unreadable.len()),
             );
-            self.warn(&text);
         }
         let session = recorded.session.clone();
         self.folder = match self.begin {
@@ -1340,7 +1339,9 @@ impl Job {
             Err(e) => {
                 if !self.record_warned {
                     self.record_warned = true;
-                    self.warn(&format!("the packets could not be recorded ({e})."));
+                    self.warn(
+                        Message::new("the packets could not be recorded ({error}).").with("error", e),
+                    );
                 }
                 None
             }
@@ -1357,27 +1358,26 @@ impl Job {
 
     fn log_instructions(&mut self) {
         let title = self.options.extension.title.clone();
-        self.say("Rip the catalogue through G-Earth");
-        self.say("This reads the catalogue the way your own client does: G-Earth relays the requests through your");
-        self.say("logged-in session. Nothing is bought or changed; your game traffic passes through unchanged.");
-        self.say("  1. Start G-Earth AS ADMINISTRATOR (it edits the hosts file for the Flash/AIR client).");
-        self.say("  2. With the client closed, press Connect in G-Earth; then open the client and log in.");
-        self.say(format!(
-            "  3. G-Earth may ask whether to allow the extension \"{title}\": answer Yes."
-        ));
-        self.say("  4. Keep the catalogue window closed in your client while the rip runs.");
-        let text = format!(
-            "Requests are sent one at a time, every {} ms{}.",
-            self.timing.delay,
-            if self.options.adaptive_delay {
-                format!(
-                    " (slower, up to {} ms, when the hotel stops answering)",
-                    self.timing.max_delay
-                )
-            } else {
-                String::new()
-            }
+        self.say(Message::new("Rip the catalogue through G-Earth"));
+        self.say(Message::new("This reads the catalogue the way your own client does: G-Earth relays the requests through your"));
+        self.say(Message::new("logged-in session. Nothing is bought or changed; your game traffic passes through unchanged."));
+        self.say(Message::new("  1. Start G-Earth AS ADMINISTRATOR (it edits the hosts file for the Flash/AIR client)."));
+        self.say(Message::new("  2. With the client closed, press Connect in G-Earth; then open the client and log in."));
+        self.say(
+            Message::new("  3. G-Earth may ask whether to allow the extension \"{title}\": answer Yes.")
+                .with("title", title),
         );
+        self.say(Message::new("  4. Keep the catalogue window closed in your client while the rip runs."));
+        let text = if self.options.adaptive_delay {
+            Message::new(
+                "Requests are sent one at a time, every {delay} ms (slower, up to {max} ms, when the hotel stops answering).",
+            )
+            .with("delay", self.timing.delay)
+            .with("max", self.timing.max_delay)
+        } else {
+            Message::new("Requests are sent one at a time, every {delay} ms.")
+                .with("delay", self.timing.delay)
+        };
         self.say(text);
     }
 
@@ -1397,7 +1397,7 @@ impl Job {
         ) {
             Ok(true) => {
                 let port = self.options.gearth_port;
-                self.say(format!("Connected to G-Earth on port {port}."));
+                self.say(Message::new("Connected to G-Earth on port {port}.").with("port", port));
                 self.emit(RipEvent::GearthConnected { port });
                 self.set_phase(Phase::WaitHotel);
                 self.state = State::WaitHotel {
@@ -1411,11 +1411,12 @@ impl Job {
                 let e = gearth::Error::NoInfoRequest;
                 self.gearth = None;
                 Ctl::End(Step::Failed(Failure {
-                    message: format!(
-                        "G-Earth did not answer on port {} within {} s ({e}): is it G-Earth's extension port?",
-                        self.options.gearth_port,
-                        secs(self.options.handshake_timeout_ms)
-                    ),
+                    message: Message::new(
+                        "G-Earth did not answer on port {port} within {seconds} s ({error}): is it G-Earth's extension port?",
+                    )
+                    .with("port", self.options.gearth_port)
+                    .with("seconds", secs(self.options.handshake_timeout_ms))
+                    .with("error", &e),
                     cancelled: false,
                     gearth_error: Some(e),
                     reconnect: false,
@@ -1427,7 +1428,8 @@ impl Job {
             Err(e) => {
                 let abort = self.gearth_lost(e);
                 Ctl::End(Step::Failed(Failure {
-                    message: format!("Connecting to G-Earth failed: {}", abort.message),
+                    message: Message::new("Connecting to G-Earth failed: {error}")
+                        .with_message("error", abort.message.clone()),
                     not_gearth: true,
                     ..abort.failure()
                 }))
@@ -1448,18 +1450,24 @@ impl Job {
             };
             let (deadline, was_accepted) = (*deadline, *accepted);
             if now >= deadline {
-                return Ctl::End(Step::Failed(Abort::new(format!(
-                    "No hotel connection through G-Earth within {} s. Connect G-Earth to the hotel, then start your client and log in.",
-                    secs(self.timing.hotel_wait)
-                ))
-                .failure()));
+                return Ctl::End(Step::Failed(
+                    Abort::new(
+                        Message::new(
+                            "No hotel connection through G-Earth within {seconds} s. Connect G-Earth to the hotel, then start your client and log in.",
+                        )
+                        .with("seconds", secs(self.timing.hotel_wait)),
+                    )
+                    .failure(),
+                ));
             }
             if now.saturating_sub(*last_note) >= 30_000 {
                 *last_note = now;
-                self.say(format!(
-                    "Still waiting for the hotel connection ({} s left): connect G-Earth, then open your client and log in.",
-                    secs(deadline - now)
-                ));
+                self.say(
+                    Message::new(
+                        "Still waiting for the hotel connection ({seconds} s left): connect G-Earth, then open your client and log in.",
+                    )
+                    .with("seconds", secs(deadline - now)),
+                );
             }
             if self.out_of_time(now, end) {
                 return Ctl::Yield;
@@ -1472,20 +1480,21 @@ impl Job {
                     let title = self.options.extension.title.clone();
                     return Ctl::End(Step::Failed(if was_accepted {
                         Failure {
-                            message: format!(
-                                "G-Earth let the extension go before the hotel connection ({}; G-Earth restarted, or Connect in Nitro mode): connect again.",
-                                abort.message
-                            ),
+                            message: Message::new(
+                                "G-Earth let the extension go before the hotel connection ({error}; G-Earth restarted, or Connect in Nitro mode): connect again.",
+                            )
+                            .with_message("error", abort.message.clone()),
                             reconnect: true,
                             ..abort.failure()
                         }
                     } else {
                         Failure {
-                            message: format!(
-                                "G-Earth refused the extension ({}). G-Earth asks once whether to allow an unknown extension; \
+                            message: Message::new(
+                                "G-Earth refused the extension ({error}). G-Earth asks once whether to allow an unknown extension; \
                                  if \"No\" was remembered, restart G-Earth and answer Yes when it asks about \"{title}\".",
-                                abort.message
-                            ),
+                            )
+                            .with_message("error", abort.message.clone())
+                            .with("title", title),
                             ..abort.failure()
                         }
                     }));
@@ -1499,11 +1508,14 @@ impl Job {
                             *accepted = true;
                         }
                         let title = self.options.extension.title.clone();
-                        self.say(format!(
-                            "G-Earth accepted the extension (shown in its Extensions tab as \"{title}\")."
-                        ));
+                        self.say(
+                            Message::new(
+                                "G-Earth accepted the extension (shown in its Extensions tab as \"{title}\").",
+                            )
+                            .with("title", title),
+                        );
                         if !connected {
-                            self.say("G-Earth is not connected to a hotel yet: press Connect in G-Earth, then open your client and log in.");
+                            self.say(Message::new("G-Earth is not connected to a hotel yet: press Connect in G-Earth, then open your client and log in."));
                         }
                     }
                     GEarthEvent::ConnectionStart(info) => {
@@ -1512,7 +1524,7 @@ impl Job {
                         return self.hotel_connected(io, info);
                     }
                     GEarthEvent::ConnectionEnd => {
-                        self.say("The hotel connection ended; waiting for a new one.")
+                        self.say(Message::new("The hotel connection ended; waiting for a new one."))
                     }
                     GEarthEvent::Packet(_) => {}
                 }
@@ -1521,27 +1533,33 @@ impl Job {
     }
 
     fn hotel_connected(&mut self, io: &mut JobIo, connection: ConnectionInfo) -> Ctl {
-        self.say(format!(
-            "Hotel connection: {} ({} client, {})",
-            connection.host, connection.client_type, connection.hotel_version
-        ));
+        self.say(
+            Message::new("Hotel connection: {host} ({client} client, {version})")
+                .with("host", &connection.host)
+                .with("client", &connection.client_type)
+                .with("version", &connection.hotel_version),
+        );
         self.emit(RipEvent::HotelConnected {
             host: connection.host.clone(),
             client_type: connection.client_type.clone(),
             hotel_version: connection.hotel_version.clone(),
         });
         match connection.client_type.to_ascii_uppercase().as_str() {
-            "SHOCKWAVE" => return Ctl::End(Step::Failed(Abort::new("The Shockwave (Origins) client uses another protocol and has no catalogue pages to rip; use the Flash/AIR or Nitro client.").failure())),
-            "UNITY" => self.warn("the Unity client is not tested; trying with the Flash structures."),
+            "SHOCKWAVE" => return Ctl::End(Step::Failed(Abort::new(Message::new("The Shockwave (Origins) client uses another protocol and has no catalogue pages to rip; use the Flash/AIR or Nitro client.")).failure())),
+            "UNITY" => self.warn(Message::new("the Unity client is not tested; trying with the Flash structures.")),
             _ => {}
         }
         if let Some(recorded) = &self.recorded {
             if !recorded.session.host.eq_ignore_ascii_case(&connection.host) {
                 return Ctl::End(Step::Failed(
-                    Abort::new(format!(
-                        "{} was ripped from {}, but G-Earth is connected to {}: connect to the same hotel to go on with it.",
-                        recorded.folder, recorded.session.host, connection.host
-                    ))
+                    Abort::new(
+                        Message::new(
+                            "{folder} was ripped from {ripped}, but G-Earth is connected to {connected}: connect to the same hotel to go on with it.",
+                        )
+                        .with("folder", &recorded.folder)
+                        .with("ripped", &recorded.session.host)
+                        .with("connected", &connection.host),
+                    )
                     .failure(),
                 ));
             }
@@ -1554,10 +1572,10 @@ impl Job {
                 if let Some(h) = recorded.session.headers {
                     profile.headers = HeaderMap::new(h.get_index, h.get_page, h.index, h.page);
                 }
-                self.say(format!(
-                    "Hotel profile: {} (from the stopped rip).",
-                    profile.name
-                ));
+                self.say(
+                    Message::new("Hotel profile: {name} (from the stopped rip).")
+                        .with("name", &profile.name),
+                );
                 self.emit(RipEvent::ProfileChosen {
                     name: profile.name.clone(),
                     kind: profile.kind,
@@ -1584,20 +1602,22 @@ impl Job {
                 &profile.name,
             ) {
                 Ok(resolved) => self.headers_found(io, resolved.headers, resolved.sources),
-                Err(e) => Ctl::End(Step::Failed(Abort::new(format!("{e:#}")).failure())),
+                Err(e) => Ctl::End(Step::Failed(Abort::new(Message::verbatim(format!("{e:#}"))).failure())),
             };
         }
         // Learn the missing ids from the client while the user opens the catalogue.
         let learner = Learner::new(partial);
         let missing = learner.missing();
-        self.say(format!(
-            "No hotel profile and no G-Earth packet info has the id of {}.",
-            missing.join(", ")
-        ));
-        self.say(format!(
-            "Open the catalogue in your client now and click any page: the ripper learns the ids from it (waiting up to {} s).",
-            secs(self.timing.hotel_wait)
-        ));
+        self.say(
+            Message::new("No hotel profile and no G-Earth packet info has the id of {missing}.")
+                .with("missing", missing.join(", ")),
+        );
+        self.say(
+            Message::new(
+                "Open the catalogue in your client now and click any page: the ripper learns the ids from it (waiting up to {seconds} s).",
+            )
+            .with("seconds", secs(self.timing.hotel_wait)),
+        );
         self.emit(RipEvent::LearningHeaders { missing });
         if let Some(g) = self.gearth.as_mut() {
             g.watch_all(true);
@@ -1644,34 +1664,41 @@ impl Job {
     ) -> HotelProfile {
         let (profile, detected_by) = match choice {
             ProfileChoice::Fixed(profile) => {
-                self.say(format!(
-                    "Hotel profile: {} ({}).",
-                    profile.name,
-                    profile.kind.label()
-                ));
+                self.say(
+                    Message::new("Hotel profile: {name} ({kind}).")
+                        .with("name", &profile.name)
+                        .with_message("kind", profile.kind.label()),
+                );
                 (profile, None)
             }
             ProfileChoice::Detect(list) => match profiles::detect(&list, connection) {
                 Some((profile, by)) => {
                     let how = match by {
-                        DetectedBy::Host => format!("host {}", connection.host),
-                        DetectedBy::Revision => {
-                            format!("client revision {}", connection.hotel_version)
+                        DetectedBy::Host => {
+                            Message::new("host {host}").with("host", &connection.host)
                         }
-                        DetectedBy::ClientType => format!("{} client", connection.client_type),
+                        DetectedBy::Revision => Message::new("client revision {version}")
+                            .with("version", &connection.hotel_version),
+                        DetectedBy::ClientType => Message::new("{client} client")
+                            .with("client", &connection.client_type),
                     };
-                    self.say(format!(
-                        "Hotel profile: {} ({}), picked by the {how}.",
-                        profile.name,
-                        profile.kind.label()
-                    ));
+                    self.say(
+                        Message::new("Hotel profile: {name} ({kind}), picked by the {how}.")
+                            .with("name", &profile.name)
+                            .with_message("kind", profile.kind.label())
+                            .with_message("how", how),
+                    );
                     (profile.clone(), Some(by))
                 }
                 None => {
-                    self.say(format!(
-                        "No hotel profile matches {} ({} client {}): using G-Earth's packet info.",
-                        connection.host, connection.client_type, connection.hotel_version
-                    ));
+                    self.say(
+                        Message::new(
+                            "No hotel profile matches {host} ({client} client {version}): using G-Earth's packet info.",
+                        )
+                        .with("host", &connection.host)
+                        .with("client", &connection.client_type)
+                        .with("version", &connection.hotel_version),
+                    );
                     (Self::fallback_profile(connection), None)
                 }
             },
@@ -1699,10 +1726,16 @@ impl Job {
             let now = io.clock.now_ms();
             if now >= deadline {
                 let missing = learner.missing().join(", ");
-                return Ctl::End(Step::Failed(Abort::new(format!(
-                    "The header ids could not be learned within {} s (still missing: {missing}). Open the catalogue in your client and click a page while the ripper waits, or set the ids in the hotel profile.",
-                    secs(self.timing.hotel_wait),
-                )).failure()));
+                return Ctl::End(Step::Failed(
+                    Abort::new(
+                        Message::new(
+                            "The header ids could not be learned within {seconds} s (still missing: {missing}). Open the catalogue in your client and click a page while the ripper waits, or set the ids in the hotel profile.",
+                        )
+                        .with("seconds", secs(self.timing.hotel_wait))
+                        .with("missing", missing),
+                    )
+                    .failure(),
+                ));
             }
             if self.out_of_time(now, end) {
                 return Ctl::Yield;
@@ -1720,8 +1753,11 @@ impl Job {
                             unreachable!()
                         };
                         if let Some(name) = learner.observe(p.to_server, &p.packet) {
-                            let line = format!("Learned {name} = {}.", p.packet.header);
-                            self.say(line);
+                            self.say(
+                                Message::new("Learned {name} = {header}.")
+                                    .with("name", name)
+                                    .with("header", p.packet.header),
+                            );
                         }
                         let State::Learn { learner, .. } = &self.state else {
                             unreachable!()
@@ -1734,8 +1770,10 @@ impl Job {
                     }
                     GEarthEvent::ConnectionEnd => {
                         return Ctl::End(Step::Failed(
-                            Abort::new("the hotel connection ended (logged out or disconnected)")
-                                .failure(),
+                            Abort::new(Message::new(
+                                "the hotel connection ended (logged out or disconnected)",
+                            ))
+                            .failure(),
                         ))
                     }
                     _ => {}
@@ -1778,7 +1816,10 @@ impl Job {
         }
         match profiles::save_profile(profile) {
             Ok(file) => self.learned_profile = Some(file),
-            Err(e) => self.warn(&format!("the learned profile could not be saved: {e:#}")),
+            Err(e) => self.warn(
+                Message::new("the learned profile could not be saved: {error}")
+                    .with("error", format!("{e:#}")),
+            ),
         }
         self.learned = true;
         self.emit(RipEvent::HeadersLearned {
@@ -1794,10 +1835,19 @@ impl Job {
         headers: Headers,
         sources: [&'static str; 4],
     ) -> Ctl {
-        self.say(format!(
-            "Header ids: GetCatalogIndex {} ({}), GetCatalogPage {} ({}), CatalogIndex {} ({}), CatalogPage {} ({})",
-            headers.get_index, sources[0], headers.get_page, sources[1], headers.index, sources[2], headers.page, sources[3],
-        ));
+        self.say(
+            Message::new(
+                "Header ids: GetCatalogIndex {get_index} ({source_get_index}), GetCatalogPage {get_page} ({source_get_page}), CatalogIndex {index} ({source_index}), CatalogPage {page} ({source_page})",
+            )
+            .with("get_index", headers.get_index)
+            .with("source_get_index", sources[0])
+            .with("get_page", headers.get_page)
+            .with("source_get_page", sources[1])
+            .with("index", headers.index)
+            .with("source_index", sources[2])
+            .with("page", headers.page)
+            .with("source_page", sources[3]),
+        );
         self.emit(RipEvent::HeadersResolved { headers, sources });
         self.headers = Some(headers);
         // The modes to rip, in order.
@@ -1811,21 +1861,24 @@ impl Job {
             if profile.builders_club {
                 modes.push("BUILDERS_CLUB".to_string());
             } else {
-                skipped = Some(format!(
-                    "the profile \"{}\" has no Builders Club catalogue",
-                    profile.name
-                ));
+                skipped = Some(
+                    Message::new("the profile \"{name}\" has no Builders Club catalogue")
+                        .with("name", &profile.name),
+                );
             }
         }
         if let Some(reason) = skipped {
-            self.say(format!("Only the normal catalogue is ripped: {reason}."));
             self.emit(RipEvent::ModeSkipped {
                 mode: "BUILDERS_CLUB".into(),
-                reason,
+                reason: reason.to_string(),
             });
+            self.say(
+                Message::new("Only the normal catalogue is ripped: {reason}.")
+                    .with_message("reason", reason),
+            );
         }
         if modes.is_empty() {
-            return Ctl::End(Step::Failed(Abort::new("Nothing to rip: this hotel has no Builders Club catalogue and the normal one is turned off.").failure()));
+            return Ctl::End(Step::Failed(Abort::new(Message::new("Nothing to rip: this hotel has no Builders Club catalogue and the normal one is turned off.")).failure()));
         }
         self.mode_list = modes;
         let console = format!(
@@ -1834,7 +1887,7 @@ impl Job {
         );
         let Some(g) = self.gearth.as_mut() else {
             return Ctl::End(Step::Failed(
-                Abort::new("the connection to G-Earth ended").failure(),
+                Abort::new(Message::new("the connection to G-Earth ended")).failure(),
             ));
         };
         g.watch(false, headers.index);
@@ -1894,11 +1947,14 @@ impl Job {
             }
             let folder = recorded.folder.clone();
             let indexes = self.indexes.len();
-            self.say(format!(
-                "Going on with {folder}: {} catalogue indexes and {} pages are already there; the rest is asked.",
-                indexes,
-                n0(self.resumed_pages)
-            ));
+            self.say(
+                Message::new(
+                    "Going on with {folder}: {indexes} catalogue indexes and {pages} pages are already there; the rest is asked.",
+                )
+                .with("folder", &folder)
+                .with("indexes", indexes)
+                .with("pages", n0(self.resumed_pages)),
+            );
             self.emit(RipEvent::Resumed {
                 folder: PathBuf::from(folder),
                 indexes,
@@ -1945,7 +2001,10 @@ impl Job {
                             self.indexes.insert(mode, index);
                         }
                     }
-                    Err(e) => self.warn(&format!("a catalogue index could not be read: {e:#}")),
+                    Err(e) => self.warn(
+                        Message::new("a catalogue index could not be read: {error}")
+                            .with("error", format!("{e:#}")),
+                    ),
                 }
             }
             GEarthEvent::Packet(p) if !p.to_server && p.packet.header == headers.page => {
@@ -1971,11 +2030,16 @@ impl Job {
                             // Keep the raw packet so the layout can be worked out from real data.
                             let written = self.recorder.page(sink, &mode, id, &p.packet.body, true);
                             if let Some(Some(file)) = self.record_result(written) {
-                                self.say(format!("  raw page saved: {file}"));
+                                self.say(
+                                    Message::new("  raw page saved: {file}").with("file", file),
+                                );
                             }
                             self.unreadable.insert((mode, id), format!("{e:#}"));
                         } else {
-                            self.warn(&format!("a catalogue page could not be read: {e:#}"));
+                            self.warn(
+                                Message::new("a catalogue page could not be read: {error}")
+                                    .with("error", format!("{e:#}")),
+                            );
                         }
                     }
                 }
@@ -1986,7 +2050,7 @@ impl Job {
             GEarthEvent::Packet(_) | GEarthEvent::Init { .. } | GEarthEvent::ConnectionStart(_) => {
             }
             GEarthEvent::ConnectionEnd => {
-                return Err(Abort::new("the hotel connection ended (logged out or disconnected; if the hotel kicks clients that ask too fast, raise the delay between requests)"));
+                return Err(Abort::new(Message::new("the hotel connection ended (logged out or disconnected; if the hotel kicks clients that ask too fast, raise the delay between requests)")));
             }
         }
         Ok(())
@@ -2001,12 +2065,16 @@ impl Job {
         Ok(progressed)
     }
 
-    fn set_delay(&mut self, delay: u64, why: &str) {
+    fn set_delay(&mut self, delay: u64, why: Message) {
         if delay == self.delay {
             return;
         }
         self.delay = delay;
-        self.say(format!("{why}: {delay} ms between requests now."));
+        self.say(
+            Message::new("{why}: {delay} ms between requests now.")
+                .with_message("why", why)
+                .with("delay", delay),
+        );
         self.emit(RipEvent::DelayChanged { delay_ms: delay });
     }
 
@@ -2015,7 +2083,7 @@ impl Job {
         self.answered_in_a_row = 0;
         if self.options.adaptive_delay && self.delay < self.timing.max_delay {
             let slower = (self.delay * 2).min(self.timing.max_delay);
-            self.set_delay(slower, "A request went unanswered, slowing down");
+            self.set_delay(slower, Message::new("A request went unanswered, slowing down"));
         }
     }
 
@@ -2027,11 +2095,11 @@ impl Job {
         {
             self.answered_in_a_row = 0;
             let faster = (self.delay / 2).max(self.timing.delay);
-            self.set_delay(faster, "Answers come back again, speeding up");
+            self.set_delay(faster, Message::new("Answers come back again, speeding up"));
         }
     }
 
-    fn begin(&mut self, want: Want, packet: Packet, label: String, once: bool) {
+    fn begin(&mut self, want: Want, packet: Packet, label: Message, once: bool) {
         match &want {
             Want::Index(mode) => self.index_mode = mode.clone(),
             Want::Page(mode, _) => self.page_mode = mode.clone(),
@@ -2088,7 +2156,9 @@ impl Job {
                     let next = self.last_send.map_or(now, |last| last + self.delay);
                     if now >= next {
                         let Some(g) = self.gearth.as_mut() else {
-                            return Poll::Ready(Err(Abort::new("the connection to G-Earth ended")));
+                            return Poll::Ready(Err(Abort::new(Message::new(
+                                "the connection to G-Earth ended",
+                            ))));
                         };
                         if let Err(e) = g.send_to_server(&mut *io.transport, &req.packet) {
                             return Poll::Ready(Err(self.gearth_lost(e)));
@@ -2120,31 +2190,37 @@ impl Job {
                         match kind {
                             WaitKind::First if self.answered.contains(&header) => {
                                 self.slow_down();
-                                self.say(format!(
-                                    "No answer for {} within {:.1} s, asking once more.",
-                                    req.label,
-                                    self.timing.response_timeout as f64 / 1000.0
-                                ));
+                                self.say(
+                                    Message::new("No answer for {label} within {seconds} s, asking once more.")
+                                        .with_message("label", req.label.clone())
+                                        .with(
+                                            "seconds",
+                                            format!("{:.1}", self.timing.response_timeout as f64 / 1000.0),
+                                        ),
+                                );
                                 req.stage = Stage::Send(WaitKind::Retry);
                             }
                             WaitKind::First => {
                                 // Never answered yet: not logged in yet, wrong header ids, or
                                 // G-Earth blocks the packet.
                                 let label = req.label.clone();
-                                self.say(format!(
-                                    "The hotel did not answer the {label} request yet."
-                                ));
-                                self.say("  - Make sure your client is logged in (in the hotel view or a room).");
-                                self.say("  - G-Earth only forwards packets it knows: if its packet info did not load, open the catalogue in");
-                                self.say("    your client once and click any page (or turn on Developer mode in G-Earth's Extra tab).");
                                 self.say(
-                                    "  - On a retro, check the header ids of the hotel profile.",
+                                    Message::new("The hotel did not answer the {label} request yet.")
+                                        .with_message("label", label),
                                 );
-                                self.say(format!(
-                                    "  Waiting up to {} s; the request is repeated every {} s.",
-                                    secs(self.timing.hotel_wait),
-                                    secs(self.timing.resend_every)
+                                self.say(Message::new("  - Make sure your client is logged in (in the hotel view or a room)."));
+                                self.say(Message::new("  - G-Earth only forwards packets it knows: if its packet info did not load, open the catalogue in"));
+                                self.say(Message::new("    your client once and click any page (or turn on Developer mode in G-Earth's Extra tab)."));
+                                self.say(Message::new(
+                                    "  - On a retro, check the header ids of the hotel profile.",
                                 ));
+                                self.say(
+                                    Message::new(
+                                        "  Waiting up to {wait} s; the request is repeated every {every} s.",
+                                    )
+                                    .with("wait", secs(self.timing.hotel_wait))
+                                    .with("every", secs(self.timing.resend_every)),
+                                );
                                 self.client_sent.remove(&header);
                                 req.stage = Stage::Patient {
                                     end: now + self.timing.hotel_wait,
@@ -2172,11 +2248,13 @@ impl Job {
                         Some(until) => until,
                         None => {
                             if now >= patience {
-                                return Poll::Ready(Err(Abort::new(format!(
-                                    "The hotel never answered the {} request (waited {} s). On a retro, check the hotel profile's header ids.",
-                                    req.label,
-                                    secs(self.timing.hotel_wait)
-                                ))));
+                                return Poll::Ready(Err(Abort::new(
+                                    Message::new(
+                                        "The hotel never answered the {label} request (waited {seconds} s). On a retro, check the hotel profile's header ids.",
+                                    )
+                                    .with_message("label", req.label.clone())
+                                    .with("seconds", secs(self.timing.hotel_wait)),
+                                )));
                             }
                             let until = (now + self.timing.resend_every).min(patience);
                             req.stage = Stage::Patient {
@@ -2222,12 +2300,14 @@ impl Job {
         }
         let key = self.mode_list[i].to_ascii_uppercase();
         if self.req.is_none() {
-            self.say(format!("Requesting the {key} catalogue index ..."));
+            self.say(
+                Message::new("Requesting the {mode} catalogue index ...").with("mode", &key),
+            );
             let headers = self.headers.expect("headers");
             self.begin(
                 Want::Index(key.clone()),
                 packets::get_catalog_index(headers.get_index, &self.mode_list[i]),
-                format!("{key} index"),
+                Message::new("{mode} index").with("mode", &key),
                 false,
             );
         }
@@ -2247,15 +2327,24 @@ impl Job {
                         .and_then(|first| self.indexes.get(first))
                         .is_some_and(|first| first.root == index.root);
                 if same {
-                    let reason = "the hotel sent the normal catalogue again".to_string();
-                    self.say(format!(
-                        "{key}: {reason} (no separate {key} catalogue); skipped."
-                    ));
-                    self.emit(RipEvent::ModeSkipped { mode: key, reason });
+                    let reason = Message::new("the hotel sent the normal catalogue again");
+                    self.emit(RipEvent::ModeSkipped {
+                        mode: key.clone(),
+                        reason: reason.to_string(),
+                    });
+                    self.say(
+                        Message::new("{mode}: {reason} (no separate {mode} catalogue); skipped.")
+                            .with("mode", &key)
+                            .with_message("reason", reason),
+                    );
                     return Ctl::Continue;
                 }
                 let count = index.walk().len();
-                self.say(format!("{key}: {} pages in the index.", n0(count)));
+                self.say(
+                    Message::new("{mode}: {pages} pages in the index.")
+                        .with("mode", &key)
+                        .with("pages", n0(count)),
+                );
                 self.emit(RipEvent::IndexRead {
                     mode: key.clone(),
                     pages: count,
@@ -2263,15 +2352,23 @@ impl Job {
                 self.accepted.push(key);
             }
             Ok(false) if i == 0 => {
-                self.aborted = Some(Abort::new(format!(
-                    "The hotel did not send the {key} catalogue index."
-                )));
+                self.aborted = Some(Abort::new(
+                    Message::new("The hotel did not send the {mode} catalogue index.")
+                        .with("mode", &key),
+                ));
                 return self.after_requests(io);
             }
             Ok(false) => {
-                let reason = "no index (this account or hotel may not have it)".to_string();
-                self.say(format!("{key}: {reason}; skipped."));
-                self.emit(RipEvent::ModeSkipped { mode: key, reason });
+                let reason = Message::new("no index (this account or hotel may not have it)");
+                self.emit(RipEvent::ModeSkipped {
+                    mode: key.clone(),
+                    reason: reason.to_string(),
+                });
+                self.say(
+                    Message::new("{mode}: {reason}; skipped.")
+                        .with("mode", &key)
+                        .with_message("reason", reason),
+                );
             }
             Err(abort) => {
                 self.aborted = Some(abort);
@@ -2309,7 +2406,9 @@ impl Job {
         self.jobs = jobs;
         self.set_phase(Phase::Pages);
         self.progress.total = self.jobs.len() as u64;
-        self.say(format!("Requesting {} pages ...", n0(self.jobs.len())));
+        self.say(
+            Message::new("Requesting {pages} pages ...").with("pages", n0(self.jobs.len())),
+        );
         self.state = State::Pages { n: 0 };
         Ctl::Continue
     }
@@ -2332,13 +2431,18 @@ impl Job {
         let key = (mode.clone(), page_id);
         if self.req.is_none() {
             if !self.pages.contains_key(&key) {
-                self.say(format!("[{}/{total}] {label}", n + 1));
+                self.say(
+                    Message::new("[{n}/{total}] {label}")
+                        .with("n", n + 1)
+                        .with("total", total)
+                        .with("label", &label),
+                );
             }
             let headers = self.headers.expect("headers");
             self.begin(
                 Want::Page(mode.clone(), page_id),
                 packets::get_catalog_page(headers.get_page, page_id, &mode),
-                format!("page {page_id}"),
+                Message::new("page {page}").with("page", page_id),
                 false,
             );
         }
@@ -2352,13 +2456,19 @@ impl Job {
                 if ok {
                     *self.read_in_mode.entry(m).or_default() += 1;
                 } else if let Some(error) = self.unreadable.get(&key).cloned() {
-                    self.say(format!("  page {page_id} could not be read: {error}"));
+                    self.say(
+                        Message::new("  page {page} could not be read: {error}")
+                            .with("page", page_id)
+                            .with("error", error),
+                    );
                     self.failed.entry(mode.clone()).or_default().push(page_id);
                 }
                 self.emit(RipEvent::PageDone { mode, page_id, ok });
             }
             Ok(false) => {
-                self.say(format!("  page {page_id}: no answer, skipped."));
+                self.say(
+                    Message::new("  page {page}: no answer, skipped.").with("page", page_id),
+                );
                 let list = self.failed.entry(mode.clone()).or_default();
                 list.push(page_id);
                 let failed_here = list.len();
@@ -2368,11 +2478,18 @@ impl Job {
                     ok: false,
                 });
                 if m > 0 && !self.read_in_mode.contains_key(&m) && failed_here >= 3 {
-                    let reason = "its first pages got no answer".to_string();
-                    self.say(format!(
-                        "{mode}: {reason}; the rest of the {mode} catalogue is skipped."
-                    ));
-                    self.emit(RipEvent::ModeSkipped { mode, reason });
+                    let reason = Message::new("its first pages got no answer");
+                    self.emit(RipEvent::ModeSkipped {
+                        mode: mode.clone(),
+                        reason: reason.to_string(),
+                    });
+                    self.say(
+                        Message::new(
+                            "{mode}: {reason}; the rest of the {mode} catalogue is skipped.",
+                        )
+                        .with("mode", &mode)
+                        .with_message("reason", reason),
+                    );
                     self.skip_mode = Some(m);
                 }
             }
@@ -2413,10 +2530,10 @@ impl Job {
             let Some((ask_id, answer_id)) =
                 extras::resolve(extra, &profile.extra_headers, &connection.packets)
             else {
-                self.say(format!(
-                    "{}: no header ids for this hotel; skipped.",
-                    extra.answer
-                ));
+                self.say(
+                    Message::new("{name}: no header ids for this hotel; skipped.")
+                        .with("name", extra.answer),
+                );
                 self.state = State::Extras { i: i + 1 };
                 return Ctl::Continue;
             };
@@ -2427,7 +2544,7 @@ impl Job {
             self.begin(
                 Want::Raw(answer_id),
                 extras::request(extra, ask_id),
-                extra.answer.to_string(),
+                Message::verbatim(extra.answer),
                 true,
             );
         }
@@ -2444,10 +2561,12 @@ impl Job {
                 let body = self.raw.remove(&answer_id).unwrap_or_default();
                 let written = self.recorder.extra(&mut *io.sink, extra.key, &body);
                 self.record_result(written);
-                self.say(format!("{}: read.", extra.answer));
+                self.say(Message::new("{name}: read.").with("name", extra.answer));
                 self.extra_answers.insert(extra.key.to_string(), body);
             }
-            Ok(false) => self.say(format!("{}: no answer; skipped.", extra.answer)),
+            Ok(false) => self.say(
+                Message::new("{name}: no answer; skipped.").with("name", extra.answer),
+            ),
             Err(abort) => {
                 self.aborted = Some(abort);
                 return self.after_requests(io);
@@ -2465,7 +2584,7 @@ impl Job {
                 // Every index asked: on to the pages.
                 return if self.accepted.is_empty() {
                     Ctl::End(Step::Failed(
-                        Abort::new("no catalogue index was received").failure(),
+                        Abort::new(Message::new("no catalogue index was received")).failure(),
                     ))
                 } else {
                     self.begin_pages(&mut *io.sink)
@@ -2476,7 +2595,7 @@ impl Job {
             let abort = self
                 .aborted
                 .take()
-                .unwrap_or_else(|| Abort::new("no catalogue index was received"));
+                .unwrap_or_else(|| Abort::new(Message::new("no catalogue index was received")));
             return Ctl::End(Step::Failed(abort.failure()));
         }
         // The built-in drops its G-Earth session here, before writing the output.
@@ -2512,9 +2631,10 @@ impl Job {
 
     /// The catalogue is read: on to the output (the built-in's `Output::write`).
     fn begin_output(&mut self, catalog: RippedCatalog, io: &mut JobIo) -> Ctl {
+        // The note goes into README.txt (English, as the built-in wrote it); the line is for the log.
         let (database_note, items_line) = match io.items {
             None => ("No items_base was given: item_ids are subqueries on items_base, resolved when the SQL is imported.".to_string(), None),
-            Some(_) => ("item_ids were matched against the hotel's items_base; products it lacked are looked up again on import (subqueries).".to_string(), Some("Using the hotel's items_base.")),
+            Some(_) => ("item_ids were matched against the hotel's items_base; products it lacked are looked up again on import (subqueries).".to_string(), Some(Message::new("Using the hotel's items_base."))),
         };
         if let Some(line) = items_line {
             self.say(line);
@@ -2610,7 +2730,11 @@ impl Job {
                 self.state = State::Export(ExportStage::Productdata);
                 self.fetched = true;
                 let host = self.connection.as_ref().expect("connection").host.clone();
-                self.say(format!("Reading the furnidata of {host} ({source}) ..."));
+                self.say(
+                    Message::new("Reading the furnidata of {host} ({source}) ...")
+                        .with("host", &host)
+                        .with("source", &source),
+                );
                 let catalog = &self.out.as_ref().expect("out").catalog;
                 // Of the whole entries, only those of the furni items_base lacks are kept (for
                 // missing_furnidata.json); the response is dropped at the end of this step.
@@ -2622,17 +2746,22 @@ impl Job {
                 });
                 match loaded {
                     Ok(data) => {
-                        self.say(format!(
-                            "Furnidata: {} class names; products are matched by class name.",
-                            n0(data.len())
-                        ));
+                        self.say(
+                            Message::new(
+                                "Furnidata: {count} class names; products are matched by class name.",
+                            )
+                            .with("count", n0(data.len())),
+                        );
                         let out = self.out.as_mut().expect("out");
                         out.furnidata_names = Some(data.len());
                         out.furnidata = Some(data);
                     }
-                    Err(e) => self.warn(&format!(
-                        "the furnidata could not be read ({e}); products are matched by sprite id."
-                    )),
+                    Err(e) => self.warn(
+                        Message::new(
+                            "the furnidata could not be read ({error}); products are matched by sprite id.",
+                        )
+                        .with("error", e),
+                    ),
                 }
                 // One download and parse per step.
                 Ctl::Yield
@@ -2664,12 +2793,17 @@ impl Job {
                 });
                 match loaded {
                     Ok(data) => {
-                        self.say(format!("Productdata: {} product names.", n0(data.len())));
+                        self.say(
+                            Message::new("Productdata: {count} product names.")
+                                .with("count", n0(data.len())),
+                        );
                         let out = self.out.as_mut().expect("out");
                         out.productdata_names = data.len();
                         out.products = Some(data);
                     }
-                    Err(e) => self.warn(&format!("the productdata could not be read ({e}).")),
+                    Err(e) => self.warn(
+                        Message::new("the productdata could not be read ({error}).").with("error", e),
+                    ),
                 }
                 Ctl::Yield
             }
@@ -2699,9 +2833,13 @@ impl Job {
                         }
                         Err(FetchError::NotFound) => {}
                         Err(FetchError::Failed(e)) => {
-                            self.warn(&format!(
-                                "the client configuration could not be read (GET {url}: {e}); the image URLs of the profile are used."
-                            ));
+                            self.warn(
+                                Message::new(
+                                    "the client configuration could not be read (GET {url}: {error}); the image URLs of the profile are used.",
+                                )
+                                .with("url", &url)
+                                .with("error", e),
+                            );
                             return self.begin_images(None);
                         }
                     }
@@ -2710,16 +2848,22 @@ impl Job {
                 let fetched = std::mem::take(fetched);
                 match site_config::load(&source, &fetched) {
                     Ok(urls) => {
-                        self.say(format!(
-                            "Catalogue images from the client configuration: {} (icons {}<n>.png).",
-                            urls.catalog_url, urls.icon_url
-                        ));
+                        self.say(
+                            Message::new(
+                                "Catalogue images from the client configuration: {catalogue} (icons {icons}<n>.png).",
+                            )
+                            .with("catalogue", &urls.catalog_url)
+                            .with("icons", &urls.icon_url),
+                        );
                         self.begin_images(Some((urls.catalog_url, urls.icon_url)))
                     }
                     Err(e) => {
-                        self.warn(&format!(
-                            "the client configuration could not be read ({e:#}); the image URLs of the profile are used."
-                        ));
+                        self.warn(
+                            Message::new(
+                                "the client configuration could not be read ({error}); the image URLs of the profile are used.",
+                            )
+                            .with("error", format!("{e:#}")),
+                        );
                         self.begin_images(None)
                     }
                 }
@@ -2771,10 +2915,12 @@ impl Job {
                         found: None,
                     },
                     (Some(earlier), false) => {
-                        let text = format!(
-                            "the earlier rip {earlier} cannot be compared: there is no folder to read it from"
+                        self.warn(
+                            Message::new(
+                                "the earlier rip {earlier} cannot be compared: there is no folder to read it from",
+                            )
+                            .with("earlier", earlier),
                         );
-                        self.warn(&text);
                         return Ctl::Continue;
                     }
                     (None, true) if self.options.diff_with_previous => {
@@ -2844,15 +2990,23 @@ impl Job {
                             match found {
                                 // Found by looking: the next earlier one, if any.
                                 Some(find) => {
-                                    self.warn(&format!(
-                                        "the earlier rip {earlier} cannot be compared ({e}); looking for an earlier one."
-                                    ));
+                                    self.warn(
+                                        Message::new(
+                                            "the earlier rip {earlier} cannot be compared ({error}); looking for an earlier one.",
+                                        )
+                                        .with("earlier", &earlier)
+                                        .with("error", e),
+                                    );
                                     DiffStage::Find(find)
                                 }
                                 None => {
-                                    self.warn(&format!(
-                                        "the earlier rip {earlier} cannot be compared: {e}"
-                                    ));
+                                    self.warn(
+                                        Message::new(
+                                            "the earlier rip {earlier} cannot be compared: {error}",
+                                        )
+                                        .with("earlier", &earlier)
+                                        .with("error", e),
+                                    );
                                     return Ctl::Continue;
                                 }
                             }
@@ -2899,7 +3053,12 @@ impl Job {
             if let Err(e) = made.result {
                 let path = format!("{}/{}", self.folder, made.file.name());
                 return Ctl::End(Step::Failed(
-                    Abort::new(format!("writing {path}: {e}")).failure(),
+                    Abort::new(
+                        Message::new("writing {path}: {error}")
+                            .with("path", path)
+                            .with("error", e),
+                    )
+                    .failure(),
                 ));
             }
             if !out.data.needs_furnidata_entries() {
@@ -2982,7 +3141,7 @@ impl Job {
         } else {
             out.plan = images::plan(&out.catalog, &out.catalog_url, &out.icon_url);
             let total = out.plan.len() as u64;
-            self.say("Downloading page images and icons ...");
+            self.say(Message::new("Downloading page images and icons ..."));
             self.set_phase(Phase::Images);
             self.progress.total = total;
         }
@@ -3000,7 +3159,8 @@ impl Job {
                 return self.finish(io);
             }
             if cancelled || out.next_image >= out.plan.len() {
-                let mut text = out.stats.describe();
+                // For README.txt: English.
+                let mut text = out.stats.describe().to_string();
                 if cancelled {
                     text.push_str(" (stopped: cancelled)");
                 }
@@ -3054,7 +3214,11 @@ impl Job {
                         }
                         Err(e) => {
                             out.stats.failed += 1;
-                            line = Some(format!("Image {label}: {e}"));
+                            line = Some(
+                                Message::new("Image {label}: {error}")
+                                    .with("label", &label)
+                                    .with("error", e),
+                            );
                         }
                     }
                     out.next_image += 1;
@@ -3094,7 +3258,12 @@ impl Job {
         let path = self.path("README.txt");
         if let Err(e) = io.sink.write(&path, readme.as_bytes()) {
             return Ctl::End(Step::Failed(
-                Abort::new(format!("writing {path}: {e}")).failure(),
+                Abort::new(
+                    Message::new("writing {path}: {error}")
+                        .with("path", path)
+                        .with("error", e),
+                )
+                .failure(),
             ));
         }
         let mut summary = self.summary();
@@ -3107,11 +3276,11 @@ impl Job {
         match self.aborted.take() {
             None => Ctl::End(Step::Done(summary)),
             Some(abort) => {
-                let message = PartialOutput {
-                    folder: PathBuf::from(&summary.folder),
-                    reason: abort.message.clone(),
-                }
-                .to_string();
+                let message = Message::new(
+                    "{reason}\nThe catalogue read so far was saved in {folder}.",
+                )
+                .with_message("reason", abort.message.clone())
+                .with("folder", &summary.folder);
                 Ctl::End(Step::Failed(Failure {
                     message,
                     partial: Some(Box::new(summary)),
@@ -3175,54 +3344,56 @@ impl Job {
 
     fn log_summary(&mut self, s: &Summary) {
         let mut lines = vec![
-            "Catalogue rip summary".to_string(),
-            format!(
-                "  Hotel:               {} ({}, profile {})",
-                s.hotel, s.host, s.profile
-            ),
-            format!(
-                "  Time:                {:.1} min",
-                s.elapsed_ms as f64 / 60_000.0
-            ),
-            format!("  Pages:               {}", n0(s.pages)),
+            Message::new("Catalogue rip summary"),
+            Message::new("  Hotel:               {hotel} ({host}, profile {profile})")
+                .with("hotel", &s.hotel)
+                .with("host", &s.host)
+                .with("profile", &s.profile),
+            Message::new("  Time:                {minutes} min")
+                .with("minutes", format!("{:.1}", s.elapsed_ms as f64 / 60_000.0)),
+            Message::new("  Pages:               {count}").with("count", n0(s.pages)),
         ];
         if s.resumed_pages > 0 {
-            lines.push(format!("  From the stopped rip: {}", n0(s.resumed_pages)));
+            lines.push(
+                Message::new("  From the stopped rip: {count}").with("count", n0(s.resumed_pages)),
+            );
         }
         if s.pages_failed > 0 {
-            lines.push(format!("  Pages without answer: {}", n0(s.pages_failed)));
+            lines.push(
+                Message::new("  Pages without answer: {count}").with("count", n0(s.pages_failed)),
+            );
         }
-        lines.push(format!("  Offers:              {}", n0(s.items)));
-        lines.push(format!("  Products:            {}", n0(s.products)));
-        lines.push(format!("  Frontpage items:     {}", n0(s.frontpage_items)));
-        lines.push(format!(
-            "  Arcturus SQL:        {} catalog_pages, {} catalog_items",
-            n0(s.sql.pages),
-            n0(s.sql.items)
-        ));
-        lines.push(format!(
-            "  Manager import:      {} pages, {} offers ({}){}",
-            n0(s.manager.pages),
-            n0(s.manager.offers),
-            s.manager.mode.label(),
-            if s.manager.offers_unresolved > 0 {
-                format!(
-                    ", {} left out: products not in items_base",
-                    n0(s.manager.offers_unresolved)
-                )
-            } else {
-                String::new()
-            }
-        ));
-        lines.push(format!("  Images:              {}", s.images.describe()));
-        lines.push(format!("  Output folder:       {}", s.folder));
+        lines.push(Message::new("  Offers:              {count}").with("count", n0(s.items)));
+        lines.push(Message::new("  Products:            {count}").with("count", n0(s.products)));
+        lines.push(
+            Message::new("  Frontpage items:     {count}").with("count", n0(s.frontpage_items)),
+        );
+        lines.push(
+            Message::new("  Arcturus SQL:        {pages} catalog_pages, {items} catalog_items")
+                .with("pages", n0(s.sql.pages))
+                .with("items", n0(s.sql.items)),
+        );
+        lines.push(if s.manager.offers_unresolved > 0 {
+            Message::new(
+                "  Manager import:      {pages} pages, {offers} offers ({mode}), {left_out} left out: products not in items_base",
+            )
+            .with("left_out", n0(s.manager.offers_unresolved))
+        } else {
+            Message::new("  Manager import:      {pages} pages, {offers} offers ({mode})")
+        }
+        .with("pages", n0(s.manager.pages))
+        .with("offers", n0(s.manager.offers))
+        .with_message("mode", s.manager.mode.label()));
+        lines.push(
+            Message::new("  Images:              {images}").with_message("images", s.images.describe()),
+        );
+        lines.push(Message::new("  Output folder:       {folder}").with("folder", &s.folder));
         if !s.complete {
             lines.push(if self.recorder.any {
-                "  INCOMPLETE: the rip stopped early (see README.txt); it can go on from this folder."
+                Message::new("  INCOMPLETE: the rip stopped early (see README.txt); it can go on from this folder.")
             } else {
-                "  INCOMPLETE: the rip stopped early (see README.txt)."
-            }
-            .to_string());
+                Message::new("  INCOMPLETE: the rip stopped early (see README.txt).")
+            });
         }
         self.log.extend(lines);
     }

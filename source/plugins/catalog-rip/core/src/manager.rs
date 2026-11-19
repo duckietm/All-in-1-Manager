@@ -29,6 +29,7 @@ use crate::export::{
     numbered_pages, ItemsBase, RippedCatalog,
 };
 use crate::furnidata::Furnidata;
+use crate::message::Message;
 use crate::packets::Offer;
 
 /// How catalog_manager.sql changes the hotel's catalogue.
@@ -45,11 +46,11 @@ pub enum ManagerMode {
 }
 
 impl ManagerMode {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> Message {
         match self {
-            ManagerMode::Replace => "replace the whole catalogue",
-            ManagerMode::ReplaceRipped => "replace the ripped catalogues",
-            ManagerMode::Add => "add next to the existing catalogue",
+            ManagerMode::Replace => Message::new("replace the whole catalogue"),
+            ManagerMode::ReplaceRipped => Message::new("replace the ripped catalogues"),
+            ManagerMode::Add => Message::new("add next to the existing catalogue"),
         }
     }
 }

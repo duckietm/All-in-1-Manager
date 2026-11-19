@@ -24,6 +24,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::conn::ConnectionInfo;
+use crate::message::Message;
 
 /// What kind of hotel a profile is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,11 +39,11 @@ pub enum HotelKind {
 }
 
 impl HotelKind {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> Message {
         match self {
-            HotelKind::Official => "official Habbo",
-            HotelKind::FlashRetro => "Flash retro",
-            HotelKind::NitroRetro => "Nitro retro",
+            HotelKind::Official => Message::new("official Habbo"),
+            HotelKind::FlashRetro => Message::new("Flash retro"),
+            HotelKind::NitroRetro => Message::new("Nitro retro"),
         }
     }
 }

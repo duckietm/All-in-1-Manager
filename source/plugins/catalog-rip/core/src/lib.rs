@@ -25,6 +25,7 @@ pub mod images;
 pub mod job;
 pub mod learn;
 pub mod manager;
+pub mod message;
 pub mod missing;
 pub mod names;
 pub mod output;
@@ -48,6 +49,7 @@ pub use job::{
     RipOptions, Sink, Step, Summary,
 };
 pub use manager::{ExistingCatalogue, ManagerMode};
+pub use message::Message;
 pub use missing::MissingFurni;
 pub use packets::Headers;
 pub use profiles::{

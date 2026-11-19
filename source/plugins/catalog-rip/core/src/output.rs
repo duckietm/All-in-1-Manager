@@ -12,6 +12,7 @@ use crate::diff::{self, Changes, ChangesJson, ChangesSummary};
 use crate::export::{self, ItemsBase, RippedCatalog, RippedMode, SqlFile, SqlStats};
 use crate::extras;
 use crate::furnidata::Furnidata;
+use crate::message::Message;
 use crate::manager::{self, ExistingCatalogue, ManagerExport, ManagerMode, ManagerStats};
 use crate::missing::{self, MissingFurni};
 use crate::packets::{CatalogIndex, CatalogPage};
@@ -118,7 +119,20 @@ pub struct DataFiles {
     pub manager: ManagerStats,
     pub missing_furni: Vec<MissingFurni>,
     /// Log lines the built-in writes while making them.
-    pub log: Vec<String>,
+    pub log: Vec<Message>,
+}
+
+/// The log line about the products items_base lacks.
+fn missing_line(count: usize, with_furnidata: bool) -> Message {
+    if with_furnidata {
+        Message::new(
+            "{count} products are not in the hotel's items_base: missing_furni.json and missing_furnidata.json (for the furni import).",
+        )
+        .with("count", n0(count))
+    } else {
+        Message::new("{count} products are not in the hotel's items_base: missing_furni.json.")
+            .with("count", n0(count))
+    }
 }
 
 fn pretty(value: &impl serde::Serialize) -> Vec<u8> {
@@ -167,22 +181,14 @@ pub fn data_files(input: &ExportInput) -> DataFiles {
         },
     );
     if !manager.stats.note.is_empty() {
-        log.push(format!("Manager import file: {}", manager.stats.note));
+        log.push(Message::new("Manager import file: {note}").with("note", &manager.stats.note));
     }
     files.push(("catalog_manager.sql".into(), manager.text.into_bytes()));
 
     let missing_furni =
         missing::missing_furni(catalog, input.items, input.furnidata, input.products);
     if !missing_furni.is_empty() {
-        log.push(format!(
-            "{} products are not in the hotel's items_base: missing_furni.json{}.",
-            n0(missing_furni.len()),
-            if input.furnidata.is_some() {
-                " and missing_furnidata.json (for the furni import)"
-            } else {
-                ""
-            }
-        ));
+        log.push(missing_line(missing_furni.len(), input.furnidata.is_some()));
         files.push((
             "missing_furni.json".into(),
             pretty(&serde_json::json!({
@@ -282,7 +288,7 @@ pub struct MadeFile {
     pub file: DataFile,
     pub bytes: Vec<u8>,
     /// Log lines the built-in writes while making it.
-    pub log: Vec<String>,
+    pub log: Vec<Message>,
 }
 
 /// One data file streamed by [`DataExport::stream_next_file`].
@@ -292,7 +298,7 @@ pub struct StreamedFile {
     /// The first error of `append`: the file stopped there (part of it may be written).
     pub result: Result<(), String>,
     /// Log lines the built-in writes while making it.
-    pub log: Vec<String>,
+    pub log: Vec<Message>,
 }
 
 /// The data files of [`data_files`], made one per call of [`DataExport::stream_next_file`] (or
@@ -494,7 +500,10 @@ impl DataExport {
                     };
                     self.manager = manager::write_manager_sql(&mut out, catalog, &export);
                     if !self.manager.note.is_empty() {
-                        log.push(format!("Manager import file: {}", self.manager.note));
+                        log.push(
+                            Message::new("Manager import file: {note}")
+                                .with("note", &self.manager.note),
+                        );
                     }
                 }
                 DataFile::MissingFurni => {
@@ -507,15 +516,7 @@ impl DataExport {
                     if self.missing_furni.is_empty() {
                         continue;
                     }
-                    log.push(format!(
-                        "{} products are not in the hotel's items_base: missing_furni.json{}.",
-                        n0(self.missing_furni.len()),
-                        if input.furnidata.is_some() {
-                            " and missing_furnidata.json (for the furni import)"
-                        } else {
-                            ""
-                        }
-                    ));
+                    log.push(missing_line(self.missing_furni.len(), input.furnidata.is_some()));
                     write_json(
                         &mut out,
                         &MissingJson {

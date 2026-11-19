@@ -24,11 +24,11 @@ use aio_plugin_sdk::i18n::{tr, tr_with};
 use aio_plugin_sdk::sql::{Op, Select};
 use aio_plugin_sdk::ui::BannerKind;
 use aio_plugin_sdk::{export_plugin, files, host, tcp, ErrorKind, Event, Plugin, Ui};
-use catalog_rip_core::images::ImageStats;
+use catalog_rip_core::Message;
 use catalog_rip_core::output::items_base;
 use catalog_rip_core::transport::{Closed, Transport};
 use catalog_rip_core::{
-    Clock, Failure, HotelKind, HotelProfile, ItemsBase, ItemsBaseRow, Job, JobIo, Phase, ProfileChoice, RipOptions, Step, Summary,
+    Clock, Failure, HotelProfile, ItemsBase, ItemsBaseRow, Job, JobIo, Phase, ProfileChoice, RipOptions, Step, Summary,
 };
 
 /// What one tick gives the job; the rest of the tick's 5 s is margin (the job's G-Earth waits are host I/O).
@@ -60,7 +60,7 @@ struct Run {
     /// The port G-Earth answered on.
     port: Option<u16>,
     /// What the job waits for the user to do.
-    waiting: Option<String>,
+    waiting: Option<Message>,
     cancelling: bool,
 }
 
@@ -143,26 +143,10 @@ fn phase_text(phase: Phase) -> String {
     }
 }
 
-/// The kind of a hotel profile, as the profile list shows it (the core's `label` is English).
-fn kind_text(kind: HotelKind) -> String {
-    match kind {
-        HotelKind::Official => tr("official Habbo"),
-        HotelKind::FlashRetro => tr("Flash retro"),
-        HotelKind::NitroRetro => tr("Nitro retro"),
-    }
-}
-
-/// What the image downloads came to (the core's `describe` is English).
-fn images_text(images: &ImageStats) -> String {
-    let downloaded = images.downloaded.to_string();
-    let missing = images.missing.to_string();
-    if images.failed > 0 {
-        return tr_with(
-            "{downloaded} downloaded, {missing} not on the server, {failed} failed",
-            &[("downloaded", &downloaded), ("missing", &missing), ("failed", &images.failed.to_string())],
-        );
-    }
-    tr_with("{downloaded} downloaded, {missing} not on the server", &[("downloaded", &downloaded), ("missing", &missing)])
+/// A message of the core in the Manager's language: its English template is the key, `it.json` has the
+/// translation (the drift test reads the core's `Message::new("...")` literals), the values are filled after.
+fn text(message: &Message) -> String {
+    message.render(&|english| tr(english)) // scan:dynamic (the core's templates, checked in the core's sources)
 }
 
 impl Run {
@@ -234,8 +218,9 @@ impl Run {
                 };
                 let step = job.step(&mut io, JOB_BUDGET_MS);
                 for line in job.take_log() {
-                    host::log(host::Level::Info, &line);
-                    log.push(line);
+                    // The host's log stays English; the page's log is in the Manager's language.
+                    host::log(host::Level::Info, &line.to_string());
+                    log.push(text(&line));
                 }
                 // Every event has a log line too; nothing more to show.
                 job.take_events();
@@ -263,11 +248,11 @@ impl Run {
                         match after_failure(&failure, rest.len()) {
                             AfterFailure::Ended => Some(Ended::Failed(failure)),
                             AfterFailure::NoGearth => {
-                                log.push(format!("{} {}", failure.message, tr("No port left to try.")));
+                                log.push(format!("{} {}", text(&failure.message), tr("No port left to try.")));
                                 Some(Ended::NoGearth)
                             }
                             AfterFailure::NextPort => {
-                                log.push(format!("{} {}", failure.message, tr("Trying the next port.")));
+                                log.push(format!("{} {}", text(&failure.message), tr("Trying the next port.")));
                                 self.port = None;
                                 self.waiting = None;
                                 self.stage = Stage::Connect(std::mem::take(rest));
@@ -418,7 +403,7 @@ impl Ripper {
                         ("offers", &summary.items.to_string()),
                         ("folder", &run.folder.name()),
                         ("path", &summary.folder),
-                        ("images", &images_text(&summary.images)),
+                        ("images", &text(&summary.images.describe())),
                     ],
                 );
                 // Each sentence is translated whole and the sentences are joined with a space.
@@ -440,12 +425,12 @@ impl Ripper {
                     self.save_learned(&partial.learned_profile);
                 }
                 let kind = if failure.cancelled { BannerKind::Info } else { BannerKind::Error };
-                let mut text = failure.message.clone();
+                let mut banner = text(&failure.message);
                 if failure.reconnect {
-                    text.push(' ');
-                    text.push_str(&tr("Click Try again to connect to G-Earth again."));
+                    banner.push(' ');
+                    banner.push_str(&tr("Click Try again to connect to G-Earth again."));
                 }
-                self.say(kind, text);
+                self.say(kind, banner);
             }
             Ended::NoGearth => self.say(
                 BannerKind::Error,
@@ -530,7 +515,7 @@ impl Ripper {
     fn render_settings(&self, ui: &mut Ui) {
         ui.card(tr("Settings"), |ui| {
             let options = std::iter::once(tr("Detect from the hotel connection")).chain(self.profiles.iter().map(|p| {
-                let values = [("name", p.name.as_str()), ("kind", &kind_text(p.kind))];
+                let values = [("name", p.name.as_str()), ("kind", &text(&p.kind.label()))];
                 if p.builtin {
                     tr_with("{name} ({kind})", &values)
                 } else {
@@ -567,7 +552,7 @@ impl Ripper {
                 ui.text(line);
                 ui.progress(progress.done, progress.total);
                 if let Some(waiting) = &run.waiting {
-                    ui.banner(BannerKind::Info, waiting.as_str());
+                    ui.banner(BannerKind::Info, text(waiting));
                 }
             }
         });

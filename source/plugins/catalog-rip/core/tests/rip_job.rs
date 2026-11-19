@@ -327,7 +327,7 @@ fn a_failed_append_fails_the_rip_and_names_the_file() {
     let run = run_tcp(options(port), port, &mut fetch, &mut sink, None);
     fake.join().unwrap();
     let failure = failed(&run);
-    assert_eq!(failure.message, format!("writing {path}: disk full"));
+    assert_eq!(failure.message.to_string(), format!("writing {path}: disk full"));
     assert!(sink.files.contains_key(&format!("{FOLDER}/catalog_pages.sql")));
     assert!(!sink.files.contains_key(&path));
     assert!(!sink.files.contains_key(&format!("{FOLDER}/catalog.json")));
@@ -595,7 +595,7 @@ fn waits_until_the_client_opened_the_catalogue() {
         (None, None),
         |_| 50,
         |_, step| {
-            if matches!(step, Step::Waiting(text) if text.contains("NORMAL index request")) {
+            if matches!(step, Step::Waiting(text) if text.to_string().contains("NORMAL index request")) {
                 steps_waiting += 1;
             }
         },
@@ -689,12 +689,13 @@ fn an_unverified_retro_profile_stops_with_a_clear_error() {
     fake.join().unwrap();
     let failure = failed(&run);
     assert!(
-        failure.message.contains(profiles::PLUS_FLASH),
+        failure.message.to_string().contains(profiles::PLUS_FLASH),
         "{}",
         failure.message
     );
     assert!(failure
         .message
+        .to_string()
         .contains("set the four ids in the hotel profile"));
     assert!(failure.partial.is_none() && failure.gearth_error.is_none());
     assert!(seen.lock().unwrap().requests.is_empty(), "nothing sent");
@@ -962,8 +963,8 @@ fn cancel_stops_within_one_tick() {
     let failure = failed(&run);
     assert!(failure.cancelled);
     assert!(failure.gearth_error.is_none() && !failure.reconnect);
-    assert!(failure.message.contains("cancelled"), "{}", failure.message);
-    assert!(failure.message.contains("saved in"), "{}", failure.message);
+    assert!(failure.message.to_string().contains("cancelled"), "{}", failure.message);
+    assert!(failure.message.to_string().contains("saved in"), "{}", failure.message);
     let partial = failure.partial.as_ref().expect("what was written");
     assert!(!partial.complete);
     assert!(partial.cancelled);
@@ -1254,12 +1255,12 @@ fn hotel_disconnect_keeps_partial_output() {
     let failure = failed(&run);
     assert!(!failure.cancelled);
     assert!(
-        failure.message.contains("hotel connection ended"),
+        failure.message.to_string().contains("hotel connection ended"),
         "{}",
         failure.message
     );
     assert!(
-        failure.message.contains("saved in habbo.nl_"),
+        failure.message.to_string().contains("saved in habbo.nl_"),
         "{}",
         failure.message
     );
@@ -1321,7 +1322,7 @@ fn gearth_closing_ends_the_session_and_keeps_partial_output() {
         Some(catalog_rip_core::gearth::Error::Closed)
     );
     assert!(
-        failure.message.starts_with("G-Earth closed the connection"),
+        failure.message.to_string().starts_with("G-Earth closed the connection"),
         "{}",
         failure.message
     );
@@ -1373,6 +1374,7 @@ fn reconnect_when_gearth_lets_the_extension_go_before_the_hotel() {
     assert!(failure.reconnect, "{failure:?}");
     assert!(failure
         .message
+        .to_string()
         .contains("let the extension go before the hotel connection"));
     assert!(run.log_text().contains("G-Earth accepted the extension"));
 }
@@ -1393,7 +1395,7 @@ fn nothing_to_rip_and_no_gearth() {
         |_| 50,
         |_, _, _| {},
     );
-    assert!(failed(&run).message.starts_with("Nothing to rip"));
+    assert!(failed(&run).message.to_string().starts_with("Nothing to rip"));
 
     // Something that never sends G-Earth's InfoRequest.
     struct Silent(SimClock);

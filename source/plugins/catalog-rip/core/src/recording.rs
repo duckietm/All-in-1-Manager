@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::job::Sink;
+use crate::message::Message;
 use crate::names::safe_file_name;
 use crate::packets::{self, CatalogIndex, CatalogPage, Headers};
 use crate::profiles::HotelProfile;
@@ -226,13 +227,16 @@ impl Recorded {
 
     /// One packet file, as the built-in's `recording::read` takes it (other names are left
     /// alone, but kept for the copy).
-    pub fn add(&mut self, name: &str, body: Vec<u8>) -> Result<(), String> {
+    pub fn add(&mut self, name: &str, body: Vec<u8>) -> Result<(), Message> {
         if let Some(stem) = name.strip_suffix(".bin") {
             if let Some(key) = stem.strip_prefix("extra_") {
                 self.extras.insert(key.to_string(), body.clone());
             } else if let Some(mode) = stem.strip_prefix("index_") {
-                let mut index = packets::parse_index(&body)
-                    .map_err(|e| format!("reading {}/{PACKETS_DIR}/{name}: {e:#}", self.folder))?;
+                let mut index = packets::parse_index(&body).map_err(|e| {
+                    Message::new("reading {path}: {error}")
+                        .with("path", format!("{}/{PACKETS_DIR}/{name}", self.folder))
+                        .with("error", format!("{e:#}"))
+                })?;
                 index.mode = mode.to_string();
                 self.indexes.insert(mode.to_string(), index);
             } else if let Some(rest) = stem.strip_prefix("page_") {
@@ -303,24 +307,31 @@ impl Loader {
         &mut self,
         source: &mut dyn Source,
         more: &mut dyn FnMut() -> bool,
-    ) -> Result<Option<Recorded>, String> {
+    ) -> Result<Option<Recorded>, Message> {
         let dir = self.dir();
         loop {
             if self.out.is_none() {
                 let path = format!("{dir}/{SESSION_FILE}");
                 let text = source::read_capped(source, &path, MAX_SESSION).map_err(|e| {
-                    format!(
-                        "{} has no recorded packets ({path} is missing): it was ripped without recording, or is not a rip folder: {e}",
-                        self.folder
+                    Message::new(
+                        "{folder} has no recorded packets ({path} is missing): it was ripped without recording, or is not a rip folder: {error}",
                     )
+                    .with("folder", &self.folder)
+                    .with("path", &path)
+                    .with("error", e)
                 })?;
-                let session: SessionInfo =
-                    serde_json::from_slice(&text).map_err(|e| format!("reading {path}: {e}"))?;
+                let session: SessionInfo = serde_json::from_slice(&text).map_err(|e| {
+                    Message::new("reading {path}: {error}")
+                        .with("path", &path)
+                        .with("error", e)
+                })?;
                 if session.format != FORMAT {
-                    return Err(format!(
-                        "{path} is format {}; this version reads format {FORMAT}",
-                        session.format
-                    ));
+                    return Err(Message::new(
+                        "{path} is format {found}; this version reads format {expected}",
+                    )
+                    .with("path", &path)
+                    .with("found", session.format)
+                    .with("expected", FORMAT));
                 }
                 let mut recorded = Recorded::new(&self.folder, session);
                 recorded.session_raw = text;
@@ -328,7 +339,11 @@ impl Loader {
             } else if !self.list_done {
                 let page = source
                     .list(&dir, self.listed.len() as u32)
-                    .map_err(|e| format!("listing {dir}: {e}"))?;
+                    .map_err(|e| {
+                        Message::new("listing {dir}: {error}")
+                            .with("dir", &dir)
+                            .with("error", e)
+                    })?;
                 if page.is_empty() {
                     self.list_done = true;
                     let mut names: Vec<(String, u64)> = std::mem::take(&mut self.listed)
@@ -339,9 +354,12 @@ impl Loader {
                     if let Some((name, size)) =
                         names.iter().find(|(_, size)| *size > MAX_PACKET_FILE)
                     {
-                        return Err(format!(
-                            "{dir}/{name} is {size} bytes: not a recorded packet (at most {MAX_PACKET_FILE})"
-                        ));
+                        return Err(Message::new(
+                            "{path} is {size} bytes: not a recorded packet (at most {max})",
+                        )
+                        .with("path", format!("{dir}/{name}"))
+                        .with("size", size)
+                        .with("max", MAX_PACKET_FILE));
                     }
                     self.names = Some(names);
                 } else {
@@ -361,16 +379,28 @@ impl Loader {
                 };
                 let path = format!("{dir}/{name}");
                 let mut body = self.reading.take().unwrap_or_default();
-                // One piece per call; the piece that would pass the listed size shows the end.
-                let want = (size.saturating_sub(body.len() as u64) + 1).min(MAX_READ as u64) as u32;
+                // One piece per call; the piece that would pass the listed size shows the end. A
+                // file that already passed the listed size (it was listed smaller than it is) is
+                // read in whole pieces, not a byte at a time.
+                let want = if body.len() as u64 >= size {
+                    MAX_READ
+                } else {
+                    (size - body.len() as u64 + 1).min(MAX_READ as u64) as u32
+                };
                 let piece = source
                     .read(&path, body.len() as u64, want)
-                    .map_err(|e| format!("reading {path}: {e}"))?;
+                    .map_err(|e| {
+                        Message::new("reading {path}: {error}")
+                            .with("path", &path)
+                            .with("error", e)
+                    })?;
                 body.extend_from_slice(&piece);
                 if body.len() as u64 > MAX_PACKET_FILE {
-                    return Err(format!(
-                        "{path} is larger than {MAX_PACKET_FILE} bytes: not a recorded packet"
-                    ));
+                    return Err(Message::new(
+                        "{path} is larger than {max} bytes: not a recorded packet",
+                    )
+                    .with("path", &path)
+                    .with("max", MAX_PACKET_FILE));
                 }
                 if !piece.is_empty() && piece.len() as u32 == want {
                     // More may follow (a big file, or one that grew): the next call goes on.
@@ -504,6 +534,6 @@ mod tests {
             .is_some());
         let mut empty = MemSource::new();
         let err = Loader::new("x").step(&mut empty, &mut || true).unwrap_err();
-        assert!(err.contains("no recorded packets"), "{err}");
+        assert!(err.to_string().contains("no recorded packets"), "{err}");
     }
 }

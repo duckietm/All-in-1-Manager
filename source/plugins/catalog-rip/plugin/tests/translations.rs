@@ -1,6 +1,8 @@
 //! Keeps `i18n/it.json` in step with the texts the plugin passes to `tr` / `tr_with`.
 //!
-//! The scanner reads `src/*.rs` as text. Its limits: it finds `tr("...")` and `tr_with("..."` whose first argument
+//! The scanner reads `src/*.rs` as text, and the core's `src/*.rs` for the texts it hands the plugin as
+//! `Message::new("...")` (the plugin translates them in `text`; a `tr(` call marked `scan:dynamic` on its line is that
+//! one place, and a core file's `#[cfg(test)]` part is not read). Its limits: it finds `tr("...")` and `tr_with("..."` whose first argument
 //! is a plain string literal (with `\"`, `\\`, `\n`, `\t`, `\u{..}` and a `\` at the end of a line understood), and it
 //! fails on a call whose first argument is anything else, so a text can not slip past it by being built elsewhere.
 //! It does not parse Rust: a `tr(` inside a comment or a string would count, and raw strings are not read.
@@ -10,20 +12,36 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The plugin's sources, as `(file, text)`.
-fn sources() -> Vec<(String, String)> {
+/// The `.rs` files of a source folder, as `(file, text)`.
+fn sources_in(dir: &str, drop_tests: bool) -> Vec<(String, String)> {
     let mut found = Vec::new();
     // The scan is not recursive: a subfolder would be skipped without a word, so refuse one.
-    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
-        assert!(entry.unwrap().path().is_file(), "src/ has a subdirectory: scan it too (make `sources` recursive)");
+    for entry in std::fs::read_dir(dir).unwrap() {
+        assert!(entry.unwrap().path().is_file(), "{dir} has a subdirectory: scan it too (make `sources_in` recursive)");
     }
-    for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src")).unwrap() {
+    for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "rs") {
-            found.push((path.file_name().unwrap().to_string_lossy().into_owned(), std::fs::read_to_string(&path).unwrap()));
+            let mut text = std::fs::read_to_string(&path).unwrap();
+            if drop_tests {
+                if let Some(at) = text.find("#[cfg(test)]") {
+                    text.truncate(at);
+                }
+            }
+            found.push((path.file_name().unwrap().to_string_lossy().into_owned(), text));
         }
     }
     found
+}
+
+/// The plugin's sources.
+fn sources() -> Vec<(String, String)> {
+    sources_in(concat!(env!("CARGO_MANIFEST_DIR"), "/src"), false)
+}
+
+/// The core's sources.
+fn core_sources() -> Vec<(String, String)> {
+    sources_in(concat!(env!("CARGO_MANIFEST_DIR"), "/../core/src"), true)
 }
 
 /// The string literal that starts at `chars[at]` (the opening quote): its text and the index after it.
@@ -67,9 +85,14 @@ fn literal(chars: &[char], at: usize) -> (String, usize) {
 
 /// Every text passed to `tr` / `tr_with` in `text`.
 fn used_texts(file: &str, text: &str) -> BTreeSet<String> {
+    used_in(file, text, &["tr", "tr_with"])
+}
+
+/// Every text passed to the calls `names` (`tr`, or `Message::new`) in `text`.
+fn used_in(file: &str, text: &str, names: &[&str]) -> BTreeSet<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut found = BTreeSet::new();
-    for name in ["tr", "tr_with"] {
+    for name in names {
         let call: Vec<char> = name.chars().chain(['(']).collect();
         let mut i = 0;
         while i + call.len() <= chars.len() {
@@ -79,7 +102,13 @@ fn used_texts(file: &str, text: &str) -> BTreeSet<String> {
                 while chars.get(at).is_some_and(|c| c.is_whitespace()) {
                     at += 1;
                 }
-                assert_eq!(chars.get(at), Some(&'"'), "{file}: a call of {name} whose first argument is not a string literal");
+                if chars.get(at) != Some(&'"') {
+                    let line_end = chars[at..].iter().position(|c| *c == '\n').map_or(chars.len(), |n| n + at);
+                    let line: String = chars[at..line_end].iter().collect();
+                    assert!(line.contains("scan:dynamic"), "{file}: a call of {name} whose first argument is not a string literal");
+                    i = at;
+                    continue;
+                }
                 let (english, end) = literal(&chars, at);
                 found.insert(english);
                 i = end;
@@ -118,6 +147,17 @@ fn the_scanner_reads_literals() {
 }
 
 #[test]
+fn the_scanner_reads_core_messages() {
+    let code = "Message::new(\"One {a}\").with(\"a\", 1); Abort::new(Message::new(
+ \"Two\")); text(|e| tr(e)) // scan:dynamic
+";
+    let used = used_in("sample", code, &["Message::new"]);
+    assert_eq!(used.into_iter().collect::<Vec<_>>(), ["One {a}", "Two"]);
+    let dynamic = used_in("sample", code, &["tr"]);
+    assert!(dynamic.is_empty());
+}
+
+#[test]
 fn italian_covers_every_text_and_only_those() {
     let json = read_json("i18n/it.json");
     let italian: BTreeMap<String, String> = json
@@ -131,6 +171,11 @@ fn italian_covers_every_text_and_only_those() {
     for (file, text) in sources() {
         expected.extend(used_texts(&file, &text));
     }
+    let plugin_only = expected.len();
+    for (file, text) in core_sources() {
+        expected.extend(used_in(&file, &text, &["Message::new"]));
+    }
+    assert!(expected.len() > plugin_only + 40, "the scanner found only {} texts in the core", expected.len() - plugin_only);
     assert!(expected.len() > 40, "the scanner found only {} texts", expected.len());
 
     let missing: Vec<_> = expected.iter().filter(|text| !italian.contains_key(*text)).collect();

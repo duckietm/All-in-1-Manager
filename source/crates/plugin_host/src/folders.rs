@@ -1,0 +1,1084 @@
+//! Picked folders (API 1.1): a folder the user chose in a dialog, where a plugin may create new files.
+//!
+//! The plugin never sees the folder's path. It names files with the private-file path rules
+//! ([`crate::runtime::check_relative`]) and may:
+//!
+//! * create a data file ([`DATA_EXTENSIONS`]; no hidden names) that does not exist yet (and the subfolders it needs),
+//!   with create-new semantics, so a file that appears in the meantime is never overwritten
+//!   (`permission denied: <path> already exists`);
+//! * rewrite a file it created through the same handle (and only that), through a temporary file renamed over it, so
+//!   a failed write never leaves a cut-off file;
+//! * append to a file it created through the same handle (or create it, like a first write): the file is opened
+//!   without following a link and must still be a plain file. A failed append may leave part of the data at the
+//!   end; the handle then counts the file's real size;
+//! * hand such a file (at most [`crate::runtime::MAX_FILE_READ`]) to the Manager's import preview;
+//! * read any existing data file in the folder (not only its own), at most [`MAX_FOLDER_READ`] bytes per call, through
+//!   a handle opened without following a link that must show a plain file with a single name (no hard link to a file
+//!   elsewhere), the same file as looked at just before; never a file in a folder of the Manager;
+//! * list a folder, a page of at most [`MAX_FOLDER_ENTRIES`] entries (sorted by name) from a given index; links,
+//!   hidden names and names the path rules cannot name are left out.
+//!
+//! An open for `read` or `append` is checked again after it succeeded: on Windows the handle's final path
+//! (`GetFinalPathNameByHandleW`) must still lie in the picked root and outside the Manager's folders (a folder on the
+//! way swapped for a junction between the look and the open would lead elsewhere); on Unix the path is walked again
+//! without following links and must still name the opened file (device and inode).
+//!
+//! Every existing component below the picked root is looked at without following it ([`std::fs::symlink_metadata`]);
+//! a symlink, a junction or any other reparse point is refused, so a write cannot be led out of the folder. The root
+//! is canonical when picked and must still canonicalise to itself at every use (it was not replaced by a link). A
+//! root inside a folder of the Manager (its configuration, the plugin's own folder) is refused when picked, and a
+//! write that would land in one (a root above it) is refused too: [`MANAGER_FOLDER`]. Too broad a root (a drive's
+//! root, the user's home folder itself, a startup folder or anything inside one, see [`UserFolders`]) is refused when
+//! picked: [`OWN_FOLDER`]. Every refusal starts with `permission denied:`, like every other refusal of the API.
+//!
+//! Limits per handle ([`FolderLimits`]): [`MAX_FOLDER_FILES`] files, [`MAX_FOLDER_BYTES`] in total (the files' current
+//! sizes), each file at most [`MAX_FOLDER_FILE`]; past them [`LIMIT_REACHED`].
+
+use std::collections::HashMap;
+use std::fs::{self, Metadata, OpenOptions};
+use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+use crate::runtime::{check_relative, io_text, MAX_FILE_READ};
+
+/// Files one folder handle may create.
+pub const MAX_FOLDER_FILES: usize = 100_000;
+/// Total size of the files one folder handle created (their current sizes).
+pub const MAX_FOLDER_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Largest file written into a picked folder.
+pub const MAX_FOLDER_FILE: u64 = 256 * 1024 * 1024;
+/// Most bytes one `read` of a picked folder returns.
+pub const MAX_FOLDER_READ: u32 = 4 * 1024 * 1024;
+/// Most entries one `list` of a picked folder returns (one page; the next starts where it ended).
+pub const MAX_FOLDER_ENTRIES: usize = 10_000;
+/// Most entries a folder may have to be listed at all (they are all read and sorted for every page), as many as one
+/// handle may write ([`MAX_FOLDER_FILES`]).
+pub const MAX_FOLDER_SCAN: usize = 100_000;
+/// The refusal past a limit of [`FolderLimits`].
+pub const LIMIT_REACHED: &str = "permission denied: folder limit reached";
+/// The refusal of a folder that is (or leads into) one of the Manager's own folders.
+pub const MANAGER_FOLDER: &str = "permission denied: this folder belongs to the Manager";
+/// The refusal of too broad a root: a drive's root, the home folder itself, a startup folder.
+pub const OWN_FOLDER: &str = "permission denied: pick a folder of its own for this";
+/// The file types a plugin may write into a picked folder (the last extension, any letter case): data, never
+/// programs, libraries, scripts or shortcuts that a broad pick could plant.
+pub const DATA_EXTENSIONS: &[&str] = &[
+    "json", "sql", "txt", "md", "csv", "tsv", "xml", "html", "png", "gif", "jpg", "jpeg", "webp", "bmp", "svg", "zip",
+    "nitro", "swf", "bin", "log",
+];
+
+/// The user's folders a picked root may not be: the home folder itself, and the startup folders (programs started at
+/// login) or anything inside them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UserFolders {
+    pub home: Option<PathBuf>,
+    pub autostart: Vec<PathBuf>,
+}
+
+impl UserFolders {
+    /// The folders of the user running the Manager: `home_dir`, and the Windows Startup folders (the user's and all
+    /// users'), `$XDG_CONFIG_HOME/autostart` and `~/.config/autostart`, and `~/Library/LaunchAgents` on macOS.
+    pub fn of_this_user() -> Self {
+        let home = std::env::home_dir();
+        let mut autostart = Vec::new();
+        #[cfg(windows)]
+        {
+            const STARTUP: &str = r"Microsoft\Windows\Start Menu\Programs\Startup";
+            for var in ["APPDATA", "ProgramData"] {
+                if let Some(base) = std::env::var_os(var) {
+                    autostart.push(PathBuf::from(base).join(STARTUP));
+                }
+            }
+        }
+        #[cfg(unix)]
+        {
+            if let Some(config) = std::env::var_os("XDG_CONFIG_HOME").filter(|c| !c.is_empty()) {
+                autostart.push(PathBuf::from(config).join("autostart"));
+            }
+            autostart.extend(home.as_ref().map(|h| h.join(".config/autostart")));
+            #[cfg(target_os = "macos")]
+            autostart.extend(home.as_ref().map(|h| h.join("Library/LaunchAgents")));
+        }
+        Self { home, autostart }
+    }
+}
+
+/// No hidden segment (`.config`, `.bashrc`).
+fn check_not_hidden(path: &str, segments: &[String]) -> Result<(), String> {
+    if segments.iter().any(|s| s.starts_with('.')) {
+        return Err(format!("permission denied: {path} is hidden (a name starts with .)"));
+    }
+    Ok(())
+}
+
+/// A path made only of data files: no hidden segment (`.config`, `.bashrc`), and a last extension in
+/// [`DATA_EXTENSIONS`].
+fn check_data_file(path: &str, segments: &[String]) -> Result<(), String> {
+    check_not_hidden(path, segments)?;
+    let name = segments.last().map(String::as_str).unwrap_or("");
+    let data = name.rsplit_once('.').is_some_and(|(_, ext)| DATA_EXTENSIONS.iter().any(|d| d.eq_ignore_ascii_case(ext)));
+    if !data {
+        return Err(format!("permission denied: {path} is not a data file"));
+    }
+    Ok(())
+}
+/// Shortest time between two `reveal`s of one handle (each opens a file-manager window).
+pub const REVEAL_SPACING: Duration = Duration::from_secs(2);
+
+/// What one folder handle may write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FolderLimits {
+    pub files: usize,
+    pub bytes: u64,
+    pub file: u64,
+}
+
+impl Default for FolderLimits {
+    fn default() -> Self {
+        Self { files: MAX_FOLDER_FILES, bytes: MAX_FOLDER_BYTES, file: MAX_FOLDER_FILE }
+    }
+}
+
+/// A folder the user picked. The guest gets a handle; the path stays here.
+pub struct PickedFolder {
+    /// Canonical.
+    root: PathBuf,
+    /// The Manager's folders, canonical (those that exist).
+    manager: Vec<PathBuf>,
+    limits: FolderLimits,
+    /// The files this handle created (the plugin's relative path, as written) and their current sizes.
+    written: HashMap<String, u64>,
+    total: u64,
+    last_reveal: Option<Instant>,
+}
+
+/// A write checked against the handle's state, run off the async workers ([`WriteJob::run`]).
+pub(crate) struct WriteJob {
+    root: PathBuf,
+    manager: Vec<PathBuf>,
+    rel: String,
+    segments: Vec<String>,
+    /// The path was created through this handle: it may be rewritten.
+    own: bool,
+}
+
+impl PickedFolder {
+    /// The folder the user picked at `picked`, unless it lies inside one of `manager` (the Manager's folders) or is
+    /// too broad a root: a drive's root, `user`'s home folder itself, one of its startup folders or inside one.
+    pub(crate) fn open(picked: &Path, manager: &[PathBuf], user: &UserFolders, limits: FolderLimits) -> Result<Self, String> {
+        let root = fs::canonicalize(picked).map_err(|e| io_text(&e))?;
+        if !fs::metadata(&root).map_err(|e| io_text(&e))?.is_dir() {
+            return Err("not a folder".into());
+        }
+        let manager: Vec<PathBuf> = manager.iter().filter_map(|m| fs::canonicalize(m).ok()).collect();
+        if manager.iter().any(|m| root.starts_with(m)) {
+            return Err(MANAGER_FOLDER.into());
+        }
+        let real = |p: &PathBuf| fs::canonicalize(p).ok();
+        let is_home = user.home.as_ref().and_then(real).is_some_and(|h| h == root);
+        let in_autostart = user.autostart.iter().filter_map(real).any(|a| root.starts_with(a));
+        if root.parent().is_none() || is_home || in_autostart {
+            return Err(OWN_FOLDER.into());
+        }
+        Ok(Self { root, manager, limits, written: HashMap::new(), total: 0, last_reveal: None })
+    }
+
+    /// The folder's name (its last path component; empty for a drive's root).
+    pub fn name(&self) -> String {
+        self.root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+
+    /// Checks a write of `len` bytes to `path` against the path rules and the limits; nothing is touched yet.
+    pub(crate) fn check_write(&self, path: &str, len: u64) -> Result<WriteJob, String> {
+        let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
+        check_data_file(path, &segments)?;
+        let old = self.written.get(path).copied();
+        let new_file = old.is_none();
+        if len > self.limits.file
+            || (new_file && self.written.len() >= self.limits.files)
+            || self.total.saturating_sub(old.unwrap_or(0)).saturating_add(len) > self.limits.bytes
+        {
+            return Err(LIMIT_REACHED.into());
+        }
+        Ok(WriteJob { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments, own: !new_file })
+    }
+
+    /// Records a write that [`WriteJob::run`] completed.
+    pub(crate) fn record(&mut self, path: &str, len: u64) {
+        let old = self.written.insert(path.to_string(), len).unwrap_or(0);
+        self.total = self.total.saturating_sub(old).saturating_add(len);
+    }
+
+    /// Checks an append of `len` bytes to `path` against the path rules and the limits (the file's size after the
+    /// append, the handle's total, a new file's count); nothing is touched yet.
+    pub(crate) fn check_append(&self, path: &str, len: u64) -> Result<WriteJob, String> {
+        let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
+        check_data_file(path, &segments)?;
+        let old = self.written.get(path).copied();
+        if old.unwrap_or(0).saturating_add(len) > self.limits.file
+            || (old.is_none() && self.written.len() >= self.limits.files)
+            || self.total.saturating_add(len) > self.limits.bytes
+        {
+            return Err(LIMIT_REACHED.into());
+        }
+        Ok(WriteJob { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments, own: old.is_some() })
+    }
+
+    /// Records an append of `len` bytes: what [`WriteJob::append`] did, or how it failed.
+    pub(crate) fn record_append(&mut self, path: &str, len: u64, outcome: &Result<Appended, AppendFailed>) {
+        match outcome {
+            Ok(Appended::Created) => self.record(path, len),
+            Ok(Appended::Extended) => {
+                let old = self.written.get(path).copied().unwrap_or(0);
+                self.record(path, old.saturating_add(len));
+            }
+            Err(AppendFailed::Refused(_)) => {}
+            // Part of the data may be in the handle's file: count its real size, or (unknown) as if all of it were.
+            // Never makes a file the handle's own (a stopped append of a file it did not have yet).
+            Err(AppendFailed::Partial { size, .. }) => {
+                if let Some(&old) = self.written.get(path) {
+                    self.record(path, size.unwrap_or(old.saturating_add(len)));
+                }
+            }
+        }
+    }
+
+    /// Checks a read of `path` for the import preview: only a file this handle wrote; nothing is touched yet.
+    pub(crate) fn read_job(&self, path: &str) -> Result<ReadJob, String> {
+        let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
+        if !self.written.contains_key(path) {
+            return Err(format!("permission denied: {path} was not written through this folder"));
+        }
+        Ok(ReadJob { file: self.file_read(path, segments) })
+    }
+
+    /// Checks a `read` of at most `max` bytes of `path`: any data file of the folder (the path rules, the data-file
+    /// types, no hidden names), at most [`MAX_FOLDER_READ`] bytes; nothing is touched yet.
+    pub(crate) fn check_read(&self, path: &str, max: u32) -> Result<FileRead, String> {
+        if max > MAX_FOLDER_READ {
+            return Err(format!("permission denied: at most {} MiB can be read at once", MAX_FOLDER_READ / (1024 * 1024)));
+        }
+        let segments: Vec<String> = check_relative(path)?.into_iter().map(str::to_string).collect();
+        check_data_file(path, &segments)?;
+        Ok(self.file_read(path, segments))
+    }
+
+    fn file_read(&self, path: &str, segments: Vec<String>) -> FileRead {
+        FileRead { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments }
+    }
+
+    /// Checks a `list` of the folder `path` (`""`: the picked folder itself) from entry `start`: the path rules, no
+    /// hidden names; nothing is touched yet.
+    pub(crate) fn check_list(&self, path: &str, start: u32) -> Result<ListJob, String> {
+        let segments: Vec<String> =
+            if path.is_empty() { Vec::new() } else { check_relative(path)?.into_iter().map(str::to_string).collect() };
+        check_not_hidden(path, &segments)?;
+        Ok(ListJob { root: self.root.clone(), manager: self.manager.clone(), rel: path.to_string(), segments, start })
+    }
+
+    /// The folder to show in the file manager, at most once per [`REVEAL_SPACING`].
+    pub(crate) fn reveal_path(&mut self) -> Result<PathBuf, String> {
+        if self.last_reveal.is_some_and(|t| t.elapsed() < REVEAL_SPACING) {
+            return Err(format!("permission denied: the folder was shown less than {} s ago", REVEAL_SPACING.as_secs()));
+        }
+        check_root(&self.root)?;
+        // Still a folder: a file put in its place would be opened, not shown.
+        if !fs::symlink_metadata(&self.root).map_err(|e| io_text(&e))?.is_dir() {
+            return Err("permission denied: the folder is no longer a folder".into());
+        }
+        self.last_reveal = Some(Instant::now());
+        Ok(self.root.clone())
+    }
+}
+
+/// A checked read of a file a handle wrote ([`PickedFolder::read_job`]), run off the async workers.
+#[derive(Debug)]
+pub(crate) struct ReadJob {
+    file: FileRead,
+}
+
+impl ReadJob {
+    /// The file's name and bytes (at most [`MAX_FILE_READ`]), opened like [`FileRead::run`]. Blocking file I/O.
+    pub(crate) fn run(self) -> Result<(String, Vec<u8>), String> {
+        let too_large = || format!("file larger than {} MiB", MAX_FILE_READ / (1024 * 1024));
+        let file = self.file.open()?;
+        let len = file.metadata().map_err(|e| io_text(&e))?.len();
+        if len > MAX_FILE_READ {
+            return Err(too_large());
+        }
+        let mut bytes = Vec::with_capacity(len as usize);
+        file.take(MAX_FILE_READ + 1).read_to_end(&mut bytes).map_err(|e| io_text(&e))?;
+        if bytes.len() as u64 > MAX_FILE_READ {
+            return Err(too_large());
+        }
+        Ok((self.file.segments.last().cloned().unwrap_or_default(), bytes))
+    }
+}
+
+/// A checked read of a data file of a picked folder ([`PickedFolder::check_read`]), run off the async workers.
+#[derive(Debug)]
+pub(crate) struct FileRead {
+    root: PathBuf,
+    manager: Vec<PathBuf>,
+    rel: String,
+    segments: Vec<String>,
+}
+
+impl FileRead {
+    /// At most `max` bytes of the file from `offset`: fewer at its end, none past it. Blocking file I/O.
+    pub(crate) fn run(&self, offset: u64, max: u32) -> Result<Vec<u8>, String> {
+        let mut file = self.open()?;
+        let len = file.metadata().map_err(|e| io_text(&e))?.len();
+        if offset >= len || max == 0 {
+            return Ok(Vec::new());
+        }
+        file.seek(SeekFrom::Start(offset)).map_err(|e| io_text(&e))?;
+        let want = u64::from(max).min(len - offset);
+        // The file may grow meanwhile: never more than asked.
+        let mut bytes = Vec::with_capacity(want as usize);
+        file.take(u64::from(max)).read_to_end(&mut bytes).map_err(|e| io_text(&e))?;
+        Ok(bytes)
+    }
+
+    /// Opens the file for reading. Every component is looked at without following it (no link on the way), the file
+    /// must not lie in a folder of the Manager, and the open itself does not follow a link (Windows:
+    /// `FILE_FLAG_OPEN_REPARSE_POINT`; Unix: `O_NOFOLLOW | O_NONBLOCK`, so a FIFO or device put in its place fails or
+    /// is refused instead of blocking). The opened handle must show a plain file with a single name (no hard link to a
+    /// file elsewhere), the same file as looked at just before.
+    fn open(&self) -> Result<fs::File, String> {
+        let link = || format!("permission denied: {} leads through a link", self.rel);
+        let target = join(&self.root, &self.segments);
+        let seen = match walk(&self.root, &self.segments, &self.rel)? {
+            Some(meta) if meta.is_file() => meta,
+            Some(_) => return Err("not a file".into()),
+            None => return Err("file not found".into()),
+        };
+        #[cfg(test)]
+        tests::after_walk(&target);
+        check_manager(&self.root, &self.manager, &target)?;
+        let before = identity_before(&target, &seen).map_err(|e| io_text(&e))?;
+        let file = match open_no_follow(&target, false) {
+            Ok(file) => file,
+            Err(e) if is_link_error(&e) => return Err(link()),
+            Err(e) => return Err(io_text(&e)),
+        };
+        let opened = handle_info(&file).map_err(|e| io_text(&e))?;
+        if !opened.plain {
+            return Err(format!("permission denied: {} is not a plain file", self.rel));
+        }
+        if opened.id != before {
+            return Err(link());
+        }
+        if opened.links != 1 {
+            return Err(format!("permission denied: {} has other names (hard links)", self.rel));
+        }
+        check_opened(&file, opened.id, &self.root, &self.manager, &self.segments, &self.rel)?;
+        Ok(file)
+    }
+}
+
+/// After an open: the handle is still the file the plugin named inside the picked root (see the module's notes). Windows:
+/// its final path lies in `root` and in none of `manager`; Unix: `root/segments`, walked again without following links,
+/// names the opened file (`id`: device and inode).
+fn check_opened(file: &fs::File, id: (u64, u64), root: &Path, manager: &[PathBuf], segments: &[String], rel: &str) -> Result<(), String> {
+    let link = || format!("permission denied: {rel} leads through a link");
+    #[cfg(windows)]
+    {
+        let _ = (id, segments);
+        let real = normalised(&final_path(file).map_err(|e| io_text(&e))?);
+        if !inside(&real, &normalised(root)) {
+            return Err(link());
+        }
+        if manager.iter().any(|m| inside(&real, &normalised(m))) {
+            return Err(MANAGER_FOLDER.into());
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = (file, manager);
+        match walk(root, segments, rel)? {
+            Some(meta) if (meta.dev(), meta.ino()) == id => {}
+            _ => return Err(link()),
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
+    let _ = (file, id, root, manager, segments, link);
+    Ok(())
+}
+
+/// The path an open handle really refers to (`GetFinalPathNameByHandleW`, normalised, with a drive letter).
+#[cfg(windows)]
+fn final_path(file: &fs::File) -> io::Result<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::GetFinalPathNameByHandleW;
+    let mut buffer = vec![0u16; 512];
+    loop {
+        // SAFETY: the handle is open for the call; the buffer is valid for `len` u16s and written by it.
+        let n = unsafe { GetFinalPathNameByHandleW(file.as_raw_handle() as _, buffer.as_mut_ptr(), buffer.len() as u32, 0) } as usize;
+        if n == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if n < buffer.len() {
+            buffer.truncate(n);
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buffer)));
+        }
+        // Too small: `n` is the size needed, with the terminating NUL.
+        buffer.resize(n + 1, 0);
+    }
+}
+
+/// A Windows path for comparing: without the `\\?\` (or `\\?\UNC\`) prefix and a trailing `\`, lower case.
+#[cfg(windows)]
+fn normalised(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let plain = match text.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => text.strip_prefix(r"\\?\").unwrap_or(&text).to_string(),
+    };
+    plain.trim_end_matches('\\').to_lowercase()
+}
+
+/// `path` is `folder` or inside it (both [`normalised`]).
+#[cfg(windows)]
+fn inside(path: &str, folder: &str) -> bool {
+    path == folder || path.strip_prefix(folder).is_some_and(|rest| rest.starts_with('\\'))
+}
+
+/// One entry of a listed folder.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub is_folder: bool,
+    /// A file's size; 0 for a folder.
+    pub size: u64,
+}
+
+/// A checked `list` of a folder of a picked folder ([`PickedFolder::check_list`]), run off the async workers.
+#[derive(Debug)]
+pub(crate) struct ListJob {
+    root: PathBuf,
+    manager: Vec<PathBuf>,
+    rel: String,
+    segments: Vec<String>,
+    /// The index of the first entry returned.
+    start: u32,
+}
+
+impl ListJob {
+    /// The folder's entries sorted by name, at most [`MAX_FOLDER_ENTRIES`] from index `start` (none past the last):
+    /// plain files and folders whose names a plugin path can name and that are not hidden; links (symlinks, junctions,
+    /// any reparse point) and anything else are left out. A folder with more than [`MAX_FOLDER_SCAN`] such entries is
+    /// refused. Blocking file I/O.
+    pub(crate) fn run(&self) -> Result<Vec<Entry>, String> {
+        let target = join(&self.root, &self.segments);
+        if self.segments.is_empty() {
+            check_root(&self.root)?;
+        } else {
+            match walk(&self.root, &self.segments, &self.rel)? {
+                Some(meta) if meta.is_dir() => {}
+                Some(_) => return Err("not a folder".into()),
+                None => return Err("file not found".into()),
+            }
+        }
+        check_manager(&self.root, &self.manager, &target)?;
+        // Still inside the picked folder (no link put on the way since the look above).
+        if !fs::canonicalize(&target).map_err(|e| io_text(&e))?.starts_with(&self.root) {
+            return Err(format!("permission denied: {} leads through a link", self.rel));
+        }
+        let shown = if self.rel.is_empty() { "the folder" } else { self.rel.as_str() };
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(&target).map_err(|e| io_text(&e))? {
+            let entry = entry.map_err(|e| io_text(&e))?;
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else { continue };
+            if name.starts_with('.') || check_relative(&name).is_err() {
+                continue;
+            }
+            // The kind from the directory listing itself (no call per entry on Windows, and none for a folder on
+            // Unix): links and anything but files and folders are left out.
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_symlink() || !(kind.is_file() || kind.is_dir()) {
+                continue;
+            }
+            // Sizes of files; on Windows also every other reparse point (from the listing's own data, no extra call).
+            let size = if kind.is_file() || cfg!(windows) {
+                let Ok(meta) = entry.metadata() else { continue };
+                if is_link(&meta) {
+                    continue;
+                }
+                if kind.is_file() { meta.len() } else { 0 }
+            } else {
+                0
+            };
+            let is_folder = kind.is_dir();
+            if entries.len() == MAX_FOLDER_SCAN {
+                return Err(format!("permission denied: {shown} has more than {MAX_FOLDER_SCAN} entries"));
+            }
+            entries.push(Entry { name, is_folder, size });
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        let start = (self.start as usize).min(entries.len());
+        let end = start.saturating_add(MAX_FOLDER_ENTRIES).min(entries.len());
+        entries.truncate(end);
+        Ok(entries.split_off(start))
+    }
+}
+
+impl WriteJob {
+    /// Creates the file (or rewrites this handle's own file) with `data`. Blocking file I/O.
+    pub(crate) fn run(self, data: &[u8]) -> Result<(), String> {
+        let exists = || format!("permission denied: {} already exists", self.rel);
+        let target = join(&self.root, &self.segments);
+        let rewrite = match walk(&self.root, &self.segments, &self.rel)? {
+            Some(meta) if self.own && meta.is_file() => true,
+            Some(_) => return Err(exists()),
+            None => false,
+        };
+        // Never a folder of the Manager, also when the root lies above one.
+        check_manager(&self.root, &self.manager, &target)?;
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| io_text(&e))?;
+        }
+        // Again now that the folders exist: none of them may be a link made in the meantime.
+        let again = walk(&self.root, &self.segments, &self.rel)?;
+        check_manager(&self.root, &self.manager, &target)?;
+        if rewrite {
+            if !again.is_some_and(|m| m.is_file()) {
+                return Err(exists());
+            }
+            return replace(&target, data);
+        }
+        if again.is_some() {
+            return Err(exists());
+        }
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&target) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Err(exists()),
+            Err(e) => return Err(io_text(&e)),
+        };
+        if let Err(e) = file.write_all(data) {
+            drop(file);
+            let _ = fs::remove_file(&target);
+            return Err(io_text(&e));
+        }
+        Ok(())
+    }
+
+    /// Appends `data` to this handle's own file, or creates the file like a first [`run`](WriteJob::run) when it is
+    /// not there (also when the plugin's file was removed in the meantime). Blocking file I/O.
+    ///
+    /// The existing file is opened without following a link (Windows: `FILE_FLAG_OPEN_REPARSE_POINT`; Unix:
+    /// `O_NOFOLLOW | O_NONBLOCK`, so a FIFO or device put in its place fails or is refused instead of blocking). The
+    /// opened handle must show a plain file with a single name (no hard link to a file elsewhere), and the same file
+    /// as looked at just before. A file removed before the open is created like a first write. A failed write may
+    /// leave part of `data` at the end: [`AppendFailed::Partial`] with the file's size read again.
+    pub(crate) fn append(self, data: &[u8]) -> Result<Appended, AppendFailed> {
+        let exists = || AppendFailed::Refused(format!("permission denied: {} already exists", self.rel));
+        let link = || AppendFailed::Refused(format!("permission denied: {} leads through a link", self.rel));
+        let refused = AppendFailed::Refused;
+        let target = join(&self.root, &self.segments);
+        match walk(&self.root, &self.segments, &self.rel).map_err(refused)? {
+            Some(meta) if self.own && meta.is_file() => {}
+            Some(_) => return Err(exists()),
+            // Created like a first write: create-new, so a file that appears in the meantime is not touched.
+            None => return self.create(data),
+        }
+        check_manager(&self.root, &self.manager, &target).map_err(refused)?;
+        // Right before opening: still a plain file of this handle, no link on the way.
+        let seen = match walk(&self.root, &self.segments, &self.rel).map_err(refused)? {
+            Some(meta) if meta.is_file() => meta,
+            Some(_) => return Err(exists()),
+            None => return self.create(data),
+        };
+        #[cfg(test)]
+        tests::after_walk(&target);
+        let before = match identity_before(&target, &seen) {
+            Ok(id) => id,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return self.create(data),
+            Err(e) => return Err(refused(io_text(&e))),
+        };
+        #[cfg(test)]
+        tests::before_open(&target);
+        let mut file = match open_no_follow(&target, true) {
+            Ok(file) => file,
+            // Removed since it was looked at: a new file, by the first-write rules.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return self.create(data),
+            Err(e) if is_link_error(&e) => return Err(link()),
+            Err(e) => return Err(refused(io_text(&e))),
+        };
+        let opened = handle_info(&file).map_err(|e| refused(io_text(&e)))?;
+        if !opened.plain {
+            return Err(exists());
+        }
+        if opened.id != before {
+            return Err(link());
+        }
+        if opened.links != 1 {
+            return Err(AppendFailed::Refused(format!("permission denied: {} has other names (hard links)", self.rel)));
+        }
+        check_opened(&file, opened.id, &self.root, &self.manager, &self.segments, &self.rel).map_err(refused)?;
+        if let Err(e) = file.write_all(data) {
+            // Read again: the totals count what is really in the file.
+            let size = file.metadata().ok().map(|m| m.len());
+            return Err(AppendFailed::Partial { error: io_text(&e), size });
+        }
+        Ok(Appended::Extended)
+    }
+
+    /// The append of a file that is not there: a first write (create-new; a failure leaves no file).
+    fn create(self, data: &[u8]) -> Result<Appended, AppendFailed> {
+        WriteJob { own: false, ..self }.run(data).map(|()| Appended::Created).map_err(AppendFailed::Refused)
+    }
+
+}
+
+/// Refuses `target` (below `root`) when its deepest existing folder (canonical, so in its real letter case) is inside
+/// one of the Manager's folders `manager`.
+fn check_manager(root: &Path, manager: &[PathBuf], target: &Path) -> Result<(), String> {
+    let existing = target.ancestors().find(|p| fs::symlink_metadata(p).is_ok()).unwrap_or(root);
+    let real = fs::canonicalize(existing).map_err(|e| io_text(&e))?;
+    if manager.iter().any(|m| real.starts_with(m)) {
+        return Err(MANAGER_FOLDER.into());
+    }
+    Ok(())
+}
+
+/// Writes `data` to a new temporary file next to `target` (a hidden name a plugin cannot write itself), then renames
+/// it over `target`: a failed write leaves `target` as it was, never cut off. The rename replaces the directory
+/// entry and never follows a link put there in the meantime. The temporary file is removed on any failure.
+fn replace(target: &Path, data: &[u8]) -> Result<(), String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let parent = target.parent().ok_or_else(|| "invalid path".to_string())?;
+    for _ in 0..100 {
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let temp = parent.join(format!(".aio-tmp-{}-{n}", std::process::id()));
+        let mut file = match OpenOptions::new().write(true).create_new(true).open(&temp) {
+            Ok(file) => file,
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(io_text(&e)),
+        };
+        let written = file.write_all(data).and_then(|()| file.sync_all());
+        drop(file);
+        let result = written.and_then(|()| fs::rename(&temp, target));
+        if let Err(e) = result {
+            let _ = fs::remove_file(&temp);
+            return Err(io_text(&e));
+        }
+        return Ok(());
+    }
+    Err("no free temporary name".into())
+}
+
+/// What a successful [`WriteJob::append`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Appended {
+    /// The file was not there: created with the data.
+    Created,
+    /// The handle's file was extended by the data.
+    Extended,
+}
+
+/// How a [`WriteJob::append`] failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AppendFailed {
+    /// Refused or failed before any byte was written (or a new file, removed again).
+    Refused(String),
+    /// The write failed part way: the end of the file may hold part of the data. `size` is the file's size read
+    /// again (`None`: it could not be read).
+    Partial { error: String, size: Option<u64> },
+}
+
+impl AppendFailed {
+    pub(crate) fn into_message(self) -> String {
+        match self {
+            AppendFailed::Refused(e) | AppendFailed::Partial { error: e, .. } => e,
+        }
+    }
+}
+
+#[cfg(windows)]
+const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+/// Opens the existing file `target` for appending (`append`) or for reading without following a link: on Windows a
+/// reparse point is opened itself (`FILE_FLAG_OPEN_REPARSE_POINT`), so the caller sees it in the handle's attributes;
+/// on Unix `O_NOFOLLOW` fails on a link and `O_NONBLOCK` keeps a FIFO from blocking the open. The sharing is the
+/// default one, the same as `write`'s (others may read, write and delete). Never creates the file.
+fn open_no_follow(target: &Path, append: bool) -> io::Result<fs::File> {
+    let mut options = OpenOptions::new();
+    if append {
+        options.append(true);
+    } else {
+        options.read(true);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options.open(target)
+}
+
+/// The open failed because the last component is a link (`O_NOFOLLOW` on Unix).
+fn is_link_error(e: &io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        e.raw_os_error() == Some(libc::ELOOP)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = e;
+        false
+    }
+}
+
+/// What an open handle shows about its file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct HandleInfo {
+    /// Unix: device and inode. Windows: volume serial number and file index.
+    id: (u64, u64),
+    /// The file's names (hard links).
+    links: u64,
+    /// A regular file, not a link or reparse point, not a device or FIFO.
+    plain: bool,
+}
+
+#[cfg(unix)]
+fn handle_info(file: &fs::File) -> io::Result<HandleInfo> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata()?;
+    Ok(HandleInfo { id: (meta.dev(), meta.ino()), links: meta.nlink(), plain: meta.file_type().is_file() })
+}
+
+#[cfg(windows)]
+fn handle_info(file: &fs::File) -> io::Result<HandleInfo> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let meta = file.metadata()?;
+    // SAFETY: a plain C struct, all zeroes is valid; the handle is open for the call; the struct is written by it.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    Ok(HandleInfo {
+        id: (u64::from(info.dwVolumeSerialNumber), index),
+        links: u64::from(info.nNumberOfLinks),
+        plain: meta.is_file() && !is_link(&meta),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn handle_info(file: &fs::File) -> io::Result<HandleInfo> {
+    let meta = file.metadata()?;
+    Ok(HandleInfo { id: (0, 0), links: 1, plain: meta.is_file() })
+}
+
+/// The identity of the file looked at (`seen`, without following links) just before the open for appending. Unix:
+/// from `seen` itself. Windows: from a handle opened for no access at all, without following a reparse point.
+fn identity_before(target: &Path, seen: &Metadata) -> io::Result<(u64, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = target;
+        Ok((seen.dev(), seen.ino()))
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        let _ = seen;
+        let file = OpenOptions::new().access_mode(0).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(target)?;
+        Ok(handle_info(&file)?.id)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (target, seen);
+        Ok((0, 0))
+    }
+}
+
+fn join(root: &Path, segments: &[String]) -> PathBuf {
+    let mut path = root.to_path_buf();
+    path.extend(segments);
+    path
+}
+
+/// The root still canonicalises to itself (it was not replaced by a link since it was picked).
+fn check_root(root: &Path) -> Result<(), String> {
+    match fs::canonicalize(root) {
+        Ok(real) if real == root => Ok(()),
+        Ok(_) => Err("permission denied: the folder was replaced by a link".into()),
+        Err(e) => Err(io_text(&e)),
+    }
+}
+
+/// A symlink, a junction or any other reparse point.
+fn is_link(meta: &Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        if meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    meta.file_type().is_symlink()
+}
+
+/// Looks at every existing component of `root/segments` without following it: a link is refused, a component before
+/// the last must be a folder. The metadata of the last one, `None` when the path does not exist (yet).
+fn walk(root: &Path, segments: &[String], rel: &str) -> Result<Option<Metadata>, String> {
+    check_root(root)?;
+    let mut path = root.to_path_buf();
+    for (i, segment) in segments.iter().enumerate() {
+        path.push(segment);
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(io_text(&e)),
+        };
+        if is_link(&meta) {
+            return Err(format!("permission denied: {rel} leads through a link"));
+        }
+        if i + 1 == segments.len() {
+            return Ok(Some(meta));
+        }
+        if !meta.is_dir() {
+            return Err(format!("permission denied: {rel} leads through a file"));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    type Hook = Box<dyn Fn(&Path)>;
+
+    thread_local! {
+        /// Runs in [`WriteJob::append`] right before the open, on the test's thread: a change made in the window.
+        static BEFORE_OPEN: RefCell<Option<Hook>> = RefCell::new(None);
+        /// Runs in [`WriteJob::append`] and [`FileRead::open`] right after the path was walked, before the file's
+        /// identity is taken and it is opened.
+        static AFTER_WALK: RefCell<Option<Hook>> = RefCell::new(None);
+    }
+
+    pub(super) fn after_walk(target: &Path) {
+        AFTER_WALK.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook(target);
+            }
+        });
+    }
+
+    /// Swaps the folder `folder` (of `root`) for a junction to `outside` holding the same file names: every look and
+    /// open by path then reaches `outside`, with no link left in the last component. False when no junction can be
+    /// made.
+    #[cfg(windows)]
+    fn junction_swap(folder: &Path, outside: &Path) -> bool {
+        fs::rename(folder, folder.with_extension("old")).unwrap();
+        std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(folder)
+            .arg(outside)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// A folder on the way swapped for a junction between the walk and the open: the read is refused by the handle's
+    /// final path, although the file looked at and the file opened are the same (outside) file.
+    #[cfg(windows)]
+    #[test]
+    fn read_refuses_a_folder_swapped_for_a_junction_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, outside) = (dir.path().join("out"), dir.path().join("outside"));
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("sub/data.txt"), b"mine").unwrap();
+        fs::write(outside.join("data.txt"), b"secret").unwrap();
+        let folder = PickedFolder::open(&root, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        let job = folder.check_read("sub/data.txt", 100).unwrap();
+        let (sub, target) = (root.join("sub"), outside.clone());
+        let made = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = made.clone();
+        AFTER_WALK.with(|h| *h.borrow_mut() = Some(Box::new(move |_| flag.set(junction_swap(&sub, &target)))));
+        let outcome = job.run(0, 100);
+        AFTER_WALK.with(|h| *h.borrow_mut() = None);
+        if !made.get() {
+            eprintln!("no junction could be made; skipping");
+            return;
+        }
+        assert_eq!(outcome.unwrap_err(), "permission denied: sub/data.txt leads through a link");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn append_refuses_a_folder_swapped_for_a_junction_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (root, outside) = (dir.path().join("out"), dir.path().join("outside"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("own.txt"), b"victim").unwrap();
+        let mut folder = PickedFolder::open(&root, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        folder.check_write("sub/own.txt", 3).unwrap().run(b"own").unwrap();
+        folder.record("sub/own.txt", 3);
+        let job = folder.check_append("sub/own.txt", 4).unwrap();
+        let (sub, target) = (root.join("sub"), outside.clone());
+        let made = std::rc::Rc::new(std::cell::Cell::new(false));
+        let flag = made.clone();
+        AFTER_WALK.with(|h| *h.borrow_mut() = Some(Box::new(move |_| flag.set(junction_swap(&sub, &target)))));
+        let outcome = job.append(b"evil");
+        AFTER_WALK.with(|h| *h.borrow_mut() = None);
+        if !made.get() {
+            eprintln!("no junction could be made; skipping");
+            return;
+        }
+        assert_eq!(outcome.unwrap_err().into_message(), "permission denied: sub/own.txt leads through a link");
+        assert_eq!(fs::read(outside.join("own.txt")).unwrap(), b"victim");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn final_paths_compare_without_prefix_and_case() {
+        assert_eq!(normalised(Path::new(r"\\?\C:\Users\Me\Out\")), r"c:\users\me\out");
+        assert_eq!(normalised(Path::new(r"\\?\UNC\server\share\x")), r"\\server\share\x");
+        assert!(inside(r"c:\out\a.txt", r"c:\out"));
+        assert!(inside(r"c:\out", r"c:\out"));
+        assert!(!inside(r"c:\outside\a.txt", r"c:\out"));
+    }
+
+    #[test]
+    fn list_pages_are_sorted_and_end_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..25 {
+            fs::write(dir.path().join(format!("f{i:02}.txt")), b"").unwrap();
+        }
+        let folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        let names = |start| folder.check_list("", start).unwrap().run().unwrap().into_iter().map(|e| e.name).collect::<Vec<_>>();
+        assert_eq!(names(0).len(), 25);
+        assert_eq!(names(20), ["f20.txt", "f21.txt", "f22.txt", "f23.txt", "f24.txt"]);
+        assert!(names(25).is_empty());
+        assert!(names(u32::MAX).is_empty());
+        // A folder may hold as many entries as one handle may write, and no more is listed.
+        assert_eq!(MAX_FOLDER_SCAN, MAX_FOLDER_FILES);
+    }
+
+    pub(super) fn before_open(target: &Path) {
+        BEFORE_OPEN.with(|hook| {
+            if let Some(hook) = hook.borrow().as_ref() {
+                hook(target);
+            }
+        });
+    }
+
+    /// `folder` (an own file `own.txt` of 3 bytes) appended with `hook` run right before the open.
+    fn append_with_hook(dir: &Path, hook: Hook) -> (PickedFolder, Result<Appended, AppendFailed>) {
+        let mut folder = PickedFolder::open(dir, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        folder.check_write("own.txt", 3).unwrap().run(b"own").unwrap();
+        folder.record("own.txt", 3);
+        BEFORE_OPEN.with(|h| *h.borrow_mut() = Some(hook));
+        let outcome = folder.check_append("own.txt", 4).unwrap().append(b"more");
+        BEFORE_OPEN.with(|h| *h.borrow_mut() = None);
+        folder.record_append("own.txt", 4, &outcome);
+        (folder, outcome)
+    }
+
+    #[test]
+    fn append_creates_a_file_removed_right_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let (folder, outcome) = append_with_hook(dir.path(), Box::new(|target| fs::remove_file(target).unwrap()));
+        assert_eq!(outcome, Ok(Appended::Created));
+        assert_eq!(fs::read(dir.path().join("own.txt")).unwrap(), b"more");
+        assert_eq!((folder.written["own.txt"], folder.total), (4, 4));
+    }
+
+    #[test]
+    fn append_refuses_a_hard_link_swapped_in_right_before_the_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("out");
+        fs::create_dir(&root).unwrap();
+        let victim = dir.path().join("victim.txt");
+        fs::write(&victim, b"victim").unwrap();
+        let swap = victim.clone();
+        let (folder, outcome) = append_with_hook(
+            &root,
+            Box::new(move |target| {
+                fs::remove_file(target).unwrap();
+                fs::hard_link(&swap, target).unwrap();
+            }),
+        );
+        let error = outcome.unwrap_err().into_message();
+        assert!(error.starts_with("permission denied:"), "{error}");
+        assert_eq!(fs::read(&victim).unwrap(), b"victim");
+        assert_eq!((folder.written["own.txt"], folder.total), (3, 3), "a refusal changes nothing");
+    }
+
+    #[test]
+    fn a_stopped_append_of_a_new_file_does_not_make_it_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        // What the host records when the blocking task stopped (a join error).
+        folder.record_append("new.txt", 10, &Err(AppendFailed::Partial { error: "stopped".into(), size: None }));
+        assert!(folder.written.is_empty());
+        assert_eq!(folder.total, 0);
+        assert!(folder.read_job("new.txt").is_err());
+    }
+
+    #[test]
+    fn reveal_refuses_a_root_that_is_no_longer_a_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let picked = dir.path().join("out");
+        fs::create_dir(&picked).unwrap();
+        let mut folder = PickedFolder::open(&picked, &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        // Replaced by a file of the same name: the path still canonicalises to itself, but it is not the folder.
+        fs::remove_dir(&picked).unwrap();
+        fs::write(&picked, b"not a folder").unwrap();
+        let error = folder.reveal_path().unwrap_err();
+        assert!(error.starts_with("permission denied:"), "{error}");
+        // A folder again: shown.
+        fs::remove_file(&picked).unwrap();
+        fs::create_dir(&picked).unwrap();
+        assert_eq!(folder.reveal_path().unwrap(), fs::canonicalize(&picked).unwrap());
+    }
+
+    #[test]
+    fn a_failed_append_counts_the_real_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let limits = FolderLimits { files: 10, bytes: 100, file: 100 };
+        let mut folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), limits).unwrap();
+        folder.record_append("a.bin", 30, &Ok(Appended::Created));
+        folder.record_append("a.bin", 20, &Ok(Appended::Extended));
+        assert_eq!((folder.written["a.bin"], folder.total), (50, 50));
+        // Refused before writing: nothing changes.
+        folder.record_append("a.bin", 40, &Err(AppendFailed::Refused("x".into())));
+        assert_eq!((folder.written["a.bin"], folder.total), (50, 50));
+        // 7 of 40 bytes made it: the size read again counts.
+        folder.record_append("a.bin", 40, &Err(AppendFailed::Partial { error: "disk full".into(), size: Some(57) }));
+        assert_eq!((folder.written["a.bin"], folder.total), (57, 57));
+        // The size could not be read: counted as if all of it were written.
+        folder.record_append("a.bin", 10, &Err(AppendFailed::Partial { error: "x".into(), size: None }));
+        assert_eq!((folder.written["a.bin"], folder.total), (67, 67));
+        assert_eq!(folder.check_append("a.bin", 34).err().as_deref(), Some(LIMIT_REACHED));
+        assert!(folder.check_append("a.bin", 33).is_ok());
+    }
+
+    #[test]
+    fn read_job_reads_only_own_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut folder = PickedFolder::open(dir.path(), &[], &UserFolders::default(), FolderLimits::default()).unwrap();
+        assert!(folder.read_job("a.json").unwrap_err().starts_with("permission denied:"));
+        folder.check_write("a.json", 2).unwrap().run(b"{}").unwrap();
+        folder.record("a.json", 2);
+        assert_eq!(folder.read_job("a.json").unwrap().run().unwrap(), ("a.json".to_string(), b"{}".to_vec()));
+    }
+}

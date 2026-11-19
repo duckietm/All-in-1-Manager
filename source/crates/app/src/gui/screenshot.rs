@@ -101,6 +101,7 @@ impl Screenshot {
                 "tools" => Page::Tools,
                 "status" => Page::ServerStatus,
                 "doctor" => Page::Doctor,
+                "gearth" => Page::GearthTool,
                 "monitor" => Page::EmulatorMonitor,
                 "terminal" => Page::Terminal,
                 "settings" => Page::Settings,

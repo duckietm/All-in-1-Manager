@@ -1,0 +1,203 @@
+//! What the Manager provides to a running plugin.
+//!
+//! The runtime (`crate::runtime`) translates every WIT import into a call of [`HostServices`]. The
+//! permission checks and approvals (Tasks 5 and 6) sit inside the runtime, *before* these calls: an
+//! implementation of this trait may assume the plugin is allowed to make the call.
+//!
+//! The data types here are plain Rust types (no WIT bindgen types), so the app can implement the
+//! trait without depending on the generated bindings.
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use async_trait::async_trait;
+
+use crate::net::{AskedHosts, BodyBudget};
+
+/// Severity of a plugin log line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Level {
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+/// A script a plugin wants to run on the logged-in server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptRequest {
+    /// Id of the plugin asking (shown in the approval dialog).
+    pub plugin: String,
+    pub script: String,
+    pub as_root: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScriptResult {
+    pub exit_code: i32,
+    pub output: String,
+    pub error: String,
+}
+
+/// A database value.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SqlValue {
+    Null,
+    Int(i64),
+    Float(f64),
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+/// The result of a read query.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Rows {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<SqlValue>>,
+}
+
+/// Database changes applied in one transaction after the user approved them (filled by Task 5).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WriteBatch {
+    /// Parameterised statements, in order.
+    pub statements: Vec<(String, Vec<SqlValue>)>,
+    /// One human readable line per change, for the preview.
+    pub summary: Vec<String>,
+}
+
+/// A page of the Manager a plugin may open (`open-manager-page`, API 1.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManagerPage {
+    /// Tools → G-Earth.
+    GearthTool,
+}
+
+/// The Manager side of the plugin API. Calls come from tokio worker threads, never from the egui
+/// thread; the dialog methods must hand the request to the UI and wait for the user's answer.
+#[async_trait]
+pub trait HostServices: Send + Sync {
+    /// A yes/no question to the user.
+    async fn ask(&self, question: String) -> bool;
+    /// The `http:ask` question (API 1.1): may the plugin `plugin` (its name, already made display-safe) fetch from
+    /// `host` (lower case, a valid `http:<host>` host)? The runtime counts it as a dialog of the call. `Some` is the
+    /// user's Yes or No (remembered); `None` is no answer (the plugin is being stopped; nothing is remembered).
+    async fn ask_host(&self, plugin: &str, host: &str) -> Option<bool> {
+        Some(self.ask(format!("{plugin} wants to fetch from {host}. Allow?")).await)
+    }
+    /// What the user answered under `http:ask` for this plugin, taken once when an instance loads. The Manager hands
+    /// every instance of a plugin the same one for a session; the default remembers in memory, for this instance.
+    fn asked_hosts(&self) -> Arc<AskedHosts> {
+        Arc::new(AskedHosts::in_memory())
+    }
+    /// A line of the plugin log (also the plugin's stdout (Info) and stderr (Error)).
+    fn log(&self, level: Level, text: &str);
+    /// The status line text.
+    fn status(&self, text: &str);
+    /// Called by the runtime right before a script or a write batch is queued for the user's approval, so the app
+    /// can bind the approval to what is current now (the server the user is logged in to). The `run_script` /
+    /// `sql_write` that may follow belongs to this request.
+    fn before_approval(&self) {}
+    async fn run_script(&self, req: ScriptRequest) -> Result<ScriptResult, String>;
+    async fn sql_select(&self, sql: String, params: Vec<SqlValue>) -> Result<Rows, String>;
+    async fn sql_write(&self, batch: WriteBatch) -> Result<u64, String>;
+    /// `url` passed `crate::net::check_http` (rebuilt from its checked parts). The implementation must not
+    /// follow a redirect to another host, must stop reading past `crate::net::MAX_HTTP_BODY` bytes, and
+    /// returns a non-2xx status as `Err("HTTP <code>")`.
+    async fn http_get(&self, url: &str) -> Result<Vec<u8>, String>;
+    /// [`HostServices::http_get`] for a host reached only through `http:ask` (`host`: lower case, it passed
+    /// `crate::net::askable_host`). The implementation must also refuse, when connecting, every address
+    /// `crate::net::is_local_address` names (`permission denied: host <host> resolves to a local address`), for the
+    /// first request and every redirect. The default fails closed (an implementation that cannot refuse local
+    /// addresses must not fetch from asked hosts); the Manager overrides it.
+    async fn http_get_asked(&self, url: &str, host: &str) -> Result<Vec<u8>, String> {
+        let _ = (url, host);
+        Err("permission denied: this host cannot fetch from asked hosts".into())
+    }
+    /// One fetch of `http-get-many` (API 1.1): like [`HostServices::http_get`] (`asked: None`) or
+    /// [`HostServices::http_get_asked`] (`asked: Some(host)`, refusing local addresses), with every rule of those, and
+    /// besides: each piece of the body is reserved from `budget` (shared by the call's fetches) before it is kept, a
+    /// known `Content-Length` up front; a reservation that fails ends the fetch with
+    /// [`crate::net::BUDGET_EXCEEDED`]. A failed fetch releases what it reserved; a body shorter than reserved
+    /// releases the rest. The default fails closed (a host without it cannot keep several bodies within one budget).
+    async fn http_get_budgeted(&self, url: &str, asked: Option<&str>, budget: &BodyBudget) -> Result<Vec<u8>, String> {
+        let _ = (url, asked, budget);
+        Err("permission denied: this host cannot fetch several URLs at once".into())
+    }
+    /// A line of text from the user; `None` when cancelled.
+    async fn prompt_text(&self, title: String, label: String, default: String) -> Option<String>;
+    /// An open-file dialog; `extensions` have no dots, empty = every file. `None` when cancelled.
+    /// The runtime never shows the path to the plugin.
+    async fn pick_open_file(&self, title: String, extensions: Vec<String>) -> Option<PathBuf>;
+    /// A save-file dialog; `None` when cancelled. The runtime never shows the path to the plugin.
+    async fn pick_save_file(&self, title: String, suggested: String, extensions: Vec<String>) -> Option<PathBuf>;
+    /// Opens the Manager's import preview on a copy of a file the user picked (`name` without folders).
+    fn open_import_preview(&self, name: String, bytes: Vec<u8>);
+    /// A folder dialog (API 1.1); `None` when cancelled (the default: no dialog). The runtime never shows the path to
+    /// the plugin and refuses a folder inside [`HostServices::manager_folders`].
+    async fn pick_folder(&self, title: String) -> Option<PathBuf> {
+        let _ = title;
+        None
+    }
+    /// Opens `folder` (a picked folder, canonical) in the file manager.
+    fn reveal_folder(&self, folder: &Path) -> Result<(), String> {
+        let _ = folder;
+        Err("this host cannot show folders".into())
+    }
+    /// Switches the Manager to `page` (API 1.1; no permission). The default does nothing.
+    fn open_manager_page(&self, page: ManagerPage) {
+        let _ = page;
+    }
+    /// The Manager's own folders (its configuration: plugin code, `http-hosts.json`, `verified.json`): a picked folder
+    /// may not lie inside one, and nothing is written into one through a folder above it. The runtime adds the
+    /// plugin's own folder.
+    fn manager_folders(&self) -> Vec<PathBuf> {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A host that does not override `http_get_asked`.
+    struct Plain;
+
+    #[async_trait]
+    impl HostServices for Plain {
+        async fn ask(&self, _q: String) -> bool {
+            false
+        }
+        fn log(&self, _level: Level, _text: &str) {}
+        fn status(&self, _text: &str) {}
+        async fn run_script(&self, _req: ScriptRequest) -> Result<ScriptResult, String> {
+            Err("no".into())
+        }
+        async fn sql_select(&self, _sql: String, _params: Vec<SqlValue>) -> Result<Rows, String> {
+            Err("no".into())
+        }
+        async fn sql_write(&self, _batch: WriteBatch) -> Result<u64, String> {
+            Err("no".into())
+        }
+        async fn http_get(&self, _url: &str) -> Result<Vec<u8>, String> {
+            Ok(b"unfiltered".to_vec())
+        }
+        async fn prompt_text(&self, _t: String, _l: String, _d: String) -> Option<String> {
+            None
+        }
+        async fn pick_open_file(&self, _t: String, _e: Vec<String>) -> Option<PathBuf> {
+            None
+        }
+        async fn pick_save_file(&self, _t: String, _s: String, _e: Vec<String>) -> Option<PathBuf> {
+            None
+        }
+        fn open_import_preview(&self, _name: String, _bytes: Vec<u8>) {}
+    }
+
+    /// Without an override that refuses local addresses, an asked host is never fetched (the unfiltered `http_get`
+    /// would reach this computer and the local network).
+    #[tokio::test]
+    async fn asked_fetch_fails_closed_by_default() {
+        let error = Plain.http_get_asked("https://example.com/", "example.com").await.unwrap_err();
+        assert_eq!(error, "permission denied: this host cannot fetch from asked hosts");
+    }
+}

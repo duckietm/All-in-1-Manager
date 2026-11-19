@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const REPOSITORY: &str = "duckietm/All-in-1-Manager";
-const TAG_PREFIX: &str = "rust-v";
+pub(crate) const TAG_PREFIX: &str = "rust-v";
 
 #[cfg(windows)]
 pub const ASSET_NAME: &str = "all-in-1-manager-windows-x64.exe";
@@ -42,29 +42,43 @@ pub struct Release {
     pub changes: Vec<(String, String)>,
 }
 
+/// The GitHub REST API (releases are read from it).
+pub(crate) const GITHUB_API: &str = "https://api.github.com";
+
+/// A release as the GitHub API returns it (also read by the G-Earth tool).
 #[derive(Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    html_url: String,
+pub(crate) struct GithubRelease {
+    pub(crate) tag_name: String,
+    pub(crate) html_url: String,
     #[serde(default)]
-    body: Option<String>,
+    pub(crate) body: Option<String>,
     #[serde(default)]
-    draft: bool,
+    pub(crate) draft: bool,
     #[serde(default)]
-    prerelease: bool,
+    pub(crate) prerelease: bool,
     #[serde(default)]
-    assets: Vec<GithubAsset>,
+    pub(crate) assets: Vec<GithubAsset>,
 }
 
 #[derive(Deserialize)]
-struct GithubAsset {
-    name: String,
-    browser_download_url: String,
+pub(crate) struct GithubAsset {
+    pub(crate) name: String,
+    pub(crate) browser_download_url: String,
     #[serde(default)]
-    size: u64,
+    pub(crate) size: u64,
+    /// "sha256:<hex>": the digest GitHub computed when the file was uploaded (newer releases carry it).
+    #[serde(default)]
+    pub(crate) digest: Option<String>,
 }
 
-fn client() -> reqwest::Client {
+impl GithubAsset {
+    /// The SHA-256 GitHub publishes for this file, as lowercase hex, when it has one.
+    pub(crate) fn sha256(&self) -> Option<String> {
+        checksum_in(self.digest.as_deref()?.strip_prefix("sha256:")?)
+    }
+}
+
+pub(crate) fn client() -> reqwest::Client {
     reqwest::Client::builder()
         // The GitHub API refuses requests without a user agent.
         .user_agent(format!("All-in-1-Manager/{CURRENT_VERSION}"))
@@ -90,7 +104,7 @@ pub async fn check() -> Option<Release> {
 
 /// The newest published release, newer than this build or not.
 pub async fn latest() -> Result<Option<Release>> {
-    let url = format!("https://api.github.com/repos/{REPOSITORY}/releases?per_page=30");
+    let url = format!("{GITHUB_API}/repos/{REPOSITORY}/releases?per_page=30");
     let response = client()
         .get(&url)
         .header("Accept", "application/vnd.github+json")
@@ -163,13 +177,34 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 }
 
 /// The SHA-256 of `bytes` as lowercase hex.
-fn sha256_of(bytes: &[u8]) -> String {
+pub(crate) fn sha256_of(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    hex(&Sha256::digest(bytes))
+}
+
+/// Bytes as lowercase hex (a finished SHA-256).
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Downloads a published checksum file (`<asset>.sha256`) and reads the digest from it.
+pub(crate) async fn published_checksum(url: &str) -> Result<String> {
+    /// A checksum file is one line; anything bigger is not one.
+    const MAX: usize = 4096;
+    let mut published = client().get(url).send().await.context("Downloading the checksum failed")?.error_for_status()?;
+    let mut text = Vec::new();
+    // Read in chunks and stop at the limit, also when the server sends no Content-Length.
+    while let Some(chunk) = published.chunk().await.context("Downloading the checksum failed")? {
+        if text.len() + chunk.len() > MAX {
+            bail!("The published checksum could not be read (it is longer than {MAX} bytes)");
+        }
+        text.extend_from_slice(&chunk);
+    }
+    checksum_in(&String::from_utf8_lossy(&text)).context("The published checksum could not be read")
 }
 
 /// The digest from a published checksum file: "<hex>" or the `sha256sum` form "<hex>  <file name>".
-fn checksum_in(text: &str) -> Option<String> {
+pub(crate) fn checksum_in(text: &str) -> Option<String> {
     let digest = text.split_whitespace().next()?.trim().to_ascii_lowercase();
     (digest.len() == 64 && digest.chars().all(|c| c.is_ascii_hexdigit())).then_some(digest)
 }
@@ -198,9 +233,7 @@ pub async fn download_and_replace(release: &Release, progress: impl Fn(u64, u64)
     // What the release says the file should be. A release without a .sha256 is installed as before, so an older
     // release stays installable; when one is published it has to match, and a changed download never runs.
     if let Some(url) = &release.asset_sha256_url {
-        let published = client().get(url).send().await.context("Downloading the checksum failed")?.error_for_status()?;
-        let expected = checksum_in(&published.text().await.context("Downloading the checksum failed")?)
-            .context("The published checksum could not be read")?;
+        let expected = published_checksum(url).await?;
         let actual = sha256_of(&bytes);
         if actual != expected {
             bail!(
@@ -288,7 +321,7 @@ mod tests {
             draft: false,
             prerelease,
             assets: if asset {
-                vec![GithubAsset { name: ASSET_NAME.into(), browser_download_url: format!("https://example.test/{tag}/{ASSET_NAME}"), size: 5 }]
+                vec![GithubAsset { name: ASSET_NAME.into(), browser_download_url: format!("https://example.test/{tag}/{ASSET_NAME}"), size: 5, digest: None }]
             } else {
                 vec![]
             },

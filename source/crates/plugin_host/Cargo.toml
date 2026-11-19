@@ -1,0 +1,41 @@
+[package]
+name = "aio-plugin-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "All-in-1 Manager: the host side of the external WASM plugin API (aio:plugin)"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zip.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+async-trait.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+# `http-get-many`: the fetches of one call polled together in the call's task (dropped with it).
+futures.workspace = true
+# The URL parser reqwest fetches with: `askable_host` decides with it.
+url.workspace = true
+
+# Picked-folder appends: the link count and identity of an open file (GetFileInformationByHandle); versions already
+# in Cargo.lock.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+# Picked-folder appends: O_NOFOLLOW | O_NONBLOCK.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
+[features]
+# Failure-injection hooks for the tests only.
+test-hooks = []
+
+[dev-dependencies]
+aio-plugin-host = { path = ".", features = ["test-hooks"] }
+tempfile.workspace = true
+# tokio::time::pause for the host I/O timeout tests.
+tokio = { workspace = true, features = ["test-util"] }
+wit-parser.workspace = true

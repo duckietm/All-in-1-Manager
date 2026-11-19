@@ -1,0 +1,16 @@
+[package]
+name = "catalog-rip"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+description = "Catalogue ripper plugin: reads a Habbo hotel's catalogue through G-Earth into SQL and JSON files"
+
+[lib]
+# A component is a cdylib built for wasm32-wasip2.
+crate-type = ["cdylib"]
+
+[dependencies]
+aio-plugin-sdk = { path = "../../sdk" }
+catalog-rip-core = { path = "../core" }
+serde_json = "1"

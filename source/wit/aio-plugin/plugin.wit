@@ -1,0 +1,387 @@
+/// The All-in-1 Manager plugin API.
+///
+/// A plugin is a WebAssembly component targeting the `plugin` world. It never draws:
+/// `render` returns a description of its page and `on-event` receives what the user did.
+/// Everything else (scripts, database, network, files) goes through the `host` imports,
+/// each one gated by a permission in the plugin manifest and by the user's approval.
+///
+/// 1.1 only adds items to 1.0 (kept verbatim in `../aio-plugin-1.0`): `host.keep-working`,
+/// `tcp-connection.recv-timeout`, `host.pick-folder` with the `picked-folder` resource and its `folder-entry`,
+/// `host.language`, `host.translate`, `host.http-get-many`, `host.open-manager-page` with `manager-page`, and the
+/// optional `tick` export. A component that imports the 1.1 interfaces needs `"api": "1.1"` in its manifest.
+package aio:plugin@1.1.0;
+
+interface types {
+    /// A flat description of a page. WIT has no recursive types, so the tree is stored as a
+    /// list of elements; containers refer to their children by index into `elements`.
+    record ui-tree {
+        /// Index into `elements` of the top element.
+        root: u32,
+        elements: list<ui-element>,
+    }
+
+    record card-data {
+        title: string,
+        children: list<u32>,
+    }
+
+    record button-data {
+        id: string,
+        label: string,
+        primary: bool,
+    }
+
+    record input-data {
+        id: string,
+        label: string,
+        value: string,
+    }
+
+    record checkbox-data {
+        id: string,
+        label: string,
+        checked: bool,
+    }
+
+    record select-data {
+        id: string,
+        options: list<string>,
+        /// Index into `options` of the chosen option.
+        selected: u32,
+    }
+
+    record table-data {
+        columns: list<string>,
+        rows: list<list<string>>,
+    }
+
+    record progress-data {
+        done: u64,
+        total: u64,
+    }
+
+    enum banner-kind {
+        info,
+        success,
+        warning,
+        error,
+    }
+
+    record banner-data {
+        kind: banner-kind,
+        text: string,
+    }
+
+    /// One widget of a page.
+    variant ui-element {
+        card(card-data),
+        heading(string),
+        text(string),
+        button(button-data),
+        input(input-data),
+        checkbox(checkbox-data),
+        select(select-data),
+        table(table-data),
+        progress(progress-data),
+        log(list<string>),
+        banner(banner-data),
+        /// Children laid out left to right (indices into `elements`).
+        row(list<u32>),
+        /// Children laid out top to bottom (indices into `elements`).
+        column(list<u32>),
+    }
+
+    record changed-data {
+        id: string,
+        value: string,
+    }
+
+    /// What the user did on the page.
+    variant ui-event {
+        /// A button was pressed (its id).
+        clicked(string),
+        /// An input, checkbox or select changed. `value` is the text, "true" or "false" for a
+        /// checkbox, or the index of the chosen option for a select.
+        changed(changed-data),
+    }
+
+    enum log-level {
+        debug,
+        info,
+        warn,
+        error,
+    }
+
+    record script-result {
+        exit-code: s32,
+        output: string,
+        error: string,
+    }
+
+    /// A database value.
+    variant sql-value {
+        null,
+        int(s64),
+        float(f64),
+        text(string),
+        bytes(list<u8>),
+    }
+
+    enum compare-op {
+        eq,
+        ne,
+        lt,
+        le,
+        gt,
+        ge,
+        like,
+        is-null,
+        not-null,
+    }
+
+    /// `column <op> value`; `value` is ignored for `is-null` and `not-null`.
+    record condition {
+        column: string,
+        op: compare-op,
+        value: sql-value,
+    }
+
+    /// A read query. All conditions are combined with AND.
+    record select {
+        table: string,
+        columns: list<string>,
+        conditions: list<condition>,
+        limit: option<u32>,
+    }
+
+    record rows {
+        columns: list<string>,
+        rows: list<list<sql-value>>,
+    }
+
+    record insert-op {
+        table: string,
+        values: list<tuple<string, sql-value>>,
+    }
+
+    record update-op {
+        table: string,
+        set: list<tuple<string, sql-value>>,
+        conditions: list<condition>,
+    }
+
+    record delete-op {
+        table: string,
+        conditions: list<condition>,
+    }
+
+    /// A change to the database. Writes are collected, shown to the user in a preview and
+    /// applied in one transaction after approval.
+    variant write-op {
+        insert(insert-op),
+        update(update-op),
+        delete(delete-op),
+    }
+}
+
+interface host {
+    use types.{log-level, script-result, select, rows, write-op};
+
+    /// Appends a line to the plugin log.
+    log: func(level: log-level, text: string);
+
+    /// Asks the user a yes/no question and waits for the answer.
+    ask: func(question: string) -> bool;
+
+    /// Sets the status line text.
+    status: func(text: string);
+
+    /// Runs a script on the logged-in server (permission `ssh`). The user sees the full
+    /// script and approves it first. `as-root` runs it with root rights.
+    run-script: func(script: string, as-root: bool) -> result<script-result, string>;
+
+    /// Reads from the hotel database (permission `sql:read`).
+    sql-select: func(query: select) -> result<rows, string>;
+
+    /// Applies changes to the hotel database after a preview (permission
+    /// `sql:write:<tables>`). Returns the number of affected rows.
+    sql-write: func(ops: list<write-op>) -> result<u64, string>;
+
+    /// HTTP(S) GET, only to hosts listed in the manifest (permission `http:<hosts>`). With the permission `http:ask`
+    /// (API 1.1), a request to another public host name asks the user first (IP addresses, `localhost` and local
+    /// network names are refused without asking); a host the user allowed is remembered for the plugin, a refused
+    /// one gets `permission denied: host <host> was refused` for the rest of the session.
+    http-get: func(url: string) -> result<list<u8>, string>;
+
+    /// Up to 8 `http-get`s at once (API 1.1): each URL is checked exactly like `http-get` (declared hosts, `http:ask`
+    /// with its questions asked one at a time before anything is fetched, the address filter of asked hosts, the
+    /// redirect and size rules), then the allowed ones are fetched concurrently. The results keep the order of `urls`.
+    /// The bodies of one call add up to at most 32 MiB, reserved while they are read: a URL whose body does not fit
+    /// in what is left fails with `permission denied: response budget exceeded` (the others go on). More than 8 URLs:
+    /// nothing is checked or fetched and the list has a single entry, `permission denied: at most 8 URLs per call`.
+    @since(version = 1.1.0)
+    http-get-many: func(urls: list<string>) -> list<result<list<u8>, string>>;
+
+    /// A local TCP connection (permission `tcp:localhost:<port>`, or `tcp:localhost:<a>-<b>` for a range of at most
+    /// 16 ports since API 1.1).
+    resource tcp-connection {
+        send: func(data: list<u8>) -> result<_, string>;
+        /// Reads up to `max` bytes; an empty list means the peer closed the connection.
+        recv: func(max: u32) -> result<list<u8>, string>;
+        /// Like `recv`, but waits at most `timeout-ms` milliseconds (0 to 30000; larger values are clamped to
+        /// 30000; 0 only takes what has already arrived). `none` means nothing arrived in time; `some` with an empty
+        /// list means the peer closed the connection.
+        @since(version = 1.1.0)
+        recv-timeout: func(max: u32, timeout-ms: u32) -> result<option<list<u8>>, string>;
+        close: func();
+    }
+
+    /// Connects to `localhost:<port>`; the port must be listed in the manifest.
+    tcp-connect: func(port: u16) -> result<tcp-connection, string>;
+
+    /// Reads a file of the plugin's private data folder.
+    file-read: func(path: string) -> result<list<u8>, string>;
+
+    /// Writes a file of the plugin's private data folder.
+    file-write: func(path: string, data: list<u8>) -> result<_, string>;
+
+    /// Asks the user for a line of text. `none` means the user cancelled.
+    prompt-text: func(title: string, label: string, default-value: string) -> option<string>;
+
+    /// A file the user picked in a dialog. The plugin never sees its path, only its name and
+    /// its content.
+    resource picked-file {
+        /// The file name without folders.
+        name: func() -> string;
+        read: func() -> result<list<u8>, string>;
+        write: func(data: list<u8>) -> result<_, string>;
+    }
+
+    /// Shows an open-file dialog. `extensions` has no dots (for example "sql"); an empty list
+    /// allows every file. `none` means the user cancelled.
+    pick-open-file: func(title: string, extensions: list<string>) -> option<picked-file>;
+
+    /// Shows a save-file dialog. `none` means the user cancelled.
+    pick-save-file: func(title: string, suggested-name: string, extensions: list<string>) -> option<picked-file>;
+
+    /// Hands a user-picked file to the Manager's import preview (used by the catalog ripper).
+    /// The user reviews it there before anything is changed.
+    open-import-preview: func(file: borrow<picked-file>) -> result<_, string>;
+
+    /// One entry of a picked folder's `list` (API 1.1).
+    @since(version = 1.1.0)
+    record folder-entry {
+        /// The name, without folders.
+        name: string,
+        is-folder: bool,
+        /// The size in bytes of a file; 0 for a folder.
+        size: u64,
+    }
+
+    /// A folder the user picked in a dialog (API 1.1). The plugin never sees its path, only its name. It may list what
+    /// is in the folder, read the data files already there, create new data files (and subfolders as needed) and
+    /// rewrite or append to the files it created through this handle; it never changes or removes anything else. Paths follow the private-file rules: relative with `/`, at most 255 characters and 8
+    /// levels, the characters A-Z a-z 0-9 . _ - only, no `..`, no drive, no reserved names. A path that already exists
+    /// and was not written through this handle gets `permission denied: <path> already exists`; a path leading through
+    /// a link (symlink or junction) is refused. One handle may write at most 100,000 files and 2 GiB in total, each
+    /// file at most 256 MiB (`permission denied: folder limit reached`).
+    @since(version = 1.1.0)
+    resource picked-folder {
+        /// The folder's name (its last path component).
+        @since(version = 1.1.0)
+        name: func() -> string;
+        /// Creates the file `path` (or rewrites one this handle created) with `data`. Only data files: the last
+        /// extension (any letter case) is one of json, sql, txt, md, csv, tsv, xml, html, png, gif, jpg, jpeg, webp,
+        /// bmp, svg, zip, nitro, swf, bin, log; anything else, or a name without an extension, gets
+        /// `permission denied: <path> is not a data file`. No name in the path may start with `.` (hidden files and
+        /// folders). A rewrite replaces the file whole (a failed one leaves the old content).
+        @since(version = 1.1.0)
+        write: func(path: string, data: list<u8>) -> result<_, string>;
+        /// Appends `data` to the file `path` that this handle created (with `write` or an earlier `append`), or creates
+        /// it (like a first `write`) when it does not exist yet, so a large file can be written in pieces. The same
+        /// path rules, data-file types and refusals as `write`: a file that exists and was not created through this
+        /// handle gets `permission denied: <path> already exists`; a file replaced by a link or given another name
+        /// (a hard link) is refused too. It counts against the same limits: the file at most 256 MiB after the append,
+        /// the handle's files at most 2 GiB in all, a new file one of the 100,000. A failed append may leave part of
+        /// `data` at the end of the file (a failed first one leaves no file). A later `write` replaces the file whole,
+        /// and it stays this handle's own.
+        @since(version = 1.1.0)
+        append: func(path: string, data: list<u8>) -> result<_, string>;
+        /// Reads at most `max` bytes (at most 4 MiB, larger is refused) of the file `path` from byte `offset`: fewer at
+        /// the end of the file, none past it. Any existing data file in the folder may be read, not only the handle's
+        /// own: the same path rules and data-file types as `write` (no hidden names), never through a link (symlink or
+        /// junction), never a file with other names (a hard link) and never a file inside a folder of the Manager. A
+        /// missing file gets `file not found`.
+        @since(version = 1.1.0)
+        read: func(path: string, offset: u64, max: u32) -> result<list<u8>, string>;
+        /// The entries of the folder `path` ("" for the picked folder itself), sorted by name, from entry `start`: at
+        /// most 10,000 per call; the next page starts where this one ended, and a page past the last entry is empty.
+        /// Links, hidden names (starting with `.`) and names the path rules cannot name are left out; files of every
+        /// type are listed. A folder with more than 100,000 entries gets `permission denied: <path> has more than
+        /// 100000 entries`; a missing one `file not found`.
+        @since(version = 1.1.0)
+        %list: func(path: string, start: u32) -> result<list<folder-entry>, string>;
+        /// Opens the folder in the file manager.
+        @since(version = 1.1.0)
+        reveal: func() -> result<_, string>;
+        /// Hands the file `path`, written through this handle and at most 32 MiB, to the Manager's import preview
+        /// (like `open-import-preview`). The user reviews it there before anything is changed.
+        @since(version = 1.1.0)
+        open-import-preview: func(path: string) -> result<_, string>;
+    }
+
+    /// Shows a folder dialog (API 1.1); no permission is needed, the user picks the folder each time. `none` means the
+    /// user cancelled, or picked a folder that is refused: one of the Manager's (its install or configuration folder,
+    /// or inside one), a drive's root, the home folder itself, or a startup folder (or inside one).
+    @since(version = 1.1.0)
+    pick-folder: func(title: string) -> option<picked-folder>;
+
+    /// A page of the Manager a plugin may open (API 1.1).
+    @since(version = 1.1.0)
+    enum manager-page {
+        /// Tools → G-Earth: install and start G-Earth (the packet logger).
+        gearth-tool,
+    }
+
+    /// Switches the Manager to `page` (API 1.1), as if the user chose it, which closes the plugin's page; nothing
+    /// is started there. No permission is needed. Ignored while the Manager is busy (a running tool or approved
+    /// work), like any other page change.
+    @since(version = 1.1.0)
+    open-manager-page: func(page: manager-page);
+
+    /// Asks the host to call `tick` once more after the next render, so that a long job runs in steps between
+    /// pages (each step is a call of its own, with its own time limit). The request holds for the call that makes
+    /// it; the next event or tick starts without one. Work runs only while the plugin's page is open. A component
+    /// that does not export `tick` gets an error (`tick is not exported`) that stops the call.
+    @since(version = 1.1.0)
+    keep-working: func();
+
+    /// The Manager's current language code (API 1.1): "en" for English, else one of "it", "fr", "de", "nl", "es",
+    /// "pt", "tr", "fi". It can change between two calls (the user switched languages; the page is rendered again).
+    @since(version = 1.1.0)
+    language: func() -> string;
+
+    /// The translation of `english` in the Manager's current language, from the plugin's own `i18n/<lang>.json`
+    /// (API 1.1), or `english` unchanged when there is none. `{name}` placeholders are kept as they are; the plugin
+    /// fills them in after translating. No permission is needed.
+    @since(version = 1.1.0)
+    translate: func(english: string) -> string;
+}
+
+world plugin {
+    import host;
+
+    use types.{ui-tree, ui-event};
+
+    /// Describes the plugin page.
+    export render: func() -> ui-tree;
+
+    /// Handles what the user did on the page. The page is re-rendered afterwards.
+    export on-event: func(event: ui-event) -> result<_, string>;
+
+    /// One step of a long job, called after a render when the last call asked for it with `keep-working`.
+    /// Events the user sent meanwhile are handled first. The page is re-rendered afterwards. Optional: the
+    /// host looks it up by name, and a component without it never gets ticks.
+    @since(version = 1.1.0)
+    export tick: func() -> result<_, string>;
+}

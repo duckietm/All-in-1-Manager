@@ -1,0 +1,30 @@
+{
+  "Notes": "Note",
+  "Example plugin: keep admin notes, export them, and see the latest registered users.": "Plugin di esempio: tieni le note dell'admin, esportale e guarda gli ultimi utenti registrati.",
+  "Example plugin: admin notes and recent users.": "Plugin di esempio: note dell'admin e utenti recenti.",
+
+  "My notes": "Le mie note",
+  "Export...": "Esporta...",
+  "Rename note title...": "Rinomina il titolo della nota...",
+  "Recent users": "Utenti recenti",
+  "ID": "ID",
+  "Username": "Nome utente",
+  "Refresh users": "Aggiorna utenti",
+  "There are no users yet.": "Non ci sono ancora utenti.",
+
+  "Export notes": "Esporta note",
+  "Exported to {file}.": "Esportato in {file}.",
+  "Could not export: {error}": "Impossibile esportare: {error}",
+  "Rename note": "Rinomina nota",
+  "Title": "Titolo",
+  "The title cannot be empty.": "Il titolo non può essere vuoto.",
+  "Title renamed.": "Titolo rinominato.",
+  "Could not save the title: {error}": "Impossibile salvare il titolo: {error}",
+  "Could not save the note: {error}": "Impossibile salvare la nota: {error}",
+  "The saved note was longer than {limit} characters and was shortened.": "La nota salvata era più lunga di {limit} caratteri ed è stata accorciata.",
+
+  "The users table is not available: the plugin lacks the `sql:read:users` permission.": "La tabella degli utenti non è disponibile: al plugin manca il permesso `sql:read:users`.",
+  "The request was rejected, so the user list was not loaded.": "La richiesta è stata rifiutata, quindi l'elenco degli utenti non è stato caricato.",
+  "The server did not answer in time. Try Refresh users again.": "Il server non ha risposto in tempo. Riprova con Aggiorna utenti.",
+  "The user list is not available right now ({error}).": "L'elenco degli utenti non è disponibile al momento ({error})."
+}

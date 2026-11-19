@@ -1,7 +1,7 @@
 //! The Tools page (ToolsView.cs): the server tools as tiles (restarts, firewall, Fail2Ban / CrowdSec whitelist and
 //! bans, database backup and import, the SQL password, the update check and the updates), each with its question,
-//! check list, result and log under the tiles. Server status, Emulator & wired and the SSH terminal are sub-pages of it,
-//! built once (the terminal keeps its shell while other pages are shown). The settings backup card is drawn on the
+//! check list, result and log under the tiles. Server status, Emulator & wired, the SSH terminal and G-Earth are
+//! sub-pages of it, built once (the terminal keeps its shell while other pages are shown). The settings backup card is drawn on the
 //! Settings page, from here, since its password dialog is one of this view's dialogs.
 //!
 //! The check for updates runs by itself once per login; its result goes on the update tiles' captions, on the line
@@ -26,6 +26,7 @@ use crate::gui::widgets::{self, ResultKind};
 use crate::gui::{Page, Request, Shared, View};
 use crate::i18n::{n, t, tf};
 use crate::views::emulator_monitor::EmulatorMonitorView;
+use crate::views::gearth_tool::GearthToolView;
 use crate::views::server_status::ServerStatusView;
 use crate::views::terminal::TerminalView;
 
@@ -71,6 +72,8 @@ enum Tool {
     UpdateTraefik,
     UpdateGitea,
     UpdateCrowdSec,
+    /// G-Earth on this computer: needs no login.
+    GEarth,
 }
 
 impl Tool {
@@ -105,7 +108,13 @@ impl Tool {
             Tool::UpdateTraefik => (n("Update Traefik"), n("The newest traefik:v3 image (Docker Hub)"), Icon::Swap),
             Tool::UpdateGitea => (n("Update Gitea"), n("The newest gitea/gitea:1 image; the repositories stay"), Icon::Git),
             Tool::UpdateCrowdSec => (n("Update CrowdSec"), n("The newest image and detection rules; bans and enrollment stay"), Icon::Shield),
+            Tool::GEarth => (n("G-Earth"), n("Install, update and start G-Earth on this computer."), Icon::Download),
         }
+    }
+
+    /// A tool of this computer, not of the server: it works without a login.
+    fn local(self) -> bool {
+        matches!(self, Tool::GEarth)
     }
 
     fn title(self) -> &'static str {
@@ -129,7 +138,7 @@ impl Tool {
 }
 
 /// The sections of the page, in order.
-const SECTIONS: [(&str, &[Tool]); 8] = [
+const SECTIONS: [(&str, &[Tool]); 9] = [
     (n("Status"), &[Tool::HealthCheck, Tool::ServerStatus, Tool::EmulatorMonitor, Tool::Terminal]),
     (n("Services"), &[Tool::RestartEmulator, Tool::RestartMariaDb, Tool::RestartNginx, Tool::RestartTraefik, Tool::RestartAll]),
     (n("Visitors"), &[Tool::FixVisitorIps]),
@@ -150,6 +159,7 @@ const SECTIONS: [(&str, &[Tool]); 8] = [
             Tool::UpdateCrowdSec,
         ],
     ),
+    (n("This computer"), &[Tool::GEarth]),
 ];
 
 /// The settings backup buttons.
@@ -210,6 +220,7 @@ pub struct ToolsView {
     doctor: Option<crate::views::doctor::DoctorView>,
     emulator_monitor: Option<EmulatorMonitorView>,
     terminal: Option<TerminalView>,
+    gearth: Option<GearthToolView>,
     /// What the search field above the tiles filters on.
     search: String,
 }
@@ -222,7 +233,7 @@ fn matches(query: &str, texts: &[&str]) -> bool {
 
 impl ToolsView {
     pub fn new(_shared: &Shared) -> Self {
-        Self { page: Page::Tools, state: Arc::new(Mutex::new(State::default())), server_status: None, doctor: None, emulator_monitor: None, terminal: None, search: String::new() }
+        Self { page: Page::Tools, state: Arc::new(Mutex::new(State::default())), server_status: None, doctor: None, emulator_monitor: None, terminal: None, gearth: None, search: String::new() }
     }
 
     /// Starts the update check once per login (not while a tool runs). (ToolsView.Refresh)
@@ -288,6 +299,9 @@ impl ToolsView {
 
     /// A tile was clicked (or an Update button of the dashboard). (RunToolAsync)
     fn start_tool(&mut self, tool: Tool, shared: &Shared) {
+        if tool == Tool::GEarth {
+            return self.page = Page::GearthTool;
+        }
         let Some(server) = shared.session() else { return };
         if self.state.lock().running {
             return;
@@ -485,13 +499,13 @@ impl ToolsView {
                     }
                     ui.horizontal_wrapped(|ui| {
                         ui.spacing_mut().item_spacing = egui::vec2(10.0, 10.0);
-                        if !connected {
+                        if !connected && !shown.iter().all(|tool| tool.local()) {
                             ui.multiply_opacity(0.45);
                         }
                         for &tool in &shown {
                             let (title, description, icon) = tool.info();
                             let caption = captions.get(&tool).cloned().unwrap_or_else(|| t(description).to_string());
-                            if tile(ui, palette, icon, t(title), &caption, connected && !running) {
+                            if tile(ui, palette, icon, t(title), &caption, (connected || tool.local()) && !running) {
                                 clicked_tool = Some(tool);
                             }
                         }
@@ -579,6 +593,16 @@ impl View for ToolsView {
                     self.page = Page::Tools;
                     self.start_tool(tool, shared);
                 }
+            }
+            Page::GearthTool => {
+                egui::ScrollArea::vertical().id_salt("tools-gearth").auto_shrink([false, false]).show(ui, |ui| {
+                    widgets::card(ui, palette, egui::Margin::symmetric(24, 20), |ui| {
+                        self.gearth.get_or_insert_with(|| GearthToolView::new(shared)).show(ui, palette, shared);
+                        ui.add_space(16.0);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| self.back_button(ui));
+                    });
+                    ui.add_space(18.0);
+                });
             }
             Page::Terminal => {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| self.back_button(ui));

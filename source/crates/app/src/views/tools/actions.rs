@@ -118,7 +118,7 @@ async fn pick_dump(title: &str) -> Option<PathBuf> {
 
 pub async fn perform(tool: Tool, job: &Job) -> Result<()> {
     match tool {
-        Tool::HealthCheck | Tool::ServerStatus | Tool::EmulatorMonitor | Tool::Terminal => Ok(()),
+        Tool::HealthCheck | Tool::ServerStatus | Tool::EmulatorMonitor | Tool::Terminal | Tool::GEarth => Ok(()),
         Tool::RestartEmulator => restart_emulator(job).await,
         Tool::RestartMariaDb => restart_mariadb(job).await,
         Tool::RestartNginx => restart_nginx(job).await,

@@ -1,0 +1,231 @@
+//! The images a rip refers to: page images from the catalogue image URL (`<name>.gif`, else
+//! `<name>.png`), page icons from the icon URL (`icon_<n>.png`) and the frontpage promo images
+//! (relative to c_images). Planning only: [`plan`] lists what to download from where and where
+//! it goes; the job downloads them through its `Fetch`, up to `Fetch::max_batch` at a time
+//! (`Fetch::get_many`: 8 in the plugin, as the built-in ran 8 downloads at a time).
+//!
+//! (`images.rs` of the built-in crate, without the download loop, which had its own HTTP
+//! client.)
+
+use std::collections::BTreeSet;
+
+use crate::export::RippedCatalog;
+use crate::message::Message;
+use crate::names::safe_file_name;
+
+/// What the image downloads came to.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageStats {
+    pub downloaded: usize,
+    pub missing: usize,
+    pub failed: usize,
+    pub missing_names: Vec<String>,
+}
+
+impl ImageStats {
+    pub fn describe(&self) -> Message {
+        if self.failed > 0 {
+            return Message::new(
+                "{downloaded} downloaded, {missing} not on the server, {failed} failed",
+            )
+            .with("downloaded", self.downloaded)
+            .with("missing", self.missing)
+            .with("failed", self.failed);
+        }
+        Message::new("{downloaded} downloaded, {missing} not on the server")
+            .with("downloaded", self.downloaded)
+            .with("missing", self.missing)
+    }
+}
+
+/// One image: the URLs to try in order, and where it goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageJob {
+    /// The name in the log and in [`ImageStats::missing_names`].
+    pub label: String,
+    pub urls: Vec<String>,
+    /// The folder, relative to the rip folder: `images`, `images/icons` or `images/frontpage`.
+    pub dest_dir: String,
+    /// The file name, without the extension when the name has none (the URL's is used).
+    pub stem: String,
+}
+
+impl ImageJob {
+    /// The file `url` is saved as, relative to the rip folder.
+    pub fn dest(&self, url: &str) -> String {
+        if has_extension(&self.stem) {
+            format!("{}/{}", self.dest_dir, self.stem)
+        } else {
+            format!(
+                "{}/{}.{}",
+                self.dest_dir,
+                self.stem,
+                extension_of(url).unwrap_or("png")
+            )
+        }
+    }
+}
+
+pub fn has_extension(name: &str) -> bool {
+    let last = name.rsplit('/').next().unwrap_or(name);
+    last.rsplit_once('.').is_some_and(|(_, ext)| {
+        (2..=4).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric())
+    })
+}
+
+/// The extension of the file a URL names (its `?query` and `#fragment` left out).
+pub fn extension_of(url: &str) -> Option<&str> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let last = path.rsplit('/').next()?;
+    let (_, ext) = last.rsplit_once('.')?;
+    Some(ext)
+}
+
+/// The page image names, icon numbers and promo images of a rip.
+pub fn collect(catalog: &RippedCatalog) -> (BTreeSet<String>, BTreeSet<i32>, BTreeSet<String>) {
+    let mut names = BTreeSet::new();
+    let mut icons = BTreeSet::new();
+    let mut promos = BTreeSet::new();
+    for mode in &catalog.modes {
+        for (node, _, _) in mode.index.walk() {
+            if node.icon > 0 {
+                icons.insert(node.icon);
+            }
+        }
+        for page in mode.pages.values() {
+            for image in &page.images {
+                // frontpage_featured joins several with ';'.
+                for name in image.split(';').map(str::trim).filter(|n| !n.is_empty()) {
+                    names.insert(name.to_string());
+                }
+            }
+            for item in &page.frontpage_items {
+                if !item.promo_image.trim().is_empty() {
+                    promos.insert(item.promo_image.trim().to_string());
+                }
+            }
+        }
+    }
+    (names, icons, promos)
+}
+
+/// Habbo's current image host. Old settings point the catalogue URL at habboo-a.akamaihd.net,
+/// which no longer serves anything, so every image is also tried here (retros mostly keep
+/// Habbo's image names, so this also fills the gaps of a retro's own image host).
+pub const CURRENT_CATALOGUE: &str = "https://images.habbo.com/c_images/catalogue";
+
+/// Every image of the rip, in the built-in's order: page images (by name), icons (by number),
+/// promo images. Each page image is tried as `.gif` then `.png` at the catalogue URL, then the
+/// same at [`CURRENT_CATALOGUE`]; promo images at the c_images folder, then Habbo's.
+pub fn plan(catalog: &RippedCatalog, catalog_url: &str, icon_url: &str) -> Vec<ImageJob> {
+    let (names, icons, promos) = collect(catalog);
+    let base = catalog_url.trim().trim_end_matches('/');
+    let c_images = base.strip_suffix("/catalogue").unwrap_or(base);
+    let mut jobs = Vec::new();
+    let mut bases = vec![base.to_string()];
+    if !base.eq_ignore_ascii_case(CURRENT_CATALOGUE) {
+        bases.push(CURRENT_CATALOGUE.to_string());
+    }
+    for name in names {
+        let urls = bases
+            .iter()
+            .flat_map(|base| {
+                if has_extension(&name) {
+                    vec![format!("{base}/{name}")]
+                } else {
+                    vec![format!("{base}/{name}.gif"), format!("{base}/{name}.png")]
+                }
+            })
+            .collect();
+        let stem = safe_file_name(&name);
+        jobs.push(ImageJob {
+            label: name,
+            urls,
+            dest_dir: "images".into(),
+            stem,
+        });
+    }
+    for icon in icons {
+        jobs.push(ImageJob {
+            label: format!("icon_{icon}"),
+            urls: vec![format!("{}{icon}.png", icon_url.trim())],
+            dest_dir: "images/icons".into(),
+            stem: format!("icon_{icon}"),
+        });
+    }
+    for promo in promos {
+        let urls = if promo.starts_with("http://") || promo.starts_with("https://") {
+            vec![promo.clone()]
+        } else {
+            let current = CURRENT_CATALOGUE
+                .strip_suffix("/catalogue")
+                .unwrap_or(CURRENT_CATALOGUE);
+            let mut urls = vec![format!("{c_images}/{}", promo.trim_start_matches('/'))];
+            if !c_images.eq_ignore_ascii_case(current) {
+                urls.push(format!("{current}/{}", promo.trim_start_matches('/')));
+            }
+            urls
+        };
+        let file = promo.rsplit('/').next().unwrap_or(&promo);
+        jobs.push(ImageJob {
+            label: promo.clone(),
+            urls,
+            dest_dir: "images/frontpage".into(),
+            stem: safe_file_name(file),
+        });
+    }
+    jobs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names() {
+        assert_eq!(
+            safe_file_name("catalog_header/../x?.gif"),
+            "catalog_header_.._x_.gif"
+        );
+        assert!(has_extension("catalogue/feature_cata_vert.png"));
+        assert!(!has_extension("catalog_frontpage_headline_shop_EN"));
+        assert!(!has_extension("ctlg_pic_v1.0_hc"));
+        assert_eq!(
+            extension_of("http://x/c_images/catalogue/a.gif"),
+            Some("gif")
+        );
+    }
+
+    #[test]
+    fn dest_takes_the_urls_extension() {
+        let job = ImageJob {
+            label: "h".into(),
+            urls: vec![],
+            dest_dir: "images".into(),
+            stem: "h".into(),
+        };
+        assert_eq!(job.dest("http://x/h.gif"), "images/h.gif");
+        assert_eq!(job.dest("http://x/h"), "images/h.png");
+        let named = ImageJob {
+            stem: "a.png".into(),
+            ..job
+        };
+        assert_eq!(named.dest("http://x/whatever.gif"), "images/a.png");
+    }
+
+    #[test]
+    fn extension_ignores_query_and_fragment() {
+        assert_eq!(extension_of("http://x/h.gif?v=2"), Some("gif"));
+        assert_eq!(extension_of("http://x/h.png#top"), Some("png"));
+        assert_eq!(extension_of("http://x/h.png?a=b.c#d.e"), Some("png"));
+        assert_eq!(extension_of("http://x/h?file=a.gif"), None);
+        let job = ImageJob {
+            label: "h".into(),
+            urls: vec![],
+            dest_dir: "images".into(),
+            stem: "h".into(),
+        };
+        assert_eq!(job.dest("http://x/h.gif?v=2"), "images/h.gif");
+        assert_eq!(job.dest("http://x/h?v=1.5"), "images/h.png");
+    }
+}

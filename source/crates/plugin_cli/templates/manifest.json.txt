@@ -1,0 +1,16 @@
+{
+  "id": "{{id}}",
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "author": "Your name",
+  "description": "What {{name}} does, in one sentence.",
+  "api": "1.1",
+  "permissions": ["files"],
+  "page_title": "{{name}}",
+  "tile": {
+    "title": "{{name}}",
+    "description": "What {{name}} does, in one sentence.",
+    "color": "#4f8cff"
+  },
+  "dev_wasm": "target/wasm32-wasip2/release/{{wasm}}.wasm"
+}

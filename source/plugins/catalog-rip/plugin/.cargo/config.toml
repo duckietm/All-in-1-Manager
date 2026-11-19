@@ -1,0 +1,5 @@
+# Build into catalog-rip/plugin/target (not the plugins workspace's target): the built catalog_rip.wasm then lies
+# inside the plugin folder, where the manifest's dev_wasm points, so the folder loads in the Manager's developer mode
+# as it is.
+[build]
+target-dir = "target"

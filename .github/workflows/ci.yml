@@ -1,6 +1,6 @@
 name: CI
 
-# Tests and builds the installer on Windows and Linux on every pull request and push to main, and keeps the
+# Tests and builds the installer on Windows, Linux and macOS on every pull request and push to main, and keeps the
 # release binaries as workflow artifacts.
 
 on:
@@ -62,3 +62,21 @@ jobs:
         with:
           name: all-in-1-manager-linux-x64
           path: target/release/all-in-1-manager
+
+  macos:
+    name: macOS (Apple silicon + Intel)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --workspace
+      - name: Build the app
+        run: source/tools/package-macos.sh out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: all-in-1-manager-macos
+          path: out/all-in-1-manager-macos.zip

@@ -14,7 +14,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "All-in-1 Manager {}\n\n  --dry-run            show the commands instead of running them on a server\n  --renderer=wgpu|glow  draw with DirectX / Vulkan (wgpu) or OpenGL (glow)\n  --version            print the version",
+            "All-in-1 Manager {}\n\n  --dry-run            show the commands instead of running them on a server\n  --renderer=wgpu|glow  draw with DirectX / Metal / Vulkan (wgpu) or OpenGL (glow)\n  --version            print the version",
             update::CURRENT_VERSION
         );
         return;

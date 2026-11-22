@@ -557,15 +557,17 @@ Uses the address from the web access step; nothing to fill in. For `https://exam
    **Update Octane**) then:
    - **moves an existing hotel over** once, with Octane's own `yarn config:split` (`scripts/config-split.mjs`): every
      key the hotel set goes to its section, old key names are renamed, keys no code reads go to the last section of
-     `config/hotel.jsonc`. The old `renderer-config.json` and `ui-config.json` are left where they are, but no longer
-     load (**Client configuration** marks them *not loaded*). A new hotel gets `config.example.jsonc` and
-     `config.example/` copied instead;
+     `config/hotel.jsonc`. A new hotel gets `config.example.jsonc` and `config.example/` copied instead;
    - checks that every file `config.jsonc` lists is there (a missing one is copied from `config.example/`; with no
      example the step stops, as the client would not load);
    - sets the URL keys of the table above in the file that holds each one (the last listed file that has it, else
      its section's file from `configuration-keys.json`), **in place**: comments, sections and layout stay. The keys
      this client does not read (`hof.furni.url`, `badge.asset.group.url`, `timezone.settings`) are left alone. A file
      that changes is saved as `.bak-<time>` first;
+   - renames the old `renderer-config.json` and `ui-config.json` (also `.jsonc`), which no longer load, to
+     `renderer-config.json.old` and `ui-config.json.old` as a backup (when a `.old` is already there:
+     `.old-<time>`). This happens last, only when everything before it went well; the next build drops them from
+     `dist/` too;
    - prints Octane's `yarn config:sync` report (missing install addresses, keys set to the default anyway, old
      names, keys no code reads). It only reports; the full list: `cd /var/www/Octane && yarn config:sync`.
 
@@ -1770,8 +1772,9 @@ that is not made yet is marked *not made yet*; one the built client has no copy 
 With a newer Octane (`config.jsonc` + `config/`), **Main** lists **Load order** (`config.jsonc`), then **Server**,
 **Hotel**, **Features** and **Data tables** (`config/server.jsonc`, `hotel.jsonc`, `features.jsonc`, `data.jsonc`)
 in the order the client loads them, each with its example from `config.example/`. Their `// ==== Section ====` comments become
-headings in the form, the key comments show as help, and both stay when you save. The old `renderer-config.json` and `ui-config.json` move to
-**Other**, marked *not loaded*. The newer example names (`client-mode.example.json`, `radio-stations.example.jsonc`,
+headings in the form, the key comments show as help, and both stay when you save. Once **Update Octane** has moved a hotel over, the old
+`renderer-config.json` and `ui-config.json` are renamed to `.old` and no longer listed; one put back by hand shows
+under **Other**, marked *not loaded*. The newer example names (`client-mode.example.json`, `radio-stations.example.jsonc`,
 ...) are recognised as well.
 
 - **Settings** shows the chosen file as a form: the sections of `ui-config` (Login screen, Hotel view, Toolbar, ...),

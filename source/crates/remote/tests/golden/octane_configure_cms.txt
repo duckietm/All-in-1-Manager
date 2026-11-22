@@ -267,7 +267,7 @@ const oneFile = (name, configs) => {
 
 // The new layout (Octane with config.example.jsonc): config.jsonc lists config/server.jsonc, hotel, features and
 // data, loaded in that order. A hotel still on renderer-config.json + ui-config.json is moved over by Octane's own
-// yarn config:split (the old files stay where they are, but no longer load); a new hotel gets the examples. Every file
+// yarn config:split (the old files, which no longer load, are then renamed to .old); a new hotel gets the examples. Every file
 // config.jsonc lists must be there, and the hotel's URL keys are set in the file that holds each one, comments kept.
 const layered = async () => {
     const base = path.join(dir, 'config.jsonc');
@@ -275,7 +275,7 @@ const layered = async () => {
     if (!fs.existsSync(base)) {
         const old = ['renderer-config.json', 'ui-config.json'].filter(f => fs.existsSync(path.join(dir, f)));
         if (old.length) {
-            console.log(`  config.jsonc: this Octane loads config.jsonc + config/; moving ${old.join(' + ')} into it (yarn config:split, the old files are kept)`);
+            console.log(`  config.jsonc: this Octane loads config.jsonc + config/; moving ${old.join(' + ')} into it (yarn config:split)`);
             const result = spawnSync('node', ['scripts/config-split.mjs'], { cwd: octaneDir, encoding: 'utf8' });
             for (const line of `${result.stdout || ''}${result.stderr || ''}`.split('\n').filter(Boolean)) console.log(`    ${short(line)}`);
             if (result.status !== 0 || !fs.existsSync(base)) throw new Error('yarn config:split did not finish (see above): the old renderer-config.json and ui-config.json are as they were.');
@@ -354,6 +354,15 @@ const layered = async () => {
             for (const line of lines) console.log(`    ${short(line)}`);
             console.log(`    (the full list: cd ${octaneDir} && yarn config:sync)`);
         }
+    }
+    // The old files no longer load: once everything above went well they are renamed to .old (an older .old is kept
+    // too, as .old-<time>), so nobody edits a file the client does not read.
+    for (const name of ['renderer-config.json', 'ui-config.json', 'renderer-config.jsonc', 'ui-config.jsonc']) {
+        const file = path.join(dir, name);
+        if (!fs.existsSync(file)) continue;
+        const target = fs.existsSync(`${file}.old`) ? `${file}.old-${stamp()}` : `${file}.old`;
+        fs.renameSync(file, target);
+        console.log(`  ${name}: no longer loaded (its values are in config/), renamed to ${path.basename(target)}`);
     }
     const merged = {};
     for (const file of files) Object.assign(merged, values.get(file));

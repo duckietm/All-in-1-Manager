@@ -1,7 +1,8 @@
 //! Keeps the program itself up to date (AppUpdate.cs). At startup it asks GitHub for the newest release; when that
 //! release is newer than the running build, the download replaces the running file and the program starts again.
 //! Releases of the Rust build are tagged `rust-v<version>` and carry `all-in-1-manager-windows-x64.exe` /
-//! `all-in-1-manager-linux-x64`. Only published releases count: no internet, a draft or pre-release, or a
+//! `all-in-1-manager-linux-x64` / `all-in-1-manager-macos-universal` (the program inside the Mac app, for Apple
+//! silicon and Intel; the update replaces it in `All-in-1 Manager.app/Contents/MacOS`). Only published releases count: no internet, a draft or pre-release, or a
 //! repository without releases all mean no question is asked.
 
 use std::path::{Path, PathBuf};
@@ -15,13 +16,17 @@ const TAG_PREFIX: &str = "rust-v";
 
 #[cfg(windows)]
 pub const ASSET_NAME: &str = "all-in-1-manager-windows-x64.exe";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub const ASSET_NAME: &str = "all-in-1-manager-macos-universal";
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub const ASSET_NAME: &str = "all-in-1-manager-linux-x64";
 
 /// The release file holding `ASSET_NAME`'s SHA-256, written by the release workflow.
 #[cfg(windows)]
 pub const CHECKSUM_NAME: &str = "all-in-1-manager-windows-x64.exe.sha256";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub const CHECKSUM_NAME: &str = "all-in-1-manager-macos-universal.sha256";
+#[cfg(all(not(windows), not(target_os = "macos")))]
 pub const CHECKSUM_NAME: &str = "all-in-1-manager-linux-x64.sha256";
 
 /// Where to get the newest program by hand.

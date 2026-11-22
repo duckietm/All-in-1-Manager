@@ -31,23 +31,41 @@ impl ConfigFile {
     }
 }
 
-/// A plain file name of the configuration folder: letters, digits, `.`, `_`, `-`, ending in .json or .jsonc.
+/// The folder of the files `config.jsonc` lists (Octane's layout with config.jsonc + config/server.jsonc, ...).
+pub const LAYERED_FOLDER: &str = "config/";
+
+/// A plain file name of the configuration folder, or of its `config/` folder: letters, digits, `.`, `_`, `-`, ending
+/// in .json or .jsonc.
 pub fn valid_name(name: &str) -> bool {
+    let file = name.strip_prefix(LAYERED_FOLDER).unwrap_or(name);
     // An example is never a file of its own (pets.json.example.json is pets.json's example).
-    !name.starts_with('.')
-        && !name.contains(".example")
-        && (name.ends_with(".json") || name.ends_with(".jsonc"))
-        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    !file.starts_with('.')
+        && !file.contains(".example")
+        && (file.ends_with(".json") || file.ends_with(".jsonc"))
+        && file.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
-/// The file an `.example` becomes: `ui-config.example` -> `ui-config.json`, `radio-stations.jsonc.example` ->
-/// `radio-stations.jsonc`. None for examples that are not JSON (`ads-frame.html.example`) or name a language copy of a
-/// file the gamedata layout handles (`UITexts_*.jsonc.example`).
+/// The file an example becomes: `ui-config.example` -> `ui-config.json`, `radio-stations.jsonc.example` ->
+/// `radio-stations.jsonc`, and as newer Octane names them, `client-mode.example.json` -> `client-mode.json`,
+/// `config.example.jsonc` -> `config.jsonc`, `config.example/server.jsonc` -> `config/server.jsonc`. None for examples
+/// that are not JSON (`ads-frame.html.example`) or name a language copy of a file the gamedata layout handles
+/// (`UITexts_*.jsonc.example`).
 pub fn example_target(example: &str) -> Option<String> {
-    let base = example.strip_suffix(".example")?;
+    if let Some(file) = example.strip_prefix("config.example/") {
+        let name = format!("{LAYERED_FOLDER}{file}");
+        return valid_name(&name).then_some(name);
+    }
+    let base = match (example.strip_suffix(".example.json"), example.strip_suffix(".example.jsonc")) {
+        // pets.json.example.json is pets.json's.
+        (Some(base), _) if base.ends_with(".json") || base.ends_with(".jsonc") => base.to_string(),
+        (Some(base), _) => format!("{base}.json"),
+        (_, Some(base)) => format!("{base}.jsonc"),
+        _ => example.strip_suffix(".example")?.to_string(),
+    };
     if base.starts_with("UITexts") {
         return None;
     }
+    let base = base.as_str();
     let name = if base.ends_with(".json") || base.ends_with(".jsonc") {
         base.to_string()
     } else if base.contains('.') {
@@ -69,9 +87,18 @@ pub fn example_of(name: &str) -> String {
 /// The examples a file may have, the likeliest first: a hotel that keeps `ui-config.jsonc` still has Octane's
 /// `ui-config.example`, and the other way round.
 pub fn examples_of(name: &str) -> Vec<String> {
+    if let Some(file) = name.strip_prefix(LAYERED_FOLDER) {
+        return vec![format!("config.example/{file}")];
+    }
     let stem = name.trim_end_matches(".jsonc").trim_end_matches(".json");
-    let mut list = vec![example_of(name), format!("{stem}.example"), format!("{stem}.jsonc.example"), format!("{name}.example.json")];
-    list.dedup();
+    let mut list = vec![
+        example_of(name),
+        format!("{stem}.example"),
+        format!("{stem}.jsonc.example"),
+        format!("{stem}.example.json"),
+        format!("{stem}.example.jsonc"),
+        format!("{name}.example.json"),
+    ];
     let mut seen = std::collections::HashSet::new();
     list.retain(|e| seen.insert(e.clone()));
     list
@@ -139,8 +166,11 @@ const LIST: &str = r#"p={{Public}}
 d={{Served}}
 [ -d "$p" ] || exit 0
 find "$p" -maxdepth 1 -type f \( -name '*.json' -o -name '*.jsonc' \) -printf 'P %f %s\n'
-find "$p" -maxdepth 1 -type f -name '*.example' -printf 'E %f\n'
+find "$p" -maxdepth 1 -type f \( -name '*.example' -o -name '*.example.json' -o -name '*.example.jsonc' \) -printf 'E %f\n'
+[ -d "$p/config" ] && find "$p/config" -maxdepth 1 -type f \( -name '*.json' -o -name '*.jsonc' \) -printf 'P config/%f %s\n'
+[ -d "$p/config.example" ] && find "$p/config.example" -maxdepth 1 -type f \( -name '*.json' -o -name '*.jsonc' \) -printf 'E config.example/%f\n'
 [ -d "$d" ] && find "$d" -maxdepth 1 -type f \( -name '*.json' -o -name '*.jsonc' \) -printf 'D %f\n'
+[ -d "$d/config" ] && find "$d/config" -maxdepth 1 -type f \( -name '*.json' -o -name '*.jsonc' \) -printf 'D config/%f\n'
 true"#;
 
 /// The configuration files: the ones there, and the ones this Octane version has an example of.
@@ -609,7 +639,10 @@ pub fn save_script(name: &str, uploaded: &str, expected: &str) -> String {
         &[
             ("JsonFile", &shell_quote(uploaded)),
             ("Target", &shell_quote(&format!("{}/{name}", public()))),
-            ("Served", &shell_quote(&served())),
+            ("Served", &shell_quote(&match name.strip_prefix(LAYERED_FOLDER) {
+                Some(_) => format!("{}/config", served()),
+                None => served(),
+            })),
             ("Expected", &shell_quote(expected)),
         ],
     )
@@ -632,7 +665,7 @@ pub async fn save(server: &dyn Server, loaded: &Loaded, text: &str, log: Log<'_>
     let local = std::env::temp_dir().join(format!("all-in-1-config-{}-{}", std::process::id(), chrono::Local::now().format("%Y%m%d-%H%M%S%f")));
     std::fs::write(&local, text.as_bytes())?;
     let directory = server_tools::backup_directory();
-    let remote = format!("{directory}/config-{}-{}", loaded.name, chrono::Local::now().format("%Y%m%d-%H%M%S%f"));
+    let remote = format!("{directory}/config-{}-{}", loaded.name.replace('/', "_"), chrono::Local::now().format("%Y%m%d-%H%M%S%f"));
     let uploaded = async {
         server.run_as_root(&format!("install -d -m 700 {}", shell_quote(&directory))).await?;
         server.upload(&local, &remote, &|_| {}).await
@@ -758,6 +791,33 @@ mod tests {
         assert_eq!(names, vec!["locked-texts.json", "news.json", "pets.json", "ui-config.json"]);
     }
 
+    /// Octane with config.jsonc + config/: the files under config/ open, with their example in config.example/.
+    #[tokio::test]
+    async fn the_layered_files_open_with_their_examples() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join("public/configuration");
+        std::fs::create_dir_all(folder.join("config")).unwrap();
+        std::fs::create_dir_all(folder.join("config.example")).unwrap();
+        std::fs::write(folder.join("config.example.jsonc"), "{\n    // order\n    \"config.files\": [\"config/server.jsonc\", \"config/hotel.jsonc\"]\n}\n").unwrap();
+        std::fs::write(folder.join("config.jsonc"), "{\n    \"config.files\": [\"config/server.jsonc\", \"config/hotel.jsonc\"]\n}\n").unwrap();
+        std::fs::write(folder.join("config/server.jsonc"), "{\n    // ==== Server ====\n    \"socket.url\": \"wss://h/ws\"\n}\n").unwrap();
+        std::fs::write(folder.join("config/server.jsonc.bak-20260101"), "{}").unwrap();
+        std::fs::write(folder.join("config.example/server.jsonc"), "{\n    \"socket.url\": \"ws://localhost\"\n}\n").unwrap();
+        std::fs::write(folder.join("config.example/hotel.jsonc"), "{\n    \"chat.max\": 100\n}\n").unwrap();
+        std::fs::write(folder.join("client-mode.example.json"), "{\"apiBaseUrl\": \"\"}").unwrap();
+        let server = LocalServer { root: dir.path().to_path_buf(), login: crate::server::ServerLogin::password("test", 22, "duckietm", "") };
+        let names: Vec<String> = list(&server).await.unwrap().into_iter().map(|f| f.name).collect();
+        assert_eq!(names, vec!["client-mode.json", "config.jsonc", "config/hotel.jsonc", "config/server.jsonc"]);
+        let server_file = load(&server, "config/server.jsonc").await.unwrap();
+        assert!(!server_file.is_new() && server_file.text.contains("wss://h/ws") && server_file.example.as_deref().unwrap().contains("localhost"));
+        let hotel = load(&server, "config/hotel.jsonc").await.unwrap();
+        assert!(hotel.is_new() && hotel.text.contains("chat.max"));
+        assert!(load(&server, "client-mode.json").await.unwrap().is_new());
+        let script = save_script("config/server.jsonc", "/root/b/up", "abc");
+        assert!(script.contains("target='/var/www/Octane/public/configuration/config/server.jsonc'"), "{script}");
+        assert!(script.contains("served='/var/www/Octane/dist/configuration/config'"), "{script}");
+    }
+
     #[test]
     fn names_and_examples() {
         for good in ["ui-config.json", "radio-stations.jsonc", "housekeeping-texts-en.json"] {
@@ -768,13 +828,41 @@ mod tests {
         }
         assert_eq!(example_target("ui-config.example").as_deref(), Some("ui-config.json"));
         assert_eq!(example_target("radio-stations.jsonc.example").as_deref(), Some("radio-stations.jsonc"));
-        assert_eq!(example_target("pets.json.example.json"), None);
+        assert_eq!(example_target("pets.json.example.json").as_deref(), Some("pets.json"));
+        assert_eq!(example_target("client-mode.example.json").as_deref(), Some("client-mode.json"));
+        assert_eq!(example_target("radio-stations.example.jsonc").as_deref(), Some("radio-stations.jsonc"));
+        assert_eq!(example_target("config.example.jsonc").as_deref(), Some("config.jsonc"));
+        assert_eq!(example_target("config.example/server.jsonc").as_deref(), Some("config/server.jsonc"));
+        assert_eq!(example_target("ads-frame.example.html"), None);
+        assert_eq!(example_target("UITexts_en.example.jsonc"), None);
+        assert!(valid_name("config/server.jsonc"));
+        for bad in ["config/../x.json", "other/x.json", "config/a/b.jsonc", "config/.x.jsonc"] {
+            assert!(!valid_name(bad), "{bad}");
+        }
+        assert_eq!(examples_of("config/hotel.jsonc"), vec!["config.example/hotel.jsonc"]);
+        assert!(examples_of("client-mode.json").contains(&"client-mode.example.json".to_string()));
         assert_eq!(example_target("ads-frame.html.example"), None);
         assert_eq!(example_target("UITexts_en.jsonc.example"), None);
         assert_eq!(example_of("ui-config.json"), "ui-config.example");
         assert_eq!(example_of("radio-stations.jsonc"), "radio-stations.jsonc.example");
-        assert_eq!(examples_of("ui-config.jsonc"), vec!["ui-config.jsonc.example", "ui-config.example", "ui-config.jsonc.example.json"]);
-        assert_eq!(examples_of("ui-config.json"), vec!["ui-config.example", "ui-config.jsonc.example", "ui-config.json.example.json"]);
+        assert_eq!(
+            examples_of("ui-config.jsonc"),
+            vec!["ui-config.jsonc.example", "ui-config.example", "ui-config.example.json", "ui-config.example.jsonc", "ui-config.jsonc.example.json"]
+        );
+        assert_eq!(
+            examples_of("ui-config.json"),
+            vec!["ui-config.example", "ui-config.jsonc.example", "ui-config.example.json", "ui-config.example.jsonc", "ui-config.json.example.json"]
+        );
+        // Octane with config.jsonc + config/.
+        let files = parse_listing("P config.jsonc 50\nE config.example.jsonc\nE config.example/server.jsonc\nE config.example/data.jsonc\nP config/server.jsonc 900\nD config/server.jsonc\nD config.jsonc\n");
+        assert_eq!(
+            files,
+            vec![
+                ConfigFile { name: "config.jsonc".into(), size: Some(50), example: true, served: true },
+                ConfigFile { name: "config/data.jsonc".into(), size: None, example: true, served: false },
+                ConfigFile { name: "config/server.jsonc".into(), size: Some(900), example: true, served: true },
+            ]
+        );
         // A hotel that keeps ui-config.jsonc: one entry, with Octane's example.
         let files = parse_listing("P ui-config.jsonc 9\nE ui-config.example\nD ui-config.jsonc\n");
         assert_eq!(files, vec![ConfigFile { name: "ui-config.jsonc".into(), size: Some(9), example: true, served: true }]);

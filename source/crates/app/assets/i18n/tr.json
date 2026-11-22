@@ -4017,5 +4017,16 @@
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} kaydedildi. Otel derlenmiş kopyayı sunuyor: kullanmak için Rebuild Octane'i (Araçlar) çalıştır.",
   "{folder} has no settings files: run the Octane step first.": "{folder} içinde ayar dosyası yok: önce Octane adımını çalıştır.",
   "{key}  ({count})": "{key}  ({count})",
-  "This file is not a list of settings: it is edited as text.": "Bu dosya bir ayar listesi değil: metin olarak düzenlenir."
+  "This file is not a list of settings: it is edited as text.": "Bu dosya bir ayar listesi değil: metin olarak düzenlenir.",
+  "Addresses, socket and API, login and loading screens, logging: what an install sets.": "Adresler, soket ve API, giriş ve yükleme ekranları, kayıt: kurulumun ayarladıkları.",
+  "Avatars, rooms, catalogue, chat, friends and quests.": "Avatarlar, odalar, katalog, sohbet, arkadaşlar ve görevler.",
+  "Data tables": "Veri tabloları",
+  "Features": "Özellikler",
+  "Features switched on and off, wired, radio, camera and the staff tools.": "Açılıp kapatılan özellikler, wired, radyo, kamera ve yetkili araçları.",
+  "Load order": "Yükleme sırası",
+  "Server, Hotel and Features (config/) hold most of the client's settings.": "Sunucu, Otel ve Özellikler (config/) istemcinin ayarlarının çoğunu tutar.",
+  "The files below that the client loads, in this order: a key in a later file wins.": "İstemcinin bu sırayla yüklediği aşağıdaki dosyalar: sonraki dosyadaki bir anahtar kazanır.",
+  "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "Uzun tablolar: sohbet stilleri, kamera efektleri, bildirimler, oda modelleri. Nadiren düzenlenir.",
+  "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Bu istemci bunun yerine config.jsonc ve config/ altındaki dosyaları yükler: Update Octane bu değerleri oraya taşıdı (yarn config:split). Dosya olduğu gibi kalır.",
+  "not loaded": "yüklenmedi"
 }

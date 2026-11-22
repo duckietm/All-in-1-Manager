@@ -4017,5 +4017,16 @@
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} tallennettu. Hotelli tarjoaa käännetyn kopion: suorita Rebuild Octane (Työkalut) ottaaksesi sen käyttöön.",
   "{folder} has no settings files: run the Octane step first.": "Kansiossa {folder} ei ole asetustiedostoja: suorita ensin Octane-vaihe.",
   "{key}  ({count})": "{key}  ({count})",
-  "This file is not a list of settings: it is edited as text.": "Tämä tiedosto ei ole asetusluettelo: sitä muokataan tekstinä."
+  "This file is not a list of settings: it is edited as text.": "Tämä tiedosto ei ole asetusluettelo: sitä muokataan tekstinä.",
+  "Addresses, socket and API, login and loading screens, logging: what an install sets.": "Osoitteet, socket ja API, kirjautumis- ja latausnäkymät, lokit: mitä asennus asettaa.",
+  "Avatars, rooms, catalogue, chat, friends and quests.": "Avatarit, huoneet, luettelo, chat, kaverit ja tehtävät.",
+  "Data tables": "Datataulukot",
+  "Features": "Ominaisuudet",
+  "Features switched on and off, wired, radio, camera and the staff tools.": "Päälle ja pois kytkettävät ominaisuudet, wired, radio, kamera ja henkilökunnan työkalut.",
+  "Load order": "Latausjärjestys",
+  "Server, Hotel and Features (config/) hold most of the client's settings.": "Palvelin, Hotelli ja Ominaisuudet (config/) sisältävät suurimman osan clientin asetuksista.",
+  "The files below that the client loads, in this order: a key in a later file wins.": "Alla olevat tiedostot, jotka client lataa tässä järjestyksessä: myöhemmän tiedoston avain voittaa.",
+  "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "Pitkät taulukot: chat-tyylit, kameraefektit, ilmoitukset, huonemallit. Muokataan harvoin.",
+  "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Tämä client lataa sen sijaan config.jsonc:n ja config/-kansion tiedostot: Update Octane siirsi nämä arvot sinne (yarn config:split). Tiedosto jää ennalleen.",
+  "not loaded": "ei ladattu"
 }

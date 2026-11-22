@@ -4017,5 +4017,16 @@
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} enregistré. L'hôtel sert la copie compilée : lance Rebuild Octane (Outils) pour l'utiliser.",
   "{folder} has no settings files: run the Octane step first.": "{folder} n'a pas de fichiers de paramètres : lance d'abord l'étape Octane.",
   "{key}  ({count})": "{key}  ({count})",
-  "This file is not a list of settings: it is edited as text.": "Ce fichier n'est pas une liste de réglages : il est modifié en texte."
+  "This file is not a list of settings: it is edited as text.": "Ce fichier n'est pas une liste de réglages : il est modifié en texte.",
+  "Addresses, socket and API, login and loading screens, logging: what an install sets.": "Adresses, socket et API, écrans de connexion et de chargement, journalisation : ce qu'une installation règle.",
+  "Avatars, rooms, catalogue, chat, friends and quests.": "Avatars, apparts, catalogue, chat, amis et quêtes.",
+  "Data tables": "Tables de données",
+  "Features": "Fonctions",
+  "Features switched on and off, wired, radio, camera and the staff tools.": "Fonctions activées et désactivées, wired, radio, caméra et outils du staff.",
+  "Load order": "Ordre de chargement",
+  "Server, Hotel and Features (config/) hold most of the client's settings.": "Serveur, Hôtel et Fonctions (config/) contiennent la plupart des réglages du client.",
+  "The files below that the client loads, in this order: a key in a later file wins.": "Les fichiers ci-dessous que le client charge, dans cet ordre : une clé d'un fichier suivant l'emporte.",
+  "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "Les longues tables : styles de chat, effets caméra, notifications, modèles d'appart. Rarement modifiées.",
+  "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Ce client charge à la place config.jsonc et les fichiers de config/ : Update Octane y a déplacé ces valeurs (yarn config:split). Le fichier reste tel quel.",
+  "not loaded": "non chargé"
 }

@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use aio_remote::club_admin::{self, GiftClaim, Payday};
 use aio_remote::housekeeping::{self as hk, Action as Hk};
 use aio_remote::players_admin::{self, Action as Rcon, BanKind, Player, PlayerRow, Problem, Rank, SearchPage};
 use aio_remote::rcon::{self, Answer};
@@ -182,6 +183,11 @@ struct Extra {
     temporary_rank: Option<hk::TemporaryRank>,
     /// The IPs and mail, only after "Reveal".
     private: Option<hk::Private>,
+    /// Club gifts: how many the emulator counts as taken, and the record of which (None: the gameserver keeps none).
+    gifts_taken: i64,
+    gift_claims: Option<Vec<GiftClaim>>,
+    /// The latest HC paydays.
+    paydays: Vec<Payday>,
 }
 
 #[derive(Default)]
@@ -404,6 +410,9 @@ impl Ctl {
             sanctions: hk::sanctions(&session, &database, id).await.unwrap_or_default(),
             temporary_rank: hk::temporary_rank(&session, &database, id).await.ok().flatten(),
             private: None,
+            gifts_taken: club_admin::gifts_taken(&session, &database, id).await.unwrap_or(0),
+            gift_claims: club_admin::gift_claims(&session, &database, id).await.ok().flatten(),
+            paydays: club_admin::paydays(&session, &database, Some(id), 20).await.unwrap_or_default(),
         };
         self.with(generation, |s| {
             s.busy = false;
@@ -630,6 +639,9 @@ impl PlayersView {
                     sanctions: vec![hk::Sanction { level: 1, reason: "Scamming".into(), probation_until: 1_763_200_000, trade_locked_until: 0, mute_minutes: 0 }],
                     temporary_rank: Some(hk::TemporaryRank { rank: 7, previous: 1, expires_at: 1_762_900_000, staff: "admin".into(), reason: String::new() }),
                     private: None,
+                    gifts_taken: 2,
+                    gift_claims: Some(vec![GiftClaim { id: 2, catalog_item_id: 9003, catalog_name: "club_gift_hc_lmp".into(), furni: "HC Lamp".into(), claimed_at: 1_762_800_000 }]),
+                    paydays: vec![Payday { id: 5, timestamp: 1_762_000_000, user_id: 1, streak: 45, spent: 300, reward_spent: 30, reward_streak: 10, payout: 40, currency: "credits".into(), claimed: true, ..Payday::default() }],
                 };
                 return;
             }
@@ -1070,6 +1082,55 @@ fn staff(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<
                 }
             });
         }
+    }
+
+    section(ui, t("Habbo Club gifts"));
+    let claims = s.extra.gift_claims.as_ref();
+    widgets::muted(
+        ui,
+        palette,
+        &tf("{count} gifts taken (the number the emulator counts, also from before the record).", &[("count", &s.extra.gifts_taken.to_string())]),
+        12.5,
+    );
+    match claims {
+        None => widgets::muted(ui, palette, t("The emulator does not record which gift was chosen yet: update the gameserver (club_gift_claims)."), 12.0),
+        Some(list) if list.is_empty() => widgets::muted(ui, palette, t("No gift chosen since the gameserver keeps the record."), 12.5),
+        Some(list) => {
+            egui::Grid::new("players-gift-claims").num_columns(2).spacing([16.0, 3.0]).striped(true).show(ui, |ui| {
+                for name in [t("Chosen"), t("Gift")] {
+                    ui.label(RichText::new(name).size(12.5).strong());
+                }
+                ui.end_row();
+                for claim in list {
+                    ui.label(RichText::new(hk::when(claim.claimed_at)).size(12.5));
+                    let gift = if claim.furni.is_empty() { claim.catalog_name.clone() } else { format!("{} ({})", claim.furni, claim.catalog_name) };
+                    ui.label(RichText::new(gift).size(12.5));
+                    ui.end_row();
+                }
+            });
+        }
+    }
+
+    section(ui, &tf("HC paydays ({count})", &[("count", &s.extra.paydays.len().to_string())]));
+    if s.extra.paydays.is_empty() {
+        widgets::muted(ui, palette, t("No HC payday paid to this player."), 12.5);
+    } else {
+        egui::Grid::new("players-paydays").num_columns(5).spacing([16.0, 3.0]).striped(true).show(ui, |ui| {
+            for name in [t("Payday"), t("HC in a row"), t("Spent"), t("Paid"), ""] {
+                ui.label(RichText::new(name).size(12.5).strong());
+            }
+            ui.end_row();
+            for payday in &s.extra.paydays {
+                ui.label(RichText::new(hk::when(payday.timestamp)).size(12.5));
+                ui.label(RichText::new(tf("{days} days", &[("days", &payday.streak.to_string())])).size(12.5));
+                ui.label(RichText::new(payday.spent.to_string()).size(12.5));
+                ui.label(RichText::new(format!("{} {}", payday.payout, payday.currency)).size(12.5))
+                    .on_hover_text(tf("{spent} back from spending, {streak} streak bonus", &[("spent", &payday.reward_spent.to_string()), ("streak", &payday.reward_streak.to_string())]));
+                let (state, color) = if payday.claimed { (t("Paid out"), palette.muted) } else { (t("At the next login"), palette.warning_text) };
+                ui.label(RichText::new(state).size(12.5).color(color));
+                ui.end_row();
+            }
+        });
     }
 
     section(ui, &tf("Staff notes ({count})", &[("count", &s.extra.notes.len().to_string())]));

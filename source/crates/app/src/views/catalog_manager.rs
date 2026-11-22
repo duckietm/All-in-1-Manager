@@ -1,4 +1,4 @@
-//! The catalogue manager: what the Catalogue explorer does not do - the front page slots, limited series, vouchers,
+//! The catalogue manager: what the Catalogue explorer does not do - the front page slots, club gifts, limited series, vouchers,
 //! checks (duplicate offers, merging pages) and catalogue backups - in the hotel database through the SSH session (the
 //! SQL Editor's tunnel and MariaDB login). Pages and offers are edited in the Catalogue explorer.
 //! **Publish** makes the running emulator load the catalogue again (RCON `updatecatalog`), which tells the players
@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+mod bundles;
+mod club_gifts;
 mod front_page;
 
 use aio_remote::catalog_admin::{self, CatalogBackup, Catalogue, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse};
@@ -45,6 +47,8 @@ impl Status {
 enum Tab {
     #[default]
     FrontPage,
+    ClubGifts,
+    Bundles,
     Limited,
     Vouchers,
     Checks,
@@ -81,6 +85,10 @@ struct State {
     featured_saved: Vec<FeaturedRow>,
     /// The graphical front page: the tile edited, the image picker, the server's images and the page's header.
     front: FrontState,
+    /// The Club gifts tab.
+    gifts_tab: club_gifts::ClubGifts,
+    /// The Bundles tab.
+    bundles: bundles::BundlesTab,
     /// The limited series (None until the tab is opened), the sizes typed per offer, and the search.
     limited: Option<Vec<LimitedSeries>>,
     limited_sizes: std::collections::HashMap<i64, i64>,
@@ -265,6 +273,8 @@ impl Ctl {
         let tab = self.lock().tab;
         match tab {
             Tab::FrontPage => self.load_featured().await,
+            Tab::ClubGifts => self.load_gifts().await,
+            Tab::Bundles => {}
             Tab::Limited => self.load_limited().await,
             Tab::Vouchers => self.load_vouchers(None).await,
             Tab::Checks => self.load_checks().await,
@@ -347,7 +357,7 @@ impl Ctl {
             return;
         };
         let generation = self.lock().generation;
-        let folder = format!("{}/c_images", aio_remote::octane::gamedata());
+        let folder = aio_remote::octane::gamedata_path("images");
         let temp = std::env::temp_dir().join(format!("all-in-1-front-page-{}", std::process::id()));
         loop {
             let batch: Vec<String> = {
@@ -937,6 +947,19 @@ enum Action {
     SaveFeatured,
     ListFrontImages,
     FetchFrontImages,
+    OpenBundle(i64),
+    NewBundle,
+    SaveBundle,
+    SearchBundleAdd,
+    ResolveBundle,
+    LoadGifts,
+    MakeGiftPage,
+    FixGiftPage(i64),
+    SearchGiftFurni,
+    AddGifts(Vec<catalog_admin::Furni>),
+    OpenGiftPicker,
+    RemoveGift(i64),
+    SaveGifts,
     LoadLimited,
     ChangeLimited(i64, LimitedAction),
     LoadVouchers,
@@ -997,6 +1020,19 @@ impl View for CatalogManagerView {
                 Action::SaveFeatured => ctl.spawn(|c| c.save_featured()),
                 Action::ListFrontImages => ctl.spawn(|c| c.list_front_images()),
                 Action::FetchFrontImages => ctl.spawn(|c| c.fetch_front_images()),
+                Action::OpenBundle(id) => ctl.spawn(move |c| c.open_bundle(id)),
+                Action::NewBundle => ctl.spawn(|c| c.new_bundle()),
+                Action::SaveBundle => ctl.spawn(|c| c.save_bundle()),
+                Action::SearchBundleAdd => ctl.spawn(|c| c.search_bundle_add()),
+                Action::ResolveBundle => ctl.spawn(|c| async move { c.resolve_bundle().await }),
+                Action::LoadGifts => ctl.spawn(|c| async move { c.load_gifts().await }),
+                Action::MakeGiftPage => ctl.spawn(|c| c.make_gift_page()),
+                Action::FixGiftPage(id) => ctl.spawn(move |c| c.fix_gift_page(id)),
+                Action::SearchGiftFurni => ctl.spawn(|c| c.search_gift_furni()),
+                Action::AddGifts(list) => ctl.spawn(move |c| c.add_gifts(list)),
+                Action::OpenGiftPicker => ctl.spawn(|c| c.open_gift_picker()),
+                Action::RemoveGift(id) => ctl.spawn(move |c| c.remove_gift(id)),
+                Action::SaveGifts => ctl.spawn(|c| c.save_gifts()),
                 Action::LoadLimited => ctl.spawn(|c| async move { c.load_limited().await }),
                 Action::ChangeLimited(offer_id, action) => ctl.spawn(move |c| c.change_limited(offer_id, action)),
                 Action::LoadVouchers => ctl.spawn(|c| async move { c.load_vouchers(None).await }),
@@ -1065,11 +1101,14 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
 
 fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontImages, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::History, t("History")), (Tab::Backups, t("Backups"))] {
+        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::ClubGifts, t("Club gifts")), (Tab::Bundles, t("Bundles")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::History, t("History")), (Tab::Backups, t("Backups"))] {
             if ui.selectable_label(s.tab == tab, RichText::new(label).size(15.0)).clicked() && s.tab != tab {
                 s.tab = tab;
                 if tab == Tab::FrontPage && s.featured.is_none() && s.session.is_some() {
                     actions.push(Action::LoadFeatured);
+                }
+                if tab == Tab::ClubGifts && s.gifts_tab.gifts.is_none() && s.session.is_some() {
+                    actions.push(Action::LoadGifts);
                 }
                 if tab == Tab::Limited && s.limited.is_none() && s.session.is_some() {
                     actions.push(Action::LoadLimited);
@@ -1111,6 +1150,18 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontI
     if s.tab == Tab::Vouchers {
         egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("catalog-vouchers").auto_shrink([false, false]).show(ui, |ui| vouchers(ui, palette, s, actions));
+        });
+        return;
+    }
+    if s.tab == Tab::Bundles {
+        egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("catalog-bundles").auto_shrink([false, false]).show(ui, |ui| bundles::show(ui, palette, s, images, actions));
+        });
+        return;
+    }
+    if s.tab == Tab::ClubGifts {
+        egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("catalog-club-gifts").auto_shrink([false, false]).show(ui, |ui| club_gifts::show(ui, palette, s, images, actions));
         });
         return;
     }
@@ -1538,6 +1589,86 @@ fn sample(s: &mut State) {
         s.front.picker = Some(String::new());
     }
     s.subtitle = "The catalogue of hotel on example.org, through the SSH tunnel.".into();
+    // AIO_SCREENSHOT_TAB=gifts: the Club gifts tab with three gifts, one changed and a search.
+    let tab = std::env::var("AIO_SCREENSHOT_TAB").unwrap_or_default();
+    // AIO_SCREENSHOT_TAB=bundles: a bundle with furni and an offer it follows.
+    if tab == "bundles" {
+        s.tab = Tab::Bundles;
+        let bundle = Page { id: 300, parent_id: 2, caption: "Sunny Café".into(), caption_save: "bundle_sunny_cafe".into(), layout: "single_bundle".into(), visible: true, enabled: true, min_rank: 1, ..Page::default() };
+        s.pages.push(bundle.clone());
+        s.pages.push(Page { id: 301, parent_id: 2, caption: "Dragon Lair".into(), layout: "single_bundle".into(), enabled: true, ..Page::default() });
+        let furni = |id: i64, item: &str, name: &str| catalog_admin::Furni { id, item_name: item.into(), public_name: name.into(), kind: "s".into(), sprite_id: id };
+        let offer = Offer { id: 9100, page_id: 300, catalog_name: "bundle_sunny_cafe".into(), item_ids: "@1234:2;230;5001:4".into(), cost_credits: 45, cost_points: 10, points_type: 5, amount: 1, ..Offer::default() };
+        let texts = aio_remote::bundle_admin::PageTexts {
+            headline: "catalog_bundle_header".into(),
+            teaser: "room_bundle_cafe".into(),
+            text1: "Everything for a sunny café".into(),
+            details: "Open your own <b>café</b> in one go: tables, lamps and a throne for the boss.".into(),
+            teaser_text: "In this bundle:".into(),
+            text2: "The furni go to your inventory.".into(),
+        };
+        let mut furni_map = std::collections::HashMap::new();
+        for f in [furni(230, "throne", "Throne"), furni(5001, "pillow*2", "Pillow"), furni(4501, "rare_dragonlamp*4", "Dragon Lamp")] {
+            furni_map.insert(f.id, f);
+        }
+        let mut offers = std::collections::HashMap::new();
+        offers.insert(1234, aio_remote::bundle_admin::OfferInfo { id: 1234, name: "rare_dragonlamp_4".into(), page: "Rares".into(), item_ids: "4501".into(), amount: 1 });
+        match std::env::var("AIO_SCREENSHOT_BUNDLE").as_deref() {
+            Ok("picture") => s.bundles.picture = Some((bundles::Picture::Teaser, String::new())),
+            Ok("add") => {
+                s.bundles.add = Some(bundles::AddWindow {
+                    kind: bundles::AddKind::Offer,
+                    search: "dragon".into(),
+                    furni: None,
+                    offers: Some(vec![
+                        aio_remote::bundle_admin::OfferInfo { id: 1234, name: "rare_dragonlamp_4".into(), page: "Rares".into(), item_ids: "4501".into(), amount: 1 },
+                        aio_remote::bundle_admin::OfferInfo { id: 1235, name: "rare_dragonlamp_set".into(), page: "Rares".into(), item_ids: "4501;4502;4503".into(), amount: 1 },
+                    ]),
+                })
+            }
+            _ => {}
+        }
+        s.bundles.selected = Some(300);
+        s.bundles.editor = Some(bundles::Editor {
+            page_saved: bundle.clone(),
+            page: bundle,
+            texts_saved: texts.clone(),
+            texts,
+            offer_saved: offer.clone(),
+            offer,
+            offers,
+            furni: furni_map,
+            extra_offers: 0,
+        });
+    }
+    if tab == "gifts" || tab == "giftpicker" {
+        s.tab = Tab::ClubGifts;
+        s.pages.push(Page { id: 212, parent_id: 3, caption: "Clubcadeaus".into(), caption_save: "club_gifts".into(), layout: "club_gift".into(), visible: true, enabled: true, min_rank: 1, ..Page::default() });
+        let furni = |id: i64, item: &str, name: &str| catalog_admin::Furni { id, item_name: item.into(), public_name: name.into(), kind: "s".into(), sprite_id: id };
+        let gift = |id: i64, f: catalog_admin::Furni, days: &str, order: i64| {
+            let offer = Offer { id, page_id: 212, catalog_name: format!("club_gift_{}", f.item_name), item_ids: f.id.to_string(), amount: 1, order_number: order, club_only: true, extradata: days.into(), ..Offer::default() };
+            club_gifts::Gift { saved: offer.clone(), offer, furni: vec![f] }
+        };
+        let mut gifts = vec![
+            gift(9001, furni(4501, "hc_chr", "HC Chair"), "0", 1),
+            gift(9002, furni(4502, "hc_tbl", "HC Table"), "31", 2),
+            gift(9003, furni(4503, "hc_lmp", "HC Lamp"), "365", 3),
+        ];
+        gifts[2].offer.extradata = "186".into();
+        s.gifts_tab.page = Some(212);
+        s.gifts_tab.gifts = Some(gifts);
+        s.gifts_tab.search = "throne".into();
+        s.gifts_tab.results = Some(vec![furni(230, "throne", "Throne"), furni(4501, "hc_chr", "HC Chair")]);
+        // AIO_SCREENSHOT_TAB=giftpicker: the club furni window open, two ticked.
+        if tab == "giftpicker" {
+            let names = [("hc_bkshlf", "Medieval Bookcase"), ("hc_chr", "HC Chair"), ("hc_crtn", "Purple Curtain"), ("hc_dsk", "Study Desk"), ("hc_frplc", "Heavy Fireplace"), ("hc_lmp", "HC Lamp"), ("hc_machine", "Weird Science Machine"), ("hc_rntgn", "X-Ray Divider"), ("hc_tbl", "HC Table"), ("hc_trll", "Drinks Trolley"), ("hc_tv", "Mega TV Set"), ("hc_wall_lamp", "Bubble Lamp")];
+            let list: Vec<catalog_admin::Furni> = names.iter().enumerate().map(|(i, (item, name))| furni(4490 + i as i64, item, name)).collect();
+            let mut ticked = std::collections::BTreeSet::new();
+            ticked.insert(4492);
+            ticked.insert(4494);
+            s.gifts_tab.picker = Some(club_gifts::Picker { furni: Some(list), filter: String::new(), ticked });
+        }
+    }
 }
 
 /// What a health problem is, as a heading.

@@ -109,8 +109,8 @@ impl TerminalLine {
     pub fn clear(&mut self, from: i64, to: i64, background: i32) {
         let from = from.max(0) as usize;
         let to = (to.max(0) as usize).min(self.cells.len());
-        for i in from..to {
-            self.cells[i] = TerminalCell::blank(background);
+        if from < to {
+            self.cells[from..to].fill(TerminalCell::blank(background));
         }
     }
 

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use aio_core::config_dir;
 use aio_core::layout::{AtomCmsPresence, ROOT_ACCOUNT};
 use aio_core::settings::{self as core_settings, BRANCH_CHOICES, HOTEL_LOOK, PROFESSIONAL_LOOK};
-use aio_core::{InstallerSettings, ServerLayout};
+use aio_core::{GamedataLayout, InstallerSettings, ServerLayout};
 use aio_remote::server_users::{self, ServerUser};
 use aio_remote::{Server, ServerLogin};
 use eframe::egui::{self, RichText};
@@ -75,6 +75,31 @@ struct LayoutFields {
     crowdsec: String,
     nginx_site: String,
     nginx_logs: String,
+    /// Where the files and folders are inside gamedata.
+    gamedata_layout: GamedataLayout,
+}
+
+/// A gamedata layout entry's name in Settings.
+fn gamedata_label(key: &str) -> &'static str {
+    match key {
+        "furnidata" => t("Furniture data (FurnitureData.json)"),
+        "productdata" => t("Product data (ProductData.json)"),
+        "figuredata" => t("Figure data (FigureData.json)"),
+        "figuremap" => t("Figure map (FigureMap.json)"),
+        "effectmap" => t("Effect map (EffectMap.json)"),
+        "external_texts" => t("External texts (ExternalTexts.json)"),
+        "ui_texts" => t("UI texts (UITexts.jsonc)"),
+        "avatar_actions" => t("Avatar actions (HabboAvatarActions.json)"),
+        "furniture" => t("Furniture (.hab / .nitro)"),
+        "icons" => t("Furniture icons"),
+        "clothes" => t("Clothes"),
+        "pets" => t("Pets"),
+        "effects" => t("Effects"),
+        "sounds" => t("Sounds"),
+        "images" => t("Images (c_images)"),
+        "badges" => t("Badges"),
+        _ => "",
+    }
 }
 
 pub struct SettingsView {
@@ -199,6 +224,7 @@ impl SettingsView {
             crowdsec: layout.crowdsec.clone(),
             nginx_site: layout.nginx_site.clone(),
             nginx_logs: layout.nginx_logs.clone(),
+            gamedata_layout: layout.gamedata_layout.clone(),
         };
         self.account = layout.emulator_account.clone();
     }
@@ -592,6 +618,8 @@ impl SettingsView {
             row(ui, "Gitea", &mut layout.gitea, "/opt/gitea");
             row(ui, "CrowdSec", &mut layout.crowdsec, "/opt/crowdsec");
         });
+        ui.add_space(8.0);
+        self.gamedata_layout_section(ui, palette);
         // root works, but the emulator then has every right on the server.
         if self.account == ROOT_ACCOUNT {
             widgets::result_banner(
@@ -618,6 +646,51 @@ impl SettingsView {
         if create {
             self.create_account(shared, session);
         }
+    }
+
+    /// Where each gamedata file and folder is, for hotels with their own structure: a path inside gamedata, or an
+    /// absolute one. Every tool that reads or writes them (the editors, imports, language switches, Deploy Assets)
+    /// uses these places.
+    fn gamedata_layout_section(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let gamedata = self.layout.gamedata.trim().trim_end_matches('/').to_string();
+        let custom = !self.layout.gamedata_layout.is_standard();
+        let title = if custom { t("Gamedata layout (your own)") } else { t("Gamedata layout (standard)") };
+        egui::CollapsingHeader::new(RichText::new(title).size(14.0).strong()).id_salt("settings-gamedata-layout").default_open(custom).show(ui, |ui| {
+            widgets::muted(
+                ui,
+                palette,
+                t("Where the files and folders are inside gamedata, for a hotel with its own structure. Write a path inside the gamedata folder (config/FurnitureData.json, bundled/furniture) or a full path starting with /. The editors, imports, language switches and Deploy Assets read and write these places. Your client's renderer-config must point to the same places."),
+                12.0,
+            );
+            ui.add_space(4.0);
+            let fields = &mut self.layout.gamedata_layout;
+            egui::Grid::new("settings-gamedata-layout-grid").num_columns(3).spacing([12.0, 6.0]).show(ui, |ui| {
+                for (index, entry) in aio_core::layout::GAMEDATA_ENTRIES.iter().enumerate() {
+                    if index == 8 {
+                        // An empty row between the files and the folders (a grid cannot take plain space).
+                        ui.label("");
+                        ui.end_row();
+                    }
+                    label(ui, palette, gamedata_label(entry.key));
+                    let standard = GamedataLayout::standard(entry.key);
+                    let Some(value) = fields.get_mut(entry.key) else { continue };
+                    // A fixed size: in a grid a wished-for width is held to the column's width of the frame before.
+                    ui.add_sized([300.0, 22.0], egui::TextEdit::singleline(value).hint_text(RichText::new(&standard).color(palette.subtle)).font(egui::TextStyle::Monospace));
+                    let full = GamedataLayout::resolve(if gamedata.is_empty() { "/var/www/gamedata" } else { &gamedata }, if value.trim().is_empty() { &standard } else { value });
+                    let changed = value.trim() != standard;
+                    ui.horizontal(|ui| {
+                        if changed && ui.small_button("↺").on_hover_text(tf("Back to {value}", &[("value", &standard)])).clicked() {
+                            *value = standard.clone();
+                        }
+                        ui.label(RichText::new(full).size(11.5).monospace().color(if changed { palette.accent_text } else { palette.subtle }));
+                    });
+                    ui.end_row();
+                }
+            });
+            if custom && ui.add(widgets::secondary_button(t("All back to the standard layout"))).clicked() {
+                self.layout.gamedata_layout = GamedataLayout::default();
+            }
+        });
     }
 
     /// "Create a new user": asks for the name, and creates the account when logged in.
@@ -698,6 +771,7 @@ impl SettingsView {
             crowdsec: fields.crowdsec.clone(),
             nginx_site: fields.nginx_site.clone(),
             nginx_logs: fields.nginx_logs.clone(),
+            gamedata_layout: fields.gamedata_layout.clone(),
         };
         layout.normalize();
         if let Some(problem) = layout.validate() {

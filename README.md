@@ -550,6 +550,29 @@ Uses the address from the web access step; nothing to fill in. For `https://exam
 
    A new file also gets `timezone.settings` from the emulator's
    timezone, and in `client-mode.json` obfuscation, secure assets and secure API off.
+
+   **Newer Octane (`config.jsonc` + `config/`).** An Octane that ships `config.example.jsonc` no longer reads
+   `renderer-config.json` and `ui-config.json`: `config.jsonc` lists `config/server.jsonc`, `config/hotel.jsonc`,
+   `config/features.jsonc` and `config/data.jsonc`, loaded in that order (a key in a later file wins). The step (and
+   **Update Octane**) then:
+   - **moves an existing hotel over** once, with Octane's own `yarn config:split` (`scripts/config-split.mjs`): every
+     key the hotel set goes to its section, old key names are renamed, keys no code reads go to the last section of
+     `config/hotel.jsonc`. A new hotel gets `config.example.jsonc` and `config.example/` copied instead;
+   - checks that every file `config.jsonc` lists is there (a missing one is copied from `config.example/`; with no
+     example the step stops, as the client would not load);
+   - sets the URL keys of the table above in the file that holds each one (the last listed file that has it, else
+     its section's file from `configuration-keys.json`), **in place**: comments, sections and layout stay. The keys
+     this client does not read (`hof.furni.url`, `badge.asset.group.url`, `timezone.settings`) are left alone. A file
+     that changes is saved as `.bak-<time>` first;
+   - renames the old `renderer-config.json` and `ui-config.json` (also `.jsonc`), which no longer load, to
+     `renderer-config.json.old` and `ui-config.json.old` as a backup (when a `.old` is already there:
+     `.old-<time>`). This happens last, only when everything before it went well; the next build drops them from
+     `dist/` too;
+   - prints Octane's `yarn config:sync` report (missing install addresses, keys set to the default anyway, old
+     names, keys no code reads). It only reports; the full list: `cd /var/www/Octane && yarn config:sync`.
+
+   A hotel already on the new layout is only checked: a second run changes nothing. The test at the end of the step
+   loads `config.jsonc` and each file it lists through the hotel's address and looks for `socket.url` in them.
 3. **`/var/www/gamedata`**: every folder those URLs point to is created (`config`, `furniture`, `clothes`,
    `effect`, `pets`, `room`, `icons`, `c_images/album1584`, `c_images/catalogue`, … 26 in all), owned by
    `www-data` with the group sticky (`2775`). **The assets themselves are not copied**: put them there with the
@@ -1145,6 +1168,12 @@ tools' `Assets_tools/Original_SWF_Files/<type>`, never into gamedata, so never t
 | Pets | `pets/*.hab` |
 | Effect icons | `c_images/fx_icons` |
 
+**Reception images** are every hotel view and promo image Habbo's external_variables names below `c_images`: written as
+`${image.library.url}reception/...`, and also as a full address (`https://images.habbo.com/c_images/...` or
+`//images.habbo.com/c_images/...`, as the current hotel view backgrounds are), with a slash too many or with a query
+after the name. Octane's own standard pictures (`stretch_blue`, `sun`, `drape`, the country sides) are not at Habbo:
+they come with the Manager and go to the server with **Deploy Assets**.
+
 Habbo has no download link for the effect icons (`fx_icon_<type>` for the avatar editor): they are inside the Habbo
 Classic app, in `habbo-inventory-com.hab` inside its `resources/app.asar`. Choose that `app.asar` (choosing it ticks
 **Effect icons**); **Download all** takes them along when it is set. **Clothes: make every clothing set wearable** turns off `sellable` in
@@ -1342,18 +1371,52 @@ page has the rest:
   A tile whose end date passed is marked *Ended*: the emulator no longer sends it (an emulator before that fix kept
   showing it for good), so clear the date to show it again, or remove it. **Save front page** replaces the whole set at once. The table is MyISAM, so a save that fails
   halfway is not rolled back: save again.
-- **Limited** (the second tab) lists every limited series: its offer and page, and how many are sold of how many,
+- **Club gifts** (the second tab): the free gifts Habbo Club members choose in the catalogue. A member gets one gift
+  for every started 31 days of HC (all their HC time, earlier memberships too) minus the gifts already taken
+  (`users_settings.hc_gifts_claimed`). The gifts are the offers of the page with the layout `club_gift`: the emulator
+  uses one such page, and only when it is visible, enabled and open to every rank. With no such page, **Make the Club
+  gifts page** makes one (at the top of the catalogue; move it in the Catalogue explorer); a page the emulator does
+  not use says why, with **Show it to every member**. Every gift shows its furni (name, class name and icon, from this
+  computer's gamedata), **Can be chosen** (Straight away, after 1, 3 or 6 months, 1 or 2 years of HC, or any number of
+  days: the offer's `extradata`), the **VIP mark** (`club_only`) and ↑ ↓ for its place in the list (`order_number`);
+  **Save the changes** writes what changed, and **Remove** takes a gift away after asking (who chose it keeps it).
+  **Add a gift**: find a furni by name, class name or `items_base` id and press **Add**; it becomes a free offer named
+  `club_gift_<class name>` (unique on the page, as the game sends that name back), straight away, with the VIP mark.
+  **Choose HC furni ...** opens a window with every furni whose class name starts with `hc` (`hc_chr`, `hc2_...`, ...), as pictures with their
+  names and a filter: click to tick (or **Tick all shown**) and **Add N gifts** adds them all at once, in that order.
+  Furni that already is a gift is greyed out.
+  Every change is in the History tab. Publish afterwards; to try it, give a player Habbo Club on the Players page.
+- **Bundles** (the third tab): bundles (several furni for one price; room bundles too) on pages with the
+  `single_bundle` layout, without SQL. On the left the bundle pages (hidden ones greyed out) and **Make the bundle
+  page** (a name and under which page; it starts hidden). On the right the chosen bundle **as the game shows it**
+  (Octane's single bundle layout: the header picture, the description, the big picture with the price, the special
+  text over a grid of what is in it with the counts, and the bottom text), and its settings:
+  - **What is in it**: furni (**Add furni ...**: by name, class name or id) and **catalogue offers** the bundle
+    follows (**Add an offer ...**: the `@1234` entries of Polaris' bundle references), each with how many (×),
+    ↑ ↓ and ✕. Under it **The buyer gets ...**, worked out as the emulator does (the same furni adds up, a lone furni
+    counts the offer's amount, offers naming offers up to 5 deep, at most 1000 of one furni), and which offers the
+    emulator would leave out (missing, or naming itself).
+  - **Price**: credits, points and their type, HC only, and the offer's name.
+  - **Pictures and texts**: the big picture and the header picture (`c_images/catalogue/<name>.gif`; **Choose ...**
+    shows the pictures of this computer and the server), and the description, special text, bottom text and header
+    text (simple HTML; the rest is taken out on Save).
+
+  **Save** writes the page, its texts and the bundle's offer (made on the first save), all in the History tab;
+  publish afterwards. The `@` entries need an emulator with bundle references (Polaris-Emulator, November 2026); the
+  Catalogue explorer and the health check accept them too, and the health check reports an `@` entry whose offer does
+  not exist.
+- **Limited** (the fourth tab) lists every limited series: its offer and page, and how many are sold of how many,
   with a search. **Grow** makes a series bigger (the emulator makes the new numbers, after the last one, when it loads
   the catalogue); a series never gets smaller, as its numbers already exist. **No longer limited** ends a series of
   which nothing is sold; **Remove with its sales** ends one that sold, after asking, and deletes its numbers and the
   record of who has which one for good (the furni players have keeps its number).
-- **Vouchers** (the third tab): the codes players type in the catalogue, with what each gives (credits, points of a
+- **Vouchers** (the fifth tab): the codes players type in the catalogue, with what each gives (credits, points of a
   type, an offer), how often it was used of how many uses (0: without end) and how often one player may use it (-1:
   without end), and a search. **New voucher**, **Save voucher**, **Delete voucher** (with the record of its uses, after
   asking); a code is 1 to 10 letters, digits, `-` or `_` and is never used twice, as the emulator matches it exactly.
   **Make codes** adds up to 500 vouchers with random codes (an optional prefix, then at least 4 easy-to-read letters and
   digits) that each give what the form shows. A voucher's **Used by** lists who used it and when.
-- **Checks** (the fourth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
+- **Checks** (the sixth tab) finds **pages with the same internal name** (a `catalog/open/<name>` link reaches only one
   of them) and **offers that sell the same furni** (the same furni ids in any order, with the same extra data; for `wallpaper_single`, `floor_single` and
   `landscape_single` offers also the same pattern number in the name, as the emulator reads it from there). Tick
   copies (or **Tick all but the first of each**) and **Delete ticked** removes
@@ -1364,14 +1427,14 @@ page has the rest:
   their song, limited series smaller than what is sold, pages under a missing page, loops in the tree, layouts the
   emulator does not know (it skips those pages), sibling pages with the same order number, wrong `includes`, and
   visible pages under a hidden one (players never reach them). Fix them in the explorers (right-click, Edit).
-- **History** (the fifth tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
+- **History** (the seventh tab): every change to pages and offers, by Octane's Catalog Studio and by the Manager (the
   explorers, Checks, Limited, imports), newest first: the same history Octane shows (`catalog_manager_history`).
   **Undo ...** puts what one operation changed back, in one go, when nothing changed those pages and offers since
   (otherwise it says which one did); the undo is recorded too. The Manager writes its changes there as the emulator
   does, raises `catalog_manager_state.revision` so Octane sees the catalogue changed, and takes the ids of new pages
   and offers from `catalog_id_sequences`, so Octane never makes a page or offer at an id that is already used. An
   emulator older than Catalog Studio has none of these tables: then nothing is recorded.
-- **Backups** (the sixth tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
+- **Backups** (the eighth tab) starts with **Export and import**: the pages and offers of both catalogues as one SQL
   file in the format of Octane's Catalog Studio, so a file exported there can be imported here and the other way
   round. **Import a file ...** never runs the file as SQL: only `INSERT`, `UPDATE` and `DELETE` of `catalog_pages` and
   `catalog_items` with plain values are read (anything else is refused), and you first see what would be new,
@@ -1599,6 +1662,9 @@ Catalogue; the changes go to the running emulator over RCON, the way the catalog
   100 of it) and set the Habbo Club days (0 ends it). Below the details: the running temporary rank, the
   **sanctions** of the mod tools' ladder, the **accounts on the same IP** (registered or logged in from one of this
   player's IPs; **Open** shows one), the **IP and mail** behind **Reveal**, and the **staff notes** (add and delete).
+- **Habbo Club** on the player: how many club gifts they took (the count the emulator uses), which gift and when (from
+  `club_gift_claims`, which the gameserver fills since it keeps that record; older gifts are only in the count), and
+  their latest HC paydays.
 
 ### Housekeeping
 
@@ -1625,6 +1691,15 @@ emulator without that command says so at the top; the lists still work.
 - **Support**: the open and picked-up help tickets; reply (and close) or close as resolved, useless or abusive.
 - **Soundboard**: the `soundboard_sounds` catalogue: add, edit, enable, order (up/down), delete, and tell the
   emulator to load it again (`updatesoundboard`).
+- **Habbo Club**: the **HC payday**. On every payday each HC member gets back a percentage of the credits spent in the
+  catalogue since the last one, plus a **streak bonus** for days of HC in a row (the highest step reached counts); an
+  offline member gets it at the next login. Set it on or off, the next payday (`YYYY-MM-DD HH:MM:SS`, server time), how
+  often (every week, 2 weeks, month, or any `<number> <unit>`), the percentage, the currency (credits, diamonds,
+  duckets or a points type), the streak steps, whether spending counts from the start of a new membership, and the
+  message (`%amount%` is the payout). A worked example shows what a member would get. **Save** writes
+  `emulator_settings` (`subscriptions.hc.payday.*`) and `emulator_texts`, and has the emulator read them again
+  (`reloadcontent` config and texts). Under it, the latest paydays (`logs_hc_payday`): who, how long HC, spent, paid,
+  and whether it is paid out or waits for the next login.
 
 Every action asks first and shows the emulator's answer. The emulator checks the staff rank, the limits and the
 permissions itself, and logs every action. The gameserver also gained the RCON commands `banuser`, `unbanuser` and
@@ -1686,6 +1761,39 @@ after reloading the hotel page. Octane's `UITexts.jsonc` is not edited here, bec
 JSON would drop; FigureData is not edited either, because its set, part and palette ids depend on each other and a
 plain field edit easily breaks avatars.
 
+### Client configuration
+
+**HOTEL → Client configuration** edits the Octane client's settings files on the server (`<Octane>/public/configuration`):
+on the left the files with plain names, grouped (**Main**: Connection and assets = `renderer-config.json`, Interface =
+`ui-config.json`, Client mode; **Content**: login news, hot looks, infostand backgrounds, pets, advertising, radio
+stations, soundboard; **Texts**: the housekeeping and rare values texts; **Other**). A file Octane has an example of but
+that is not made yet is marked *not made yet*; one the built client has no copy of, *not served*.
+
+With a newer Octane (`config.jsonc` + `config/`), **Main** lists **Load order** (`config.jsonc`), then **Server**,
+**Hotel**, **Features** and **Data tables** (`config/server.jsonc`, `hotel.jsonc`, `features.jsonc`, `data.jsonc`)
+in the order the client loads them, each with its example from `config.example/`. Their `// ==== Section ====` comments become
+headings in the form, the key comments show as help, and both stay when you save. Once **Update Octane** has moved a hotel over, the old
+`renderer-config.json` and `ui-config.json` are renamed to `.old` and no longer listed; one put back by hand shows
+under **Other**, marked *not loaded*. The newer example names (`client-mode.example.json`, `radio-stations.example.jsonc`,
+...) are recognised as well.
+
+- **Settings** shows the chosen file as a form: the sections of `ui-config` (Login screen, Hotel view, Toolbar, ...),
+  switches for on/off, number fields, text fields (addresses in a fixed-width font), groups that open, and lists with
+  **+ Add** and ✕. The important addresses of `renderer-config` (`socket.url`, `asset.url`, `furnidata.url`, ...) have a
+  short help under them. **Search settings** finds a setting by name or value. A changed setting turns blue, with ↺ to
+  put it back.
+- **Text** shows the file as text, checked while you type (the line and column of a mistake).
+- A `.jsonc` file (JSON with comments, such as the radio and soundboard files, or a hotel's own `ui-config.jsonc`) opens
+  in the form too: its comments show as help above and beside their settings, and a save from the form keeps them where
+  they were (above their setting, after its value, at the top and end of the file) in the file's own indent. A hotel
+  that keeps `ui-config.jsonc` or `renderer-config.jsonc` gets one entry for it, with Octane's example.
+- When this Octane version's example has settings the file lacks, a bar lists them and **Add them** adds them with
+  their example values, in the example's order (your own values and settings stay).
+
+**Save** (or **Make the file** for a new one) first checks the file was not changed on the server since it was loaded,
+keeps the old one as `.bak-<time>`, and writes it to `public/configuration` (what the next build uses) and to
+`dist/configuration` (what the hotel serves), so players get it when they reload the hotel, without a rebuild.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;
@@ -1732,6 +1840,22 @@ afterwards so the row shows the new version.
   | EpicNext CMS / EpicNext source | `/var/www/epicnext`, `/var/www/epicnext-src` |
   | Gitea | `/opt/gitea` |
   | CrowdSec | `/opt/crowdsec` |
+
+  **Gamedata layout**, for a hotel whose gamedata has its own structure: where each file and folder is, as a path
+  inside gamedata or a full path starting with `/`. The full server path is shown beside each one, and ↺ puts one back.
+
+  | Setting | Standard |
+  |---|---|
+  | FurnitureData.json, ProductData.json, FigureData.json, FigureMap.json, EffectMap.json, ExternalTexts.json, HabboAvatarActions.json | `config/<name>` |
+  | UITexts.jsonc | `config/UITexts.jsonc` |
+  | Furniture, furniture icons, clothes, pets, effects, sounds | `furniture`, `icons`, `clothes`, `pets`, `effects`, `sounds` |
+  | Images, badges | `c_images`, `c_images/album1584` |
+
+  The editors (gamedata, catalogue images), the imports (custom furniture, default catalogue), the language switches,
+  the UI texts, the emulator's badge folders, AtomCMS's badge and texts settings and **Deploy Assets** use these places:
+  Deploy Assets sends each downloaded folder (laid out the standard way on this computer) to the folder the layout gives
+  it, and each config file to its own place, under its own name. Your client's `renderer-config.json` must point to the
+  same places (the Octane step only writes the standard ones).
 
   **Emulator account** is a list of the server's accounts once you are logged in: `root`, the people's accounts and
   the accounts in group `www-data` (where the emulator's account lives), each with a short note. **+ Create a new
@@ -1875,8 +1999,8 @@ recorded.
 ## Updating the installer itself
 
 **Renamed from All-in-1 Installer.** The repository was `duckietm/All-in-1-installer` and the program
-`all-in-1-installer`. Releases still carry `all-in-1-installer-windows-x64.exe` / `-linux-x64` next to the new names,
-so a version from before the rename updates itself to the All-in-1 Manager. Its settings stay: the `configuration`
+`all-in-1-installer`. Releases carry only the new names (`all-in-1-manager-windows-x64.exe` / `-linux-x64`), so a
+version from before the rename no longer finds an update: download the All-in-1 Manager by hand once. Its settings stay: the `configuration`
 folder next to the program, or `All-in-1 Installer\configuration` in the user's data folder while that one exists;
 files the installer wrote on a server are recognised by both names, and the old history files are still read.
 

@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use aio_remote::club_admin::{self, PaydaySettings};
 use aio_remote::housekeeping::{self as hk, Action as Hk, Recipient, Resolution, RoomSettings};
 use aio_remote::players_admin::{self, Rank};
 use aio_remote::rcon::Answer;
@@ -23,7 +24,7 @@ use super::sql_editor::text;
 use crate::gui::dialogs::Choice;
 use crate::gui::theme::Palette;
 use crate::gui::{widgets, Page as AppPage, Request, Shared, View};
-use crate::i18n::{t, tf};
+use crate::i18n::{n, t, tf};
 
 #[derive(Default, Clone)]
 struct Status {
@@ -43,9 +44,10 @@ enum Tab {
     Bans,
     Support,
     Soundboard,
+    Club,
 }
 
-const TABS: [Tab; 9] = [Tab::Dashboard, Tab::Online, Tab::Rooms, Tab::Hotel, Tab::WordFilter, Tab::Permissions, Tab::Bans, Tab::Support, Tab::Soundboard];
+const TABS: [Tab; 10] = [Tab::Dashboard, Tab::Online, Tab::Rooms, Tab::Hotel, Tab::WordFilter, Tab::Permissions, Tab::Bans, Tab::Support, Tab::Soundboard, Tab::Club];
 
 fn tab_name(tab: Tab) -> &'static str {
     match tab {
@@ -58,6 +60,7 @@ fn tab_name(tab: Tab) -> &'static str {
         Tab::Bans => t("Bans"),
         Tab::Support => t("Support"),
         Tab::Soundboard => t("Soundboard"),
+        Tab::Club => t("Habbo Club"),
     }
 }
 
@@ -102,6 +105,10 @@ struct State {
     bans: Option<Vec<hk::Ban>>,
     tickets: Option<Vec<hk::Ticket>>,
     sounds: Option<Vec<hk::Sound>>,
+    /// The HC payday as edited and as saved, and the latest paydays.
+    payday: Option<PaydaySettings>,
+    payday_saved: Option<PaydaySettings>,
+    paydays: Option<Vec<club_admin::Payday>>,
     ranks: Vec<Rank>,
     /// The emulator answered that it does not know the `housekeeping` RCON command.
     unsupported: bool,
@@ -170,6 +177,7 @@ enum Action {
     SaveSound,
     DeleteSound(i64),
     MoveSound(usize, bool),
+    SavePayday,
 }
 
 pub struct HousekeepingView {
@@ -417,6 +425,17 @@ impl Ctl {
             Tab::Soundboard => hk::sounds(&session, &database).await.map(|list| {
                 self.with(generation, |s| s.sounds = Some(list));
             }).map_err(|e| e.to_string()),
+            Tab::Club => {
+                let settings = club_admin::load_payday(&session, &database).await;
+                let paydays = club_admin::paydays(&session, &database, None, 100).await.unwrap_or_default();
+                settings.map(|settings| {
+                    self.with(generation, |s| {
+                        s.payday_saved = Some(settings.clone());
+                        s.payday = Some(settings);
+                        s.paydays = Some(paydays);
+                    });
+                }).map_err(|e| e.to_string())
+            }
         };
         self.with(generation, |s| {
             s.busy = false;
@@ -572,6 +591,31 @@ impl Ctl {
     }
 
     /// The emulator loads the soundboard catalogue again; false when it did not answer.
+    /// Saves the HC payday and has the emulator read it again.
+    async fn save_payday(self) {
+        let Some((generation, session, database)) = self.session() else { return };
+        let Some(settings) = self.lock().payday.clone() else { return };
+        if let Some(problem) = settings.problem() {
+            self.with(generation, |s| s.error(t(&problem).to_string()));
+            return;
+        }
+        self.with(generation, |s| s.busy = true);
+        let saved = club_admin::save_payday(&session, &database, &settings).await;
+        let reloaded = match (&saved, self.shared.session()) {
+            (Ok(()), Some(server)) => Some(club_admin::reload_payday(&*server).await),
+            _ => None,
+        };
+        self.with(generation, |s| {
+            s.busy = false;
+            match (saved, reloaded) {
+                (Err(error), _) => s.error(error.to_string()),
+                (Ok(()), Some(Err(error))) => s.error(error.to_string()),
+                _ => s.ok(t("HC payday saved; the emulator uses it now.").into()),
+            }
+        });
+        self.load(Tab::Club).await;
+    }
+
     async fn reload_sounds(&self) -> bool {
         let Some(server) = self.shared.session() else { return false };
         aio_remote::rcon::send(&*server, &hk::reload_sounds_request()).await.is_ok_and(|a| a.ok())
@@ -640,6 +684,7 @@ impl View for HousekeepingView {
                 Action::SaveSound => ctl.spawn(|c| c.save_sound()),
                 Action::DeleteSound(id) => ctl.spawn(move |c| c.delete_sound(id)),
                 Action::MoveSound(index, up) => ctl.spawn(move |c| c.move_sound(index, up)),
+                Action::SavePayday => ctl.spawn(|c| c.save_payday()),
             }
         }
     }
@@ -715,6 +760,7 @@ fn loaded(s: &State, tab: Tab) -> bool {
         Tab::Bans => s.bans.is_some(),
         Tab::Support => s.tickets.is_some(),
         Tab::Soundboard => s.sounds.is_some(),
+        Tab::Club => s.payday.is_some(),
     }
 }
 
@@ -741,7 +787,172 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<A
             Tab::Bans => bans(ui, palette, s, actions),
             Tab::Support => support(ui, palette, s, actions),
             Tab::Soundboard => soundboard(ui, palette, s, actions),
+            Tab::Club => club(ui, palette, s, actions),
         });
+    });
+}
+
+// ---- Habbo Club --------------------------------------------------------------------------------------------------
+
+/// How often a payday comes, offered in the list (the emulator's interval text).
+fn intervals() -> [(&'static str, &'static str); 3] {
+    [("1 week", n("Every week")), ("2 week", n("Every 2 weeks")), ("1 month", n("Every month"))]
+}
+
+fn currency_label(currency: &str) -> String {
+    match currency.trim().to_lowercase().as_str() {
+        "credits" | "credit" | "coins" | "coin" => t("Credits").into(),
+        "diamonds" | "diamond" => t("Diamonds").into(),
+        "duckets" | "ducket" | "pixels" | "pixel" => t("Duckets").into(),
+        other => tf("Points type {type}", &[("type", other)]),
+    }
+}
+
+fn club(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
+    let busy = s.busy;
+    let saved = s.payday_saved.clone();
+    let Some(p) = s.payday.as_mut() else { return loading(ui, palette) };
+    ui.label(RichText::new(t("HC payday")).size(16.0).strong());
+    widgets::muted(
+        ui,
+        palette,
+        t("On every payday, each Habbo Club member gets back a part of the credits they spent since the last payday, plus a bonus for being HC for a while without a break. A member who is offline gets it at the next login."),
+        12.5,
+    );
+    ui.add_space(6.0);
+    let label = |ui: &mut egui::Ui, text: &str| {
+        ui.label(RichText::new(text).size(12.5).color(palette.muted));
+    };
+    egui::Grid::new("hk-payday").num_columns(2).spacing([16.0, 10.0]).show(ui, |ui| {
+        label(ui, t("Payday"));
+        ui.checkbox(&mut p.enabled, t("On"));
+        ui.end_row();
+
+        label(ui, t("Next payday"));
+        ui.horizontal(|ui| {
+            ui.add_sized([170.0, 26.0], egui::TextEdit::singleline(&mut p.next_date).hint_text("2026-12-01 18:00:00").vertical_align(egui::Align::Center));
+            widgets::muted(ui, palette, t("YYYY-MM-DD HH:MM:SS, in the server's time"), 12.0);
+        });
+        ui.end_row();
+
+        label(ui, t("How often"));
+        ui.horizontal(|ui| {
+            let interval = p.interval.split_whitespace().collect::<Vec<_>>().join(" ");
+            let shown = intervals().iter().find(|(v, _)| *v == interval).map(|(_, l)| t(l).to_string()).unwrap_or_else(|| t("Other").to_string());
+            egui::ComboBox::from_id_salt("hk-payday-interval").selected_text(shown).width(160.0).show_ui(ui, |ui| {
+                for (value, text) in intervals() {
+                    if ui.selectable_label(interval == value, t(text)).clicked() {
+                        p.interval = value.into();
+                    }
+                }
+            });
+            ui.add_sized([120.0, 26.0], egui::TextEdit::singleline(&mut p.interval).hint_text("1 month").vertical_align(egui::Align::Center))
+                .on_hover_text(t("A number and second, minute, hour, day, week, month or year; for example 10 day."));
+        });
+        ui.end_row();
+
+        label(ui, t("Pays back"));
+        ui.horizontal(|ui| {
+            ui.add(egui::DragValue::new(&mut p.percentage).range(0..=100).suffix(" %"));
+            widgets::muted(ui, palette, t("of the credits spent in the catalogue since the last payday"), 12.0);
+        });
+        ui.end_row();
+
+        label(ui, t("Paid in"));
+        ui.horizontal(|ui| {
+            egui::ComboBox::from_id_salt("hk-payday-currency").selected_text(currency_label(&p.currency)).width(160.0).show_ui(ui, |ui| {
+                for value in club_admin::CURRENCIES {
+                    if ui.selectable_label(p.currency.trim().eq_ignore_ascii_case(value), currency_label(value)).clicked() {
+                        p.currency = value.into();
+                    }
+                }
+            });
+            ui.add_sized([90.0, 26.0], egui::TextEdit::singleline(&mut p.currency).vertical_align(egui::Align::Center)).on_hover_text(t("Or the number of another points type."));
+        });
+        ui.end_row();
+
+        label(ui, t("Spending"));
+        ui.checkbox(&mut p.reset_on_expire, t("Count the spending from the start of a new membership, not from the last payday"));
+        ui.end_row();
+    });
+
+    ui.add_space(8.0);
+    ui.label(RichText::new(t("Streak bonus")).size(13.5).strong());
+    widgets::muted(ui, palette, t("Added on top, for days of HC in a row; the highest step reached counts."), 12.0);
+    let mut remove = None;
+    let unit = currency_label(&p.currency);
+    egui::Grid::new("hk-payday-streak").num_columns(6).spacing([8.0, 6.0]).show(ui, |ui| {
+        for (index, (days, bonus)) in p.streak.iter_mut().enumerate() {
+            ui.label(RichText::new(t("After")).size(12.5));
+            ui.add_sized([86.0, 26.0], egui::DragValue::new(days).range(1..=3650).suffix(t(" days")));
+            ui.label(RichText::new(t("of HC in a row:")).size(12.5));
+            ui.add_sized([80.0, 26.0], egui::DragValue::new(bonus).range(0..=1_000_000).prefix("+ "));
+            ui.label(RichText::new(&unit).size(12.5).color(palette.muted));
+            if ui.add(small(t("Remove"))).clicked() {
+                remove = Some(index);
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(index) = remove {
+        p.streak.remove(index);
+    }
+    if ui.add(small(t("Add a step"))).clicked() {
+        let next = p.streak.iter().map(|(d, _)| *d).max().map_or(7, |d| d + 30);
+        let bonus = p.streak.iter().map(|(_, b)| *b).max().map_or(5, |b| b + 5);
+        p.streak.push((next, bonus));
+    }
+
+    ui.add_space(8.0);
+    ui.label(RichText::new(t("Message")).size(13.5).strong());
+    ui.add_sized([ui.available_width().min(640.0), 52.0], egui::TextEdit::multiline(&mut p.message));
+    widgets::muted(ui, palette, t("%amount% becomes the amount paid."), 12.0);
+
+    // A worked example, so the numbers mean something.
+    let spent = 500;
+    let streak_days = 45;
+    let bonus = p.streak.iter().filter(|(d, _)| *d <= streak_days).map(|(_, b)| *b).max().unwrap_or(0);
+    let back = (spent as f64 * p.percentage as f64 / 100.0).round() as i64;
+    ui.add_space(6.0);
+    widgets::muted(
+        ui,
+        palette,
+        &tf(
+            "Example: a member who spent {spent} credits and is HC for {days} days in a row gets {back} + {bonus} = {total} {currency}.",
+            &[("spent", &spent.to_string()), ("days", &streak_days.to_string()), ("back", &back.to_string()), ("bonus", &bonus.to_string()), ("total", &(back + bonus).to_string()), ("currency", &currency_label(&p.currency))],
+        ),
+        12.0,
+    );
+
+    ui.add_space(8.0);
+    let problem = p.problem();
+    let changed = saved.as_ref() != Some(&*p);
+    ui.horizontal(|ui| {
+        if ui.add_enabled(!busy && changed && problem.is_none(), widgets::primary_button(t("Save"))).on_hover_text(t("Saves it and has the emulator use it straight away.")).clicked() {
+            actions.push(Action::SavePayday);
+        }
+        if changed && ui.add_enabled(!busy, small(t("Undo the changes"))).clicked() {
+            s.payday = saved.clone();
+        }
+    });
+    if let Some(problem) = problem {
+        ui.label(RichText::new(t(&problem)).size(12.0).color(palette.error_text));
+    }
+
+    section(ui, t("Latest paydays"));
+    let list = s.paydays.clone().unwrap_or_default();
+    if list.is_empty() {
+        widgets::muted(ui, palette, t("No payday paid yet."), 12.5);
+        return;
+    }
+    table(ui, "hk-paydays", &[130.0, 150.0, 100.0, 80.0, 110.0, 120.0], &[t("Payday"), t("Player"), t("HC in a row"), t("Spent"), t("Paid"), ""], list.len(), |i, row| {
+        let payday = &list[i];
+        cell(row, hk::when(payday.timestamp));
+        cell(row, if payday.user.is_empty() { payday.user_id.to_string() } else { payday.user.clone() });
+        cell(row, tf("{days} days", &[("days", &payday.streak.to_string())]));
+        cell(row, payday.spent.to_string());
+        cell(row, format!("{} {}", payday.payout, payday.currency));
+        cell(row, if payday.claimed { t("Paid out") } else { t("At the next login") });
     });
 }
 
@@ -1327,6 +1538,13 @@ fn soundboard(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut
 /// The screenshot's sample (the dry run has no database).
 fn sample(s: &mut State) {
     s.sample = true;
+    let payday = PaydaySettings { enabled: true, next_date: "2026-12-01 18:00:00".into(), ..PaydaySettings::default() };
+    s.payday_saved = Some(payday.clone());
+    s.payday = Some(payday);
+    s.paydays = Some(vec![
+        club_admin::Payday { id: 2, timestamp: 1_762_000_000, user_id: 1, user: "duckie".into(), streak: 45, spent: 500, reward_spent: 50, reward_streak: 10, payout: 60, currency: "credits".into(), claimed: true },
+        club_admin::Payday { id: 1, timestamp: 1_762_000_000, user_id: 2, user: "rene".into(), streak: 3, spent: 0, reward_spent: 0, reward_streak: 0, payout: 0, currency: "credits".into(), claimed: false },
+    ]);
     s.subtitle = "The hotel habbo on hotel.example.com: lists from the database, actions to the emulator over RCON.".into();
     s.ranks = vec![Rank { id: 1, name: "Member".into() }, Rank { id: 7, name: "Administrator".into() }];
     s.dashboard = Some(hk::Dashboard { online_users: 42, total_users: 1830, active_rooms: 17, total_rooms: 960, peak_today: 61, peak_all_time: 233, pending_tickets: 2, uptime_seconds: 190_000, version: "Polaris 4.2".into() });
@@ -1343,6 +1561,7 @@ fn sample(s: &mut State) {
         Ok("rooms") => Tab::Rooms,
         Ok("hotel") => Tab::Hotel,
         Ok("permissions") => Tab::Permissions,
+        Ok("club") => Tab::Club,
         _ => Tab::Dashboard,
     };
     s.permissions = Some(hk::Permissions {

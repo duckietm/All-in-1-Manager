@@ -16,7 +16,7 @@ pub fn url(language: FurniLanguage) -> String {
 }
 
 pub fn file() -> String {
-    format!("{}/config/ExternalTexts.json", octane::gamedata())
+    octane::gamedata_path("external_texts")
 }
 
 /// The texts file (`key=value` lines) as JSON, like ConvertTextsToJsonAsync: blank lines and # comments skipped, split
@@ -93,19 +93,20 @@ pub async fn current(server: &dyn Server) -> Result<Option<Value>> {
 }
 
 const PUT: &str = r#"json={{JsonFile}}
-config={{Gamedata}}/config
+texts={{ExternalTexts}}
+config=$(dirname "$texts")
 trap 'rm -f "$json"' EXIT
 [ -s "$json" ] || fail "The uploaded ExternalTexts.json is missing or empty."
-echo "> $config/ExternalTexts.json ({{Language}})"
+echo "> $texts ({{Language}})"
 install -d -o www-data -g www-data -m 2775 "$config"
-if [ -f "$config/ExternalTexts.json" ]; then
-  old="$config/ExternalTexts.json.bak-$(date +%Y%m%d-%H%M%S)"
-  cp -p "$config/ExternalTexts.json" "$old"
+if [ -f "$texts" ]; then
+  old="$texts.bak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$texts" "$old"
   echo "  The old one is kept as $old"
   echo "OLD=$old"
 fi
 # Group www-data may write: the emulator adds the names of custom badges.
-install -o www-data -g www-data -m 664 "$json" "$config/ExternalTexts.json""#;
+install -o www-data -g www-data -m 664 "$json" "$texts""#;
 
 /// Puts the prepared texts in gamedata/config (the old file kept as .bak-<time>). Returns the old file's copy, or
 /// None when there was none. Meant for while the emulator is stopped, because it writes to this file too.
@@ -125,7 +126,7 @@ pub async fn put(server: &dyn Server, prepared: &PreparedTexts, log: Log<'_>) ->
     let body = fill(
         PUT,
         &[
-            ("Gamedata", &shell_quote(&octane::gamedata())),
+            ("Gamedata", &shell_quote(&octane::gamedata())), ("ExternalTexts", &crate::server::shell_quote(&crate::octane::gamedata_path("external_texts"))),
             ("Language", &format!("{}, {}", language.name, language.domain)),
             ("JsonFile", &shell_quote(&remote)),
         ],

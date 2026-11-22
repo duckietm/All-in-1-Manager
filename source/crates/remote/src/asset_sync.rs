@@ -22,12 +22,87 @@ pub struct AssetMapping {
     pub pattern: String,
     pub only: Option<Vec<String>>,
     pub add_only: bool,
+    /// Files that get another name on the server (local name, server name): a hotel whose gamedata layout keeps
+    /// FurnitureData.json as furnidata.json.
+    pub renames: Vec<(String, String)>,
 }
 
 impl AssetMapping {
     fn new(name: &str, source: &str, target: &str, pattern: &str) -> Self {
-        Self { name: name.into(), source: source.into(), target: target.into(), pattern: pattern.into(), only: None, add_only: false }
+        Self { name: name.into(), source: source.into(), target: target.into(), pattern: pattern.into(), only: None, add_only: false, renames: Vec::new() }
     }
+}
+
+/// The folders of the gamedata layout, the deepest standard place first (c_images/album1584 before c_images).
+const LAYOUT_FOLDERS: [&str; 8] = ["badges", "furniture", "icons", "clothes", "pets", "effects", "sounds", "images"];
+/// The config files of the gamedata layout.
+const LAYOUT_FILES: [&str; 8] = ["furnidata", "productdata", "figuredata", "figuremap", "effectmap", "external_texts", "ui_texts", "avatar_actions"];
+
+/// Where a folder of the local gamedata (laid out the standard way) goes on the server: the place the gamedata layout
+/// gives it, inside gamedata or absolute. A folder the layout does not name stays where it is.
+pub fn server_folder(layout: &aio_core::GamedataLayout, local: &str) -> String {
+    for key in LAYOUT_FOLDERS {
+        let standard = aio_core::GamedataLayout::standard(key);
+        if local == standard {
+            return layout.get(key).to_string();
+        }
+        if let Some(rest) = local.strip_prefix(&format!("{standard}/")) {
+            return format!("{}/{rest}", layout.get(key));
+        }
+    }
+    local.to_string()
+}
+
+fn split_path(value: &str) -> (String, String) {
+    match value.rsplit_once('/') {
+        Some((folder, name)) => (folder.to_string(), name.to_string()),
+        None => (String::new(), value.to_string()),
+    }
+}
+
+/// The local config folder's files sent where the layout puts each one: one mapping per server folder, renaming a
+/// file whose name differs there. Files the layout does not name go next to FurnitureData.json. Only added when missing,
+/// like the standard config mapping.
+fn config_mappings(layout: &aio_core::GamedataLayout, local_names: &[String]) -> Vec<AssetMapping> {
+    let (furnidata_folder, _) = split_path(layout.get("furnidata"));
+    let mut by_folder: Vec<(String, Vec<String>, Vec<(String, String)>)> = Vec::new();
+    let mut place = |folder: String, local: &str, server: &str| {
+        let index = match by_folder.iter().position(|(f, _, _)| *f == folder) {
+            Some(i) => i,
+            None => {
+                by_folder.push((folder, Vec::new(), Vec::new()));
+                by_folder.len() - 1
+            }
+        };
+        by_folder[index].1.push(local.to_string());
+        if local != server {
+            by_folder[index].2.push((local.to_string(), server.to_string()));
+        }
+    };
+    for name in local_names {
+        let entry = LAYOUT_FILES.iter().find(|key| split_path(&aio_core::GamedataLayout::standard(key)).1 == *name);
+        match entry {
+            Some(key) => {
+                let (folder, server) = split_path(layout.get(key));
+                place(folder, name, &server);
+            }
+            None => place(furnidata_folder.clone(), name, name),
+        }
+    }
+    by_folder
+        .into_iter()
+        .map(|(folder, only, renames)| AssetMapping {
+            only: Some(only),
+            add_only: true,
+            renames,
+            ..AssetMapping::new(&folder, &format!("{}/config", crate::habbo_assets::GAMEDATA), &folder, "*")
+        })
+        .collect()
+}
+
+/// A mapping's server folder as a full path.
+fn server_path(target: &str) -> String {
+    aio_core::GamedataLayout::resolve(&crate::octane::gamedata(), target)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,6 +186,8 @@ fn scan(folder: &Path, mapping: &AssetMapping) -> Vec<LocalFile> {
             continue;
         }
         let modified = metadata.modified().map(unix_seconds).unwrap_or(0);
+        // The name it gets on the server (the same, unless the gamedata layout renames it).
+        let name = mapping.renames.iter().find(|(local, _)| *local == name).map(|(_, server)| server.clone()).unwrap_or(name);
         files.push(LocalFile { name, path: entry.path(), size: metadata.len() as i64, modified });
     }
     files
@@ -154,13 +231,22 @@ pub fn gamedata_mappings(assets_folder: &Path) -> Vec<AssetMapping> {
         }
     }
     folders.sort();
-    folders
-        .into_iter()
-        .map(|target| AssetMapping {
-            add_only: target == "config",
-            ..AssetMapping::new(&target, &format!("{}/{target}", crate::habbo_assets::GAMEDATA), &target, "*")
-        })
-        .collect()
+    let layout = &aio_core::ServerLayout::current().gamedata_layout;
+    let mut mappings = Vec::new();
+    for folder in folders {
+        // The standard layout keeps the folders as they are (one config mapping, as always).
+        if folder == "config" && !layout.is_standard() {
+            let mut names: Vec<String> = std::fs::read_dir(root.join("config"))
+                .map(|entries| entries.flatten().filter(|e| e.path().is_file()).filter_map(|e| e.file_name().into_string().ok()).filter(|n| !n.starts_with('.')).collect())
+                .unwrap_or_default();
+            names.sort();
+            mappings.extend(config_mappings(layout, &names));
+            continue;
+        }
+        let target = server_folder(layout, &folder);
+        mappings.push(AssetMapping { add_only: folder == "config", ..AssetMapping::new(&folder, &format!("{}/{folder}", crate::habbo_assets::GAMEDATA), &target, "*") });
+    }
+    mappings
 }
 
 /// What Deploy Assets copies from: the downloaded Habbo assets, when the folder holds files.
@@ -183,7 +269,7 @@ pub async fn plan_sources(server: &dyn Server, sources: &[Source], overwrite_con
         .map(|(i, (_, m))| {
             format!(
                 "echo '== {i}'; find {} -maxdepth 1 -type f -printf '%f\\t%s\\t%T@\\n' 2>/dev/null",
-                shell_quote(&format!("{gamedata}/{}", m.target))
+                shell_quote(&aio_core::GamedataLayout::resolve(&gamedata, &m.target))
             )
         })
         .collect::<Vec<_>>()
@@ -276,7 +362,7 @@ echo "OK $(find {{target}} -maxdepth 1 -type f | wc -l)""#;
 
 /// Streams the plan's files as tar into the target folder. `progress` gets the bytes sent so far.
 pub async fn upload(server: &dyn Server, plan: &AssetPlan, progress: Progress<'_>) -> Result<()> {
-    let target = shell_quote(&format!("{}/{}", crate::octane::gamedata(), plan.mapping.target));
+    let target = shell_quote(&server_path(&plan.mapping.target));
     let script = script::fill(UPLOAD, &[("target", &target)]);
     let items: Vec<tar_stream::TarItem> = plan.upload().map(|f| tar_stream::TarItem::file(&f.path, &f.name)).collect();
     let result = tar_stream::upload(server, &script, &items, progress).await?;
@@ -512,6 +598,44 @@ pub(crate) mod tar_stream {
 mod tests {
     use super::tar_stream::{self, TarItem};
     use super::*;
+
+    #[test]
+    fn a_hotel_with_its_own_gamedata_layout_gets_the_files_where_it_keeps_them() {
+        let standard = aio_core::GamedataLayout::default();
+        for folder in ["furniture", "config", "c_images/album1584", "c_images/reception/x", "other"] {
+            assert_eq!(server_folder(&standard, folder), folder, "the standard layout keeps every folder");
+        }
+        let own = aio_core::GamedataLayout {
+            furniture: "bundled/furniture".into(),
+            badges: "/srv/badges".into(),
+            images: "images".into(),
+            furnidata: "data/furnidata.json".into(),
+            external_texts: "/srv/texts/ExternalTexts.json".into(),
+            ..Default::default()
+        };
+        assert_eq!(server_folder(&own, "furniture"), "bundled/furniture");
+        assert_eq!(server_folder(&own, "c_images/album1584"), "/srv/badges");
+        assert_eq!(server_folder(&own, "c_images/reception/x"), "images/reception/x");
+        assert_eq!(server_folder(&own, "pets"), "pets");
+        let names: Vec<String> = ["ExternalTexts.json", "FigureData.json", "FurnitureData.json", "Other.json"].iter().map(|n| n.to_string()).collect();
+        let mappings = config_mappings(&own, &names);
+        let find = |target: &str| mappings.iter().find(|m| m.target == target).unwrap_or_else(|| panic!("{target}: {mappings:?}"));
+        let data = find("data");
+        assert_eq!(data.only.as_deref(), Some(&["FurnitureData.json".to_string(), "Other.json".to_string()][..]));
+        assert_eq!(data.renames, vec![("FurnitureData.json".to_string(), "furnidata.json".to_string())]);
+        assert!(data.add_only);
+        assert_eq!(find("/srv/texts").only.as_deref(), Some(&["ExternalTexts.json".to_string()][..]));
+        assert_eq!(find("config").only.as_deref(), Some(&["FigureData.json".to_string()][..]));
+        assert_eq!(server_path("/srv/badges"), "/srv/badges");
+        assert_eq!(server_path("bundled/furniture"), "/var/www/gamedata/bundled/furniture");
+        // A renamed file is listed (and compared, and sent) under its server name.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("FurnitureData.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("Other.json"), "{}").unwrap();
+        let mut found: Vec<String> = scan(dir.path(), data).into_iter().map(|f| f.name).collect();
+        found.sort();
+        assert_eq!(found, vec!["Other.json", "furnidata.json"]);
+    }
     use std::io::Read;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 

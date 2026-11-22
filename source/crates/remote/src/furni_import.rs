@@ -777,17 +777,18 @@ json={{JsonFile}}
 trap 'rm -f "$json"' EXIT
 [ -s "$json" ] || fail "The uploaded FurnitureData.json is missing or empty."
 gamedata={{Gamedata}}
-config="$gamedata/config"
+furnidata={{Furnidata}}
+config=$(dirname "$furnidata")
 [ -d "$gamedata" ] || fail "$gamedata does not exist: run the Octane step first."
 install -d -o www-data -g www-data -m 2775 "$config"
-if [ -f "$config/FurnitureData.json" ]; then
-  old="$config/FurnitureData.json.bak-$(date +%Y%m%d-%H%M%S)"
-  cp -p "$config/FurnitureData.json" "$old"
+if [ -f "$furnidata" ]; then
+  old="$furnidata.bak-$(date +%Y%m%d-%H%M%S)"
+  cp -p "$furnidata" "$old"
   echo "  The old one is kept as $old"
   echo "OLD=$old"
 fi
-install -o www-data -g www-data -m 664 "$json" "$config/FurnitureData.json"
-echo "  $config/FurnitureData.json ($(du -h "$config/FurnitureData.json" | cut -f1))""#;
+install -o www-data -g www-data -m 664 "$json" "$furnidata"
+echo "  $furnidata ($(du -h "$furnidata" | cut -f1))""#;
 
 /// Puts the uploaded `remote_json` in gamedata/config as FurnitureData.json; the one that was there is kept next to
 /// it as .bak-<time> (returned).
@@ -795,7 +796,7 @@ pub async fn put_furniture_data(server: &dyn Server, remote_json: &str, log: Log
     log("> FurnitureData.json to the server");
     let body = fill(
         PUT_FURNITURE_DATA,
-        &[("Gamedata", &crate::server::shell_quote(&crate::octane::gamedata())), ("JsonFile", &crate::server::shell_quote(remote_json))],
+        &[("Gamedata", &crate::server::shell_quote(&crate::octane::gamedata())), ("Furnidata", &crate::server::shell_quote(&crate::octane::furnidata())), ("JsonFile", &crate::server::shell_quote(remote_json))],
     );
     let values = script::run_capturing(server, &script::with_prelude(&body), log, "Putting FurnitureData.json on the server failed", &["OLD"], None).await?;
     Ok(values.string("OLD"))
@@ -841,16 +842,16 @@ pub fn client_files(furni: &[NewFurni], gamedata: &Path) -> Vec<ClientFile> {
     files
 }
 
-const LIST_CLIENT_FILES: &str = r#"g={{Gamedata}}
-for folder in furniture icons; do
-  [ -d "$g/$folder" ] && find "$g/$folder" -maxdepth 1 -type f -printf "$folder/%f\n"
-done
+const LIST_CLIENT_FILES: &str = r#"list() { [ -d "$2" ] && find "$2" -maxdepth 1 -type f -printf "$1/%f\n"; }
+list furniture {{Furniture}}
+list icons {{Icons}}
 true"#;
 
 /// The `files` the server's gamedata does not have yet. Names count exactly: the web server is case-sensitive, so
 /// Leet_Chair.hab there does not serve the client's leet_chair.hab.
 pub async fn missing_on_server(server: &dyn Server, files: &[ClientFile]) -> Result<Vec<ClientFile>> {
-    let body = fill(LIST_CLIENT_FILES, &[("Gamedata", &crate::server::shell_quote(&crate::octane::gamedata()))]);
+    let quoted = |key: &str| crate::server::shell_quote(&crate::octane::gamedata_path(key));
+    let body = fill(LIST_CLIENT_FILES, &[("Furniture", &quoted("furniture")), ("Icons", &quoted("icons"))]);
     let output = script::root_output(server, &body, "Listing the server's furniture files failed").await?;
     let there: HashSet<&str> = output.lines().map(str::trim).collect();
     Ok(files.iter().filter(|f| !there.contains(format!("{}/{}", f.folder, f.name).as_str())).cloned().collect())
@@ -871,7 +872,7 @@ pub async fn upload_client_files(server: &dyn Server, files: &[ClientFile], prog
         if part.is_empty() {
             continue;
         }
-        let target = crate::server::shell_quote(&format!("{}/{folder}", crate::octane::gamedata()));
+        let target = crate::server::shell_quote(&crate::octane::gamedata_path(folder));
         let script = fill(UPLOAD_CLIENT_FILES, &[("target", &target)]);
         let items: Vec<crate::asset_sync::tar_stream::TarItem> = part.iter().map(|f| crate::asset_sync::tar_stream::TarItem::file(&f.local, &f.name)).collect();
         let before = sent.load(std::sync::atomic::Ordering::Relaxed);

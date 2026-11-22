@@ -42,6 +42,187 @@ pub struct ServerLayout {
     /// The hotel's NGINX site file and its log folder.
     pub nginx_site: String,
     pub nginx_logs: String,
+    /// Where the files and folders are inside gamedata, for hotels with their own structure.
+    pub gamedata_layout: GamedataLayout,
+}
+
+/// Where each gamedata file and folder is: a path inside the gamedata folder (`config/FurnitureData.json`,
+/// `furniture`), or an absolute path for one kept elsewhere. Settings saved before this existed get the standard
+/// layout, which is what Octane's renderer-config uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct GamedataLayout {
+    pub furnidata: String,
+    pub productdata: String,
+    pub figuredata: String,
+    pub figuremap: String,
+    pub effectmap: String,
+    pub external_texts: String,
+    pub ui_texts: String,
+    pub avatar_actions: String,
+    pub furniture: String,
+    pub icons: String,
+    pub clothes: String,
+    pub pets: String,
+    pub effects: String,
+    pub sounds: String,
+    pub images: String,
+    pub badges: String,
+}
+
+impl Default for GamedataLayout {
+    fn default() -> Self {
+        Self {
+            furnidata: "config/FurnitureData.json".into(),
+            productdata: "config/ProductData.json".into(),
+            figuredata: "config/FigureData.json".into(),
+            figuremap: "config/FigureMap.json".into(),
+            effectmap: "config/EffectMap.json".into(),
+            external_texts: "config/ExternalTexts.json".into(),
+            ui_texts: "config/UITexts.jsonc".into(),
+            avatar_actions: "config/HabboAvatarActions.json".into(),
+            furniture: "furniture".into(),
+            icons: "icons".into(),
+            clothes: "clothes".into(),
+            pets: "pets".into(),
+            effects: "effects".into(),
+            sounds: "sounds".into(),
+            images: "c_images".into(),
+            badges: "c_images/album1584".into(),
+        }
+    }
+}
+
+/// One entry of the gamedata layout: its key, its name in Settings, whether it is a file, and its standard value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GamedataEntry {
+    pub key: &'static str,
+    pub label: &'static str,
+    pub file: bool,
+}
+
+pub const GAMEDATA_ENTRIES: [GamedataEntry; 16] = [
+    GamedataEntry { key: "furnidata", label: "Furniture data (FurnitureData.json)", file: true },
+    GamedataEntry { key: "productdata", label: "Product data (ProductData.json)", file: true },
+    GamedataEntry { key: "figuredata", label: "Figure data (FigureData.json)", file: true },
+    GamedataEntry { key: "figuremap", label: "Figure map (FigureMap.json)", file: true },
+    GamedataEntry { key: "effectmap", label: "Effect map (EffectMap.json)", file: true },
+    GamedataEntry { key: "external_texts", label: "External texts (ExternalTexts.json)", file: true },
+    GamedataEntry { key: "ui_texts", label: "UI texts (UITexts.jsonc)", file: true },
+    GamedataEntry { key: "avatar_actions", label: "Avatar actions (HabboAvatarActions.json)", file: true },
+    GamedataEntry { key: "furniture", label: "Furniture (.hab / .nitro)", file: false },
+    GamedataEntry { key: "icons", label: "Furniture icons", file: false },
+    GamedataEntry { key: "clothes", label: "Clothes", file: false },
+    GamedataEntry { key: "pets", label: "Pets", file: false },
+    GamedataEntry { key: "effects", label: "Effects", file: false },
+    GamedataEntry { key: "sounds", label: "Sounds", file: false },
+    GamedataEntry { key: "images", label: "Images (c_images)", file: false },
+    GamedataEntry { key: "badges", label: "Badges", file: false },
+];
+
+fn relative_pattern() -> &'static Regex {
+    static P: OnceLock<Regex> = OnceLock::new();
+    P.get_or_init(|| Regex::new("^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$").unwrap())
+}
+
+impl GamedataLayout {
+    pub fn get(&self, key: &str) -> &str {
+        match key {
+            "furnidata" => &self.furnidata,
+            "productdata" => &self.productdata,
+            "figuredata" => &self.figuredata,
+            "figuremap" => &self.figuremap,
+            "effectmap" => &self.effectmap,
+            "external_texts" => &self.external_texts,
+            "ui_texts" => &self.ui_texts,
+            "avatar_actions" => &self.avatar_actions,
+            "furniture" => &self.furniture,
+            "icons" => &self.icons,
+            "clothes" => &self.clothes,
+            "pets" => &self.pets,
+            "effects" => &self.effects,
+            "sounds" => &self.sounds,
+            "images" => &self.images,
+            "badges" => &self.badges,
+            _ => "",
+        }
+    }
+
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut String> {
+        Some(match key {
+            "furnidata" => &mut self.furnidata,
+            "productdata" => &mut self.productdata,
+            "figuredata" => &mut self.figuredata,
+            "figuremap" => &mut self.figuremap,
+            "effectmap" => &mut self.effectmap,
+            "external_texts" => &mut self.external_texts,
+            "ui_texts" => &mut self.ui_texts,
+            "avatar_actions" => &mut self.avatar_actions,
+            "furniture" => &mut self.furniture,
+            "icons" => &mut self.icons,
+            "clothes" => &mut self.clothes,
+            "pets" => &mut self.pets,
+            "effects" => &mut self.effects,
+            "sounds" => &mut self.sounds,
+            "images" => &mut self.images,
+            "badges" => &mut self.badges,
+            _ => return None,
+        })
+    }
+
+    /// The standard value of an entry.
+    pub fn standard(key: &str) -> String {
+        GamedataLayout::default().get(key).to_string()
+    }
+
+    /// The full server path of a value: itself when absolute, else inside `gamedata`.
+    pub fn resolve(gamedata: &str, value: &str) -> String {
+        let value = value.trim();
+        if value.starts_with('/') {
+            value.trim_end_matches('/').to_string()
+        } else {
+            format!("{}/{}", gamedata.trim_end_matches('/'), value.trim_matches('/'))
+        }
+    }
+
+    /// Why a value cannot be used, or None: a plain path inside gamedata, or an absolute one, never with `..`.
+    fn problem(entry: &GamedataEntry, value: &str) -> Option<String> {
+        let value = value.trim();
+        let plain = if value.starts_with('/') { path_pattern().is_match(value) } else { relative_pattern().is_match(value) };
+        if !plain || value.split('/').any(|part| part == "." || part == "..") {
+            return Some(format!(
+                "{}: \"{value}\" is not a usable path. Use a path inside gamedata such as {} or an absolute one, with letters, digits, '.', '_', '-' and '/'.",
+                entry.label,
+                GamedataLayout::standard(entry.key)
+            ));
+        }
+        if entry.file && !(value.ends_with(".json") || value.ends_with(".jsonc")) {
+            return Some(format!("{}: \"{value}\" should be a .json file.", entry.label));
+        }
+        None
+    }
+
+    pub fn validate(&self) -> Option<String> {
+        GAMEDATA_ENTRIES.iter().find_map(|entry| GamedataLayout::problem(entry, self.get(entry.key)))
+    }
+
+    /// Trims spaces and slashes at the end (and at the start of a relative value).
+    pub fn normalize(&mut self) {
+        for entry in GAMEDATA_ENTRIES {
+            if let Some(value) = self.get_mut(entry.key) {
+                let trimmed = value.trim();
+                *value = if trimmed.starts_with('/') { trimmed.trim_end_matches('/').to_string() } else { trimmed.trim_matches('/').to_string() };
+                if value.is_empty() {
+                    *value = GamedataLayout::standard(entry.key);
+                }
+            }
+        }
+    }
+
+    /// Whether every entry is the standard one.
+    pub fn is_standard(&self) -> bool {
+        *self == GamedataLayout::default()
+    }
 }
 
 impl Default for ServerLayout {
@@ -65,6 +246,7 @@ impl Default for ServerLayout {
             crowdsec: "/opt/crowdsec".into(),
             nginx_site: "/etc/nginx/sites-available/hotel".into(),
             nginx_logs: "/var/log/nginx/hotel".into(),
+            gamedata_layout: GamedataLayout::default(),
         }
     }
 }
@@ -122,6 +304,11 @@ impl ServerLayout {
     /// A Linux user name: lower case letters, digits, '_' and '-', starting with a letter or '_'.
     pub fn is_valid_account(name: &str) -> bool {
         account_pattern().is_match(name)
+    }
+
+    /// The server path of a gamedata entry (see [`GamedataLayout`]): `furnidata`, `furniture`, ...
+    pub fn gamedata_path(&self, key: &str) -> String {
+        GamedataLayout::resolve(&self.gamedata, self.gamedata_layout.get(key))
     }
 
     /// Home folder of the emulator's account (Maven's ~/.m2 lives there).
@@ -182,7 +369,7 @@ impl ServerLayout {
         if !database_pattern().is_match(&self.database) {
             return Some("Database: use letters, digits and '_' only.".into());
         }
-        None
+        self.gamedata_layout.validate()
     }
 
     /// Removes trailing slashes and spaces around the values.
@@ -216,6 +403,7 @@ impl ServerLayout {
         }
         self.emulator_account = self.emulator_account.trim().to_string();
         self.database = self.database.trim().to_string();
+        self.gamedata_layout.normalize();
     }
 }
 
@@ -242,6 +430,34 @@ mod tests {
         // Settings saved before these existed get the defaults.
         let old: ServerLayout = serde_json::from_str(r#"{"Gamedata": "/srv/gamedata"}"#).unwrap();
         assert_eq!((old.gamedata.as_str(), old.traefik.as_str()), ("/srv/gamedata", "/opt/traefik"));
+    }
+
+    #[test]
+    fn the_gamedata_layout_has_the_standard_places_and_takes_others() {
+        let layout = ServerLayout::default();
+        assert_eq!(layout.gamedata_path("furnidata"), "/var/www/gamedata/config/FurnitureData.json");
+        assert_eq!(layout.gamedata_path("badges"), "/var/www/gamedata/c_images/album1584");
+        let mut layout = ServerLayout {
+            gamedata_layout: GamedataLayout { furnidata: " /srv/data/furnidata.json ".into(), pets: "/bundled/pet/".into(), furniture: "bundled/furniture".into(), icons: "".into(), ..Default::default() },
+            ..Default::default()
+        };
+        layout.normalize();
+        assert_eq!(layout.validate(), None);
+        assert_eq!(layout.gamedata_path("furnidata"), "/srv/data/furnidata.json");
+        assert_eq!(layout.gamedata_path("pets"), "/bundled/pet");
+        assert_eq!(layout.gamedata_path("furniture"), "/var/www/gamedata/bundled/furniture");
+        assert_eq!(layout.gamedata_layout.icons, "icons", "an emptied entry goes back to the standard");
+        for (key, bad) in [("furniture", "../etc"), ("furnidata", "config/furni.txt"), ("pets", "a b"), ("clothes", "/x/../y")] {
+            let mut layout = ServerLayout::default();
+            *layout.gamedata_layout.get_mut(key).unwrap() = bad.into();
+            assert!(layout.validate().is_some(), "{key} = {bad}");
+        }
+        // Settings saved before the gamedata layout existed get the standard one.
+        let old: ServerLayout = serde_json::from_str(r#"{"Gamedata": "/srv/gamedata"}"#).unwrap();
+        assert!(old.gamedata_layout.is_standard());
+        for entry in GAMEDATA_ENTRIES {
+            assert!(!ServerLayout::default().gamedata_layout.get(entry.key).is_empty(), "{}", entry.key);
+        }
     }
 
     #[test]

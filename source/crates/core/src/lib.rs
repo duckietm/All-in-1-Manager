@@ -11,5 +11,5 @@ pub mod saved_logins;
 pub mod settings;
 
 pub use credentials::DatabaseCredentials;
-pub use layout::ServerLayout;
+pub use layout::{GamedataLayout, ServerLayout};
 pub use settings::InstallerSettings;

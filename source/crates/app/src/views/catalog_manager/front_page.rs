@@ -137,7 +137,7 @@ impl FrontImages {
 
     /// An image under c_images: from this computer, else what was fetched from the server. The second value is true
     /// when it still has to be fetched (it is not on this computer).
-    fn image(&mut self, _ctx: &egui::Context, path: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
+    pub(super) fn image(&mut self, _ctx: &egui::Context, path: &str, fetched: &HashMap<String, Option<Arc<Vec<u8>>>>) -> (Option<egui::TextureHandle>, bool) {
         let Some(path) = clean_path(path) else { return (None, false) };
         let local = format!("local:{path}");
         match self.loader.state(&local) {
@@ -160,6 +160,16 @@ impl FrontImages {
         }
     }
 
+    /// A furni's icon from this computer's gamedata/icons ("rare_dragonlamp*4" -> rare_dragonlamp_4_icon.png), loaded
+    /// in the background; None until it is there, or when there is none.
+    pub fn furni_icon(&mut self, item_name: &str) -> Option<egui::TextureHandle> {
+        let file = format!("{}_icon.png", item_name.trim().replace('*', "_"));
+        let roots = &self.roots;
+        self.loader.get(&format!("icon:{file}"), || {
+            Source::Files(roots.iter().filter_map(|r| r.parent()).flat_map(|g| [g.join("icons").join(&file), g.join("icons").join(file.to_lowercase())]).collect())
+        })
+    }
+
     /// Forgets what was read, so a reload shows changed files.
     pub fn clear(&mut self) {
         self.loader.clear();
@@ -167,7 +177,7 @@ impl FrontImages {
     }
 
     /// The image files of this computer's c_images/catalogue (two levels deep) and web_promo folders.
-    fn local_files(&mut self) -> Vec<String> {
+    pub(super) fn local_files(&mut self) -> Vec<String> {
         if self.local.is_none() {
             let mut files = Vec::new();
             for root in &self.roots {
@@ -199,7 +209,7 @@ fn collect(root: &std::path::Path, relative: &str, depth: usize, out: &mut Vec<S
 
 /// The shell command that lists the server's promo and catalogue images, relative to c_images.
 pub(super) fn list_command() -> String {
-    let folder = format!("{}/c_images", aio_remote::octane::gamedata());
+    let folder = aio_remote::octane::gamedata_path("images");
     format!(
         "cd {} 2>/dev/null && find catalogue web_promo_small web_promo -maxdepth 2 -type f \\( -iname '*.png' -o -iname '*.gif' \\) 2>/dev/null | sort; true",
         aio_remote::server::shell_quote(&folder)

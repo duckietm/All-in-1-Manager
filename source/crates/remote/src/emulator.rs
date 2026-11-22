@@ -555,23 +555,24 @@ pub async fn configure(
 /// Camera and badge imager settings for emulator_settings.
 pub fn imager_settings(site_url: &str) -> Vec<(String, String)> {
     let camera = crate::hotel_site::camera();
-    let gamedata = crate::octane::gamedata();
+    let badges = crate::octane::gamedata_path("badges");
+    let images = crate::octane::gamedata_path("images");
     vec![
         ("camera.url".into(), format!("{site_url}/gamedata/camera/")),
         ("imager.location.output.camera".into(), camera.clone()),
         ("imager.location.output.thumbnail".into(), format!("{camera}/thumb/")),
         ("camera.render.mode".into(), "auto".into()),
-        ("imager.location.output.badges".into(), format!("{gamedata}/c_images/album1584/")),
-        ("imager.location.badgeparts".into(), format!("{gamedata}/c_images/groupbadge/badgeparts/")),
+        ("imager.location.output.badges".into(), format!("{badges}/")),
+        ("imager.location.badgeparts".into(), format!("{images}/groupbadge/badgeparts/")),
     ]
 }
 
-const IMAGER_FOLDERS: &str = r#"install -d -m 2775 -o www-data -g www-data {{Camera}} {{Camera}}/thumb {{g}}/c_images {{g}}/c_images/album1584 \
-  {{g}}/c_images/groupbadge {{g}}/c_images/groupbadge/badge {{g}}/c_images/groupbadge/badgeparts"#;
+const IMAGER_FOLDERS: &str = r#"install -d -m 2775 -o www-data -g www-data {{Camera}} {{Camera}}/thumb {{i}} {{b}} \
+  {{i}}/groupbadge {{i}}/groupbadge/badge {{i}}/groupbadge/badgeparts"#;
 
 /// Writes [`imager_settings`] via [`set_settings`] and creates their folders.
 pub async fn configure_imager(server: &dyn Server, site_url: &str, log: Log<'_>) -> Result<bool> {
-    let folders = fill(IMAGER_FOLDERS, &[("Camera", &crate::hotel_site::camera()), ("g", &crate::octane::gamedata())]);
+    let folders = fill(IMAGER_FOLDERS, &[("Camera", &crate::hotel_site::camera()), ("i", &crate::octane::gamedata_path("images")), ("b", &crate::octane::gamedata_path("badges"))]);
     set_settings(server, &imager_settings(site_url), "camera and badge imager", log, &folders).await
 }
 

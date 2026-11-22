@@ -162,7 +162,7 @@ fn parse(output: &str) -> Vec<Row> {
 
 /// Every furni with a multiheight, with the states of its .hab.
 pub async fn check(server: &dyn Server) -> Result<Vec<Row>> {
-    let furniture = format!("{}/furniture", crate::octane::gamedata());
+    let furniture = crate::octane::gamedata_path("furniture");
     let body = fill(CHECK, &[("DatabaseName", &server_tools::database_name()), ("Furniture", &furniture), ("CountScript", COUNT_SCRIPT)]);
     let result = server.run_as_root(&script::with_prelude(&body)).await?;
     if !result.succeeded() {

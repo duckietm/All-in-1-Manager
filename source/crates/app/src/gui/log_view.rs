@@ -71,7 +71,8 @@ pub fn show(ui: &mut egui::Ui, id: &str, log: &mut LogLines, height: Option<f32>
         .fill(Fixed::console_background())
         .stroke(egui::Stroke::new(1.0_f32, Fixed::console_border()))
         .corner_radius(8)
-        .inner_margin(egui::Margin::symmetric(4, 6));
+        // The right side stays free for the Copy log button, so it never covers a line.
+        .inner_margin(egui::Margin { left: 4, right: 124, top: 6, bottom: 6 });
     let response = frame.show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.set_height(height - 12.0);
@@ -119,8 +120,11 @@ pub fn show(ui: &mut egui::Ui, id: &str, log: &mut LogLines, height: Option<f32>
             t("Copy log").to_string()
         };
         let button_rect = egui::Rect::from_min_size(egui::pos2(rect.right() - 120.0, rect.top() + 8.0), egui::vec2(100.0, 22.0));
-        let button = ui
-            .put(button_rect, egui::Button::new(RichText::new(caption).size(11.0)).fill(Color32::from_rgba_unmultiplied(40, 50, 64, 220)))
+        // In a child of its own: `put` would move this ui's cursor back to the button, and what comes after the log
+        // (a page's status line) was then drawn over the log's first lines.
+        let mut corner = ui.new_child(egui::UiBuilder::new().max_rect(button_rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+        let button = corner
+            .add_sized(button_rect.size(), egui::Button::new(RichText::new(caption).size(11.0)).fill(Color32::from_rgba_unmultiplied(40, 50, 64, 220)))
             .on_hover_text(t("Copies the whole log to the clipboard, or only the lines you selected. Ctrl+C does the same."));
         if button.clicked() {
             let copied = copy(ui.ctx(), log, selection);

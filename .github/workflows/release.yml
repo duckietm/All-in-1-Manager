@@ -89,8 +89,6 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force out | Out-Null
           Copy-Item target/release/all-in-1-manager.exe out/all-in-1-manager-windows-x64.exe
-          # The name versions before the rename look for when they check for updates.
-          Copy-Item target/release/all-in-1-manager.exe out/all-in-1-installer-windows-x64.exe
           # What the update check compares the download against before it replaces the running program.
           (Get-FileHash out/all-in-1-manager-windows-x64.exe -Algorithm SHA256).Hash.ToLower() `
             | Set-Content -NoNewline out/all-in-1-manager-windows-x64.exe.sha256
@@ -108,7 +106,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version.outputs.sha }}
-      - run: sudo apt-get update && sudo apt-get install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev
+      # The runner's network sometimes cannot resolve the Ubuntu mirrors for a moment: retry before failing.
+      - run: |
+          ok=
+          for try in 1 2 3; do
+            if sudo apt-get -o Acquire::Retries=5 update &&
+               sudo apt-get -o Acquire::Retries=5 install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev; then
+              ok=yes
+              break
+            fi
+            echo "apt-get failed (try $try of 3), trying again in 20 seconds"
+            sleep 20
+          done
+          [ -n "$ok" ] || { echo "The system libraries could not be installed"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
@@ -117,8 +127,6 @@ jobs:
         run: |
           mkdir -p out
           cp target/release/all-in-1-manager out/all-in-1-manager-linux-x64
-          # The name versions before the rename look for when they check for updates.
-          cp target/release/all-in-1-manager out/all-in-1-installer-linux-x64
           # What the update check compares the download against before it replaces the running program.
           sha256sum out/all-in-1-manager-linux-x64 | cut -d' ' -f1 > out/all-in-1-manager-linux-x64.sha256
       - uses: actions/upload-artifact@v4
@@ -147,7 +155,5 @@ jobs:
           files: |
             dist/all-in-1-manager-windows-x64.exe
             dist/all-in-1-manager-linux-x64
-            dist/all-in-1-installer-windows-x64.exe
-            dist/all-in-1-installer-linux-x64
             dist/all-in-1-manager-windows-x64.exe.sha256
             dist/all-in-1-manager-linux-x64.sha256

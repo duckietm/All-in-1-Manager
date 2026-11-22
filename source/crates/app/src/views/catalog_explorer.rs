@@ -973,7 +973,7 @@ impl Ctl {
     async fn list_catalogue_files(self) {
         let Some(server) = self.shared.session() else { return };
         let generation = self.lock().generation;
-        let folder = format!("{}/c_images/catalogue", aio_remote::octane::gamedata());
+        let folder = format!("{}/catalogue", aio_remote::octane::gamedata_path("images"));
         let command = format!(
             "find {} -maxdepth 1 -type f \\( -iname '*.gif' -o -iname '*.png' \\) -printf '%f\\n' 2>/dev/null | sort; true",
             aio_remote::server::shell_quote(&folder)
@@ -1001,7 +1001,7 @@ impl Ctl {
             return;
         };
         let generation = self.lock().generation;
-        let folder = format!("{}/c_images/catalogue", aio_remote::octane::gamedata());
+        let folder = format!("{}/catalogue", aio_remote::octane::gamedata_path("images"));
         let temp = std::env::temp_dir().join(format!("all-in-1-catalogue-{}", std::process::id()));
         loop {
             let batch: Vec<String> = {
@@ -1104,7 +1104,11 @@ impl Ctl {
     /// A new page under `parent` (hidden until Visible is ticked), then its editor to name it.
     async fn new_page(self, parent: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let page = catalog_admin::new_page(&self.lock().pages, parent, self.cat());
+        // One lock: `self.cat()` locks too, and a lock held for the call's arguments would wait on itself.
+        let page = {
+            let s = self.lock();
+            catalog_admin::new_page(&s.pages, parent, s.cat)
+        };
         self.with(generation, |s| s.busy = true);
         let saved = catalog_admin::save_page(&session, &database, self.cat(), &page).await;
         self.with(generation, |s| s.busy = false);

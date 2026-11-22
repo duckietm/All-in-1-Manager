@@ -215,7 +215,19 @@ pub fn problems(cat: Catalogue, catalog: &Catalog, reference: &Reference) -> Vec
         if offer.item_ids.trim().is_empty() {
             problem(Kind::OfferItemInvalid, String::new());
         } else {
-            for token in offer.item_ids.split(';') {
+            for token in offer.item_ids.split(';').filter(|t| !t.trim().is_empty()) {
+                // `@1234`: what offer 1234 sells (Polaris' bundle references); it must be an offer of this catalogue.
+                if let Some(reference) = token.trim().strip_prefix('@') {
+                    match crate::bundle_admin::parse(token.trim()).and_then(|e| e.first().copied()) {
+                        Some(entry) => {
+                            if !catalog.offers.iter().any(|o| o.id == entry.id()) {
+                                problem(Kind::OfferItemMissing, format!("@{}", entry.id()));
+                            }
+                        }
+                        None => problem(Kind::OfferItemInvalid, format!("@{reference}")),
+                    }
+                    continue;
+                }
                 let parts: Vec<&str> = token.trim().split(':').collect();
                 let id = parts.first().and_then(|p| p.trim().parse::<i64>().ok()).filter(|id| *id > 0);
                 let amount_ok = parts.len() == 1 || (parts.len() == 2 && parts[1].trim().parse::<i64>().is_ok_and(|a| a > 0));
@@ -332,6 +344,16 @@ mod tests {
         let catalog = Catalog { pages: vec![page(1, -1, 1, true), page(2, 1, 1, true)], offers: vec![offer(10, 2, "5;6:2")], ..Catalog::default() };
         let reference = Reference { furni: HashSet::from([5, 6]), currencies: HashSet::from([0]) };
         assert!(problems(Catalogue::Normal, &catalog, &reference).is_empty());
+    }
+
+    /// Polaris' bundle references: `@id` names another offer, which must exist in the same catalogue.
+    #[test]
+    fn bundle_references_must_name_an_offer() {
+        let catalog = Catalog { pages: vec![page(1, -1, 1, true)], offers: vec![offer(10, 1, "5"), offer(11, 1, "@10;@10:2;5:3"), offer(12, 1, "@99;@x")], ..Catalog::default() };
+        let reference = Reference { furni: HashSet::from([5]), currencies: HashSet::from([0]) };
+        let found = problems(Catalogue::Normal, &catalog, &reference);
+        assert_eq!(kinds(&found), vec![(Kind::OfferItemInvalid, 12), (Kind::OfferItemMissing, 12)]);
+        assert!(found.iter().any(|p| p.value == "@99"));
     }
 
     #[test]

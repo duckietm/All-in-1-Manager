@@ -458,21 +458,30 @@ pub fn quest_images(texts: &str) -> Vec<String> {
     images.into_iter().filter(|name| safe_name(name)).collect()
 }
 
-/// The images under ${image.library.url} the variables name (hotel view, promos), as paths below c_images/.
+/// The c_images images the variables name (hotel view, promos), as paths below c_images/. Habbo writes them as
+/// `${image.library.url}reception/x.png`, but also as full addresses (`https://images.habbo.com/c_images/...` or
+/// `//images.habbo.com/c_images/...`, as the current hotel view backgrounds are), with a slash too many
+/// (`${image.library.url}/web_promo_small/x.png`, `web_promo_small//x.png`) or with a query (`x.png?v=2`).
 pub fn library_images(variables: &str) -> Vec<String> {
-    const MARK: &str = "${image.library.url}";
+    const MARKS: [&str; 2] = ["${image.library.url}", "images.habbo.com/c_images/"];
     let mut images = BTreeSet::new();
     for line in variables.lines() {
-        for part in line.split(MARK).skip(1) {
-            let path = part.split([',', ';']).next().unwrap_or("").trim().trim_end_matches(['}', '"']).trim();
-            let lower = path.to_lowercase();
-            if !(lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".gif")) {
-                continue;
+        for mark in MARKS {
+            for part in line.split(mark).skip(1) {
+                let raw = part.split([',', ';', ' ', '\'', ')', '\t']).next().unwrap_or("").trim().trim_end_matches(['}', '"']).trim();
+                let raw = raw.split(['?', '#']).next().unwrap_or("");
+                // Empty parts are the slash too many; what is left must be plain names.
+                let segments: Vec<&str> = raw.split('/').filter(|s| !s.is_empty()).collect();
+                let path = segments.join("/");
+                let lower = path.to_lowercase();
+                if !(lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".gif")) {
+                    continue;
+                }
+                if segments.is_empty() || segments.iter().any(|segment| !safe_name(segment)) {
+                    continue;
+                }
+                images.insert(path);
             }
-            if path.starts_with('/') || path.split('/').any(|segment| !safe_name(segment)) {
-                continue;
-            }
-            images.insert(path.to_string());
         }
     }
     images.into_iter().collect()
@@ -593,6 +602,23 @@ mod tests {
         assert_eq!(quest_images(texts), ["welcome.png", "welcome_step1.png"]);
         let vars = "landing.view.background=${image.library.url}reception/bg.png,${image.library.url}web_promo_small/promo.jpg;x\nother=${image.library.url}../evil.png\nflash.client.url=//images.habbo.com/gordon/flash-assets-PRODUCTION-2024/\n";
         assert_eq!(library_images(vars), ["reception/bg.png", "web_promo_small/promo.jpg"]);
+        // As Habbo writes them now (November 2026): full addresses, a slash too many, a query.
+        let now = "landing.view.background_left.uri=https://images.habbo.com/c_images/reception/background_left_Nov26.png\n\
+                    landing.view.bonus.rare.image.uri=//images.habbo.com/c_images/web_promo_small/bonusbag26_3.png\n\
+                    landing.view.leprechaun.layout=${image.library.url}/web_promo_small/spromo_Leprechaun.png\n\
+                    landing.view.aug26r1.layout=${image.library.url}web_promo_small//spromo_goldwatch_aug261.png\n\
+                    landing.view.x=${image.library.url}reception/hotel.png?v=2\n\
+                    other=https://images.habbo.com/dcr/hof_furni/1/x_icon.png;${image.library.url}../../etc/passwd.png\n";
+        assert_eq!(
+            library_images(now),
+            [
+                "reception/background_left_Nov26.png",
+                "reception/hotel.png",
+                "web_promo_small/bonusbag26_3.png",
+                "web_promo_small/spromo_Leprechaun.png",
+                "web_promo_small/spromo_goldwatch_aug261.png",
+            ]
+        );
         assert_eq!(release(vars).as_deref(), Some("flash-assets-PRODUCTION-2024"));
         assert_eq!(key_values("# c\na=1\n=x\nb = two = 2\n"), json!({"a":"1","b":"two = 2"}));
     }

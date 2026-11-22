@@ -4017,5 +4017,16 @@
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} opgeslagen. Het hotel serveert de gebouwde kopie: voer Rebuild Octane (Tools) uit om het te gebruiken.",
   "{folder} has no settings files: run the Octane step first.": "{folder} heeft geen instellingenbestanden: voer eerst de Octane-stap uit.",
   "{key}  ({count})": "{key}  ({count})",
-  "This file is not a list of settings: it is edited as text.": "Dit bestand is geen lijst met instellingen: het wordt als tekst bewerkt."
+  "This file is not a list of settings: it is edited as text.": "Dit bestand is geen lijst met instellingen: het wordt als tekst bewerkt.",
+  "Addresses, socket and API, login and loading screens, logging: what an install sets.": "Adressen, socket en API, inlog- en laadscherm, logging: wat een installatie instelt.",
+  "Avatars, rooms, catalogue, chat, friends and quests.": "Avatars, kamers, catalogus, chat, vrienden en quests.",
+  "Data tables": "Datatabellen",
+  "Features": "Functies",
+  "Features switched on and off, wired, radio, camera and the staff tools.": "Functies aan en uit, wired, radio, camera en de stafftools.",
+  "Load order": "Laadvolgorde",
+  "Server, Hotel and Features (config/) hold most of the client's settings.": "Server, Hotel en Functies (config/) bevatten de meeste instellingen van de client.",
+  "The files below that the client loads, in this order: a key in a later file wins.": "De bestanden hieronder die de client laadt, in deze volgorde: een sleutel in een later bestand wint.",
+  "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "De lange tabellen: chatstijlen, camera-effecten, meldingen, kamermodellen. Zelden aangepast.",
+  "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Deze client laadt in plaats daarvan config.jsonc en de bestanden in config/: Update Octane heeft deze waarden daarheen verplaatst (yarn config:split). Het bestand blijft zoals het was.",
+  "not loaded": "niet geladen"
 }

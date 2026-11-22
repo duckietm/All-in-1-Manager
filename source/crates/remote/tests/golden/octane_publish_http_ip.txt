@@ -299,9 +299,27 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
 done
 echo "$page" | grep -q 'configuration/bootstrap.js' || fail "$client does not serve Octane's dist/index.html."
 echo "  index.html OK"
-echo "> ${client}configuration/renderer-config.json"
-socket=$(c "${client}configuration/renderer-config.json" | grep -oE '"socket.url": *"[^"]*"' || true)
-[ -n "$socket" ] || fail "${client}configuration/renderer-config.json is not served."
+# config.jsonc and the files it lists, or (an older Octane) renderer-config.json. A missing file can come back as
+# index.html, so the check is on the content.
+base=$(c "${client}configuration/config.jsonc" || true)
+if echo "$base" | grep -q '"config.files"'; then
+  echo "> ${client}configuration/config.jsonc"
+  files=$(echo "$base" | grep -vE '^[[:space:]]*//' | grep -oE '"[A-Za-z0-9_./-]+\.jsonc?"' | tr -d '"')
+  [ -n "$files" ] || fail "${client}configuration/config.jsonc lists no configuration files."
+  socket=""
+  for f in $files; do
+    body=$(c "${client}configuration/$f" || true)
+    echo "$body" | grep -q '^[[:space:]]*[{]' || fail "${client}configuration/$f is not served, but config.jsonc lists it: the client cannot load its configuration."
+    found=$(echo "$body" | grep -oE '"socket.url": *"[^"]*"' || true)
+    [ -n "$found" ] && socket=$found
+    echo "  $f OK"
+  done
+  [ -n "$socket" ] || fail "socket.url is in none of the files config.jsonc lists."
+else
+  echo "> ${client}configuration/renderer-config.json"
+  socket=$(c "${client}configuration/renderer-config.json" | grep -oE '"socket.url": *"[^"]*"' || true)
+  [ -n "$socket" ] || fail "${client}configuration/renderer-config.json is not served."
+fi
 echo "  $socket"
 echo "> $url/gamedata/"
 echo "  HTTP $(c -o /dev/null -w '%{http_code}' "$url/gamedata/config/" || true) (403/404 until the assets are copied in)"

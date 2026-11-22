@@ -1,5 +1,6 @@
 //! Client configuration: the Octane client's settings files (`<octane>/public/configuration`): renderer-config,
-//! ui-config, client-mode, news, hot looks and the rest. On the left the files with plain names, on the right the chosen
+//! ui-config (or, in a newer Octane, config.jsonc with config/server, hotel, features and data), client-mode, news,
+//! hot looks and the rest. On the left the files with plain names, on the right the chosen
 //! one as a form (sections, switches, numbers, text, groups that open, lists) with a search, or as text with a live
 //! check. Saving keeps a backup, and writes the served copy too, so players get it when they reload the hotel.
 
@@ -372,6 +373,11 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
 fn describe(name: &str) -> (String, &'static str) {
     let stem = name.trim_end_matches(".jsonc").trim_end_matches(".json");
     let known: Option<(&str, &'static str)> = match stem {
+        "config" => Some((n("Load order"), n("The files below that the client loads, in this order: a key in a later file wins."))),
+        "config/server" => Some((n("Server"), n("Addresses, socket and API, login and loading screens, logging: what an install sets."))),
+        "config/hotel" => Some((n("Hotel"), n("Avatars, rooms, catalogue, chat, friends and quests."))),
+        "config/features" => Some((n("Features"), n("Features switched on and off, wired, radio, camera and the staff tools."))),
+        "config/data" => Some((n("Data tables"), n("The long tables: chat styles, camera effects, notifications, room models. Rarely edited."))),
         "renderer-config" => Some((n("Connection and assets"), n("Where the client connects (socket.url) and where it finds the gamedata, furniture, clothes and images."))),
         "ui-config" => Some((n("Interface"), n("Login screen, hotel view, toolbar, catalogue, navigator and every other part of the interface."))),
         "client-mode" => Some((n("Client mode"), n("Where the client finds its configuration, and the login it uses."))),
@@ -393,15 +399,38 @@ fn describe(name: &str) -> (String, &'static str) {
     }
 }
 
+/// With config.jsonc the client loads config/*.jsonc, and no longer renderer-config.json and ui-config.json.
+fn layered(list: &[ConfigFile]) -> bool {
+    list.iter().any(|f| f.name == "config.jsonc" && f.size.is_some())
+}
+
+/// renderer-config or ui-config, which a client with config.jsonc no longer reads.
+fn replaced(name: &str, layered: bool) -> bool {
+    layered && matches!(name.trim_end_matches(".jsonc").trim_end_matches(".json"), "renderer-config" | "ui-config")
+}
+
 /// The group a file is listed under.
-fn group(name: &str) -> usize {
+fn group(name: &str, layered: bool) -> usize {
     let stem = name.trim_end_matches(".jsonc").trim_end_matches(".json");
+    if replaced(name, layered) {
+        return 3;
+    }
     match stem {
-        "renderer-config" | "ui-config" | "client-mode" => 0,
+        "config" | "client-mode" => 0,
+        _ if name.starts_with(config::LAYERED_FOLDER) => 0,
+        "renderer-config" | "ui-config" => 0,
         "news" | "hotlooks" | "infostand_backgrounds" | "pets" | "adsense" | "radio-stations" | "soundboard-layout" | "soundboard-sounds" => 1,
         _ if stem.contains("texts") => 2,
         _ => 3,
     }
+}
+
+/// Where a file of the main group goes: config.jsonc, then server, hotel, features and data as they load.
+fn main_order(name: &str) -> usize {
+    ["config.jsonc", "config/server.jsonc", "config/hotel.jsonc", "config/features.jsonc", "config/data.jsonc"]
+        .iter()
+        .position(|n| *n == name)
+        .unwrap_or(9)
 }
 
 fn files(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<Action>) {
@@ -409,9 +438,12 @@ fn files(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<
         widgets::muted(ui, palette, if s.busy { t("Reading the settings files ...") } else { t("Log in to a server to edit its client settings.") }, 12.5);
         return;
     };
+    let layered = layered(&list);
     egui::ScrollArea::vertical().id_salt("client-config-file-list").auto_shrink([false, false]).show(ui, |ui| {
         for (index, heading) in [t("Main"), t("Content"), t("Texts"), t("Other")].into_iter().enumerate() {
-            let in_group: Vec<&ConfigFile> = list.iter().filter(|f| group(&f.name) == index).collect();
+            let mut in_group: Vec<&ConfigFile> = list.iter().filter(|f| group(&f.name, layered) == index).collect();
+            // The load order first, then its files in the order Octane loads them.
+            in_group.sort_by_key(|f| (main_order(&f.name), f.name.clone()));
             if in_group.is_empty() {
                 continue;
             }
@@ -426,7 +458,11 @@ fn files(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec<
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&title).size(13.0).strong());
-                        if file.size.is_none() {
+                        if replaced(&file.name, layered) {
+                            ui.label(RichText::new(t("not loaded")).size(10.5).color(palette.warning_text)).on_hover_text(t(
+                                "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.",
+                            ));
+                        } else if file.size.is_none() {
                             ui.label(RichText::new(t("not made yet")).size(10.5).color(palette.warning_text));
                         } else if !file.served {
                             ui.label(RichText::new(t("not served")).size(10.5).color(palette.warning_text)).on_hover_text(t("The built client has no copy: run Rebuild Octane (Tools)."));
@@ -455,7 +491,12 @@ fn editor(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Vec
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
             ui.label(RichText::new(t("Choose a settings file on the left")).size(15.0).strong());
-            widgets::muted(ui, palette, t("Connection and assets (renderer-config) and Interface (ui-config) hold most of the client's settings."), 12.5);
+            let hint = if s.files.as_deref().is_some_and(layered) {
+                t("Server, Hotel and Features (config/) hold most of the client's settings.")
+            } else {
+                t("Connection and assets (renderer-config) and Interface (ui-config) hold most of the client's settings.")
+            };
+            widgets::muted(ui, palette, hint, 12.5);
         });
         return;
     };
@@ -696,7 +737,17 @@ fn setting(ui: &mut egui::Ui, palette: &Palette, key: &str, value: &mut Value, s
     let mut edited = false;
     // The file's own comment above the setting, as help.
     for line in notes.above() {
-        ui.label(RichText::new(line).size(11.5).italics().color(palette.subtle));
+        // Octane's "==== Section ====" comments open a section.
+        match line.trim().strip_prefix("====").and_then(|l| l.strip_suffix("====")) {
+            Some(title) => {
+                ui.add_space(8.0);
+                ui.label(RichText::new(title.trim()).size(14.5).strong().color(palette.accent_text));
+                ui.separator();
+            }
+            None => {
+                ui.label(RichText::new(line).size(11.5).italics().color(palette.subtle));
+            }
+        }
     }
     match value {
         Value::Object(map) => {
@@ -863,7 +914,46 @@ fn sample(s: &mut State) {
         file("rarevalues-texts-en.json", true),
     ]);
     let which = std::env::var("AIO_SCREENSHOT_TAB").unwrap_or_default();
-    let (name, text) = if which == "radio" {
+    if which == "layered" {
+        let list = s.files.get_or_insert_with(Vec::new);
+        list.retain(|f| f.name != "radio-stations.jsonc");
+        for name in ["config.jsonc", "config/server.jsonc", "config/hotel.jsonc", "config/features.jsonc", "config/data.jsonc"] {
+            list.push(file(name, true));
+        }
+    }
+    let (name, text) = if which == "layered" {
+        (
+            "config/server.jsonc",
+            r##"{
+    // Server, assets and login: the addresses set at install, the login and loading screens, logging.
+
+
+    // ==== Server ====
+    // Where the client connects.
+
+    // The emulator's WebSocket.
+    "socket.url": "wss://hotel.example.com/ws",
+
+    // The hotel's API.
+    "api.url": "https://hotel.example.com",
+
+
+    // ==== Assets ====
+
+    // Where the gamedata is served.
+    "asset.url": "https://hotel.example.com/gamedata",
+    "image.library.url": "https://hotel.example.com/gamedata/c_images/",
+
+
+    // ==== Login ====
+
+    // Octane's own login screen (off with a CMS).
+    "login.screen.enabled": true,
+    "login.remember.rotate.interval.minutes": 15
+}
+"##,
+        )
+    } else if which == "radio" {
         (
             "radio-stations.jsonc",
             r##"// The stations of the hotel radio.
@@ -932,7 +1022,7 @@ fn sample(s: &mut State) {
     let loaded = Loaded {
         name: name.into(),
         text: text.into(),
-        layout: aio_remote::gamedata_admin::detect_layout(text),
+        layout: if name.ends_with(".jsonc") { config::jsonc_layout(text) } else { aio_remote::gamedata_admin::detect_layout(text) },
         sha256: "x".into(),
         example: Some(example),
     };

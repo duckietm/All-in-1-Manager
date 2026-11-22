@@ -100,13 +100,17 @@ load_cloudflare_ranges() {
 }
 export PATH=/usr/sbin:/usr/bin:/sbin:/bin COREPACK_ENABLE_DOWNLOAD_PROMPT=0 CI=1 NO_COLOR=1 FORCE_COLOR=0 HOME=/root
 # The emulator's timezone (config.ini) for timezone.settings in a new renderer-config.json.
+# An Octane with config.example.jsonc loads config.jsonc + config/*.jsonc instead of renderer-config.json and
+# ui-config.json: an old hotel is moved over with Octane's yarn config:split, and yarn config:sync reports on it.
 tz=$(grep -oE 'serverTimezone=[^&[:space:]]+' /var/www/emulator/Emulator/config.ini 2>/dev/null | head -1 | cut -d= -f2)
 echo "> /var/www/Octane/public/configuration: client-mode.json, hotlooks.json, infostand_backgrounds.json, news.json, renderer-config.json, ui-config.json"
-SITE_URL='http://192.0.2.10' CLIENT_URL='http://192.0.2.10/' CLIENT_PATH='/' ATOM='' LOGIN_SCREEN='' SOCKET_URL='ws://192.0.2.10/ws' CONFIG_DIR='/var/www/Octane/public/configuration' GAMEDATA_DIR='/var/www/gamedata' \
+SITE_URL='http://192.0.2.10' CLIENT_URL='http://192.0.2.10/' CLIENT_PATH='/' ATOM='' LOGIN_SCREEN='' SOCKET_URL='ws://192.0.2.10/ws' CONFIG_DIR='/var/www/Octane/public/configuration' GAMEDATA_DIR='/var/www/gamedata' OCTANE_DIR='/var/www/Octane' \
   FILES='client-mode hotlooks infostand_backgrounds news renderer-config ui-config' TIMEZONE="$tz" node - <<'JS'
 const fs = require('fs');
 const path = require('path');
-const { SITE_URL: site, CLIENT_URL: client, CLIENT_PATH: clientPath, ATOM: atom, LOGIN_SCREEN: loginScreen, SOCKET_URL: socket, CONFIG_DIR: dir, GAMEDATA_DIR: gamedata, TIMEZONE: timezone } = process.env;
+const { spawnSync } = require('child_process');
+const { pathToFileURL } = require('url');
+const { SITE_URL: site, CLIENT_URL: client, CLIENT_PATH: clientPath, ATOM: atom, LOGIN_SCREEN: loginScreen, SOCKET_URL: socket, CONFIG_DIR: dir, GAMEDATA_DIR: gamedata, OCTANE_DIR: octaneDir, TIMEZONE: timezone } = process.env;
 
 // Always set: the hotel's URLs. Only in a file created from the .example: the folder layout and modes.
 const urls = {
@@ -152,6 +156,62 @@ const parse = (file, text) => {
         .replace(/,(\s*[}\]])/g, '$1');
     try { return JSON.parse(stripped); } catch (e) { throw new Error(`${file} is not valid JSON(C): ${e.message}`); }
 };
+// A report line with a long list ("...: a (f), b (f), ...") keeps its first items.
+const short = line => {
+    const at = line.indexOf(': ');
+    const items = at < 0 ? [] : line.slice(at + 2).split(', ');
+    return items.length <= 8 ? line : `${line.slice(0, at + 2)}${items.slice(0, 6).join(', ')}, ... (${items.length - 6} more)`;
+};
+const read = file => fs.readFileSync(file, 'utf8');
+const stamp = () => new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+
+// A file's example, by the names Octane has used: ui-config.example, client-mode.example.json, x.example.jsonc.
+const exampleOf = name => [`${name}.example`, `${name}.example.json`, `${name}.example.jsonc`].map(f => path.join(dir, f)).find(f => fs.existsSync(f));
+
+// Sets a top-level key of a JSONC text in place, so its comments and layout stay: the value after an existing key is
+// replaced, a key that is not there goes in before the closing brace, at the indent of the keys above it.
+const setJsonc = (text, key, value) => {
+    const name = JSON.stringify(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const literal = '"(?:[^"\\\\]|\\\\.)*"|true|false|null|-?\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?';
+    const pattern = new RegExp(`(${name}\\s*:\\s*)(?:${literal})`);
+    if (pattern.test(text)) return text.replace(pattern, (_, head) => head + JSON.stringify(value));
+    const close = text.lastIndexOf('}');
+    const before = text.slice(0, close).replace(/\s*$/, '');
+    const indent = (text.match(/\n([ \t]+)"/) || [null, '    '])[1];
+    const comma = /[{,]$/.test(before.replace(/\/\/[^\n]*$/, '').trimEnd()) ? '' : ',';
+    return `${before}${comma}\n${indent}${JSON.stringify(key)}: ${JSON.stringify(value)}\n${text.slice(close)}`;
+};
+
+// Every folder the asset URLs point to, e.g. ${asset.url}/furniture/%libname%.hab -> furniture.
+const makeAssetFolders = settings => {
+    const expand = (value, depth = 0) => depth > 8 ? value
+        : value.replace(/\$\{([^}]+)\}/g, (m, key) => typeof settings[key] === 'string' ? expand(settings[key], depth + 1) : m);
+    const folders = new Set();
+    const visit = value => {
+        if (Array.isArray(value)) return value.forEach(visit);
+        if (value && typeof value === 'object') return Object.values(value).forEach(visit);
+        if (typeof value !== 'string' || !value) return;
+        let url = expand(value);
+        for (const prefix of [`${site}/gamedata/`, '/gamedata/']) {
+            if (!url.startsWith(prefix)) continue;
+            const parts = url.slice(prefix.length).split(/[?#]/)[0].split('/').filter(Boolean);
+            const cut = parts.findIndex(p => p.includes('%') || p.includes('${'));
+            const kept = cut < 0 ? parts : parts.slice(0, cut);
+            if (cut < 0 && kept.length && kept[kept.length - 1].includes('.')) kept.pop();
+            if (kept.length) folders.add(kept.join('/'));
+            break;
+        }
+    };
+    visit(settings);
+    let made = 0;
+    for (const folder of [...folders].sort()) {
+        const full = path.join(gamedata, folder);
+        if (!full.startsWith(gamedata + '/')) continue;
+        if (!fs.existsSync(full)) { fs.mkdirSync(full, { recursive: true }); made++; }
+    }
+    fs.mkdirSync(gamedata, { recursive: true });
+    console.log(`> ${gamedata}: ${folders.size} asset folders (${made} new): ${[...folders].sort().join(', ')}`);
+};
 
 // The settings files follow their .example: keys a newer Octane (or you, in the .example) added come in with the
 // example's value, in the example's order; keys only the .json has stay after them. A value already in the .json is
@@ -174,66 +234,146 @@ const followExample = (example, current, added, prefix = '') => {
     return out;
 };
 
-const configs = {};
-for (const name of process.env.FILES.split(' ')) {
+// The old layout: one .json per file, made from its example, with the URL keys set.
+const oneFile = (name, configs) => {
     const file = path.join(dir, `${name}.json`);
-    const example = path.join(dir, `${name}.example`);
+    const example = exampleOf(name);
     let created = false, config;
-    if (fs.existsSync(file)) config = parse(file, fs.readFileSync(file, 'utf8'));
-    else if (fs.existsSync(example)) { config = parse(example, fs.readFileSync(example, 'utf8')); created = true; }
-    else { console.log(`  ${name}.json: no ${name}.example in this Octane version, skipped`); continue; }
+    if (fs.existsSync(file)) config = parse(file, read(file));
+    else if (example) { config = parse(example, read(example)); created = true; }
+    else { console.log(`  ${name}.json: no example of it in this Octane version, skipped`); return; }
 
     const changes = [];
     let layout = false;
-    if (!created && FOLLOW_EXAMPLE.has(name) && fs.existsSync(example)) {
+    if (!created && FOLLOW_EXAMPLE.has(name) && example) {
         const added = [];
         const before = JSON.stringify(config);
-        config = followExample(parse(example, fs.readFileSync(example, 'utf8')), config, added);
-        for (const key of added) changes.push(`${key} added from ${name}.example`);
+        config = followExample(parse(example, read(example)), config, added);
+        for (const key of added) changes.push(`${key} added from ${path.basename(example)}`);
         layout = added.length === 0 && JSON.stringify(config) !== before;
     }
     for (const [key, value] of Object.entries({ ...(created ? defaults[name] : {}), ...urls[name] })) {
         if (config[key] !== value) { changes.push(`${key} = ${JSON.stringify(value)}`); config[key] = value; }
     }
-    if (layout) changes.push(`keys put in the order of ${name}.example`);
+    if (layout) changes.push(`keys put in the order of ${path.basename(example)}`);
     if (created || changes.length > 0) {
-        if (!created) fs.copyFileSync(file, `${file}.bak-${new Date().toISOString().replace(/\D/g, '').slice(0, 14)}`);
+        if (!created) fs.copyFileSync(file, `${file}.bak-${stamp()}`);
         fs.writeFileSync(file, JSON.stringify(config, null, 4) + '\n');
     }
-    console.log(`  ${name}.json: ${created ? `created from ${name}.example` : changes.length ? 'updated (old file kept as .bak-<time>)' : 'already up to date'}`);
+    console.log(`  ${name}.json: ${created ? `created from ${path.basename(example)}` : changes.length ? 'updated (old file kept as .bak-<time>)' : 'already up to date'}`);
     for (const change of changes) console.log(`    ${change}`);
     configs[name] = config;
-}
-
-// Every folder the asset URLs point to, e.g. ${asset.url}/furniture/%libname%.hab -> furniture.
-const settings = { ...configs['renderer-config'], ...configs['ui-config'] };
-const expand = (value, depth = 0) => depth > 8 ? value
-    : value.replace(/\$\{([^}]+)\}/g, (m, key) => typeof settings[key] === 'string' ? expand(settings[key], depth + 1) : m);
-const folders = new Set();
-const visit = value => {
-    if (Array.isArray(value)) return value.forEach(visit);
-    if (value && typeof value === 'object') return Object.values(value).forEach(visit);
-    if (typeof value !== 'string' || !value) return;
-    let url = expand(value);
-    for (const prefix of [`${site}/gamedata/`, '/gamedata/']) {
-        if (!url.startsWith(prefix)) continue;
-        const parts = url.slice(prefix.length).split(/[?#]/)[0].split('/').filter(Boolean);
-        const cut = parts.findIndex(p => p.includes('%') || p.includes('${'));
-        const kept = cut < 0 ? parts : parts.slice(0, cut);
-        if (cut < 0 && kept.length && kept[kept.length - 1].includes('.')) kept.pop();
-        if (kept.length) folders.add(kept.join('/'));
-        break;
-    }
 };
-visit(settings);
-let made = 0;
-for (const folder of [...folders].sort()) {
-    const full = path.join(gamedata, folder);
-    if (!full.startsWith(gamedata + '/')) continue;
-    if (!fs.existsSync(full)) { fs.mkdirSync(full, { recursive: true }); made++; }
-}
-fs.mkdirSync(gamedata, { recursive: true });
-console.log(`> ${gamedata}: ${folders.size} asset folders (${made} new): ${[...folders].sort().join(', ')}`);
+
+// The new layout (Octane with config.example.jsonc): config.jsonc lists config/server.jsonc, hotel, features and
+// data, loaded in that order. A hotel still on renderer-config.json + ui-config.json is moved over by Octane's own
+// yarn config:split (the old files stay where they are, but no longer load); a new hotel gets the examples. Every file
+// config.jsonc lists must be there, and the hotel's URL keys are set in the file that holds each one, comments kept.
+const layered = async () => {
+    const base = path.join(dir, 'config.jsonc');
+    let fresh = false, split = false;
+    if (!fs.existsSync(base)) {
+        const old = ['renderer-config.json', 'ui-config.json'].filter(f => fs.existsSync(path.join(dir, f)));
+        if (old.length) {
+            console.log(`  config.jsonc: this Octane loads config.jsonc + config/; moving ${old.join(' + ')} into it (yarn config:split, the old files are kept)`);
+            const result = spawnSync('node', ['scripts/config-split.mjs'], { cwd: octaneDir, encoding: 'utf8' });
+            for (const line of `${result.stdout || ''}${result.stderr || ''}`.split('\n').filter(Boolean)) console.log(`    ${short(line)}`);
+            if (result.status !== 0 || !fs.existsSync(base)) throw new Error('yarn config:split did not finish (see above): the old renderer-config.json and ui-config.json are as they were.');
+            split = true;
+        } else {
+            fs.copyFileSync(path.join(dir, 'config.example.jsonc'), base);
+            fresh = true;
+            console.log('  config.jsonc: created from config.example.jsonc');
+        }
+    }
+    const listed = parse(base, read(base))['config.files'];
+    const files = (Array.isArray(listed) ? listed : []).filter(f => typeof f === 'string' && /^[A-Za-z0-9_./-]+\.jsonc?$/.test(f) && !f.split('/').includes('..'));
+    if (!files.length) throw new Error(`${base} lists no configuration files ("config.files").`);
+    // Files the split just wrote need no .bak copy.
+    const created = new Set(split ? files : []);
+    for (const file of files) {
+        const target = path.join(dir, file);
+        if (fs.existsSync(target)) continue;
+        const example = path.join(dir, file.replace(/^config\//, 'config.example/'));
+        if (!fs.existsSync(example)) throw new Error(`${file} is listed in config.jsonc but missing, and Octane has no example of it: the client would not load its configuration.`);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.copyFileSync(example, target);
+        created.add(file);
+        console.log(`  ${file}: created from ${path.relative(dir, example)}`);
+    }
+
+    // Where a key goes: the last listed file that sets it (it wins), else the file of its section in Octane's
+    // configuration-keys.json, else config/server.jsonc.
+    let fileOfKey = () => null, known = () => true;
+    try {
+        const registry = await import(pathToFileURL(path.join(octaneDir, 'scripts/config-registry.mjs')).href);
+        const sections = registry.loadRegistry();
+        const owner = new Map();
+        for (const [category, entries] of Object.entries(sections)) {
+            const spec = registry.fileOfCategory(category);
+            if (!spec) continue;
+            for (const entry of entries) if (entry && entry.key) owner.set(entry.key, registry.configFilePath(spec));
+        }
+        fileOfKey = key => owner.get(key) ?? null;
+        known = key => owner.has(key);
+    } catch (e) { console.log(`  (configuration-keys.json not read: ${e.message}; new keys go to config/server.jsonc)`); }
+
+    const texts = new Map(files.map(file => [file, read(path.join(dir, file))]));
+    const values = new Map(files.map(file => [file, parse(file, texts.get(file))]));
+    const wanted = { ...(fresh ? defaults['renderer-config'] : {}), ...urls['renderer-config'], ...urls['ui-config'] };
+    const changes = new Map();
+    const unread = Object.keys(wanted).filter(key => !known(key));
+    if (unread.length) console.log(`  not set, this client does not read them: ${unread.join(', ')}`);
+    for (const [key, value] of Object.entries(wanted)) {
+        if (!known(key)) continue;
+        const holder = [...files].reverse().find(file => Object.prototype.hasOwnProperty.call(values.get(file), key));
+        const target = holder ?? (files.includes(fileOfKey(key)) ? fileOfKey(key) : files.find(f => f.endsWith('server.jsonc')) ?? files[0]);
+        if (values.get(target)[key] === value) continue;
+        texts.set(target, setJsonc(texts.get(target), key, value));
+        values.get(target)[key] = value;
+        if (!changes.has(target)) changes.set(target, []);
+        changes.get(target).push(`${key} = ${JSON.stringify(value)}`);
+    }
+    for (const file of files) {
+        const list = changes.get(file);
+        if (!list) { if (!created.has(file)) console.log(`  ${file}: already up to date`); continue; }
+        const full = path.join(dir, file);
+        parse(file, texts.get(file));
+        if (!created.has(file)) fs.copyFileSync(full, `${full}.bak-${stamp()}`);
+        fs.writeFileSync(full, texts.get(file));
+        console.log(`  ${file}: ${created.has(file) ? 'URLs set' : 'updated (old file kept as .bak-<time>)'}`);
+        for (const change of list) console.log(`    ${change}`);
+    }
+
+    // Octane's own check (yarn config:sync): it only reports.
+    if (fs.existsSync(path.join(octaneDir, 'scripts/sync-config.mjs'))) {
+        const sync = spawnSync('node', ['scripts/sync-config.mjs'], { cwd: octaneDir, encoding: 'utf8' });
+        const lines = `${sync.stdout || ''}${sync.stderr || ''}`.split('\n').filter(Boolean);
+        if (lines.length) {
+            console.log('> yarn config:sync (what Octane says about this configuration; it changes nothing)');
+            for (const line of lines) console.log(`    ${short(line)}`);
+            console.log(`    (the full list: cd ${octaneDir} && yarn config:sync)`);
+        }
+    }
+    const merged = {};
+    for (const file of files) Object.assign(merged, values.get(file));
+    return merged;
+};
+
+(async () => {
+    const configs = {};
+    const newLayout = fs.existsSync(path.join(dir, 'config.example.jsonc'));
+    let settings;
+    if (newLayout) {
+        console.log('> config.jsonc + config/ (this Octane splits renderer-config and ui-config into four files)');
+        settings = await layered();
+        for (const name of process.env.FILES.split(' ').filter(n => n !== 'renderer-config' && n !== 'ui-config')) oneFile(name, configs);
+    } else {
+        for (const name of process.env.FILES.split(' ')) oneFile(name, configs);
+        settings = { ...configs['renderer-config'], ...configs['ui-config'] };
+    }
+    makeAssetFolders(settings);
+})().catch(e => { console.error(`ERROR: ${e.message}`); process.exit(1); });
 JS
 echo "> /var/www/Octane/package.json: vite without --base (Octane on /)"
 cd /var/www/Octane

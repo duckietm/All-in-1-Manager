@@ -550,6 +550,27 @@ Uses the address from the web access step; nothing to fill in. For `https://exam
 
    A new file also gets `timezone.settings` from the emulator's
    timezone, and in `client-mode.json` obfuscation, secure assets and secure API off.
+
+   **Newer Octane (`config.jsonc` + `config/`).** An Octane that ships `config.example.jsonc` no longer reads
+   `renderer-config.json` and `ui-config.json`: `config.jsonc` lists `config/server.jsonc`, `config/hotel.jsonc`,
+   `config/features.jsonc` and `config/data.jsonc`, loaded in that order (a key in a later file wins). The step (and
+   **Update Octane**) then:
+   - **moves an existing hotel over** once, with Octane's own `yarn config:split` (`scripts/config-split.mjs`): every
+     key the hotel set goes to its section, old key names are renamed, keys no code reads go to the last section of
+     `config/hotel.jsonc`. The old `renderer-config.json` and `ui-config.json` are left where they are, but no longer
+     load (**Client configuration** marks them *not loaded*). A new hotel gets `config.example.jsonc` and
+     `config.example/` copied instead;
+   - checks that every file `config.jsonc` lists is there (a missing one is copied from `config.example/`; with no
+     example the step stops, as the client would not load);
+   - sets the URL keys of the table above in the file that holds each one (the last listed file that has it, else
+     its section's file from `configuration-keys.json`), **in place**: comments, sections and layout stay. The keys
+     this client does not read (`hof.furni.url`, `badge.asset.group.url`, `timezone.settings`) are left alone. A file
+     that changes is saved as `.bak-<time>` first;
+   - prints Octane's `yarn config:sync` report (missing install addresses, keys set to the default anyway, old
+     names, keys no code reads). It only reports; the full list: `cd /var/www/Octane && yarn config:sync`.
+
+   A hotel already on the new layout is only checked: a second run changes nothing. The test at the end of the step
+   loads `config.jsonc` and each file it lists through the hotel's address and looks for `socket.url` in them.
 3. **`/var/www/gamedata`**: every folder those URLs point to is created (`config`, `furniture`, `clothes`,
    `effect`, `pets`, `room`, `icons`, `c_images/album1584`, `c_images/catalogue`, … 26 in all), owned by
    `www-data` with the group sticky (`2775`). **The assets themselves are not copied**: put them there with the
@@ -1745,6 +1766,13 @@ on the left the files with plain names, grouped (**Main**: Connection and assets
 `ui-config.json`, Client mode; **Content**: login news, hot looks, infostand backgrounds, pets, advertising, radio
 stations, soundboard; **Texts**: the housekeeping and rare values texts; **Other**). A file Octane has an example of but
 that is not made yet is marked *not made yet*; one the built client has no copy of, *not served*.
+
+With a newer Octane (`config.jsonc` + `config/`), **Main** lists **Load order** (`config.jsonc`), then **Server**,
+**Hotel**, **Features** and **Data tables** (`config/server.jsonc`, `hotel.jsonc`, `features.jsonc`, `data.jsonc`)
+in the order the client loads them, each with its example from `config.example/`. Their `// ==== Section ====` comments become
+headings in the form, the key comments show as help, and both stay when you save. The old `renderer-config.json` and `ui-config.json` move to
+**Other**, marked *not loaded*. The newer example names (`client-mode.example.json`, `radio-stations.example.jsonc`,
+...) are recognised as well.
 
 - **Settings** shows the chosen file as a form: the sections of `ui-config` (Login screen, Hotel view, Toolbar, ...),
   switches for on/off, number fields, text fields (addresses in a fixed-width font), groups that open, and lists with

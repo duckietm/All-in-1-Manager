@@ -4017,5 +4017,16 @@
   "{file} saved. The hotel serves the built copy: run Rebuild Octane (Tools) to use it.": "{file} salvato. L'hotel serve la copia compilata: esegui Rebuild Octane (Strumenti) per usarlo.",
   "{folder} has no settings files: run the Octane step first.": "{folder} non ha file di impostazioni: esegui prima il passaggio Octane.",
   "{key}  ({count})": "{key}  ({count})",
-  "This file is not a list of settings: it is edited as text.": "Questo file non è un elenco di impostazioni: si modifica come testo."
+  "This file is not a list of settings: it is edited as text.": "Questo file non è un elenco di impostazioni: si modifica come testo.",
+  "Addresses, socket and API, login and loading screens, logging: what an install sets.": "Indirizzi, socket e API, schermate di login e caricamento, log: ciò che imposta un'installazione.",
+  "Avatars, rooms, catalogue, chat, friends and quests.": "Avatar, stanze, catalogo, chat, amici e missioni.",
+  "Data tables": "Tabelle dati",
+  "Features": "Funzioni",
+  "Features switched on and off, wired, radio, camera and the staff tools.": "Funzioni attive e disattive, wired, radio, fotocamera e strumenti dello staff.",
+  "Load order": "Ordine di caricamento",
+  "Server, Hotel and Features (config/) hold most of the client's settings.": "Server, Hotel e Funzioni (config/) contengono la maggior parte delle impostazioni del client.",
+  "The files below that the client loads, in this order: a key in a later file wins.": "I file qui sotto che il client carica, in quest'ordine: una chiave in un file successivo prevale.",
+  "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "Le tabelle lunghe: stili chat, effetti fotocamera, notifiche, modelli di stanza. Modificate di rado.",
+  "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Questo client carica invece config.jsonc e i file in config/: Update Octane vi ha spostato questi valori (yarn config:split). Il file resta com'era.",
+  "not loaded": "non caricato"
 }

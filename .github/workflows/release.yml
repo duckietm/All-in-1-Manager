@@ -1,6 +1,6 @@
 name: Release
 
-# Every push to main publishes a release with the Windows and Linux binaries, and the version goes up by itself:
+# Every push to main publishes a release with the Windows, Linux and macOS binaries, and the version goes up by itself:
 #   - the version in Cargo.toml has no release yet (you set it yourself, e.g. 2.1.0): that version is released;
 #   - it already has one: the last number goes up (2.0.3 -> 2.0.4, with source/tools/version.py --next), the bot
 #     commits "Version 2.0.4" to main, and that is released.
@@ -134,9 +134,30 @@ jobs:
           name: linux
           path: out/
 
+  macos:
+    name: macOS (Apple silicon + Intel)
+    needs: version
+    if: needs.version.outputs.release == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
+      # The app (zip), and the program inside it with its SHA-256 for the update check.
+      - run: sh source/tools/package-macos.sh out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: out/
+
   release:
     name: Publish release
-    needs: [version, windows, linux]
+    needs: [version, windows, linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -155,5 +176,8 @@ jobs:
           files: |
             dist/all-in-1-manager-windows-x64.exe
             dist/all-in-1-manager-linux-x64
+            dist/all-in-1-manager-macos.zip
+            dist/all-in-1-manager-macos-universal
             dist/all-in-1-manager-windows-x64.exe.sha256
             dist/all-in-1-manager-linux-x64.sha256
+            dist/all-in-1-manager-macos-universal.sha256

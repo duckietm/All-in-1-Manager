@@ -1151,9 +1151,11 @@ pub enum Renderer {
 }
 
 impl Renderer {
-    /// The first one tried: DirectX on Windows, OpenGL elsewhere (Linux desktops have it, and it starts faster).
+    /// The first one tried: DirectX on Windows, Metal on macOS (both through wgpu), OpenGL on Linux (desktops have it,
+    /// and it starts faster).
     pub fn preferred() -> Self {
-        if cfg!(windows) { Renderer::Wgpu } else { Renderer::Glow }
+        // Metal through wgpu on macOS, where OpenGL is deprecated.
+        if cfg!(any(windows, target_os = "macos")) { Renderer::Wgpu } else { Renderer::Glow }
     }
 
     pub fn other(self) -> Self {

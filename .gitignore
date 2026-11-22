@@ -59,3 +59,8 @@ Thumbs.db
 # The program after source/tools/build.py, with its own configuration/ (keys, passwords, history)
 /public/dev/
 /public/release/
+# The shortcuts the build scripts leave next to themselves
+/*.lnk
+/*.desktop
+/all-in-1-manager
+/all-in-1-manager-dev

@@ -687,20 +687,20 @@ mod tests {
     /// A server that is this computer: /var/www/Octane is a temporary folder, commands run with bash, and reading a
     /// missing file fails as SFTP does ("No such file"). A file whose name has "locked" cannot be read over SFTP, as a
     /// file only root may read.
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     struct LocalServer {
         root: std::path::PathBuf,
         login: crate::server::ServerLogin,
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     impl LocalServer {
         fn local(&self, path: &str) -> String {
             path.replace("/var/www/Octane", &self.root.display().to_string())
         }
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "linux")]
     #[async_trait::async_trait]
     impl Server for LocalServer {
         fn login(&self) -> &crate::server::ServerLogin {
@@ -766,8 +766,8 @@ mod tests {
     }
 
     /// The hotel's folder as the screenshot of the report shows it: pets.json without an example of its own.
-    // LocalServer runs the server scripts with bash and GNU find on a Unix path: not on a Windows runner.
-    #[cfg(unix)]
+    // LocalServer runs the server scripts with bash and GNU find (-printf): Linux only, as on the server.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn a_file_without_an_example_opens() {
         let dir = tempfile::tempdir().unwrap();
@@ -797,8 +797,8 @@ mod tests {
     }
 
     /// Octane with config.jsonc + config/: the files under config/ open, with their example in config.example/.
-    // LocalServer runs the server scripts with bash and GNU find on a Unix path: not on a Windows runner.
-    #[cfg(unix)]
+    // LocalServer runs the server scripts with bash and GNU find (-printf): Linux only, as on the server.
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     async fn the_layered_files_open_with_their_examples() {
         let dir = tempfile::tempdir().unwrap();

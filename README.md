@@ -72,8 +72,9 @@ so both rows run Update Octane. AtomCMS gets a row of its own once it is install
 
 ## Quick start
 
-1. Download `all-in-1-manager-windows-x64.exe` or `all-in-1-manager-linux-x64` from the
-   [releases](https://github.com/duckietm/All-in-1-Manager/releases) and start it (on Linux: `chmod +x` first).
+1. Download `all-in-1-manager-windows-x64.exe`, `all-in-1-manager-linux-x64` or, for a Mac,
+   `all-in-1-manager-macos.zip` from the [releases](https://github.com/duckietm/All-in-1-Manager/releases) and start
+   it (on Linux: `chmod +x` first; on a Mac see [macOS](#macos) the first time).
 2. Log in to your server: its address, `root` (or a user with sudo) and the password or an SSH key.
    The login remembers the last server and the user of each server. With a password, **Remember the password on
    this computer** fills it in next time: it is kept encrypted (AES-256-GCM, with a random key next to it) in the
@@ -91,6 +92,23 @@ too (VMware SVGA 3D, Hyper-V, Microsoft's software renderer). If that fails, the
 OpenGL; if neither works it says so in a message box, and the reason is in `configuration/start-error.log` next to the
 program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 
+### macOS
+
+`all-in-1-manager-macos.zip` holds **All-in-1 Manager.app**, one app for Apple silicon (M1 and newer) and Intel
+Macs, macOS 11 or newer. Unzip it (double-click) and drag the app to **Applications**. It is signed ad hoc, not by
+an Apple developer account, so the first start is blocked with *"All-in-1 Manager" cannot be opened* (or *Apple
+could not verify ...*):
+
+- **macOS 15 and newer**: click **Done**, open **System Settings → Privacy & Security**, scroll down to *"All-in-1
+  Manager" was blocked* and click **Open Anyway**, then confirm with your password.
+- **macOS 14 and older**: right-click (Control-click) the app → **Open** → **Open**.
+- Or in Terminal: `xattr -dr com.apple.quarantine "/Applications/All-in-1 Manager.app"`.
+
+macOS remembers the choice: later starts and the program's own updates open straight away. The window is drawn with
+Metal (`--renderer=glow` for OpenGL). The configuration folder and the default `Habbo_Assets` folder are in
+`~/Library/Application Support/All-in-1 Manager/` (Finder: **Go → Go to Folder...**), not inside the app, so
+replacing the app keeps them; **Settings** can put `Habbo_Assets` anywhere else.
+
 ## Contents
 
 - [Requirements](#requirements)
@@ -98,15 +116,16 @@ program. Choose one by hand with `--renderer=wgpu` or `--renderer=glow`.
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
   [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
-- [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
+- [macOS](#macos) · [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
 
 ## Requirements
 
-**On your computer** (Windows 10/11 x64 or Linux x64): nothing. The installer is one file, with everything it
-needs inside (fonts, the client images for Deploy Assets). Download `all-in-1-manager-windows-x64.exe` or
-`all-in-1-manager-linux-x64` from the [releases](https://github.com/duckietm/All-in-1-Manager/releases), or
-[build it](#building). On Linux it needs a desktop (X11 or Wayland) and OpenGL.
+**On your computer** (Windows 10/11 x64, Linux x64 or macOS 11+ on Apple silicon or Intel): nothing. The installer
+is one file (on a Mac one app), with everything it needs inside (fonts, the client images for Deploy Assets).
+Download `all-in-1-manager-windows-x64.exe`, `all-in-1-manager-linux-x64` or `all-in-1-manager-macos.zip` from the
+[releases](https://github.com/duckietm/All-in-1-Manager/releases), or [build it](#building). On Linux it needs a
+desktop (X11 or Wayland) and OpenGL. On a Mac see [macOS](#macos) for the first start.
 
 **The server**: a fresh Ubuntu Server (22.04 or newer) or Debian (12 or newer) machine you can reach over SSH as
 root or as a user with sudo rights. Everything else (NGINX, PHP, MariaDB, Java, Node.js, Docker ...) is installed
@@ -203,7 +222,7 @@ trusts the host key seen during the first login.
 
 `configuration/` is created next to the installer (falling back to
 `%LOCALAPPDATA%\All-in-1 Manager\configuration` or `~/.local/share/All-in-1 Manager/configuration`
-when that folder is read-only). Keys are stored per server:
+when that folder is read-only). The Mac app always uses `~/Library/Application Support/All-in-1 Manager/configuration`. Keys are stored per server:
 
 ```
 configuration/
@@ -2016,7 +2035,9 @@ a repository without releases all mean no question is asked. A debug build (`car
 **About → Check for updates** checks again at any time.
 
 The version it compares is `version` in `[workspace.package]` of `Cargo.toml` against the release's tag. The file it
-downloads is `all-in-1-manager-windows-x64.exe` on Windows and `all-in-1-manager-linux-x64` on Linux.
+downloads is `all-in-1-manager-windows-x64.exe` on Windows, `all-in-1-manager-linux-x64` on Linux and
+`all-in-1-manager-macos-universal` on a Mac (the program inside the app: it replaces
+`All-in-1 Manager.app/Contents/MacOS/all-in-1-manager`).
 
 ## Building
 
@@ -2025,6 +2046,10 @@ Requires Rust (stable, 1.85 or newer) from <https://rustup.rs>. On Linux also th
 ```bash
 sudo apt-get install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev
 ```
+
+On a Mac the Xcode command line tools are enough (`xcode-select --install`). `cargo build --release -p aio-app` makes
+the program for that Mac; `sh source/tools/package-macos.sh` makes the app for both kinds of Mac, as the release does
+(it needs `rustup target add aarch64-apple-darwin x86_64-apple-darwin` first).
 
 The quickest way: run the build script in the root of the repository. On Windows double-click **`build.cmd`** for a
 menu, or run it in a terminal; on Linux use `./build.sh`:
@@ -2091,13 +2116,16 @@ the C# sources they compile are in the git history up to commit `50dd986`.
 
 ### On GitHub
 
-`.github/workflows/ci.yml` tests and builds both programs on every push to `main` and on every pull request, on
-`windows-latest` and `ubuntu-latest`, and keeps them as workflow artifacts.
+`.github/workflows/ci.yml` tests and builds the program on every push to `main` and on every pull request, on
+`windows-latest`, `ubuntu-latest` and `macos-latest`, and keeps them as workflow artifacts. The Mac build
+(`source/tools/package-macos.sh`) makes one program for Apple silicon and Intel (`lipo`), puts it in
+`All-in-1 Manager.app` with its icon and `Info.plist`, signs it ad hoc and zips it.
 
 Every push to `main` makes a release (`.github/workflows/release.yml`), and the version goes up by itself: when the
 version in `Cargo.toml` already has a release, the last number is raised (2.0.3 → 2.0.4), the bot commits
 `Version 2.0.4` to `main`, and that commit is tested, built and published as `rust-v2.0.4` with
-`all-in-1-manager-windows-x64.exe` and `all-in-1-manager-linux-x64`, the files the update check looks for. A
+`all-in-1-manager-windows-x64.exe`, `all-in-1-manager-linux-x64`, `all-in-1-manager-macos.zip` and
+`all-in-1-manager-macos-universal` (each program with its `.sha256`), the files the update check looks for. A
 version you set yourself and that has no release yet (for a bigger step, e.g. 2.1.0) is released as it is. Pushes
 that only change the README, the licence or `public/docs` release nothing. After a release, `git pull` brings the
 bot's version commit to your copy.

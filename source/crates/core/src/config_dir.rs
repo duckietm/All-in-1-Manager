@@ -1,5 +1,7 @@
 //! The local "configuration" directory, next to the installer or, if that is read-only, under the local application
-//! data folder (`%LOCALAPPDATA%\All-in-1 Manager\configuration`, `~/.local/share/All-in-1 Manager/configuration`).
+//! data folder (`%LOCALAPPDATA%\All-in-1 Manager\configuration`, `~/.local/share/All-in-1 Manager/configuration`,
+//! on macOS `~/Library/Application Support/All-in-1 Manager/configuration`). A Mac app (`All-in-1 Manager.app`)
+//! always uses the application data folder: inside the app it would be lost when the app is replaced.
 //! The same folder and file names as the C# installer, so an existing configuration keeps working.
 
 use std::path::{Path, PathBuf};
@@ -184,8 +186,15 @@ pub fn safe_name(host: &str) -> String {
     host.chars().map(|c| if c.is_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' }).collect()
 }
 
+/// The program runs from inside a Mac app: `<name>.app/Contents/MacOS/<program>`.
+fn in_app_bundle(exe: &Path) -> bool {
+    let mut parts = exe.ancestors().skip(1).filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+    parts.next().as_deref() == Some("MacOS") && parts.next().as_deref() == Some("Contents") && parts.next().is_some_and(|app| app.ends_with(".app"))
+}
+
 fn resolve() -> PathBuf {
-    if let Some(beside) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|p| p.join("configuration"))) {
+    let exe = std::env::current_exe().ok();
+    if let Some(beside) = exe.as_deref().filter(|exe| !in_app_bundle(exe)).and_then(|exe| exe.parent().map(|p| p.join("configuration"))) {
         if is_writable(&beside) {
             return beside;
         }
@@ -198,10 +207,13 @@ fn resolve() -> PathBuf {
     fallback
 }
 
-/// `%LOCALAPPDATA%` on Windows, `$XDG_DATA_HOME` or `~/.local/share` elsewhere (.NET's LocalApplicationData).
+/// `%LOCALAPPDATA%` on Windows, `~/Library/Application Support` on macOS, `$XDG_DATA_HOME` or `~/.local/share`
+/// elsewhere (.NET's LocalApplicationData).
 fn local_data_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Application Support"))
     } else {
         std::env::var_os("XDG_DATA_HOME")
             .filter(|v| !v.is_empty())
@@ -250,5 +262,13 @@ mod tests {
         std::fs::write(dir.path().join("id_ed25519.pub"), "x").unwrap();
         let second = free_path(dir.path(), "id_ed25519", ".pub");
         assert!(second.file_name().unwrap().to_string_lossy().starts_with("id_ed25519_"));
+    }
+
+    #[test]
+    fn a_mac_app_is_recognised() {
+        assert!(in_app_bundle(Path::new("/Applications/All-in-1 Manager.app/Contents/MacOS/all-in-1-manager")));
+        assert!(!in_app_bundle(Path::new("/Users/me/Downloads/all-in-1-manager-macos-universal")));
+        assert!(!in_app_bundle(Path::new("/opt/Contents/MacOS/all-in-1-manager")));
+        assert!(!in_app_bundle(Path::new("C:\\Tools\\all-in-1-manager.exe")));
     }
 }

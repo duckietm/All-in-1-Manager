@@ -75,7 +75,7 @@ jobs:
       - name: Test
         run: cargo test --workspace
       - name: Build the app
-        run: source/tools/package-macos.sh out
+        run: sh source/tools/package-macos.sh out
       - uses: actions/upload-artifact@v4
         with:
           name: all-in-1-manager-macos

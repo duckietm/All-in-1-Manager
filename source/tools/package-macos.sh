@@ -2,7 +2,7 @@
 # Builds the Mac version on a Mac (the GitHub macos runner): one program for Apple silicon and Intel (lipo), put in
 # "All-in-1 Manager.app" with its icon, signed ad hoc (Apple silicon runs only signed programs), and zipped.
 #
-#   source/tools/package-macos.sh [out]
+#   sh source/tools/package-macos.sh [out]
 #
 # out/ then holds:
 #   all-in-1-manager-macos.zip                the app, what people download

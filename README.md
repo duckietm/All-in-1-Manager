@@ -2048,7 +2048,7 @@ sudo apt-get install -y pkg-config libxkbcommon-dev libgl1-mesa-dev libgtk-3-dev
 ```
 
 On a Mac the Xcode command line tools are enough (`xcode-select --install`). `cargo build --release -p aio-app` makes
-the program for that Mac; `source/tools/package-macos.sh` makes the app for both kinds of Mac, as the release does
+the program for that Mac; `sh source/tools/package-macos.sh` makes the app for both kinds of Mac, as the release does
 (it needs `rustup target add aarch64-apple-darwin x86_64-apple-darwin` first).
 
 The quickest way: run the build script in the root of the repository. On Windows double-click **`build.cmd`** for a

@@ -397,6 +397,8 @@ impl InstallStep for EmulatorStep {
         ui.done(file_name(&jar));
 
         emulator::configure(server, &credentials, &timezone, memory_mb, &java_home, &log).await?;
+        // A config.ini kept from an older emulator gets the settings its config.ini.example added since.
+        emulator::add_new_settings(server, &log).await?;
         ui.done(&format!("{}@localhost, config.ini, emulator.service", credentials.emulator_user));
 
         let started = emulator::start(server, &whitelist, &log).await?;

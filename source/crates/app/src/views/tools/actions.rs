@@ -991,7 +991,7 @@ async fn update_emulator(job: &Job) -> Result<()> {
         return Ok(());
     }
     let server = job.server();
-    let run = job.start_run(&[n("git pull"), n("build.sh"), n("Start the new version")]);
+    let run = job.start_run(&[n("git pull"), n("New config.ini settings"), n("build.sh"), n("Start the new version")]);
     let log = run.logger();
     let (old_commit, old_version) = server_tools::emulator_version(server).await?;
     let commit = git_clone::update(server, &repository, branch.as_deref(), &log).await?;
@@ -999,12 +999,30 @@ async fn update_emulator(job: &Job) -> Result<()> {
     emulator_assets::install(server, &log).await?;
     let (new_commit, _) = server_tools::emulator_version(server).await?;
     run.done(&commit);
+    // Settings a newer config.ini.example brought, added to config.ini (the values there stay).
+    let added = emulator::add_new_settings(server, &log).await?;
+    run.done(&if added.is_empty() { t("none").to_string() } else { tf("{count} added", &[("count", &added.len().to_string())]) });
 
     let old_commit_text = old_commit.clone().unwrap_or_default();
     if new_commit == old_commit {
         if let Some(old_version) = &old_version {
             log(&format!("  No new commits: {old_version} stays."));
             run.done(t("not needed"));
+            if !added.is_empty() {
+                // The emulator reads config.ini only when it starts.
+                server_tools::restart_emulator(server, &log).await?;
+                run.done(t("loaded"));
+                run.result(
+                    ResultKind::Success,
+                    t("New settings added to config.ini"),
+                    &tf(
+                        "{version} ({commit}) is the newest version; config.ini got {count} new setting(s) from config.ini.example ({keys}) and the emulator was restarted to read them.",
+                        &[("version", old_version), ("commit", &old_commit_text), ("count", &added.len().to_string()), ("keys", &added.join(", "))],
+                    ),
+                );
+                job.check_quietly().await;
+                return Ok(());
+            }
             run.done(t("not needed"));
             run.result(
                 ResultKind::Success,
@@ -1039,6 +1057,14 @@ async fn update_emulator(job: &Job) -> Result<()> {
         tf(
             "{from} → {to} ({old} → {new}) is running.",
             &[("from", old_version.as_deref().unwrap_or("?")), ("to", &new_version_text), ("old", &old_commit_text), ("new", &new_commit_text)],
+        )
+    };
+    let message = if added.is_empty() {
+        message
+    } else {
+        format!(
+            "{message} {}",
+            tf("config.ini got {count} new setting(s) from config.ini.example: {keys}.", &[("count", &added.len().to_string()), ("keys", &added.join(", "))])
         )
     };
     run.result(ResultKind::Success, t("The emulator is updated"), &message);

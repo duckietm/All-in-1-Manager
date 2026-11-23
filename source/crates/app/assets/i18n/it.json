@@ -4028,5 +4028,10 @@
   "The files below that the client loads, in this order: a key in a later file wins.": "I file qui sotto che il client carica, in quest'ordine: una chiave in un file successivo prevale.",
   "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "Le tabelle lunghe: stili chat, effetti fotocamera, notifiche, modelli di stanza. Modificate di rado.",
   "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Questo client carica invece config.jsonc e i file in config/: Update Octane vi ha spostato questi valori (yarn config:split). Il file resta com'era.",
-  "not loaded": "non caricato"
+  "not loaded": "non caricato",
+  "New config.ini settings": "Nuove impostazioni di config.ini",
+  "New settings added to config.ini": "Nuove impostazioni aggiunte a config.ini",
+  "config.ini got {count} new setting(s) from config.ini.example: {keys}.": "config.ini ha ricevuto {count} nuova/e impostazione/i da config.ini.example: {keys}.",
+  "none": "nessuna",
+  "{version} ({commit}) is the newest version; config.ini got {count} new setting(s) from config.ini.example ({keys}) and the emulator was restarted to read them.": "{version} ({commit}) è la versione più recente; config.ini ha ricevuto {count} nuova/e impostazione/i da config.ini.example ({keys}) e l'emulatore è stato riavviato per leggerle."
 }

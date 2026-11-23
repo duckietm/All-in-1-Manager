@@ -65,6 +65,11 @@ async fn emulator_scripts() {
     let secrets = regex::Regex::new("(master_key|jwt\\.secret)=[A-Za-z0-9]{64}").unwrap();
     compare("emulator_configure", &secrets.replace_all(&recorder.text(), "$1=<random>"));
 
+    check("emulator_new_settings", output(0, "> config.ini: 1 new setting(s)\nADDED=db.pool.idle_timeout_ms \n"), |s| async move {
+        assert_eq!(emulator::add_new_settings(&*s, &log).await?, vec!["db.pool.idle_timeout_ms"]);
+        Ok(())
+    })
+    .await;
     check("emulator_configure_imager", None, |s| async move {
         assert!(!emulator::configure_imager(&*s, "https://hotel.example.com", &log).await?);
         Ok(())

@@ -4028,5 +4028,10 @@
   "The files below that the client loads, in this order: a key in a later file wins.": "İstemcinin bu sırayla yüklediği aşağıdaki dosyalar: sonraki dosyadaki bir anahtar kazanır.",
   "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "Uzun tablolar: sohbet stilleri, kamera efektleri, bildirimler, oda modelleri. Nadiren düzenlenir.",
   "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Bu istemci bunun yerine config.jsonc ve config/ altındaki dosyaları yükler: Update Octane bu değerleri oraya taşıdı (yarn config:split). Dosya olduğu gibi kalır.",
-  "not loaded": "yüklenmedi"
+  "not loaded": "yüklenmedi",
+  "New config.ini settings": "Yeni config.ini ayarları",
+  "New settings added to config.ini": "config.ini dosyasına yeni ayarlar eklendi",
+  "config.ini got {count} new setting(s) from config.ini.example: {keys}.": "config.ini, config.ini.example dosyasından {count} yeni ayar aldı: {keys}.",
+  "none": "yok",
+  "{version} ({commit}) is the newest version; config.ini got {count} new setting(s) from config.ini.example ({keys}) and the emulator was restarted to read them.": "{version} ({commit}) en yeni sürüm; config.ini, config.ini.example dosyasından {count} yeni ayar aldı ({keys}) ve emülatör bunları okumak için yeniden başlatıldı."
 }

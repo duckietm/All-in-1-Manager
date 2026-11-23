@@ -1,4 +1,4 @@
-"""The program's version, kept the same in Cargo.toml ([workspace.package]), Cargo.lock (the four aio-* crates) and
+"""The program's version, kept the same in Cargo.toml ([workspace.package]), Cargo.lock (the five aio-* crates) and
 the Windows version information (source/crates/app/resources/app.rc).
 
     python source/tools/version.py              # print the version
@@ -16,7 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CARGO = os.path.join(ROOT, "Cargo.toml")
 LOCK = os.path.join(ROOT, "Cargo.lock")
 RC = os.path.join(ROOT, "source", "crates", "app", "resources", "app.rc")
-CRATES = ("aio-app", "aio-core", "aio-remote", "aio-terminal")
+CRATES = ("aio-app", "aio-assets", "aio-core", "aio-remote", "aio-terminal")
 WORKSPACE_VERSION = re.compile(r'(\[workspace\.package\][^\[]*?\nversion = ")([^"]+)(")', re.S)
 
 

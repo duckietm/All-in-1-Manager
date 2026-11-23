@@ -552,6 +552,45 @@ pub async fn configure(
     script::run(server, &script::with_prelude(&body), log, "Configuring the emulator failed", Some(&stdin)).await
 }
 
+const NEW_SETTINGS: &str = r#"ini={{Directory}}/config.ini
+example="{{Repository}}/config example/config.ini.example"
+if [ ! -f "$ini" ] || [ ! -f "$example" ]; then
+  echo "> config.ini: no config.ini or config.ini.example to compare, nothing added"
+  exit 0
+fi
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# Every key=value of the example that config.ini lacks, with the comment lines right above it. A setting already in
+# config.ini is never changed, also when the example has another value.
+awk -v keys="$work/keys" '
+  { sub(/\r$/, "") }
+  FNR == NR { if ($0 !~ /^[ \t]*[#;]/ && index($0, "=") > 0) { k = substr($0, 1, index($0, "=") - 1); gsub(/^[ \t]+|[ \t]+$/, "", k); have[k] = 1 }
+              next }
+  /^[ \t]*[#;]/ { comment = comment $0 "\n"; next }
+  index($0, "=") == 0 { comment = ""; next }
+  { k = substr($0, 1, index($0, "=") - 1); gsub(/^[ \t]+|[ \t]+$/, "", k)
+    if (k != "" && !(k in have) && !(k in added)) { printf "%s%s\n", comment, $0; added[k] = 1; print k > keys }
+    comment = "" }
+' "$ini" "$example" > "$work/new"
+if [ ! -s "$work/keys" ]; then
+  echo "> config.ini: has every setting of config.ini.example"
+  exit 0
+fi
+cp -p "$ini" "$ini.bak-$(date +%Y%m%d-%H%M%S)"
+{ printf '\n# Added by All-in-1 Manager from config.ini.example on %s\n' "$(date +%Y-%m-%d)"; cat "$work/new"; } >> "$ini"
+echo "> config.ini: $(wc -l < "$work/keys") new setting(s) from config.ini.example added with the example's value (a backup was made):"
+grep -vE '^[[:space:]]*[#;]' "$work/new" | sed 's/^/  /'
+grep -qi 'change-me' "$work/new" && echo "  A new setting has a change-me value: set it in $ini and restart the emulator."
+echo "ADDED=$(tr '\n' ' ' < "$work/keys")""#;
+
+/// Adds the settings `config.ini.example` has and `config.ini` lacks (a newer emulator brought them), with the
+/// example's value and comment, at the end of config.ini; the values already there stay. Returns the keys added.
+pub async fn add_new_settings(server: &dyn Server, log: Log<'_>) -> Result<Vec<String>> {
+    let body = fill(NEW_SETTINGS, &[("Directory", &directory()), ("Repository", &repository())]);
+    let values = script::run_capturing(server, &script::with_prelude(&body), log, "Adding the new config.ini settings failed", &["ADDED"], None).await?;
+    Ok(values.or_empty("ADDED").split_whitespace().map(str::to_string).collect())
+}
+
 /// Camera and badge imager settings for emulator_settings.
 pub fn imager_settings(site_url: &str) -> Vec<(String, String)> {
     let camera = crate::hotel_site::camera();

@@ -4028,5 +4028,10 @@
   "The files below that the client loads, in this order: a key in a later file wins.": "Alla olevat tiedostot, jotka client lataa tässä järjestyksessä: myöhemmän tiedoston avain voittaa.",
   "The long tables: chat styles, camera effects, notifications, room models. Rarely edited.": "Pitkät taulukot: chat-tyylit, kameraefektit, ilmoitukset, huonemallit. Muokataan harvoin.",
   "This client loads config.jsonc and the files under config/ instead: Update Octane moved these values there (yarn config:split). The file is kept as it was.": "Tämä client lataa sen sijaan config.jsonc:n ja config/-kansion tiedostot: Update Octane siirsi nämä arvot sinne (yarn config:split). Tiedosto jää ennalleen.",
-  "not loaded": "ei ladattu"
+  "not loaded": "ei ladattu",
+  "New config.ini settings": "Uudet config.ini-asetukset",
+  "New settings added to config.ini": "Uusia asetuksia lisätty config.ini-tiedostoon",
+  "config.ini got {count} new setting(s) from config.ini.example: {keys}.": "config.ini sai {count} uutta asetusta config.ini.example-tiedostosta: {keys}.",
+  "none": "ei yhtään",
+  "{version} ({commit}) is the newest version; config.ini got {count} new setting(s) from config.ini.example ({keys}) and the emulator was restarted to read them.": "{version} ({commit}) on uusin versio; config.ini sai {count} uutta asetusta config.ini.example-tiedostosta ({keys}) ja emulaattori käynnistettiin uudelleen niiden lukemiseksi."
 }

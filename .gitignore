@@ -60,3 +60,8 @@ Thumbs.db
 /public/dev/
 /public/release/
 __pycache__/
+# The shortcuts the build scripts leave next to themselves
+/*.lnk
+/*.desktop
+/all-in-1-manager
+/all-in-1-manager-dev

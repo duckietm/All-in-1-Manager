@@ -113,6 +113,17 @@ impl Furnidata {
                     &item[(tag.len() + 1).min(item.len())..]
                 };
                 let body = &body[..body.find("</furnitype>").unwrap_or(body.len())];
+                // <partcolors><color>#fff</color>...</partcolors> -> {"color":["#fff",...]}.
+                if let Some(start) = body.find("<partcolors>") {
+                    let inner = &body[start + "<partcolors>".len()..];
+                    let inner = &inner[..inner.find("</partcolors>").unwrap_or(inner.len())];
+                    let colors: Vec<String> = inner
+                        .split("<color>")
+                        .skip(1)
+                        .map(|c| xml_unescape(c[..c.find("</color>").unwrap_or(c.len())].trim()))
+                        .collect();
+                    entry.insert("partcolors".into(), json!({ "color": colors }));
+                }
                 for child in body.split('<').skip(1) {
                     let Some((head, value)) = child.split_once('>') else {
                         continue;
@@ -122,12 +133,13 @@ impl Furnidata {
                         || key.starts_with('/')
                         || key.contains(char::is_whitespace)
                         || key.ends_with('/')
+                        || key == "color"
                     {
                         continue;
                     }
                     let value = xml_unescape(value.trim());
                     let value = match value.parse::<i64>() {
-                        Ok(n) if key != "name" && key != "description" => json!(n),
+                        Ok(n) if !TEXT_FIELDS.contains(&key) => json!(n),
                         _ => json!(value),
                     };
                     entry.entry(key.to_string()).or_insert(value);
@@ -177,6 +189,17 @@ impl Furnidata {
         self.len() == 0
     }
 }
+
+/// The XML child elements that stay text even when they look like a number.
+const TEXT_FIELDS: &[&str] = &[
+    "name",
+    "description",
+    "category",
+    "adurl",
+    "customparams",
+    "furniline",
+    "environment",
+];
 
 fn xml_attribute(tag: &str, name: &str) -> Option<String> {
     let mut rest = tag;

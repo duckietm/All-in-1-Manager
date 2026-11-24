@@ -4170,5 +4170,8 @@
   "Recording: {packets} packets, {wired} of them wired": "Opname: {packets} pakketten, waarvan {wired} wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Neemt elk pakket tussen je client en het hotel op, beide kanten op, vanaf de volgende kamer die je binnengaat: packets.jsonl (allemaal) en wired.txt (de wired-pakketten, ontleed). Om de wired in de emulator te bouwen.",
   "Stop recording": "Opname stoppen",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "De opname bevat alles wat je client en het hotel in die kamers sturen, ook chat: deel hem alleen met mensen die je vertrouwt."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "De opname bevat alles wat je client en het hotel in die kamers sturen, ook chat: deel hem alleen met mensen die je vertrouwt.",
+  "Your hotel's FurnitureData.json": "FurnitureData.json van je hotel",
+  "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Optioneel. Meubi die er al in staan, worden uit missing_furnidata.json weggelaten, en id's die het aan andere meubi geeft, worden hernummerd.",
+  "Empty: ids are not checked": "Leeg: id's worden niet gecontroleerd"
 }

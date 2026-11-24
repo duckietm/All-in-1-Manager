@@ -60,6 +60,8 @@ struct State {
     partial: Option<PathBuf>,
     error: Option<String>,
     cancel: Option<CancellationToken>,
+    /// A FurnitureData.json chosen in the file dialog, for the page to take.
+    picked_hotel_furnidata: Option<PathBuf>,
 }
 
 pub struct CatalogRipView {
@@ -74,6 +76,8 @@ pub struct CatalogRipView {
     items_lookup: bool,
     delay_ms: u64,
     output: String,
+    /// The hotel's own FurnitureData.json (empty: none).
+    hotel_furnidata: String,
 }
 
 impl CatalogRipView {
@@ -89,6 +93,7 @@ impl CatalogRipView {
             items_lookup: true,
             delay_ms: RipOptions::default().delay_ms,
             output: default_output().display().to_string(),
+            hotel_furnidata: String::new(),
         };
         view.reload_profiles();
         view
@@ -133,7 +138,10 @@ impl CatalogRipView {
         });
         ui.add_space(12.0);
 
-        ui.add_enabled_ui(!running, |ui| self.options(ui, palette));
+        if let Some(path) = self.state.lock().picked_hotel_furnidata.take() {
+            self.hotel_furnidata = path.display().to_string();
+        }
+        ui.add_enabled_ui(!running, |ui| self.options(ui, palette, shared));
         ui.add_space(12.0);
 
         ui.horizontal(|ui| {
@@ -179,7 +187,7 @@ impl CatalogRipView {
         click
     }
 
-    fn options(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+    fn options(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         widgets::card(ui, palette, egui::Margin::symmetric(24, 18), |ui| {
             ui.label(widgets::title_text(t("Options"), 17.0));
             ui.add_space(6.0);
@@ -230,6 +238,25 @@ impl CatalogRipView {
                     }
                 });
                 ui.end_row();
+
+                let hint = t("Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.");
+                ui.label(t("Your hotel's FurnitureData.json")).on_hover_text(hint);
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.hotel_furnidata).hint_text(t("Empty: ids are not checked")).desired_width(360.0))
+                        .on_hover_text(hint);
+                    if ui.add(widgets::secondary_button(t("Choose ..."))).on_hover_text(hint).clicked() {
+                        let state = self.state.clone();
+                        shared.spawn(async move {
+                            let dialog = rfd::AsyncFileDialog::new()
+                                .set_title(t("Your hotel's FurnitureData.json"))
+                                .add_filter("JSON / XML", &["json", "xml", "txt"]);
+                            if let Some(file) = dialog.pick_file().await {
+                                state.lock().picked_hotel_furnidata = Some(file.path().to_path_buf());
+                            }
+                        });
+                    }
+                });
+                ui.end_row();
             });
             for error in &self.profile_errors {
                 widgets::muted(ui, palette, &format!("⚠ {error}"), 12.0);
@@ -256,6 +283,7 @@ impl CatalogRipView {
             normal: self.normal,
             builders_club: self.builders_club,
             gearth_folder: Some(plugin_folder().join("G-Earth")),
+            hotel_furnidata: Some(self.hotel_furnidata.trim().to_string()).filter(|s| !s.is_empty()),
             ..RipOptions::default()
         };
         let choice = match self.profile.as_ref().and_then(|name| self.profiles.iter().find(|p| &p.name == name)) {

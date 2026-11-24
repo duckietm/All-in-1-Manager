@@ -4170,5 +4170,8 @@
   "Recording: {packets} packets, {wired} of them wired": "Tallennetaan: {packets} pakettia, joista {wired} wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Tallentaa jokaisen paketin clientisi ja hotellin välillä molempiin suuntiin seuraavasta huoneesta alkaen: packets.jsonl (kaikki) ja wired.txt (wired-paketit purettuina). Wiredien rakentamiseen emulaattoriin.",
   "Stop recording": "Lopeta tallennus",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille.",
+  "Your hotel's FurnitureData.json": "Hotellisi FurnitureData.json",
+  "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Valinnainen. Huonekalut, jotka siinä jo on, jätetään pois tiedostosta missing_furnidata.json, ja tunnukset, jotka se antaa muille huonekaluille, numeroidaan uudelleen.",
+  "Empty: ids are not checked": "Tyhjä: tunnuksia ei tarkisteta"
 }

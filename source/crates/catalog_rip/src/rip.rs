@@ -83,6 +83,10 @@ pub struct RipOptions {
     /// The source hotel's productdata (URL or file): product names for the reports. Official
     /// Habbo hotels need none.
     pub productdata_url: Option<String>,
+    /// The target hotel's own FurnitureData.json (a file or URL; empty: none). The furni it
+    /// already lists are left out of missing_furnidata.json, and an id it gives another furni is
+    /// renumbered (renumbered.json).
+    pub hotel_furnidata: Option<String>,
     /// Read only the catalogue indexes (the page trees), no pages: for choosing branches, then
     /// [`RipOptions::only_pages`] with [`RipOptions::resume_from`] set to this rip's folder.
     pub index_only: bool,
@@ -134,6 +138,7 @@ impl Default for RipOptions {
             adaptive_delay: true,
             max_delay_ms: 5_000,
             productdata_url: None,
+            hotel_furnidata: None,
             index_only: false,
             only_pages: None,
             diff_with_previous: true,
@@ -1512,6 +1517,30 @@ impl Output<'_> {
         }
     }
 
+    /// The target hotel's own FurnitureData.json, when the settings name one.
+    async fn hotel_furnidata(&self) -> Option<Furnidata> {
+        let source = self
+            .options
+            .hotel_furnidata
+            .clone()
+            .filter(|s| !s.trim().is_empty())?;
+        match furnidata::load(&source).await {
+            Ok(data) => {
+                (self.hooks.log)(&format!(
+                    "Your hotel's furnidata ({source}): {} furni; missing_furnidata.json is checked against it.",
+                    n0(data.len())
+                ));
+                Some(data)
+            }
+            Err(e) => {
+                self.hooks.warn(&format!(
+                    "your hotel's furnidata could not be read ({e:#}); the ids of missing_furnidata.json are not checked."
+                ));
+                None
+            }
+        }
+    }
+
     async fn productdata(&self, host: &str) -> Option<Productdata> {
         if !self.options.use_furnidata {
             return None;
@@ -1672,7 +1701,7 @@ impl Output<'_> {
             log(&format!(
                 "{} products are not in the hotel's items_base: missing_furni.json{}.",
                 n0(missing_furni.len()),
-                if furnidata.is_some() { " and missing_furnidata.json (for the furni import)" } else { "" }
+                if furnidata.is_some() { " and missing_furnidata.json + missing_productdata.json (Nitro gamedata, for the furni import)" } else { "" }
             ));
             write(
                 "missing_furni.json",
@@ -1681,13 +1710,35 @@ impl Output<'_> {
                     "furni": missing_furni,
                 }))?,
             )?;
-            if let Some(data) = &furnidata {
-                write(
-                    "missing_furnidata.json",
-                    &serde_json::to_string_pretty(&missing::missing_furnidata(&missing_furni, data))?,
-                )?;
-            }
         }
+        let gamedata = match (&furnidata, missing_furni.is_empty()) {
+            (Some(data), false) => {
+                let hotel = self.hotel_furnidata().await;
+                let out = missing::missing_gamedata(
+                    &missing_furni,
+                    data,
+                    products.as_ref(),
+                    hotel.as_ref(),
+                );
+                write("missing_furnidata.json", &crate::gamedata::to_text(&out.furnidata))?;
+                write("missing_productdata.json", &crate::gamedata::to_text(&out.productdata))?;
+                if !out.in_hotel_furnidata.is_empty() {
+                    log(&format!(
+                        "{} of them are in your hotel's furnidata already (only items_base lacks them): left out of missing_furnidata.json.",
+                        n0(out.in_hotel_furnidata.len())
+                    ));
+                }
+                if !out.renumbered.is_empty() {
+                    log(&format!(
+                        "{} ids of missing_furnidata.json are taken in your hotel's furnidata: renumbered (renumbered.json).",
+                        n0(out.renumbered.len())
+                    ));
+                    write("renumbered.json", &serde_json::to_string_pretty(&out.renumbered)?)?;
+                }
+                Some(out)
+            }
+            _ => None,
+        };
 
         let changes = match self.previous(catalog, folder) {
             Some((earlier, old)) => {
@@ -1769,11 +1820,14 @@ impl Output<'_> {
                 "\nMISSING FURNI (missing_furni.json)\n  {} products are not in the hotel's items_base, so their offers are not in catalog_manager.sql.\n  {}\n",
                 missing_furni.len(),
                 if furnidata.is_some() {
-                    "missing_furnidata.json lists them as a furnidata: give it to the Manager's furni import first."
+                    "missing_furnidata.json lists them as a furnidata (see NITRO GAMEDATA): give it to the Manager's furni import first."
                 } else {
                     "With the source hotel's furnidata they would also be written as a furnidata for the furni import."
                 }
             ));
+        }
+        if let Some(out) = &gamedata {
+            readme.push_str(&missing::readme_section(out));
         }
         if let Some(data) = &furnidata {
             readme.push_str(&format!(

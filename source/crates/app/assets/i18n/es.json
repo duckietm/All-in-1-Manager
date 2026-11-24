@@ -4170,5 +4170,8 @@
   "Recording: {packets} packets, {wired} of them wired": "Grabando: {packets} paquetes, {wired} de ellos wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Graba cada paquete entre tu cliente y el hotel, en ambos sentidos, desde la próxima sala en la que entres: packets.jsonl (todos) y wired.txt (los wired, descifrados). Para programar los wired en el emulador.",
   "Stop recording": "Detener la grabación",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "La grabación contiene todo lo que tu cliente y el hotel envían en esas salas, también el chat: compártela solo con personas de confianza."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "La grabación contiene todo lo que tu cliente y el hotel envían en esas salas, también el chat: compártela solo con personas de confianza.",
+  "Your hotel's FurnitureData.json": "FurnitureData.json de tu hotel",
+  "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Opcional. Los furnis que ya incluye se omiten de missing_furnidata.json, y los id que asigna a otros furnis se renumeran.",
+  "Empty: ids are not checked": "Vacío: los id no se comprueban"
 }

@@ -71,9 +71,11 @@ impl Furnidata {
                         .or_else(|| id.as_str().and_then(|s| s.trim().parse().ok()))
                 });
                 let name = f.get("classname").and_then(Value::as_str).map(str::trim);
+                // An id outside the client's int range is no furni id: skipped, never wrapped.
+                let id = id.and_then(|id| i32::try_from(id).ok());
                 if let (Some(id), Some(name)) = (id, name) {
                     if !name.is_empty() {
-                        data.insert(kind, id as i32, name.to_string(), f.clone());
+                        data.insert(kind, id, name.to_string(), f.clone());
                     }
                 }
             }
@@ -138,6 +140,10 @@ impl Furnidata {
                         continue;
                     }
                     let value = xml_unescape(value.trim());
+                    // <environment></environment> says what <environment/> says: nothing.
+                    if value.is_empty() {
+                        continue;
+                    }
                     let value = match value.parse::<i64>() {
                         Ok(n) if !TEXT_FIELDS.contains(&key) => json!(n),
                         _ => json!(value),
@@ -294,6 +300,28 @@ mod tests {
         assert_eq!(subset["roomitemtypes"]["furnitype"][0]["classname"], "rare_a&b");
         assert_eq!(subset["wallitemtypes"]["furnitype"][0]["id"], 13);
         assert!(Furnidata::parse("{}").is_err());
+        // Ids outside i32 are skipped, not wrapped.
+        let big = r#"{"roomitemtypes":{"furnitype":[{"id":2147483648,"classname":"too_big"},{"id":-2147483649,"classname":"too_small"},{"id":2147483647,"classname":"top"}]}}"#;
+        let f = Furnidata::parse(big).unwrap();
+        assert_eq!(f.floor.len(), 1);
+        assert_eq!(f.floor[&i32::MAX], "top");
+        assert!(Furnidata::parse(r#"{"roomitemtypes":{"furnitype":[{"id":4294967309,"classname":"wraps_to_13"}]}}"#).is_err());
+        // An empty element is the same as a self-closing one.
+        let xml = "<furnidata><roomitemtypes>\
+                   <furnitype id=\"1\" classname=\"a\"><environment></environment><furniline/></furnitype>\
+                   <furnitype id=\"2\" classname=\"a\"><environment/><furniline></furniline></furnitype>\
+                   </roomitemtypes></furnidata>";
+        let f = Furnidata::parse(xml).unwrap();
+        let without_id = |id: i32| {
+            let mut e = f.entries[&('s', id)].clone();
+            e.as_object_mut().unwrap().remove("id");
+            e
+        };
+        assert_eq!(without_id(1), without_id(2));
+        assert_eq!(without_id(1), json!({ "classname": "a" }));
+        let nitro = |id: i32| crate::gamedata::nitro_furni('s', &f.entries[&('s', id)], None);
+        assert_eq!(nitro(1)["environment"], Value::Null);
+        assert_eq!(nitro(1)["environment"], nitro(2)["environment"]);
         assert!(Furnidata::parse("nope").is_err());
     }
 

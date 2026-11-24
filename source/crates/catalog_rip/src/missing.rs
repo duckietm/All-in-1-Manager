@@ -105,7 +105,11 @@ pub struct Renumbered {
     pub product_type: String,
     pub classname: String,
     pub old_id: i64,
-    pub new_id: i64,
+    /// `None`: no free id up to 2147483647 (the furni is left out of the files).
+    pub new_id: Option<i64>,
+    /// "no free id" when `new_id` is `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// The missing floor and wall furni as Nitro gamedata (see [`missing_gamedata`]).
@@ -122,6 +126,8 @@ pub struct MissingGamedata {
     pub renumbered: Vec<Renumbered>,
     /// Whether a hotel FurnitureData.json was given (ids checked).
     pub checked: bool,
+    /// Why the hotel FurnitureData.json named in the settings could not be read.
+    pub hotel_error: Option<String>,
 }
 
 impl MissingGamedata {
@@ -206,13 +212,26 @@ pub fn missing_gamedata(
             while ids.contains(new) {
                 *new += 1;
             }
+            let product_type = if kind == 's' { "s" } else { "i" }.to_string();
+            if *new > i64::from(i32::MAX) {
+                // Ids are ints in the client and items_base.sprite_id: no wrapping.
+                out.renumbered.push(Renumbered {
+                    product_type,
+                    classname,
+                    old_id: id,
+                    new_id: None,
+                    note: Some("no free id".into()),
+                });
+                continue;
+            }
             ids.insert(*new);
             nitro["id"] = json!(*new);
             out.renumbered.push(Renumbered {
-                product_type: if kind == 's' { "s" } else { "i" }.to_string(),
+                product_type,
                 classname: classname.clone(),
                 old_id: id,
-                new_id: *new,
+                new_id: Some(*new),
+                note: None,
             });
         }
         let text = |field: &str, i: usize| {
@@ -255,10 +274,21 @@ pub fn readme_section(out: &MissingGamedata) -> String {
         out.floor(),
         out.wall()
     );
+    text.push_str(
+        "  Offer ids (offerid, bcofferid) are kept from the source hotel; they are not checked against your offers.\n",
+    );
     if !out.checked {
-        text.push_str(
-            "  The ids were not checked against your hotel's FurnitureData.json (none was given in the\n  ripper's settings): an id your hotel already uses for another furni would clash.\n",
-        );
+        match &out.hotel_error {
+            Some(error) => {
+                let _ = writeln!(
+                    text,
+                    "  Your hotel's FurnitureData.json could not be read ({error}), so the ids were not\n  checked: an id your hotel already uses for another furni would clash."
+                );
+            }
+            None => text.push_str(
+                "  The ids were not checked against your hotel's FurnitureData.json (none was given in the\n  ripper's settings): an id your hotel already uses for another furni would clash.\n",
+            ),
+        }
         return text;
     }
     let _ = writeln!(
@@ -284,7 +314,18 @@ pub fn readme_section(out: &MissingGamedata) -> String {
             out.renumbered.len()
         );
         for r in &out.renumbered {
-            let _ = writeln!(text, "    {} {}: {} -> {}", r.product_type, r.classname, r.old_id, r.new_id);
+            match r.new_id {
+                Some(new) => {
+                    let _ = writeln!(text, "    {} {}: {} -> {new}", r.product_type, r.classname, r.old_id);
+                }
+                None => {
+                    let _ = writeln!(
+                        text,
+                        "    {} {}: {} -> no free id (left out of the files)",
+                        r.product_type, r.classname, r.old_id
+                    );
+                }
+            }
         }
     }
     text
@@ -438,8 +479,9 @@ mod tests {
         let hotel = Furnidata::parse(include_str!("../tests/fixtures/nitro_furnituredata.json")).unwrap();
         let floor_max = *hotel.floor.keys().max().unwrap();
         let wall_max = *hotel.wall.keys().max().unwrap();
-        let (taken_floor, taken_name) = hotel.floor.iter().next().map(|(i, n)| (*i, n.clone())).unwrap();
-        let taken_wall = *hotel.wall.keys().next().unwrap();
+        // The smallest ids: the same furni on every run.
+        let (taken_floor, taken_name) = hotel.floor.iter().min_by_key(|(i, _)| **i).map(|(i, n)| (*i, n.clone())).unwrap();
+        let taken_wall = *hotel.wall.keys().min().unwrap();
         let source = Furnidata::parse(&format!(
             r#"{{"roomitemtypes":{{"furnitype":[
                  {{"id":{taken_floor},"classname":"new_sofa","name":"Sofa"}},
@@ -481,13 +523,15 @@ mod tests {
                     product_type: "s".into(),
                     classname: "new_sofa".into(),
                     old_id: i64::from(taken_floor),
-                    new_id: expected_sofa
+                    new_id: Some(expected_sofa),
+                    note: None,
                 },
                 Renumbered {
                     product_type: "i".into(),
                     classname: "new_poster".into(),
                     old_id: i64::from(taken_wall),
-                    new_id: i64::from(wall_max) + 1
+                    new_id: Some(i64::from(wall_max) + 1),
+                    note: None,
                 },
             ]
         );
@@ -496,6 +540,53 @@ mod tests {
         let products = out.productdata["productdata"]["product"].as_array().unwrap();
         assert_eq!(products.len(), 4);
         assert!(products.iter().any(|p| p["code"] == "new_sofa" && p["name"] == "Sofa"));
+        let readme = readme_section(&out);
+        assert!(readme.contains(&format!("s new_sofa: {taken_floor} -> {expected_sofa}")), "{readme}");
+        assert!(readme.contains("Offer ids (offerid, bcofferid) are kept from the source hotel"));
+    }
+
+    /// A hotel whose ids reach 2147483647 has no free id above its highest: the furni is left
+    /// out and listed, never given a wrapped id.
+    #[test]
+    fn no_free_id_above_the_hotels_max() {
+        let hotel = Furnidata::parse(
+            r#"{"roomitemtypes":{"furnitype":[{"id":7,"classname":"old_chair"},{"id":2147483647,"classname":"top"}]}}"#,
+        )
+        .unwrap();
+        let source = Furnidata::parse(
+            r#"{"roomitemtypes":{"furnitype":[{"id":7,"classname":"new_chair"},{"id":8,"classname":"free"}]}}"#,
+        )
+        .unwrap();
+        let list = vec![missing("s", 7, "new_chair"), missing("s", 8, "free")];
+        let out = missing_gamedata(&list, &source, None, Some(&hotel));
+        assert_eq!(
+            out.renumbered,
+            vec![Renumbered {
+                product_type: "s".into(),
+                classname: "new_chair".into(),
+                old_id: 7,
+                new_id: None,
+                note: Some("no free id".into()),
+            }]
+        );
+        assert_eq!(out.floor(), 1);
+        assert_eq!(out.furnidata["roomitemtypes"]["furnitype"][0]["classname"], "free");
+        assert_eq!(out.productdata["productdata"]["product"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            serde_json::to_string(&out.renumbered).unwrap(),
+            r#"[{"type":"s","classname":"new_chair","old_id":7,"new_id":null,"note":"no free id"}]"#
+        );
+        assert!(readme_section(&out).contains("s new_chair: 7 -> no free id (left out of the files)"));
+    }
+
+    #[test]
+    fn readme_says_why_the_ids_were_not_checked() {
+        let mut out = MissingGamedata::default();
+        assert!(readme_section(&out).contains("none was given"));
+        out.hotel_error = Some("reading x.json: not found".into());
+        let text = readme_section(&out);
+        assert!(text.contains("could not be read (reading x.json: not found)"), "{text}");
+        assert!(!text.contains("none was given"));
     }
 
     /// Flash XML furnidata becomes Nitro entries (bools from 0/1, partcolors, text fields).
@@ -519,8 +610,8 @@ mod tests {
         assert_eq!(
             gamedata::to_text(&out.furnidata),
             concat!(
-                r##"{"roomitemtypes":{"furnitype":[{"id":13,"classname":"shelves_norja","revision":61856,"category":"shelf","defaultdir":0,"xdim":1,"ydim":1,"partcolors":{"color":["#ffffff","#F7EBBC"]},"name":"Beige Bookcase","description":"For nic naks & art deco books","adurl":null,"offerid":5,"buyout":true,"rentofferid":-1,"rentbuyout":false,"bc":true,"excludeddynamic":false,"bcofferid":5,"customparams":null,"specialtype":1,"canstandon":false,"cansiton":false,"canlayon":false,"canputstuffon":false,"height":1.0,"furniline":"iced","environment":"","rare":false,"tradeable":true,"recyclable":true}]},"##,
-                r##""wallitemtypes":{"furnitype":[{"id":4001,"classname":"poster","revision":1,"category":"other","name":"7","description":"","adurl":null,"specialtype":1,"furniline":"100","environment":null,"rare":false,"tradeable":true,"recyclable":true,"offerid":-1,"buyout":false,"rentofferid":-1,"rentbuyout":false,"bc":false,"excludeddynamic":false,"bcofferid":-1}]}}"##
+                r##"{"roomitemtypes":{"furnitype":[{"id":13,"classname":"shelves_norja","revision":61856,"category":"shelf","defaultdir":0,"xdim":1,"ydim":1,"partcolors":{"color":["#ffffff","#F7EBBC"]},"name":"Beige Bookcase","description":"For nic naks & art deco books","adurl":null,"offerid":5,"buyout":true,"rentofferid":-1,"rentbuyout":false,"bc":true,"excludeddynamic":false,"bcofferid":5,"customparams":null,"specialtype":1,"canstandon":false,"cansiton":false,"canlayon":false,"canputstuffon":false,"height":1.0,"furniline":"iced","environment":null,"rare":false,"tradeable":true,"recyclable":true}]},"##,
+                r##""wallitemtypes":{"furnitype":[{"id":4001,"classname":"poster","revision":1,"category":"other","name":"7","description":null,"adurl":null,"specialtype":1,"furniline":"100","environment":null,"rare":false,"tradeable":true,"recyclable":true,"offerid":-1,"buyout":false,"rentofferid":-1,"rentbuyout":false,"bc":false,"excludeddynamic":false,"bcofferid":-1}]}}"##
             )
         );
     }

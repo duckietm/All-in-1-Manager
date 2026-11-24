@@ -1517,26 +1517,30 @@ impl Output<'_> {
         }
     }
 
-    /// The target hotel's own FurnitureData.json, when the settings name one.
-    async fn hotel_furnidata(&self) -> Option<Furnidata> {
-        let source = self
+    /// The target hotel's own FurnitureData.json, when the settings name one: `Err` with the
+    /// reason when it cannot be read.
+    async fn hotel_furnidata(&self) -> Result<Option<Furnidata>, String> {
+        let Some(source) = self
             .options
             .hotel_furnidata
             .clone()
-            .filter(|s| !s.trim().is_empty())?;
+            .filter(|s| !s.trim().is_empty())
+        else {
+            return Ok(None);
+        };
         match furnidata::load(&source).await {
             Ok(data) => {
                 (self.hooks.log)(&format!(
                     "Your hotel's furnidata ({source}): {} furni; missing_furnidata.json is checked against it.",
                     n0(data.len())
                 ));
-                Some(data)
+                Ok(Some(data))
             }
             Err(e) => {
                 self.hooks.warn(&format!(
                     "your hotel's furnidata could not be read ({e:#}); the ids of missing_furnidata.json are not checked."
                 ));
-                None
+                Err(format!("{e:#}"))
             }
         }
     }
@@ -1713,13 +1717,17 @@ impl Output<'_> {
         }
         let gamedata = match (&furnidata, missing_furni.is_empty()) {
             (Some(data), false) => {
-                let hotel = self.hotel_furnidata().await;
-                let out = missing::missing_gamedata(
+                let (hotel, hotel_error) = match self.hotel_furnidata().await {
+                    Ok(hotel) => (hotel, None),
+                    Err(e) => (None, Some(e)),
+                };
+                let mut out = missing::missing_gamedata(
                     &missing_furni,
                     data,
                     products.as_ref(),
                     hotel.as_ref(),
                 );
+                out.hotel_error = hotel_error;
                 write("missing_furnidata.json", &crate::gamedata::to_text(&out.furnidata))?;
                 write("missing_productdata.json", &crate::gamedata::to_text(&out.productdata))?;
                 if !out.in_hotel_furnidata.is_empty() {

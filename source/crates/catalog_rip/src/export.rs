@@ -1004,7 +1004,9 @@ pub fn readme(
          \x20 catalog_items.sql   INSERTs for Arcturus' catalog_items.\n\
          \x20 catalog_pages_bc.sql, catalog_items_bc.sql  The Builders Club catalogue, for catalog_pages_bc\n\
          \x20                     and catalog_items_bc (only when it was ripped; Habbo numbers it apart).\n\
-         \x20 images/             Page images (headers, teasers, ...) from the catalogue image URL,\n\
+         \x20 images/             Page images (headers, teasers, ...) and the th_* thumbnails of wallpaper,\n\
+         \x20                     floor and landscape products, from the catalogue image URL (images your\n\
+         \x20                     own catalogue folder already has are not downloaded (see the images line below),\n\
          \x20 images/icons/       page icons icon_<n>.png from the icon URL,\n\
          \x20 images/frontpage/   frontpage promo images.\n\
          \nIMPORT (Arcturus / Morningstar, MariaDB or MySQL)\n\

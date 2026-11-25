@@ -4173,5 +4173,8 @@
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Kayıt, istemcinin ve otelin o odalarda gönderdiği her şeyi, sohbet dahil, içerir: yalnızca güvendiğin kişilerle paylaş.",
   "Your hotel's FurnitureData.json": "Otelinin FurnitureData.json dosyası",
   "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "İsteğe bağlı. Zaten listelediği mobilyalar missing_furnidata.json dosyasına alınmaz ve başka mobilyalara verdiği id'ler yeniden numaralandırılır.",
-  "Empty: ids are not checked": "Boş: id'ler denetlenmez"
+  "Empty: ids are not checked": "Boş: id'ler denetlenmez",
+  "Your catalogue images folder": "Katalog görselleri klasörün",
+  "Optional. Your c_images/catalogue folder: images it already has (including the th_* thumbnails) are not downloaded again.": "İsteğe bağlı. c_images/catalogue klasörün: içinde zaten bulunan görseller (th_* küçük resimleri dahil) yeniden indirilmez.",
+  "Empty: everything is downloaded": "Boş: her şey indirilir"
 }

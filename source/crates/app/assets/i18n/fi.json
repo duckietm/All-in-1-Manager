@@ -4173,5 +4173,8 @@
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille.",
   "Your hotel's FurnitureData.json": "Hotellisi FurnitureData.json",
   "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Valinnainen. Huonekalut, jotka siinä jo on, jätetään pois tiedostosta missing_furnidata.json, ja tunnukset, jotka se antaa muille huonekaluille, numeroidaan uudelleen.",
-  "Empty: ids are not checked": "Tyhjä: tunnuksia ei tarkisteta"
+  "Empty: ids are not checked": "Tyhjä: tunnuksia ei tarkisteta",
+  "Your catalogue images folder": "Luettelokuvien kansiosi",
+  "Optional. Your c_images/catalogue folder: images it already has (including the th_* thumbnails) are not downloaded again.": "Valinnainen. c_images/catalogue-kansiosi: siinä jo olevia kuvia (myös th_*-pikkukuvia) ei ladata uudelleen.",
+  "Empty: everything is downloaded": "Tyhjä: kaikki ladataan"
 }

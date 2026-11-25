@@ -4173,5 +4173,8 @@
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "De opname bevat alles wat je client en het hotel in die kamers sturen, ook chat: deel hem alleen met mensen die je vertrouwt.",
   "Your hotel's FurnitureData.json": "FurnitureData.json van je hotel",
   "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Optioneel. Meubi die er al in staan, worden uit missing_furnidata.json weggelaten, en id's die het aan andere meubi geeft, worden hernummerd.",
-  "Empty: ids are not checked": "Leeg: id's worden niet gecontroleerd"
+  "Empty: ids are not checked": "Leeg: id's worden niet gecontroleerd",
+  "Your catalogue images folder": "Je map met catalogusafbeeldingen",
+  "Optional. Your c_images/catalogue folder: images it already has (including the th_* thumbnails) are not downloaded again.": "Optioneel. Je map c_images/catalogue: afbeeldingen die er al in staan (ook de th_*-miniaturen) worden niet opnieuw gedownload.",
+  "Empty: everything is downloaded": "Leeg: alles wordt gedownload"
 }

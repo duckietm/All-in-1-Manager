@@ -4173,5 +4173,8 @@
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "La registrazione contiene tutto ciò che il tuo client e l'hotel inviano in quelle stanze, anche la chat: condividila solo con persone di fiducia.",
   "Your hotel's FurnitureData.json": "FurnitureData.json del tuo hotel",
   "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Facoltativo. I furni che contiene già vengono esclusi da missing_furnidata.json e gli id che assegna ad altri furni vengono rinumerati.",
-  "Empty: ids are not checked": "Vuoto: gli id non vengono controllati"
+  "Empty: ids are not checked": "Vuoto: gli id non vengono controllati",
+  "Your catalogue images folder": "La tua cartella delle immagini del catalogo",
+  "Optional. Your c_images/catalogue folder: images it already has (including the th_* thumbnails) are not downloaded again.": "Facoltativo. La tua cartella c_images/catalogue: le immagini che ha già (anche le miniature th_*) non vengono scaricate di nuovo.",
+  "Empty: everything is downloaded": "Vuoto: viene scaricato tutto"
 }

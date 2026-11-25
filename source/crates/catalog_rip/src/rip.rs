@@ -87,6 +87,9 @@ pub struct RipOptions {
     /// already lists are left out of missing_furnidata.json, and an id it gives another furni is
     /// renumbered (renumbered.json).
     pub hotel_furnidata: Option<String>,
+    /// The owner's own c_images/catalogue folder (empty: none). Images already in it are not
+    /// downloaded again (reported as "already in your folder").
+    pub own_catalogue_images: Option<String>,
     /// Read only the catalogue indexes (the page trees), no pages: for choosing branches, then
     /// [`RipOptions::only_pages`] with [`RipOptions::resume_from`] set to this rip's folder.
     pub index_only: bool,
@@ -139,6 +142,7 @@ impl Default for RipOptions {
             max_delay_ms: 5_000,
             productdata_url: None,
             hotel_furnidata: None,
+            own_catalogue_images: None,
             index_only: false,
             only_pages: None,
             diff_with_previous: true,
@@ -1793,10 +1797,26 @@ impl Output<'_> {
         } else if self.cancel.is_cancelled() {
             (images::ImageStats::default(), "not downloaded (the rip was cancelled)".to_string())
         } else {
-            log("Downloading page images and icons ...");
-            let stats =
-                images::download(catalog, folder, &catalog_url, &icon_url, log, self.cancel)
-                    .await;
+            log("Downloading page images, icons and thumbnails ...");
+            let have_dir = options
+                .own_catalogue_images
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from);
+            if let Some(dir) = have_dir.as_deref().filter(|d| !d.is_dir()) {
+                self.hooks.warn(&format!("your catalogue images folder {} does not exist; everything is downloaded.", dir.display()));
+            }
+            if furnidata.is_none() {
+                log("No furnidata: the wallpaper, floor and landscape thumbnails (th_*) are not downloaded.");
+            }
+            let sources = images::Sources {
+                furnidata: furnidata.as_ref(),
+                catalog_url: &catalog_url,
+                icon_url: &icon_url,
+                have_dir: have_dir.as_deref().filter(|d| d.is_dir()),
+            };
+            let stats = images::download(catalog, folder, &sources, log, self.cancel).await;
             let text = if self.cancel.is_cancelled() {
                 format!("{} (stopped: cancelled)", stats.describe())
             } else {

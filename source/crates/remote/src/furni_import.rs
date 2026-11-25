@@ -2,7 +2,7 @@
 //! on a new catalogue page "import_<date>" (parent_id -1), so the owner can move it, or its furni, where they want.
 //!
 //! The furniture comes from Get Assets' Habbo download on this computer: gamedata/config/FurnitureData.json and
-//! gamedata/furniture/<name>.hab. Every items_base value is worked out the way the All-in-1 Converter's Generate SQL
+//! gamedata/furniture/<name>.hab (or, without one, Nitro's <name>.nitro: the same json). Every items_base value is worked out the way the All-in-1 Converter's Generate SQL
 //! does for a .nitro / .hab bundle (Generate_SQL.cs ProcessNitroFile; HabFurniScan.cs reads the same .hab json):
 //! - width / length / stack_height: logic.model.dimensions x / y / z of the bundle (1, 1, 0 when missing); a wall
 //!   item ('i') is always 1 x 1 x 0.00;
@@ -10,7 +10,8 @@
 //! - allow_stack: the height is not 1.0 and the furni can not be sat or laid on;
 //! - interaction_modes_count: the animation ids 0..49 of the first visualization that has any (the highest + 1
 //!   with an animation 0, else their number; 1 without);
-//! - interaction_type 'recolorable' for "*_recolorable", else 'default'; sprite_id the furnidata id, public_name the
+//! - interaction_type 'recolorable' for "*_recolorable", else the Polaris interaction of the bundle's logicType
+//!   ([`crate::interactions`]), else 'default'; sprite_id the furnidata id, public_name the
 //!   classname, gift / trade / marketplace / inventory stack on, recycle off;
 //! - a colour variant ("rare_dragonlamp*5") uses the bundle of its base name ("rare_dragonlamp.hab").
 //!
@@ -34,6 +35,8 @@ pub struct Bundle {
     pub modes: i64,
     /// A multiheight furni (logicType furniture_multiheight): the height of each state.
     pub multiheight: Option<Heights>,
+    /// The Polaris interaction_type of the bundle's logicType; None: nothing special ('default').
+    pub interaction: Option<&'static str>,
 }
 
 /// The height of each state of a multiheight furni (at most [`Heights::MAX`] states).
@@ -171,21 +174,44 @@ pub fn interaction_modes_count(json: &Value) -> i64 {
 /// What the json of a bundle gives. (ProcessNitroFile)
 pub fn bundle_from_json(json: &Value) -> Bundle {
     let (width, length, height) = dimensions(json).unwrap_or((1.0, 1.0, 0.0));
-    Bundle { width, length, height, modes: interaction_modes_count(json), multiheight: multiheight_heights(json) }
+    let interaction = json.get("logicType").and_then(Value::as_str).and_then(crate::interactions::for_logic_type);
+    Bundle { width, length, height, modes: interaction_modes_count(json), multiheight: multiheight_heights(json), interaction }
 }
 
-/// Reads the first .json of a .hab file (as HabFurniScan does); None when it is missing or unreadable.
+/// Reads the json of a .hab file (its first .json, as HabFurniScan does) or of a .nitro file (told apart by their
+/// content); None when it is missing or unreadable.
 pub fn read_bundle(path: &Path) -> Option<Bundle> {
     let data = std::fs::read(path).ok()?;
-    let files = aio_assets::hab::read(&data).ok()?;
-    let (_, json) = files.iter().find(|(name, _)| name.to_ascii_lowercase().ends_with(".json"))?;
-    let json: Value = serde_json::from_slice(json).ok()?;
+    let json: Value = if aio_assets::hab::is_hab(&data) {
+        let files = aio_assets::hab::read(&data).ok()?;
+        let (_, json) = files.iter().find(|(name, _)| name.to_ascii_lowercase().ends_with(".json"))?;
+        serde_json::from_slice(json).ok()?
+    } else {
+        aio_assets::nitro::read_json(&data).ok()?
+    };
     Some(bundle_from_json(&json))
+}
+
+/// The bundle `name` in `dir`: <name>.hab, or the name in lower case; without a .hab, <name>.nitro the same way.
+pub fn read_bundle_in(dir: &Path, name: &str) -> Option<Bundle> {
+    let lower = name.to_lowercase();
+    ["hab", "nitro"].iter().find_map(|extension| {
+        read_bundle(&dir.join(format!("{name}.{extension}"))).or_else(|| read_bundle(&dir.join(format!("{lower}.{extension}"))))
+    })
 }
 
 /// 'recolorable' for Habbo's recolourable furni (*_recolorable), else 'default'. (SQLGenerator.InteractionTypeFor)
 pub fn interaction_type(classname: &str) -> &'static str {
     if classname.to_ascii_lowercase().ends_with("_recolorable") { "recolorable" } else { "default" }
+}
+
+/// The interaction_type of a new furni: 'recolorable' by its name, else what its bundle's logicType gives, else
+/// 'default'. (A multiheight bundle's heights then make it 'multiheight' unless it is recolourable.)
+pub fn interaction_for(classname: &str, bundle: &Bundle) -> &'static str {
+    match interaction_type(classname) {
+        "default" => bundle.interaction.unwrap_or("default"),
+        by_name => by_name,
+    }
 }
 
 /// The bundle a classname draws from: the part before '*'. (HabFurniScan.BundleName)
@@ -362,7 +388,7 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
         }
         // A multiheight furni (its .hab says so): interaction multiheight with a height per state, and stack_height
         // 0.00 (the emulator takes the state's height). A recolorable one keeps 'recolorable' and gets the heights.
-        let interaction = interaction_type(&classname);
+        let interaction = interaction_for(&classname, &bundle);
         let (interaction, multiheight, modes, height) = match bundle.multiheight {
             Some(heights) if interaction == "recolorable" => (interaction, Some(heights.column()), heights.len() as i64, height),
             Some(heights) => ("multiheight", Some(heights.column()), heights.len() as i64, 0.0),
@@ -391,12 +417,9 @@ pub fn plan_with(furnidata: &Value, db: &DbState, read: &(dyn Fn(&str) -> Option
     plan
 }
 
-/// [`plan_with`] on the .hab files of `furniture_dir` (<name>.hab, or the name in lower case).
+/// [`plan_with`] on the bundles of `furniture_dir` ([`read_bundle_in`]: the .hab, else the .nitro).
 pub fn plan(furnidata: &Value, furniture_dir: &Path, db: &DbState) -> Plan {
-    let read = |name: &str| {
-        let exact = furniture_dir.join(format!("{name}.hab"));
-        read_bundle(&exact).or_else(|| read_bundle(&furniture_dir.join(format!("{}.hab", name.to_lowercase()))))
-    };
+    let read = |name: &str| read_bundle_in(furniture_dir, name);
     plan_with(furnidata, db, &read)
 }
 
@@ -891,7 +914,7 @@ mod tests {
     use serde_json::json;
 
     fn bundle(width: f64, length: f64, height: f64, modes: i64) -> Option<Bundle> {
-        Some(Bundle { width, length, height, modes, multiheight: None })
+        Some(Bundle { width, length, height, modes, multiheight: None, interaction: None })
     }
 
     /// bc_block_1_recolorable.hab: logicType furniture_recolorable, 5 states whose images step down.
@@ -927,15 +950,58 @@ mod tests {
     }
 
     #[test]
+    fn a_nitro_bundle_when_there_is_no_hab() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("black_sapphire_dice.nitro"), include_bytes!("../../assets/tests/fixtures/black_sapphire_dice.nitro")).unwrap();
+        // Animations 1..6 (no 0): 6 modes; logicType furniture_dice: 'dice'.
+        let dice = Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 6, multiheight: None, interaction: Some("dice") };
+        assert_eq!(read_bundle_in(dir.path(), "Black_Sapphire_Dice"), Some(dice), "the name in lower case");
+        let furnidata = json!({"roomitemtypes": {"furnitype": [
+            {"id": 9001, "classname": "black_sapphire_dice", "offerid": 9001},
+            {"id": 9002, "classname": "black_sapphire_dice_recolorable"},
+        ]}});
+        std::fs::copy(dir.path().join("black_sapphire_dice.nitro"), dir.path().join("black_sapphire_dice_recolorable.nitro")).unwrap();
+        let plan = plan(&furnidata, dir.path(), &DbState::default());
+        let types: Vec<_> = plan.new.iter().map(|f| (f.classname.as_str(), f.interaction_type, f.modes)).collect();
+        assert_eq!(types, [("black_sapphire_dice", "dice", 6), ("black_sapphire_dice_recolorable", "recolorable", 6)], "the name's rule first");
+        // A .hab is read before the .nitro of the same name.
+        let hab = aio_assets::hab::write("black_sapphire_dice", &[("black_sapphire_dice.json".into(), br#"{"logicType":"furniture_trophy"}"#.to_vec())]);
+        std::fs::write(dir.path().join("black_sapphire_dice.hab"), hab).unwrap();
+        assert_eq!(read_bundle_in(dir.path(), "black_sapphire_dice").and_then(|b| b.interaction), Some("trophy"));
+    }
+
+    #[test]
+    fn the_logic_type_gives_the_interaction() {
+        let multiheight = Heights::new(&[1.0, 0.5]);
+        let bundle = |interaction, multiheight| Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 2, multiheight, interaction };
+        let read = move |name: &str| match name {
+            "lock" => Some(bundle(Some("love_lock"), None)),
+            "steps" => Some(bundle(Some("multiheight"), multiheight)),
+            // A bundle whose heights say multiheight wins over its logicType.
+            "odd" => Some(bundle(Some("dice"), multiheight)),
+            _ => Some(bundle(None, None)),
+        };
+        let furnidata = json!({"roomitemtypes": {"furnitype": [{"classname": "lock"}, {"classname": "steps"}, {"classname": "odd"}, {"classname": "plain"}]}});
+        let plan = plan_with(&furnidata, &DbState::default(), &read);
+        let types: Vec<_> = plan.new.iter().map(|f| (f.classname.as_str(), f.interaction_type, f.multiheight.as_deref())).collect();
+        assert_eq!(
+            types,
+            [("lock", "love_lock", None), ("steps", "multiheight", Some("1.00;0.50")), ("odd", "multiheight", Some("1.00;0.50")), ("plain", "default", None)]
+        );
+        assert_eq!(bundle_from_json(&json!({"logicType": "furniture_badge_display"})).interaction, Some("badge_display"));
+        assert_eq!(bundle_from_json(&json!({"logicType": "furniture_present"})).interaction, None);
+    }
+
+    #[test]
     fn bundle_json_like_the_converter() {
         let json = json!({
             "logic": {"model": {"dimensions": {"x": 2, "y": 3, "z": 0.7}}},
             "visualizations": [{"size": 32}, {"animations": {"0": {}, "1": {}, "3": {}, "99": {}}}]
         });
-        assert_eq!(bundle_from_json(&json), Bundle { width: 2.0, length: 3.0, height: 0.7, modes: 4, multiheight: None });
+        assert_eq!(bundle_from_json(&json), Bundle { width: 2.0, length: 3.0, height: 0.7, modes: 4, multiheight: None, interaction: None });
         // Without an animation 0: their number; without any: 1; without dimensions: 1 x 1 x 0.
         assert_eq!(interaction_modes_count(&json!({"visualizations": [{"animations": {"1": {}, "2": {}}}]})), 2);
-        assert_eq!(bundle_from_json(&json!({})), Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 1, multiheight: None });
+        assert_eq!(bundle_from_json(&json!({})), Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 1, multiheight: None, interaction: None });
         assert_eq!(dimensions(&json!({"logic": {"model": {"dimensions": {"x": 2}}}})), Some((2.0, 1.0, 0.0)));
         assert_eq!(interaction_type("bc_block_recolorable"), "recolorable");
         assert_eq!(interaction_type("chair_norja"), "default");
@@ -1100,7 +1166,7 @@ mod tests {
     #[test]
     fn an_exception_wins() {
         let furnidata = json!({"roomitemtypes": {"furnitype": [{"id": 1, "classname": "olympics_c16_pommel"}, {"id": 2, "classname": "olympics_c16_pommel*2"}]}});
-        let read = |_: &str| Some(Bundle { width: 1.0, length: 2.0, height: 1.0, modes: 1, multiheight: None });
+        let read = |_: &str| Some(Bundle { width: 1.0, length: 2.0, height: 1.0, modes: 1, multiheight: None, interaction: None });
         let plan = plan_with(&furnidata, &DbState::default(), &read);
         for f in &plan.new {
             assert_eq!(f.interaction_type, "multiheight");

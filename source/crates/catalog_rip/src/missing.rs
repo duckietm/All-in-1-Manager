@@ -635,6 +635,7 @@ mod tests {
                 height: 1.0,
                 modes: 1,
                 multiheight: None,
+                interaction: None,
             })
         };
         let plan = plan_with(&written, &DbState::default(), &read);

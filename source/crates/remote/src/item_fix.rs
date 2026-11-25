@@ -497,14 +497,10 @@ pub async fn read_items(server: &dyn Server) -> Result<(String, Vec<ItemRow>)> {
     Ok(parse_items(&result.output))
 }
 
-/// Reads the bundles `names` from the first of `folders` that has them (<name>.hab, or the name in lower case), on a
-/// few threads. Keyed by the name in lower case.
+/// Reads the bundles `names` from the first of `folders` that has them (<name>.hab, or the name in lower case; else
+/// the .nitro), on a few threads. Keyed by the name in lower case.
 pub fn read_bundles(names: &[String], folders: &[std::path::PathBuf]) -> HashMap<String, Option<Bundle>> {
-    let read = |name: &str| {
-        folders.iter().find_map(|dir| {
-            crate::furni_import::read_bundle(&dir.join(format!("{name}.hab"))).or_else(|| crate::furni_import::read_bundle(&dir.join(format!("{}.hab", name.to_lowercase()))))
-        })
-    };
+    let read = |name: &str| folders.iter().find_map(|dir| crate::furni_import::read_bundle_in(dir, name));
     crate::furni_import::read_all(names, &read)
 }
 
@@ -575,11 +571,11 @@ mod tests {
         let no_hab = row(10, "no_hab_here", 's');
         let rows = [bed, chair, table, gate, multi, multi2, poster, pet, unknown, no_hab];
         let bundles: HashMap<String, Option<Bundle>> = [
-            ("bed_polyfon", Some(Bundle { width: 2.0, length: 3.0, height: 1.73125, modes: 1, multiheight: None })),
-            ("chair_norja", Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 1, multiheight: None })),
-            ("table_plasto_4leg", Some(Bundle { width: 2.0, length: 2.0, height: 1.0, modes: 1, multiheight: None })),
-            ("gate_thing", Some(Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 3, multiheight: None })),
-            ("poster", Some(Bundle { width: 1.0, length: 1.0, height: 0.5, modes: 1, multiheight: None })),
+            ("bed_polyfon", Some(Bundle { width: 2.0, length: 3.0, height: 1.73125, modes: 1, multiheight: None, interaction: None })),
+            ("chair_norja", Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 1, multiheight: None, interaction: None })),
+            ("table_plasto_4leg", Some(Bundle { width: 2.0, length: 2.0, height: 1.0, modes: 1, multiheight: None, interaction: None })),
+            ("gate_thing", Some(Bundle { width: 1.0, length: 1.0, height: 0.0, modes: 3, multiheight: None, interaction: None })),
+            ("poster", Some(Bundle { width: 1.0, length: 1.0, height: 0.5, modes: 1, multiheight: None, interaction: None })),
             ("no_hab_here", None),
         ]
         .into_iter()
@@ -625,8 +621,8 @@ mod tests {
             {"id": 4, "classname": "not_multi"}, {"id": 5, "classname": "block_recolorable"}, {"id": 6, "classname": "gate_multi"}
         ]}});
         let heights = crate::furni_import::Heights::new(&[1.0, 0.75, 0.5, 0.25, 0.1]);
-        let multi = Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 5, multiheight: heights });
-        let plain = Some(Bundle { width: 2.0, length: 1.0, height: 0.5, modes: 1, multiheight: None });
+        let multi = Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 5, multiheight: heights, interaction: None });
+        let plain = Some(Bundle { width: 2.0, length: 1.0, height: 0.5, modes: 1, multiheight: None, interaction: None });
         let bundles: HashMap<String, Option<Bundle>> = [
             ("block", multi), ("block_hand", multi), ("block_three", multi), ("not_multi", plain), ("block_recolorable", multi), ("gate_multi", multi),
         ]
@@ -676,7 +672,7 @@ mod tests {
     #[test]
     fn an_exception_is_set_exactly() {
         let furnidata = json!({"roomitemtypes": {"furnitype": [{"id": 7, "classname": "olympics_c16_pommel"}]}});
-        let multi = Some(Bundle { width: 1.0, length: 2.0, height: 1.0, modes: 3, multiheight: crate::furni_import::Heights::new(&[1.0, 0.5, 0.1]) });
+        let multi = Some(Bundle { width: 1.0, length: 2.0, height: 1.0, modes: 3, multiheight: crate::furni_import::Heights::new(&[1.0, 0.5, 0.1]), interaction: None });
         let bundles: HashMap<String, Option<Bundle>> = [("olympics_c16_pommel".to_string(), multi)].into();
         // As it is in many hotels: multiheight with other heights, stack 0, not sittable.
         let pommel = ItemRow { interaction_type: "multiheight".into(), multiheight: "1.0;1.5".into(), modes: 2, allow_walk: true, ..row(3, "olympics_c16_pommel", 's') };
@@ -727,7 +723,7 @@ mod tests {
         let furnidata = json!({"roomitemtypes": {"furnitype": [
             {"id": 1, "classname": "bc_cylinder"}, {"id": 2, "classname": "bc_cylinder_recolorable"}, {"id": 3, "classname": "lonely_recolorable"}
         ]}});
-        let cylinder = Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 5, multiheight: None });
+        let cylinder = Some(Bundle { width: 1.0, length: 1.0, height: 1.0, modes: 5, multiheight: None, interaction: None });
         let bundles: HashMap<String, Option<Bundle>> =
             [("bc_cylinder", cylinder), ("bc_cylinder_recolorable", cylinder), ("lonely_recolorable", cylinder)].into_iter().map(|(n, b)| (n.to_string(), b)).collect();
         let with = |id: i64, name: &str, interaction: &str, multiheight: &str, modes: i64, stack: f64| ItemRow {
@@ -770,7 +766,7 @@ mod tests {
     fn extra_heights_are_cut_off() {
         // The pirate_stage of the bug report: 4 states in its .hab, 5 heights in items_base.
         let furnidata = json!({"roomitemtypes": {"furnitype": [{"id": 1, "classname": "pirate_stage"}, {"id": 2, "classname": "few"}]}});
-        let stage = Some(Bundle { width: 2.0, length: 2.0, height: 0.8, modes: 4, multiheight: None });
+        let stage = Some(Bundle { width: 2.0, length: 2.0, height: 0.8, modes: 4, multiheight: None, interaction: None });
         let bundles: HashMap<String, Option<Bundle>> = [("pirate_stage".to_string(), stage), ("few".to_string(), stage)].into_iter().collect();
         let with = |id: i64, name: &str, multiheight: &str, modes: i64| ItemRow {
             interaction_type: "multiheight".into(),

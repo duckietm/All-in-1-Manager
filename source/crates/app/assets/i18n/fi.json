@@ -4071,7 +4071,7 @@
   "Click Start: the ripper asks the hotel for the catalogue index and every page, a few per second, as the client does when you browse.": "Klikkaa Käynnistä: ripperi pyytää hotellilta luettelon hakemiston ja jokaisen sivun, muutaman sekunnissa, kuten client tekee, kun selaat sitä.",
   "Copies the catalogue of Habbo or a retro hotel through G-Earth, as files and ready to import.": "Kopioi Habbon tai retrohotellin luettelon G-Earthin kautta tiedostoina ja tuontivalmiina.",
   "Detect from the connection": "Tunnista yhteydestä",
-  "Download the page images and icons": "Lataa sivujen kuvat ja kuvakkeet",
+  "Download the page images, icons and thumbnails": "Lataa sivujen kuvat, kuvakkeet ja pikkukuvat",
   "For the import: {pages} pages and {offers} offers; {left} offers left out (their furni is not in items_base).": "Tuontia varten: {pages} sivua ja {offers} tarjousta; {left} tarjousta jätetty pois (niiden kalusteet eivät ole taulussa items_base).",
   "Hotel profile": "Hotelliprofiili",
   "How it works": "Miten se toimii",

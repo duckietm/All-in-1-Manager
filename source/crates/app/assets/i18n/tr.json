@@ -4071,7 +4071,7 @@
   "Click Start: the ripper asks the hotel for the catalogue index and every page, a few per second, as the client does when you browse.": "Başlat'a tıkla: ripper, otelden katalog dizinini ve her sayfayı ister, saniyede birkaç tane, tıpkı sen göz atarken istemcinin yaptığı gibi.",
   "Copies the catalogue of Habbo or a retro hotel through G-Earth, as files and ready to import.": "Habbo'nun veya bir retro otelin kataloğunu G-Earth üzerinden dosya olarak ve içe aktarmaya hazır şekilde kopyalar.",
   "Detect from the connection": "Bağlantıdan algıla",
-  "Download the page images and icons": "Sayfa görsellerini ve simgelerini indir",
+  "Download the page images, icons and thumbnails": "Sayfa görsellerini, simgelerini ve küçük resimlerini indir",
   "For the import: {pages} pages and {offers} offers; {left} offers left out (their furni is not in items_base).": "İçe aktarma için: {pages} sayfa ve {offers} teklif; {left} teklif dışarıda bırakıldı (mobileri items_base içinde yok).",
   "Hotel profile": "Otel profili",
   "How it works": "Nasıl çalışır",

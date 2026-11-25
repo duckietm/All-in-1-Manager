@@ -224,7 +224,7 @@ fn builders_club_pages_with_normal_ids_keep_their_offers() {
 }
 
 /// The `catalog_items` columns of Polaris' schema that the ripper writes (migrations checked up
-/// to V20261124170000: rent_days from V20260907210000, habbicon_id from V20260911150000).
+/// to V20261125170000: rent_days from V20260907210000, habbicon_id from V20260911150000).
 const POLARIS_CATALOG_ITEMS: [&str; 18] = [
     "id", "item_ids", "page_id", "catalog_name", "cost_credits", "cost_points", "points_type",
     "amount", "limited_stack", "limited_sells", "order_number", "offer_id", "song_id", "extradata",
@@ -242,7 +242,7 @@ fn catalog_items_has_polaris_columns() {
     let list = head.split_once('(').unwrap().1.rsplit_once(')').unwrap().0;
     let columns: Vec<&str> = list.split(", ").map(|c| c.trim_matches('`')).collect();
     assert_eq!(columns, POLARIS_CATALOG_ITEMS);
-    assert!(sql.items.contains("V20261124170000"));
+    assert!(sql.items.contains("V20261125170000"));
     // Every row ends with the two new columns at 0 and has one value per column.
     let row = sql.items.lines().find(|l| l.starts_with("(300, '10', 3,")).unwrap();
     assert!(row.ends_with(", 0, 0),") || row.ends_with(", 0, 0);"), "{row}");

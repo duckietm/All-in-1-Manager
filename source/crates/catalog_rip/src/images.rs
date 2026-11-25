@@ -17,7 +17,7 @@ use crate::Log;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImageStats {
     pub downloaded: usize,
-    /// Found in the owner's own catalogue images folder (not downloaded).
+    /// Found in the owner's own catalogue images folder: copied, not downloaded.
     pub already_have: usize,
     pub missing: usize,
     pub failed: usize,
@@ -31,7 +31,7 @@ impl ImageStats {
             self.downloaded, self.missing
         );
         if self.already_have > 0 {
-            text.push_str(&format!(", {} already in your folder", self.already_have));
+            text.push_str(&format!(", {} already in your folder (copied)", self.already_have));
         }
         if self.failed > 0 {
             text.push_str(&format!(", {} failed", self.failed));
@@ -65,7 +65,7 @@ struct Job {
     urls: Vec<String>,
     dest_dir: PathBuf,
     stem: String,
-    /// Where the owner's own folder would have this image.
+    /// Where the owner's own folder would have this image (copied into `dest_dir` when found).
     have: Vec<PathBuf>,
 }
 
@@ -78,13 +78,14 @@ pub struct Sources<'a> {
     /// `catalog.asset.url`: the folder of page images and `th_*` thumbnails.
     pub catalog_url: &'a str,
     pub icon_url: &'a str,
-    /// The owner's own c_images/catalogue folder: images found there are not downloaded again.
+    /// The owner's own c_images/catalogue folder: images found there are copied, not downloaded.
     pub have_dir: Option<&'a Path>,
 }
 
 /// The thumbnail names (without extension) the Nitro catalogue asks `catalog.asset.url` for
 /// (`Product.getIconUrl`): wall products whose furnidata class is `floor` (`th_floor_<extra>`),
-/// `wallpaper` (`th_wall_<extra>`) or `landscape` (`th_landscape_<extra with . as _>_001`).
+/// `wallpaper` (`th_wall_<extra>`) or `landscape` (`th_landscape_<extra, first . as _>_001`);
+/// products without extra data have none.
 pub fn thumbnail_names(catalog: &RippedCatalog, furnidata: &Furnidata) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for mode in &catalog.modes {
@@ -93,7 +94,10 @@ pub fn thumbnail_names(catalog: &RippedCatalog, furnidata: &Furnidata) -> BTreeS
                 if product.product_type != "i" {
                     continue;
                 }
-                let extra = product.extra_param.as_str();
+                let extra = product.extra_param.trim();
+                if extra.is_empty() {
+                    continue;
+                }
                 match furnidata.classname(product) {
                     Some("floor") => {
                         names.insert(format!("th_floor_{extra}"));
@@ -102,7 +106,7 @@ pub fn thumbnail_names(catalog: &RippedCatalog, furnidata: &Furnidata) -> BTreeS
                         names.insert(format!("th_wall_{extra}"));
                     }
                     Some("landscape") => {
-                        names.insert(format!("th_landscape_{}_001", extra.replace('.', "_")));
+                        names.insert(format!("th_landscape_{}_001", extra.replacen('.', "_", 1)));
                     }
                     _ => {}
                 }
@@ -155,10 +159,11 @@ const CURRENT_CATALOGUE: &str = "https://images.habbo.com/c_images/catalogue";
 fn jobs(catalog: &RippedCatalog, out_dir: &Path, sources: &Sources) -> Vec<Job> {
     let (catalog_url, icon_url) = (sources.catalog_url, sources.icon_url);
     let (names, icons, promos) = collect(catalog);
+    // Looked up by their safe file names only: a name from the hotel never leaves the folder.
     let have_in = |names: &[String]| -> Vec<PathBuf> {
         sources
             .have_dir
-            .map(|dir| names.iter().map(|n| dir.join(n)).collect())
+            .map(|dir| names.iter().map(|n| dir.join(safe_file_name(n))).collect())
             .unwrap_or_default()
     };
     let base = catalog_url.trim().trim_end_matches('/');
@@ -212,7 +217,12 @@ fn jobs(catalog: &RippedCatalog, out_dir: &Path, sources: &Sources) -> Vec<Job> 
             urls: vec![format!("{}{icon}.png", icon_url.trim())],
             dest_dir: images.join("icons"),
             stem: format!("icon_{icon}"),
-            have: have_in(&[format!("icon_{icon}.png")]),
+            have: {
+                let file = format!("icon_{icon}.png");
+                let mut have = have_in(std::slice::from_ref(&file));
+                have.extend(sources.have_dir.map(|dir| dir.join("icons").join(&file)));
+                have
+            },
         });
     }
     for promo in promos {
@@ -227,11 +237,15 @@ fn jobs(catalog: &RippedCatalog, out_dir: &Path, sources: &Sources) -> Vec<Job> 
             urls
         };
         let file = promo.rsplit('/').next().unwrap_or(&promo);
-        let mut have = have_in(&[file.to_string()]);
-        if let Some(parent) = sources.have_dir.and_then(Path::parent) {
-            if !promo.starts_with("http://") && !promo.starts_with("https://") {
-                have.push(parent.join(promo.trim_start_matches('/')));
-            }
+        // Only by its path under c_images (a file name alone could be another image), and only
+        // when every part of the path is a plain file name.
+        let mut have = Vec::new();
+        let relative = promo.trim_start_matches('/');
+        let plain = !promo.starts_with("http://")
+            && !promo.starts_with("https://")
+            && relative.split('/').all(|part| !part.is_empty() && safe_file_name(part) == part);
+        if let (Some(parent), true) = (sources.have_dir.and_then(Path::parent), plain) {
+            have.push(relative.split('/').fold(parent.to_path_buf(), |path, part| path.join(part)));
         }
         jobs.push(Job {
             label: promo.clone(),
@@ -257,7 +271,7 @@ enum Got {
 }
 
 /// Downloads every image (8 at a time). Files already there are kept; images the owner's own
-/// folder has are not downloaded. Stops early (with what it has) when `cancel` fires.
+/// folder has are copied from it instead of downloaded, so the rip folder stays complete. Stops early (with what it has) when `cancel` fires.
 pub async fn download(
     catalog: &RippedCatalog,
     out_dir: &Path,
@@ -268,10 +282,22 @@ pub async fn download(
     let jobs = jobs(catalog, out_dir, sources);
     let results = futures::stream::iter(jobs)
         .map(|job| async move {
-            if job.have.iter().any(|path| path.is_file()) {
-                return (job.label, Ok(Got::Have));
-            }
             let _ = std::fs::create_dir_all(&job.dest_dir);
+            if let Some(found) = job.have.iter().find(|path| path.is_file()) {
+                let dest = if has_extension(&job.stem) {
+                    job.dest_dir.join(&job.stem)
+                } else {
+                    let ext = found.extension().and_then(|e| e.to_str()).unwrap_or("png");
+                    job.dest_dir.join(format!("{}.{ext}", job.stem))
+                };
+                if dest.is_file() {
+                    return (job.label, Ok(Got::Have));
+                }
+                return match std::fs::copy(found, &dest) {
+                    Ok(_) => (job.label, Ok(Got::Have)),
+                    Err(e) => (job.label, Err(format!("{} -> {}: {e}", found.display(), dest.display()))),
+                };
+            }
             for url in &job.urls {
                 let dest = if has_extension(&job.stem) {
                     job.dest_dir.join(&job.stem)
@@ -443,6 +469,8 @@ mod tests {
                 product("i", 10, "101"),
                 product("i", 11, "202"),
                 product("i", 12, "1.1"),
+                product("i", 12, "2.0.1"), // only the first dot, as the client does
+                product("i", 10, ""),      // no extra data: no th_floor_.png
                 product("i", 13, "40"), // a poster: no thumbnail
                 product("s", 1, "x"),   // floor furni: its icon comes from the .nitro
             ],
@@ -453,11 +481,12 @@ mod tests {
 
     #[test]
     fn thumbnails_are_named_like_the_client_asks() {
-        // Product.getIconUrl: th_floor_<extra>, th_wall_<extra>, th_landscape_<extra . -> _>_001.
+        // Product.getIconUrl: th_floor_<extra>, th_wall_<extra>,
+        // th_landscape_<extra, first . -> _>_001; nothing for an empty extra.
         let names = thumbnail_names(&thumbs_catalog(), &furnidata());
         assert_eq!(
             names.into_iter().collect::<Vec<_>>(),
-            ["th_floor_101", "th_landscape_1_1_001", "th_wall_202"]
+            ["th_floor_101", "th_landscape_1_1_001", "th_landscape_2_0.1_001", "th_wall_202"]
         );
     }
 
@@ -494,22 +523,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn images_the_owner_already_has_are_not_downloaded() {
+    async fn images_the_owner_already_has_are_copied_not_downloaded() {
         let out = tempfile::tempdir().unwrap();
         let have = tempfile::tempdir().unwrap();
         let furni = furnidata();
+        std::fs::create_dir(have.path().join("icons")).unwrap();
         for name in [
             "catalog_header.gif", // a page image, as .gif
-            "icon_5.png",
+            "icons/icon_5.png",   // icons may sit in their own folder
             "th_floor_101.png",
             "th_wall_202.png",
             "th_landscape_1_1_001.png",
+            "th_landscape_2_0.1_001.png",
         ] {
-            std::fs::write(have.path().join(name), b"x").unwrap();
+            std::fs::write(have.path().join(name), name).unwrap();
         }
         let log = |_: &str| {};
         // Everything is in the owner's folder: no request is made (the hosts would not be
-        // reached), nothing is written to the output.
+        // reached); every image is copied into the rip folder.
         let stats = download(
             &thumbs_catalog(),
             out.path(),
@@ -518,9 +549,40 @@ mod tests {
             &CancellationToken::new(),
         )
         .await;
-        assert_eq!(stats.already_have, 5, "{stats:?}");
+        assert_eq!(stats.already_have, 6, "{stats:?}");
         assert_eq!((stats.downloaded, stats.missing, stats.failed), (0, 0, 0));
-        assert!(!out.path().join("images/th_floor_101.png").exists());
-        assert!(stats.describe().contains("5 already in your folder"));
+        let images = out.path().join("images");
+        assert_eq!(std::fs::read_to_string(images.join("catalog_header.gif")).unwrap(), "catalog_header.gif");
+        assert_eq!(std::fs::read_to_string(images.join("icons/icon_5.png")).unwrap(), "icons/icon_5.png");
+        assert!(images.join("th_floor_101.png").is_file());
+        assert!(images.join("th_landscape_2_0.1_001.png").is_file());
+        assert!(stats.describe().contains("6 already in your folder (copied)"));
+    }
+
+    #[test]
+    fn owner_folder_lookups_stay_inside_it() {
+        let have = tempfile::tempdir().unwrap();
+        let catalogue = have.path().join("catalogue");
+        let mut catalog = catalog(vec![], vec!["../secret".into()], 0);
+        let page = catalog.modes[0].pages.get_mut(&1).unwrap();
+        for promo in ["catalogue/feature.png", "../outside.png", "other.png"] {
+            page.frontpage_items.push(crate::packets::FrontPageItem {
+                position: 0,
+                name: String::new(),
+                promo_image: promo.into(),
+                item_type: 0,
+                page_name: None,
+                product_offer_id: None,
+                product_code: None,
+                expiration_seconds: 0,
+            });
+        }
+        let jobs = jobs(&catalog, have.path(), &sources(None, Some(&catalogue), "http://x/c_images/catalogue"));
+        let have_of = |label: &str| jobs.iter().find(|j| j.label == label).unwrap().have.clone();
+        assert_eq!(have_of("../secret"), [catalogue.join("_secret.gif"), catalogue.join("_secret.png")]);
+        // A promo by its c_images path only (no basename match); a path leaving the folder: none.
+        assert_eq!(have_of("catalogue/feature.png"), [have.path().join("catalogue").join("feature.png")]);
+        assert!(have_of("../outside.png").is_empty());
+        assert_eq!(have_of("other.png"), [have.path().join("other.png")]);
     }
 }

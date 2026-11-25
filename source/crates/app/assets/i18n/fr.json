@@ -4071,7 +4071,7 @@
   "Click Start: the ripper asks the hotel for the catalogue index and every page, a few per second, as the client does when you browse.": "Clique sur Démarrer : le ripper demande à l'hôtel l'index du catalogue et chaque page, quelques-unes par seconde, comme le fait le client quand tu le parcours.",
   "Copies the catalogue of Habbo or a retro hotel through G-Earth, as files and ready to import.": "Copie le catalogue de Habbo ou d'un hôtel rétro via G-Earth, en fichiers et prêt à importer.",
   "Detect from the connection": "Détecter depuis la connexion",
-  "Download the page images and icons": "Télécharger les images et icônes des pages",
+  "Download the page images, icons and thumbnails": "Télécharger les images, icônes et miniatures des pages",
   "For the import: {pages} pages and {offers} offers; {left} offers left out (their furni is not in items_base).": "Pour l'import : {pages} pages et {offers} offres ; {left} offres laissées de côté (leurs mobis ne sont pas dans items_base).",
   "Hotel profile": "Profil de l'hôtel",
   "How it works": "Comment ça marche",

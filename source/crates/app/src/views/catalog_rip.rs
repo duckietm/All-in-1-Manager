@@ -228,7 +228,7 @@ impl CatalogRipView {
 
                 ui.label(t("Also"));
                 ui.vertical(|ui| {
-                    ui.checkbox(&mut self.images, t("Download the page images and icons"));
+                    ui.checkbox(&mut self.images, t("Download the page images, icons and thumbnails"));
                     ui.checkbox(&mut self.items_lookup, t("Match the furni with items_base of the server you are logged in to (for the import)"));
                 });
                 ui.end_row();

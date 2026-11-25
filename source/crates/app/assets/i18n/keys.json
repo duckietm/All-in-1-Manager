@@ -854,7 +854,7 @@
   "Download more with Assets → Habbo assets and sync again: only the new files are sent.",
   "Download only .hab",
   "Download the Habbo furniture first",
-  "Download the page images and icons",
+  "Download the page images, icons and thumbnails",
   "Download the selected ({count})",
   "Download to this computer",
   "Download with Assets → Habbo assets first. New furniture also needs rows in items_base and catalog_items: the All-in-1 converter makes the SQL (Hotel Tools → Generate SQL).",

@@ -623,6 +623,13 @@ struct PageRow<'a> {
 
 const ROWS_PER_INSERT: usize = 250;
 
+/// Checked against Polaris' Flyway migrations: the newest one when `catalog_items` was last
+/// compared (it has rent_days since V20260907210000 and habbicon_id since V20260911150000).
+const POLARIS_NOTE: &str = "-- Columns match Polaris' catalog_items (migrations checked up to V20261124170000);
+-- rent_days and habbicon_id are not in the packets: 0.
+
+";
+
 fn header(title: &str, catalog: &RippedCatalog) -> String {
     format!(
         "-- {title}\n-- Ripped from {} ({}, {} client {}) on {} by All-in-1 Manager {}.\n-- Import catalog_pages.sql first, then catalog_items.sql (see README.txt).\n\nSET NAMES utf8mb4;\nSET FOREIGN_KEY_CHECKS = 0;\n\n",
@@ -700,10 +707,11 @@ pub fn arcturus_sql_with(
     pages_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
 
     let mut items_sql = header("catalog_items for Arcturus", catalog);
+    items_sql.push_str(POLARIS_NOTE);
     unresolved_note(&mut items_sql);
     write_inserts(
         &mut items_sql,
-        "INSERT INTO `catalog_items` (`id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`, `cost_points`, `points_type`, `amount`, `limited_stack`, `limited_sells`, `order_number`, `offer_id`, `song_id`, `extradata`, `have_offer`, `club_only`)",
+        "INSERT INTO `catalog_items` (`id`, `item_ids`, `page_id`, `catalog_name`, `cost_credits`, `cost_points`, `points_type`, `amount`, `limited_stack`, `limited_sells`, `order_number`, `offer_id`, `song_id`, `extradata`, `have_offer`, `club_only`, `rent_days`, `habbicon_id`)",
         &item_rows,
     );
     items_sql.push_str("SET FOREIGN_KEY_CHECKS = 1;\n");
@@ -947,6 +955,9 @@ fn arcturus_rows(
                         "0"
                     }),
                     sql_str(if offer.club_level > 0 { "1" } else { "0" }),
+                    // Polaris' rent_days / habbicon_id: not in the packets.
+                    "0".into(),
+                    "0".into(),
                 ]
             };
             item_rows.push((note, format!("({})", values.join(", "))));

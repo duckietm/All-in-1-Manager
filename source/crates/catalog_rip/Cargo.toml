@@ -1,0 +1,26 @@
+[package]
+name = "aio-catalog-rip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "All-in-1 Manager: catalogue ripper for official Habbo and retros (Flash and Nitro) through G-Earth"
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+zip.workspace = true
+flate2.workspace = true
+tar.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# Only to check catalog_manager.sql against the Manager's own import parser.
+aio-remote.workspace = true

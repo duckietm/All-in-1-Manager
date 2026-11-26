@@ -1900,9 +1900,14 @@ is a folder in `configuration/plugins/room-rip/packets/<hotel>_<time>/` (**Open 
 The packets the ripper sends itself (opening boxes for **Read the wired**) are in it too. The recording holds
 everything sent in those rooms, chat too: share it only with people you trust.
 
-4. **Imported rooms → Undo** removes the room again: anyone in it is sent to the hotel view first (Polaris unloads a
-   room when its owner is set again over RCON), then the furni that came with it are deleted (also when they were picked
-   up since), furni placed there later go back to their owner's inventory, and the custom floor plan and the room go.
+4. **Imported rooms → Undo** removes the room again, but only while it is as it was imported: the room is still in the
+   hotel and still of its owner, nobody is in it (`rooms.users` is 0), and every furni that came with it is still in it
+   and still the owner's (`items.room_id` and `items.user_id`). When the room was used since, Undo lists what changed
+   (furni picked up, moved to another room, traded or given, deleted; people in the room) and removes nothing. Then the
+   emulator unloads the room (Polaris does when a room's owner is set again over RCON): when it refuses, or is running
+   but does not answer on RCON, Undo stops; when it is not running, nothing has the room loaded and Undo goes on. The
+   checks run again on what the emulator saved, then in one transaction the furni that came with it are deleted, furni
+   placed there later by others go back to their owner's inventory, and the custom floor plan and the room go.
    The record of each import is kept in `configuration/plugins/room-rip/imports/`.
 
 Use it on rooms you may copy.

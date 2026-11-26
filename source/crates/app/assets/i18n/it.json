@@ -2309,7 +2309,7 @@
   "Download the Habbo furniture first": "Scarica prima i furni di Habbo",
   "{file} is not there: in Habbo assets, download Furnidata and Furniture, then come back.": "{file} non c'è: in Asset di Habbo, scarica Furnidata e Furniture, poi torna qui.",
   "The database {database} has {furniture} furniture and {items} catalogue items.": "Il database {database} ha {furniture} furni e {items} item del catalogo.",
-  "{count} more are missing but have no .hab file in the download.": "Ne mancano altri {count}, ma non hanno un file .hab nel download.",
+  "{count} more are missing but have no .hab or .nitro file in the download.": "Ne mancano altri {count}, ma non hanno un file .hab o .nitro nel download.",
   "Every downloaded Habbo furniture is in the database": "Tutti i furni di Habbo scaricati sono nel database",
   "{count} furniture can be imported": "Si possono importare {count} furni",
   "Check the list below first.": "Controlla prima la lista qui sotto.",

@@ -2309,7 +2309,7 @@
   "Download the Habbo furniture first": "Lataa ensin Habbo-kalusteet",
   "{file} is not there: in Habbo assets, download Furnidata and Furniture, then come back.": "{file} puuttuu: lataa kohdassa Habbon assetit Furnidata ja Furniture ja palaa sitten.",
   "The database {database} has {furniture} furniture and {items} catalogue items.": "Tietokannassa {database} on {furniture} kalustetta ja {items} katalogituotetta.",
-  "{count} more are missing but have no .hab file in the download.": "{count} muuta puuttuu, mutta niillä ei ole .hab-tiedostoa latauksessa.",
+  "{count} more are missing but have no .hab or .nitro file in the download.": "{count} muuta puuttuu, mutta niillä ei ole .hab- tai .nitro-tiedostoa latauksessa.",
   "Every downloaded Habbo furniture is in the database": "Jokainen ladattu Habbo-kaluste on tietokannassa",
   "{count} furniture can be imported": "{count} kalustetta voidaan tuoda",
   "Check the list below first.": "Tarkista ensin alla oleva luettelo.",

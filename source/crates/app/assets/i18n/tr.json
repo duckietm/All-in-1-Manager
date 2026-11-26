@@ -2309,7 +2309,7 @@
   "Download the Habbo furniture first": "Önce Habbo mobilerini indir",
   "{file} is not there: in Habbo assets, download Furnidata and Furniture, then come back.": "{file} yok: Habbo asset'leri içinde Furnidata ve Furniture'ı indir, sonra geri gel.",
   "The database {database} has {furniture} furniture and {items} catalogue items.": "{database} veritabanında {furniture} mobi ve {items} katalog öğesi var.",
-  "{count} more are missing but have no .hab file in the download.": "{count} tane daha eksik, ama indirilenlerde .hab dosyaları yok.",
+  "{count} more are missing but have no .hab or .nitro file in the download.": "{count} tane daha eksik, ama indirilenlerde .hab veya .nitro dosyaları yok.",
   "Every downloaded Habbo furniture is in the database": "İndirilen her Habbo mobisi veritabanında var",
   "{count} furniture can be imported": "{count} mobi içe aktarılabilir",
   "Check the list below first.": "Önce aşağıdaki listeyi denetle.",

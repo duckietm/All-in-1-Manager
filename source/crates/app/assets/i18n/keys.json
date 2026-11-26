@@ -3857,7 +3857,7 @@
   "{count} key(s) installed",
   "{count} languages in the Octane clone on the server.",
   "{count} missing",
-  "{count} more are missing but have no .hab file in the download.",
+  "{count} more are missing but have no .hab or .nitro file in the download.",
   "{count} new",
   "{count} new furniture",
   "{count} new furniture: {floor} floor, {wall} wall, of which {variants} colour variants.",

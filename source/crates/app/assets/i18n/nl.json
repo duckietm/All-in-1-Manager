@@ -2309,7 +2309,7 @@
   "Download the Habbo furniture first": "Download eerst de Habbo-meubi",
   "{file} is not there: in Habbo assets, download Furnidata and Furniture, then come back.": "{file} is er niet: download in Habbo-assets Furnidata en Furniture en kom dan terug.",
   "The database {database} has {furniture} furniture and {items} catalogue items.": "De database {database} heeft {furniture} meubi en {items} catalogusitems.",
-  "{count} more are missing but have no .hab file in the download.": "Er ontbreken er nog {count}, maar die hebben geen .hab-bestand in de download.",
+  "{count} more are missing but have no .hab or .nitro file in the download.": "Er ontbreken er nog {count}, maar die hebben geen .hab- of .nitro-bestand in de download.",
   "Every downloaded Habbo furniture is in the database": "Elk gedownload Habbo-meubi staat in de database",
   "{count} furniture can be imported": "{count} meubi kunnen worden geïmporteerd",
   "Check the list below first.": "Controleer eerst de lijst hieronder.",

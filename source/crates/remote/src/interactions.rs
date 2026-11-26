@@ -17,8 +17,10 @@
 //! Turning it on is the one commented line in [`LOGIC_TYPES`].
 
 /// (logicType without "furniture_", in lower case; Polaris interaction_type).
+///
+/// furniture_multiheight is not here: such a furni is 'multiheight' only when the heights of its states are found in
+/// its bundle (furni_import::multiheight_heights), else 'default' (Polaris needs the heights).
 pub const LOGIC_TYPES: &[(&str, &str)] = &[
-    ("multiheight", "multiheight"),
     ("recolorable", "recolorable"),
     ("purchasable_clothing", "clothing"),
     ("crackable", "crackable"),
@@ -80,6 +82,36 @@ pub const LOGIC_TYPES: &[(&str, &str)] = &[
     ("clothing_change", "football_gate"),
 ];
 
+/// Furni whose Polaris interaction follows their name, not their logicType: (bundle name in lower case, how it is
+/// matched, Polaris interaction_type). Checked before [`LOGIC_TYPES`].
+pub const NAME_RULES: &[(&str, NameMatch, &str)] = &[
+    // tile_fxprovider_nfs, waterfxprovider_nfs: furniture_internal_link, but 'information_terminal' would open the
+    // commands page.
+    ("fxprovider", NameMatch::Contains, "tile_fxprovider_nfs"),
+    // Battle Banzai's puck (es_puck and the football keep 'football' from furniture_pushable).
+    ("bb_puck", NameMatch::Prefix, "battlebanzai_puck"),
+    ("hween12_costume_hopper", NameMatch::Prefix, "costume_hopper"),
+    ("vip_hopper", NameMatch::Prefix, "club_hopper"),
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameMatch {
+    Prefix,
+    Contains,
+}
+
+/// The Polaris interaction_type a furni's name decides (its bundle name, any case: "bb_puck*3" counts as bb_puck).
+pub fn for_name(classname: &str) -> Option<&'static str> {
+    let name = classname.split('*').next().unwrap_or("").trim().to_ascii_lowercase();
+    NAME_RULES
+        .iter()
+        .find(|(rule, how, _)| match how {
+            NameMatch::Prefix => name.starts_with(rule),
+            NameMatch::Contains => name.contains(rule),
+        })
+        .map(|(_, _, to)| *to)
+}
+
 /// The Polaris interaction_type of a bundle's logicType ("furniture_dice" or "dice", any case); None: 'default'.
 pub fn for_logic_type(logic_type: &str) -> Option<&'static str> {
     let logic = logic_type.trim().to_ascii_lowercase();
@@ -103,6 +135,9 @@ mod tests {
         for (logic, interaction) in LOGIC_TYPES {
             assert!(names.contains(*interaction), "{logic} -> {interaction} is not registered in Polaris");
         }
+        for (name, _, interaction) in NAME_RULES {
+            assert!(names.contains(*interaction), "{name} -> {interaction} is not registered in Polaris");
+        }
         assert!(names.contains("default") && names.contains("gift"));
     }
 
@@ -113,6 +148,19 @@ mod tests {
             assert_eq!(*logic, logic.to_ascii_lowercase(), "{logic}");
             assert!(!logic.starts_with("furniture_"), "{logic}");
             assert!(seen.insert(*logic), "{logic} twice");
+        }
+    }
+
+    #[test]
+    fn names_decide_first() {
+        assert_eq!(for_name("tile_fxprovider_nfs"), Some("tile_fxprovider_nfs"));
+        assert_eq!(for_name("WaterFxProvider_nfs"), Some("tile_fxprovider_nfs"));
+        assert_eq!(for_name("bb_puck"), Some("battlebanzai_puck"));
+        assert_eq!(for_name("bb_puck*2"), Some("battlebanzai_puck"));
+        assert_eq!(for_name("hween12_costume_hopper"), Some("costume_hopper"));
+        assert_eq!(for_name("vip_hopper"), Some("club_hopper"));
+        for other in ["es_puck", "fball_ball", "info_terminal", "xbb_puck", "hopper_vip"] {
+            assert_eq!(for_name(other), None, "{other}");
         }
     }
 
@@ -132,6 +180,7 @@ mod tests {
         assert_eq!(for_logic_type("FURNITURE_BB"), Some("ads_bg"));
         for other in [
             "furniture_present",
+            "furniture_multiheight",
             "furniture_basic",
             "furniture_multistate",
             "furniture_muItistate",

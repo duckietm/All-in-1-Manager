@@ -1274,7 +1274,9 @@ afterwards `gamedata-permissions` gives the emulator and NGINX access again.
 The config JSON files are only added when they are missing: hotels and the emulator edit them (custom furniture,
 badge texts). Tick **Also replace config JSON files** to overwrite them with the downloaded ones. New furniture also
 needs its rows in `items_base` and `catalog_items`: **Import Assets** adds them (**Import custom furniture** for a
-retro's own furni).
+retro's own furni). It reads each furni's `.hab`, or its `.nitro` when there is no `.hab`, and sets
+`interaction_type` from the bundle's logic type (dice, trophy, clothing, ...). Guild furni and badge displays can
+only be bought from a catalogue page with the matching layout (guild_custom_furni / badge_display): move them there.
 
 #### UI texts
 

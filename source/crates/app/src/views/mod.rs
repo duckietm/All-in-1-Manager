@@ -9,6 +9,7 @@ pub mod get_assets;
 pub mod atom_cms;
 pub mod catalog_explorer;
 pub mod catalog_manager;
+pub mod catalog_rip;
 pub mod content_manager;
 pub mod logs_view;
 pub mod players_view;

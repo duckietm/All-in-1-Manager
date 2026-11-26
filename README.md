@@ -115,6 +115,7 @@ replacing the app keeps them; **Settings** can put `Habbo_Assets` anywhere else.
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
   [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+- [Catalogue ripper](#catalogue-ripper)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [macOS](#macos) · [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -1819,6 +1820,34 @@ under **Other**, marked *not loaded*. The newer example names (`client-mode.exam
 **Save** (or **Make the file** for a new one) first checks the file was not changed on the server since it was loaded,
 keeps the old one as `.bak-<time>`, and writes it to `public/configuration` (what the next build uses) and to
 `dist/configuration` (what the hotel serves), so players get it when they reload the hotel, without a rebuild.
+
+## Catalogue ripper
+
+**Addons → Catalogue ripper** copies the catalogue of official Habbo or of a retro hotel (Flash or Nitro) through
+[G-Earth](https://github.com/G-Realm/G-Earth). It is a G-Earth extension: start G-Earth, log in to the hotel with your
+own client through it, then click **Start**. The ripper asks the hotel for the catalogue index and every page (the
+normal catalogue and, where the hotel has one, Builders Club), a few per second, the way the client does when you
+browse; every other packet passes through unchanged. When G-Earth is not running it offers to download its official
+release into `configuration/plugins/catalog-rip/G-Earth/` and start it: `G-Earth-windows-x64.zip` on Windows (started
+as administrator: for the Flash client G-Earth edits the hosts file, Windows asks first), `G-Earth-linux-x64.tar.gz`
+on Linux, and `G-Earth-mac-x64.zip` on a Mac (`G-Earth.app`, started with `open`; it runs on Apple silicon through
+Rosetta).
+
+- **Hotel profiles** give the packet ids. Official Habbo needs none (G-Earth knows them). Built in: Arcturus
+  Morningstar (`PRODUCTION-201611291003-338511768`) and Nitro retros. **Detect from the connection** picks one by the
+  game server's host, then the client revision, then the client type. Your own profiles are JSON files in
+  `configuration/plugins/catalog-rip/profiles/` (**Profiles folder**); one with a built-in profile's name replaces it.
+- **Output**, in `Catalog/<hotel>_<time>/` next to the configuration folder: `catalog.json`, Arcturus SQL
+  (`catalog_pages.sql`, `catalog_items.sql`), `catalog_manager.sql`, the page images and icons, and `README.txt`.
+  A rip that stops early still saves what it read.
+- **Import into the hotel** (when logged in) opens the [Catalogue](#catalogue) manager with `catalog_manager.sql` as an
+  import preview: nothing is written until **Apply**, and it is recorded in the history. The file replaces the whole
+  catalogue (normal and Builders Club). With **Match the furni with items_base** the ripper reads the server's
+  items_base (with the saved MariaDB account) so the offers point at your furni; offers whose furni is not in
+  items_base are left out and listed in the file.
+
+Use it on hotels whose catalogue you may copy, and keep the pause between pages reasonable: a hotel may disconnect a
+client that asks too fast.
 
 ## Settings
 

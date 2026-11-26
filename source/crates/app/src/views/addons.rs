@@ -30,6 +30,7 @@ pub fn entries() -> Vec<Entry> {
         entry("Fail2Ban", t("Bans addresses that guess SSH passwords; a whitelist for your own IPs (Tools → Fail2Ban).").into(), Icon::Shield, "#DC2626", Scene::Bricks, Page::Fail2Ban),
         entry("CrowdSec", t("Blocks attackers on every route through Traefik, with the community's blocklist. Cloudflare aware.").into(), Icon::Shield, "#7C3AED", Scene::Space, Page::CrowdSec),
         entry(t("Default catalogue"), t("A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.").into(), Icon::Shopping, "#D97706", Scene::Disco, Page::DefaultCatalog),
+        entry(t("Catalogue ripper"), t("The catalogue of Habbo or a retro hotel, copied through G-Earth: files to keep, or straight into the catalogue manager.").into(), Icon::Download, "#2563EB", Scene::Sky, Page::CatalogRip),
         entry("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Scene::Snow, Page::SqlEditor),
     ]
 }

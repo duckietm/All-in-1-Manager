@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aio_catalog_rip::room::{self, BaseItem, CaptureEvent, CaptureOptions, Command, Door, ImportChoice, ImportPlan, ImportRecord, PlanValue, RoomCapture, Target};
+use aio_catalog_rip::room::{self, BaseItem, CaptureEvent, CaptureOptions, Command, Door, ImportChoice, ImportPlan, ImportRecord, PlanValue, Recording, RoomCapture, Target};
 use aio_catalog_rip::{HotelProfile, ProfileChoice};
 use aio_remote::sql_session::{Linked, SqlSession, SqlValue};
 use aio_remote::Server;
@@ -36,6 +36,18 @@ fn imports_folder() -> PathBuf {
     plugin_folder().join("imports")
 }
 
+fn packets_folder() -> PathBuf {
+    plugin_folder().join("packets")
+}
+
+fn open_folder(path: &std::path::Path) {
+    let _ = std::fs::create_dir_all(path);
+    #[cfg(windows)]
+    let _ = std::process::Command::new("explorer.exe").arg(path).spawn();
+    #[cfg(not(windows))]
+    crate::gui::open_url(&path.display().to_string());
+}
+
 fn gearth_folder() -> PathBuf {
     aio_core::config_dir::directory().join("plugins").join("catalog-rip").join("G-Earth")
 }
@@ -55,6 +67,10 @@ struct State {
     connected: Option<String>,
     wired: Option<(usize, usize)>,
     reading: bool,
+    /// The packet recording: waiting for a room, or recording (packets, wired packets).
+    recording: Option<(bool, usize, usize)>,
+    /// The folder of the last finished recording.
+    recorded: Option<PathBuf>,
     /// The captures changed: the list is read again.
     refresh: bool,
     error: Option<String>,
@@ -208,6 +224,18 @@ impl RoomRipView {
                     ui.label(RichText::new(connected).size(12.0).color(palette.success_text));
                 }
             });
+            if capturing {
+                self.recording_row(ui, palette);
+            }
+            if let Some(folder) = self.state.lock().recorded.clone() {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(tf("Packet recording saved in {folder}", &[("folder", &folder.display().to_string())])).size(12.0).color(palette.success_text));
+                    if ui.add(widgets::secondary_button(t("Open the recording"))).clicked() {
+                        open_folder(&folder);
+                    }
+                });
+            }
             if let Some((done, total)) = wired.filter(|_| reading) {
                 ui.add_space(6.0);
                 ui.add(egui::ProgressBar::new(done as f32 / total.max(1) as f32).text(tf("Wired: {done} of {total} boxes", &[("done", &done.to_string()), ("total", &total.to_string())])));
@@ -219,6 +247,40 @@ impl RoomRipView {
             ui.add_space(8.0);
             log_view::show(ui, "room-rip", &mut self.state.lock().log, Some(200.0), t("The capture's log appears here."));
         });
+    }
+
+    /// For developers: record every packet, both ways.
+    fn recording_row(&mut self, ui: &mut egui::Ui, palette: &Palette) {
+        let recording = self.state.lock().recording;
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            match recording {
+                None => {
+                    if ui
+                        .add(widgets::secondary_button(t("Record every packet (developers)")))
+                        .on_hover_text(t("Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator."))
+                        .clicked()
+                    {
+                        self.state.lock().recorded = None;
+                        self.command(Command::RecordPackets(true));
+                    }
+                }
+                Some((waiting, packets, wired)) => {
+                    if ui.add(widgets::secondary_button(t("Stop recording"))).clicked() {
+                        self.command(Command::RecordPackets(false));
+                    }
+                    let text = if waiting {
+                        t("Recording starts in the next room you enter (so your login is not in it): enter or reload a room.").to_string()
+                    } else {
+                        tf("Recording: {packets} packets, {wired} of them wired", &[("packets", &packets.to_string()), ("wired", &wired.to_string())])
+                    };
+                    ui.label(RichText::new(text).size(12.0).color(palette.warning_text));
+                }
+            }
+        });
+        if recording.is_some() {
+            widgets::muted(ui, palette, t("The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust."), 11.5);
+        }
     }
 
     fn command(&self, command: Command) {
@@ -238,6 +300,8 @@ impl RoomRipView {
             state.connected = None;
             state.wired = None;
             state.reading = false;
+            state.recording = None;
+            state.recorded = None;
             state.cancel = Some(cancel.clone());
             state.commands = Some(commands);
         }
@@ -245,6 +309,7 @@ impl RoomRipView {
             folder: captures_folder(),
             furnidata_url: Some(self.furnidata_url.trim().to_string()).filter(|s| !s.is_empty()),
             gearth_folder: Some(gearth_folder()),
+            packets_folder: packets_folder(),
             ..CaptureOptions::default()
         };
         let choice = match self.profile.as_ref().and_then(|name| self.profiles.iter().find(|p| &p.name == name)) {
@@ -282,6 +347,15 @@ impl RoomRipView {
                         s.reading = false;
                         s.refresh = true;
                     }
+                    CaptureEvent::Recording(recording) => match recording {
+                        Recording::Waiting => s.recording = Some((true, 0, 0)),
+                        Recording::Running { packets, wired } => s.recording = Some((false, packets, wired)),
+                        Recording::Finished(folder) => {
+                            s.recording = None;
+                            s.recorded = Some(folder);
+                        }
+                        Recording::Off => s.recording = None,
+                    },
                 }
                 ctx.request_repaint();
             };
@@ -289,6 +363,7 @@ impl RoomRipView {
             let mut s = state.lock();
             s.capturing = false;
             s.reading = false;
+            s.recording = None;
             s.cancel = None;
             s.commands = None;
             s.connected = None;
@@ -306,7 +381,12 @@ impl RoomRipView {
         let mut open: Option<usize> = None;
         let mut delete: Option<usize> = None;
         widgets::card(ui, palette, egui::Margin::symmetric(24, 18), |ui| {
-            ui.label(widgets::title_text(t("Captured rooms"), 17.0));
+            ui.horizontal(|ui| {
+                ui.label(widgets::title_text(t("Captured rooms"), 17.0));
+                if ui.add(widgets::secondary_button(t("Open the folder"))).on_hover_text(captures_folder().display().to_string()).clicked() {
+                    open_folder(&captures_folder());
+                }
+            });
             if self.captures.is_empty() {
                 widgets::muted(ui, palette, t("No rooms yet: start the capture and enter a room."), 12.5);
                 return;

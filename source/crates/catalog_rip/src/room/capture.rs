@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
+use super::packet_log::{self, Names, PacketLog};
 use super::packets::{self as p, Door, FloorItem, RoomHeaders, RoomInfo, WallItem, WiredKind, WiredSettings};
 use crate::furnidata::Furnidata;
 use crate::gearth::{Event, ExtensionInfo, Session};
@@ -185,12 +186,15 @@ pub struct CaptureOptions {
     pub wired_timeout_ms: u64,
     pub ports: Vec<u16>,
     pub gearth_folder: Option<PathBuf>,
+    /// Where packet recordings go.
+    pub packets_folder: PathBuf,
 }
 
 impl Default for CaptureOptions {
     fn default() -> Self {
         Self {
             folder: PathBuf::from("Rooms"),
+            packets_folder: PathBuf::from("Packets"),
             furnidata_url: None,
             wired_delay_ms: 400,
             wired_timeout_ms: 4000,
@@ -207,6 +211,8 @@ pub enum Command {
     ReadWired,
     /// Stop reading the wired.
     StopReading,
+    /// For developers: record every packet, both ways, from the next room the user enters (true), or stop (false).
+    RecordPackets(bool),
 }
 
 /// What a running capture reports.
@@ -218,6 +224,20 @@ pub enum CaptureEvent {
     /// Reading the wired: done of total.
     WiredProgress { done: usize, total: usize },
     WiredDone { read: usize, total: usize, no_rights: bool },
+    /// The packet recording changed.
+    Recording(Recording),
+}
+
+/// Where the packet recording is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Recording {
+    /// It starts at the next room entered.
+    Waiting,
+    Running { packets: usize, wired: usize },
+    /// Saved in this folder.
+    Finished(PathBuf),
+    /// Not recording (it could not start, or was stopped before a room).
+    Off,
 }
 
 pub type CaptureSink<'a> = &'a (dyn Fn(CaptureEvent) + Send + Sync);
@@ -260,9 +280,64 @@ struct Capturer<'a> {
     reader: Option<WiredReader>,
     log: Log<'a>,
     sink: CaptureSink<'a>,
+    names: Names,
+    hotel_version: String,
+    /// A recording was asked for: it starts at the next room entered.
+    record_wanted: bool,
+    recording: Option<PacketLog>,
 }
 
 impl Capturer<'_> {
+    fn start_recording(&mut self, session: &Session) {
+        let readme = packet_log::readme(&self.connection_host, &self.client_type, &self.hotel_version, &self.profile, &self.names);
+        match PacketLog::start(&self.options.packets_folder, &self.hotel, &readme) {
+            Ok(recording) => {
+                session.watch_all(true);
+                (self.log)(&format!("Recording every packet into {} ...", recording.folder.display()));
+                self.recording = Some(recording);
+                (self.sink)(CaptureEvent::Recording(Recording::Running { packets: 0, wired: 0 }));
+            }
+            Err(e) => {
+                self.record_wanted = false;
+                (self.log)(&format!("The packet recording could not start: {e:#}"));
+                (self.sink)(CaptureEvent::Recording(Recording::Off));
+            }
+        }
+    }
+
+    fn stop_recording(&mut self, session: &Session) {
+        self.record_wanted = false;
+        let Some(recording) = self.recording.take() else {
+            (self.sink)(CaptureEvent::Recording(Recording::Off));
+            return;
+        };
+        session.watch_all(false);
+        let (packets, wired) = (recording.packets, recording.wired_packets);
+        match recording.finish() {
+            Ok(folder) => {
+                (self.log)(&format!("Packet recording saved: {packets} packets ({wired} wired) in {}.", folder.display()));
+                (self.sink)(CaptureEvent::Recording(Recording::Finished(folder)));
+            }
+            Err(e) => {
+                (self.log)(&format!("The packet recording could not be finished: {e:#}"));
+                (self.sink)(CaptureEvent::Recording(Recording::Off));
+            }
+        }
+    }
+
+    /// Adds a packet to the recording; stops it when it is full.
+    fn record(&mut self, to_server: bool, header: u16, body: &[u8], session: &Session) {
+        let Some(recording) = &mut self.recording else { return };
+        let room = recording.add(to_server, header, body, &self.names);
+        let (packets, wired) = (recording.packets, recording.wired_packets);
+        if !room {
+            (self.log)(&format!("The recording is full ({} packets): it stops here.", packet_log::MAX_PACKETS));
+            self.stop_recording(session);
+        } else if packets % 200 == 0 {
+            (self.sink)(CaptureEvent::Recording(Recording::Running { packets, wired }));
+        }
+    }
+
     fn class_of(&self, type_id: i32, wall: bool) -> Option<String> {
         let data = self.furnidata.as_ref()?;
         if wall { data.wall.get(&type_id) } else { data.floor.get(&type_id) }.cloned()
@@ -556,12 +631,15 @@ impl Capturer<'_> {
             return;
         };
         let by_use = reader.use_furniture;
-        let header = if by_use { self.headers.out(&p::USE_FURNITURE) } else { self.headers.out(&p::WIRED_OPEN) };
-        if let Some(header) = header {
-            let _ = session.send_to_server(&p::open_box(header, by_use, id));
-        }
         reader.waiting = Some((id, now, by_use));
         reader.next_at = now + Duration::from_millis(self.options.wired_delay_ms);
+        let header = if by_use { self.headers.out(&p::USE_FURNITURE) } else { self.headers.out(&p::WIRED_OPEN) };
+        if let Some(header) = header {
+            let packet = p::open_box(header, by_use, id);
+            let _ = session.send_to_server(&packet);
+            // G-Earth does not show an extension its own packets: the recording gets them here.
+            self.record(true, packet.header, &packet.body, session);
+        }
     }
 }
 
@@ -641,6 +719,7 @@ pub async fn capture(
     let hotel = crate::rip::hotel_name(&connection.host);
     sink(CaptureEvent::Connected { host: connection.host.clone(), client_type: connection.client_type.clone(), profile: profile.name.clone() });
     log(&format!("Connected to {} ({} client, profile {}). Enter a room.", connection.host, connection.client_type, profile.name));
+    let headers_for_names = headers.clone();
     let mut capturer = Capturer {
         options,
         headers,
@@ -656,6 +735,10 @@ pub async fn capture(
         reader: None,
         log,
         sink,
+        names: Names::new(&connection.packets, &headers_for_names, retro_ids),
+        hotel_version: connection.hotel_version.clone(),
+        record_wanted: false,
+        recording: None,
     };
     let mut commands_open = true;
     let result = loop {
@@ -669,12 +752,25 @@ pub async fn capture(
                         log("Reading the wired stopped.");
                     }
                 }
+                Some(Command::RecordPackets(true)) => {
+                    if capturer.recording.is_none() && !capturer.record_wanted {
+                        capturer.record_wanted = true;
+                        log("The packet recording starts in the next room you enter (so your login is not in it): enter or reload a room.");
+                        (capturer.sink)(CaptureEvent::Recording(Recording::Waiting));
+                    }
+                }
+                Some(Command::RecordPackets(false)) => capturer.stop_recording(&session),
                 // The page let go of the capture: no more commands.
                 None => commands_open = false,
             },
             event = session.next_event() => match event {
-                Some(Event::Packet(packet)) if !packet.to_server => {
-                    if let Some(key) = capturer.headers.incoming_key(packet.packet.header).map(str::to_string) {
+                Some(Event::Packet(packet)) => {
+                    let key = if packet.to_server { None } else { capturer.headers.incoming_key(packet.packet.header).map(str::to_string) };
+                    if capturer.record_wanted && capturer.recording.is_none() && key.as_deref() == Some(p::ROOM_READY.key) {
+                        capturer.start_recording(&session);
+                    }
+                    capturer.record(packet.to_server, packet.packet.header, &packet.packet.body, &session);
+                    if let Some(key) = key {
                         capturer.packet(&key, &packet.packet.body);
                     }
                 }
@@ -697,6 +793,9 @@ pub async fn capture(
     };
     if capturer.dirty {
         capturer.save();
+    }
+    if capturer.recording.is_some() {
+        capturer.stop_recording(&session);
     }
     match result {
         Err(e) if e.is::<Cancelled>() => {

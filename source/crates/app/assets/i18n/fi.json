@@ -4162,5 +4162,13 @@
   "{floor} floor, {wall} wall": "{floor} lattia, {wall} seinä",
   "{room} is imported as room {id}.": "{room} tuotiin huoneeksi {id}.",
   "{room} is in the hotel": "{room} on hotellissa",
-  "{room} is removed from the hotel.": "{room} poistettiin hotellista."
+  "{room} is removed from the hotel.": "{room} poistettiin hotellista.",
+  "Open the recording": "Avaa tallenne",
+  "Packet recording saved in {folder}": "Pakettitallenne tallennettu kansioon {folder}",
+  "Record every packet (developers)": "Tallenna jokainen paketti (kehittäjät)",
+  "Recording starts in the next room you enter (so your login is not in it): enter or reload a room.": "Tallennus alkaa seuraavassa huoneessa, johon menet (joten kirjautumisesi ei ole siinä): mene huoneeseen tai lataa se uudelleen.",
+  "Recording: {packets} packets, {wired} of them wired": "Tallennetaan: {packets} pakettia, joista {wired} wired",
+  "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Tallentaa jokaisen paketin clientisi ja hotellin välillä molempiin suuntiin seuraavasta huoneesta alkaen: packets.jsonl (kaikki) ja wired.txt (wired-paketit purettuina). Wiredien rakentamiseen emulaattoriin.",
+  "Stop recording": "Lopeta tallennus",
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille."
 }

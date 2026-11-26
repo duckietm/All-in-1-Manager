@@ -1884,6 +1884,22 @@ you read them. It shares the Catalogue ripper's G-Earth connection, hotel profil
      walks on/off furni, enters room, says something, periodically, at a set time, toggle state, move/rotate, show
      message, teleport, match snapshot (action and condition), furni have users, trigger on furni, reset timers, give
      score and call stacks. Other boxes, and boxes whose settings were not read, come empty and are listed.
+**Captured rooms → Open the folder** opens `configuration/plugins/room-rip/captures/`.
+
+**Record every packet (developers).** While capturing, this records every packet between your client and the hotel,
+both ways, for building the wired (or anything else) into the emulator. It starts in the **next room you enter**, so
+your login (and its SSO ticket) is never in it, and runs until **Stop recording** (or 500,000 packets). Each recording
+is a folder in `configuration/plugins/room-rip/packets/<hotel>_<time>/` (**Open the recording**):
+- `packets.jsonl`: one packet a line: `t` (ms since the start), `dir` (`out` client → hotel, `in` hotel → client),
+  `header`, `name` (from G-Earth's packet info, or the Room ripper's own names), `length` and `hex` (the body);
+- `wired.txt`: only the wired packets (box settings, the editor's save packets, opening a box, the box lights),
+  readable: the settings decoded where possible and a hex dump with offsets. Open and edit wired boxes with your own
+  client while recording to get the save packets too;
+- `README.txt`: the hotel, its client and revision, the profile and every known packet name with its id.
+
+The packets the ripper sends itself (opening boxes for **Read the wired**) are in it too. The recording holds
+everything sent in those rooms, chat too: share it only with people you trust.
+
 4. **Imported rooms → Undo** removes the room again: anyone in it is sent to the hotel view first (Polaris unloads a
    room when its owner is set again over RCON), then the furni that came with it are deleted (also when they were picked
    up since), furni placed there later go back to their owner's inventory, and the custom floor plan and the room go.

@@ -163,10 +163,13 @@ async fn captures_a_polaris_room_and_reads_its_wired() {
         wired_timeout_ms: 2000,
         ports: vec![port],
         gearth_folder: None,
+        packets_folder: dir.path().join("packets"),
     };
     let events: Arc<Mutex<Vec<CaptureEvent>>> = Arc::default();
     let log_lines: Arc<Mutex<Vec<String>>> = Arc::default();
     let (commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+    // The developer recording, asked for before the room is entered: it starts with the room.
+    commands.send(Command::RecordPackets(true)).unwrap();
     let cancel = CancellationToken::new();
     let task = {
         let (events, log_lines, cancel) = (events.clone(), log_lines.clone(), cancel.clone());
@@ -213,6 +216,19 @@ async fn captures_a_polaris_room_and_reads_its_wired() {
     assert_eq!(seen.sent[0].1, 12i32.to_be_bytes().to_vec());
     // Every room packet went on to the client.
     assert!(seen.echoed >= room_packets().len(), "echoed {}", seen.echoed);
+
+    // The recording holds every packet of the room, both ways, and the wired ones readably.
+    let finished = events.lock().unwrap().iter().find_map(|e| match e {
+        CaptureEvent::Recording(room::Recording::Finished(folder)) => Some(folder.clone()),
+        _ => None,
+    });
+    let folder = finished.expect("the recording was finished");
+    let all = std::fs::read_to_string(folder.join("packets.jsonl")).unwrap();
+    assert!(all.lines().count() >= room_packets().len() + 2, "{all}");
+    assert!(all.contains(r#""dir":"out","header":768"#) && all.contains(r#""dir":"in","header":2031,"name":"RoomReady""#), "{all}");
+    let wired = std::fs::read_to_string(folder.join("wired.txt")).unwrap();
+    assert!(wired.contains("client -> hotel  768 Open") && wired.contains("Action box 12"), "{wired}");
+    assert!(std::fs::read_to_string(folder.join("README.txt")).unwrap().contains("game.myretro.net"));
 }
 
 /// A Flash retro of another client revision than Arcturus' is matched by its client type only: its room ids are not

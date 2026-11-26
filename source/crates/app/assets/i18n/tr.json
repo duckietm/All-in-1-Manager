@@ -4162,5 +4162,13 @@
   "{floor} floor, {wall} wall": "{floor} zemin, {wall} duvar",
   "{room} is imported as room {id}.": "{room}, {id} numaralı oda olarak içe aktarıldı.",
   "{room} is in the hotel": "{room} otelde",
-  "{room} is removed from the hotel.": "{room} otelden kaldırıldı."
+  "{room} is removed from the hotel.": "{room} otelden kaldırıldı.",
+  "Open the recording": "Kaydı aç",
+  "Packet recording saved in {folder}": "Paket kaydı {folder} klasörüne kaydedildi",
+  "Record every packet (developers)": "Her paketi kaydet (geliştiriciler)",
+  "Recording starts in the next room you enter (so your login is not in it): enter or reload a room.": "Kayıt, gireceğin bir sonraki odada başlar (böylece girişin kayda girmez): bir odaya gir ya da odayı yeniden yükle.",
+  "Recording: {packets} packets, {wired} of them wired": "Kaydediliyor: {packets} paket, {wired} tanesi wired",
+  "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "İstemcin ile otel arasındaki her paketi iki yönde de, gireceğin bir sonraki odadan itibaren kaydeder: packets.jsonl (hepsi) ve wired.txt (wired paketleri, çözümlenmiş). Wired'ı emülatöre eklemek için.",
+  "Stop recording": "Kaydı durdur",
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Kayıt, istemcinin ve otelin o odalarda gönderdiği her şeyi, sohbet dahil, içerir: yalnızca güvendiğin kişilerle paylaş."
 }

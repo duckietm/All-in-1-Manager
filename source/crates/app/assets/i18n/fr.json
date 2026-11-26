@@ -4162,5 +4162,13 @@
   "{floor} floor, {wall} wall": "{floor} sol, {wall} mur",
   "{room} is imported as room {id}.": "{room} est importé comme appart {id}.",
   "{room} is in the hotel": "{room} est dans l'hôtel",
-  "{room} is removed from the hotel.": "{room} est retiré de l'hôtel."
+  "{room} is removed from the hotel.": "{room} est retiré de l'hôtel.",
+  "Open the recording": "Ouvrir l'enregistrement",
+  "Packet recording saved in {folder}": "Enregistrement des paquets sauvé dans {folder}",
+  "Record every packet (developers)": "Enregistrer chaque paquet (développeurs)",
+  "Recording starts in the next room you enter (so your login is not in it): enter or reload a room.": "L'enregistrement commence dans le prochain appart où tu entres (ta connexion n'y est donc pas) : entre dans un appart ou recharge-le.",
+  "Recording: {packets} packets, {wired} of them wired": "Enregistrement : {packets} paquets, dont {wired} wired",
+  "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Enregistre chaque paquet entre ton client et l'hôtel, dans les deux sens, à partir du prochain appart où tu entres : packets.jsonl (tous) et wired.txt (les paquets wired, décodés). Pour intégrer les wired dans l'émulateur.",
+  "Stop recording": "Arrêter l'enregistrement",
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "L'enregistrement contient tout ce que ton client et l'hôtel envoient dans ces apparts, le chat aussi : ne le partage qu'avec des personnes de confiance."
 }

@@ -7,8 +7,9 @@
 
 pub mod capture;
 pub mod import;
+pub mod packet_log;
 pub mod packets;
 
-pub use capture::{capture, list_captures, CaptureEvent, CaptureOptions, CaptureSummary, Command, RoomCapture};
+pub use capture::{capture, list_captures, CaptureEvent, CaptureOptions, CaptureSummary, Command, Recording, RoomCapture};
 pub use import::{plan, undo_statements, BaseItem, ImportChoice, ImportPlan, ImportRecord, ImportReport, PlanValue, Target};
 pub use packets::Door;

@@ -4162,5 +4162,13 @@
   "{floor} floor, {wall} wall": "{floor} vloer, {wall} muur",
   "{room} is imported as room {id}.": "{room} is geïmporteerd als kamer {id}.",
   "{room} is in the hotel": "{room} staat in het hotel",
-  "{room} is removed from the hotel.": "{room} is uit het hotel verwijderd."
+  "{room} is removed from the hotel.": "{room} is uit het hotel verwijderd.",
+  "Open the recording": "De opname openen",
+  "Packet recording saved in {folder}": "Pakketopname opgeslagen in {folder}",
+  "Record every packet (developers)": "Elk pakket opnemen (ontwikkelaars)",
+  "Recording starts in the next room you enter (so your login is not in it): enter or reload a room.": "De opname begint in de volgende kamer die je binnengaat (zodat je login er niet in staat): ga een kamer binnen of laad hem opnieuw.",
+  "Recording: {packets} packets, {wired} of them wired": "Opname: {packets} pakketten, waarvan {wired} wired",
+  "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Neemt elk pakket tussen je client en het hotel op, beide kanten op, vanaf de volgende kamer die je binnengaat: packets.jsonl (allemaal) en wired.txt (de wired-pakketten, ontleed). Om de wired in de emulator te bouwen.",
+  "Stop recording": "Opname stoppen",
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "De opname bevat alles wat je client en het hotel in die kamers sturen, ook chat: deel hem alleen met mensen die je vertrouwt."
 }

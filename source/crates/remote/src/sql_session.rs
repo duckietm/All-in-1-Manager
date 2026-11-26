@@ -71,6 +71,42 @@ pub enum SqlValue {
     Time(String),
 }
 
+/// A parameter of [`SqlSession::execute_linked`]: a value, the id an earlier statement inserted, or text in which
+/// `{#N}` becomes the id statement N inserted (a JSON list of item ids, for example).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Linked {
+    Value(SqlValue),
+    InsertId(usize),
+    Text(String),
+}
+
+impl Linked {
+    /// The value once the ids of the statements before are known.
+    pub fn resolve(&self, ids: &[u64]) -> std::result::Result<SqlValue, String> {
+        let id = |n: usize| ids.get(n).copied().filter(|id| *id > 0).ok_or_else(|| format!("statement {n} inserted no row"));
+        match self {
+            Linked::Value(value) => Ok(value.clone()),
+            Linked::InsertId(n) => id(*n).map(SqlValue::UInt),
+            Linked::Text(template) => {
+                let mut out = String::with_capacity(template.len());
+                let mut rest = template.as_str();
+                while let Some(start) = rest.find("{#") {
+                    out.push_str(&rest[..start]);
+                    let after = &rest[start + 2..];
+                    let Some(end) = after.find('}') else { break };
+                    match after[..end].parse::<usize>() {
+                        Ok(n) => out.push_str(&id(n)?.to_string()),
+                        Err(_) => out.push_str(&rest[start..start + 2 + end + 1]),
+                    }
+                    rest = &after[end + 1..];
+                }
+                out.push_str(rest);
+                Ok(SqlValue::Text(out))
+            }
+        }
+    }
+}
+
 impl SqlValue {
     pub fn is_null(&self) -> bool {
         matches!(self, SqlValue::Null)
@@ -697,6 +733,21 @@ impl SqlSession {
         Ok((changed, last_id))
     }
 
+    /// Like [`SqlSession::execute`], but a statement can use what an earlier one inserted ([`Linked`]): one
+    /// transaction, all or none. Returns the id each statement inserted (0 when it inserted none).
+    pub async fn execute_linked(&self, statements: &[(String, Vec<Linked>)]) -> Result<Vec<u64>> {
+        let mut conn = self.browse.lock().await;
+        let mut transaction = conn.start_transaction(TxOpts::default()).await?;
+        let mut ids: Vec<u64> = Vec::with_capacity(statements.len());
+        for (sql, params) in statements {
+            let params: Vec<Value> = params.iter().map(|p| p.resolve(&ids).map(|v| v.to_param())).collect::<std::result::Result<_, String>>().map_err(ServerError)?;
+            transaction.exec_drop(sql.as_str(), params).await?;
+            ids.push(transaction.last_insert_id().unwrap_or(0));
+        }
+        transaction.commit().await?;
+        Ok(ids)
+    }
+
     /// The database the query editor uses (changed by USE).
     pub async fn current_database(&self) -> Result<Option<String>> {
         let mut conn = self.query.lock().await;
@@ -779,6 +830,16 @@ impl SqlSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linked_values_use_the_ids_inserted_before() {
+        let ids = [7, 0, 12];
+        assert_eq!(Linked::InsertId(0).resolve(&ids), Ok(SqlValue::UInt(7)));
+        assert!(Linked::InsertId(1).resolve(&ids).is_err(), "a statement that inserted nothing");
+        assert_eq!(Linked::Text("{\"items\":[{#0},{#2}]}".into()).resolve(&ids), Ok(SqlValue::Text("{\"items\":[7,12]}".into())));
+        assert_eq!(Linked::Text("a {#x} b".into()).resolve(&ids), Ok(SqlValue::Text("a {#x} b".into())));
+        assert_eq!(Linked::Value(SqlValue::Int(3)).resolve(&[]), Ok(SqlValue::Int(3)));
+    }
 
     #[test]
     fn sql_text() {

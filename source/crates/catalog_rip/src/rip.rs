@@ -420,6 +420,32 @@ async fn wait_for_hotel(
     }
 }
 
+/// Connects to G-Earth (offering to start it) and waits for the hotel connection, connecting again when G-Earth lets
+/// the extension go meanwhile (a restart, or Connect in Nitro mode). Shared by the catalogue and the room ripper.
+pub(crate) async fn connect_to_hotel(
+    options: &RipOptions,
+    hooks: &RipHooks<'_>,
+    cancel: &CancellationToken,
+) -> Result<(Session, ConnectionInfo)> {
+    let log = hooks.log;
+    let timing = Timing::of(options);
+    let reconnect_until = Instant::now() + timing.hotel_wait;
+    loop {
+        let mut session = connect_gearth(options, &timing, hooks, cancel).await?;
+        match wait_for_hotel(&mut session, options, &timing, log, cancel).await {
+            Ok(connection) => return Ok((session, connection)),
+            Err(e) if e.is::<GearthDropped>() && Instant::now() < reconnect_until => {
+                log(&format!(
+                    "G-Earth let the extension go before the hotel connection ({e}; G-Earth restarted, or Connect in Nitro mode): connecting again ..."
+                ));
+                drop(session);
+                sleep_or_cancel(Duration::from_millis(500), cancel).await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 fn fallback_profile(connection: &ConnectionInfo) -> HotelProfile {
     let kind = if connection.client_type.eq_ignore_ascii_case("NITRO") {
         HotelKind::NitroRetro
@@ -446,7 +472,7 @@ fn fallback_profile(connection: &ConnectionInfo) -> HotelProfile {
 }
 
 /// The profile for this connection.
-fn choose_profile(
+pub(crate) fn choose_profile(
     choice: ProfileChoice,
     connection: &ConnectionInfo,
     hooks: &RipHooks<'_>,
@@ -982,21 +1008,7 @@ pub async fn rip_with(
         None => None,
     };
     log_instructions(options, &timing, log);
-    let reconnect_until = Instant::now() + timing.hotel_wait;
-    let (mut session, connection) = loop {
-        let mut session = connect_gearth(options, &timing, hooks, cancel).await?;
-        match wait_for_hotel(&mut session, options, &timing, log, cancel).await {
-            Ok(connection) => break (session, connection),
-            Err(e) if e.is::<GearthDropped>() && Instant::now() < reconnect_until => {
-                log(&format!(
-                    "G-Earth let the extension go before the hotel connection ({e}; G-Earth restarted, or Connect in Nitro mode): connecting again ..."
-                ));
-                drop(session);
-                sleep_or_cancel(Duration::from_millis(500), cancel).await?;
-            }
-            Err(e) => return Err(e),
-        }
-    };
+    let (mut session, connection) = connect_to_hotel(options, hooks, cancel).await?;
     log(&format!(
         "Hotel connection: {} ({} client, {})",
         connection.host, connection.client_type, connection.hotel_version

@@ -45,9 +45,18 @@ pub struct InstallerSettings {
     pub assets_path: Option<String>,
     /// The branch chosen per repository ("duckietm/Octane" to "dev"); a repository that is not in here uses main.
     pub branches: BTreeMap<String, String>,
-    /// Paths on the server and the emulator's account; None means the defaults. Read once at startup.
+    /// Paths on the server and the emulator's account; None means the defaults. The Default profile: what a server
+    /// without a profile of its own uses.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub layout: Option<ServerLayout>,
+    /// Path profiles of their own for servers laid out differently ("Test server" with /home/hotel/...). New in the
+    /// Rust port.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub layout_profiles: Vec<LayoutProfile>,
+    /// The profile each server uses, by the server as the login list writes it ("host" or "host:port"); a server not
+    /// in here uses the Default profile (`layout`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub server_layouts: BTreeMap<String, String>,
     /// "hotel" (the default) or "professional". Read once at startup.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub look: Option<String>,
@@ -61,6 +70,17 @@ pub struct InstallerSettings {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub collapsed: Vec<String>,
 }
+
+/// A named set of server paths (Settings → Server layout), for servers laid out differently from the Default one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase", default)]
+pub struct LayoutProfile {
+    pub name: String,
+    pub layout: ServerLayout,
+}
+
+/// The name the Default profile goes by in settings.json and on the page (it is `layout`, without a name).
+pub const DEFAULT_LAYOUT_PROFILE: &str = "Default";
 
 /// A branch to choose from, with the line the lists show behind its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +229,54 @@ impl InstallerSettings {
         std::fs::write(path, serde_json::to_string_pretty(self).unwrap_or_default())
     }
 
+    /// The layout of a profile: `None` (or "Default", or a profile that is gone) is the Default profile.
+    pub fn layout_of(&self, profile: Option<&str>) -> ServerLayout {
+        profile
+            .and_then(|name| self.layout_profiles.iter().find(|p| p.name == name))
+            .map(|p| p.layout.clone())
+            .unwrap_or_else(|| self.layout.clone().unwrap_or_default())
+    }
+
+    /// The profile a server of the login list uses (None: the Default one), ignoring case. A profile that was
+    /// deleted counts as none.
+    pub fn layout_profile_of(&self, server: &str) -> Option<String> {
+        let server = server.trim();
+        self.server_layouts
+            .iter()
+            .find(|(s, _)| s.eq_ignore_ascii_case(server))
+            .map(|(_, profile)| profile.clone())
+            .filter(|name| self.layout_profiles.iter().any(|p| &p.name == name))
+    }
+
+    /// Lets `server` use `profile` (None or the Default name: the Default profile).
+    pub fn set_layout_profile(&mut self, server: &str, profile: Option<&str>) {
+        let server = server.trim();
+        self.server_layouts.retain(|s, _| !s.eq_ignore_ascii_case(server));
+        if let Some(name) = profile.filter(|n| *n != DEFAULT_LAYOUT_PROFILE && !n.is_empty()) {
+            self.server_layouts.insert(server.to_string(), name.to_string());
+        }
+    }
+
+    /// Renames a profile, and the servers that use it follow. False when the new name is taken or not usable.
+    pub fn rename_layout_profile(&mut self, from: &str, to: &str) -> bool {
+        let to = to.trim();
+        if to.is_empty() || to.eq_ignore_ascii_case(DEFAULT_LAYOUT_PROFILE) || self.layout_profiles.iter().any(|p| p.name.eq_ignore_ascii_case(to) && p.name != from) {
+            return false;
+        }
+        let Some(profile) = self.layout_profiles.iter_mut().find(|p| p.name == from) else { return false };
+        profile.name = to.to_string();
+        for name in self.server_layouts.values_mut().filter(|n| n.as_str() == from) {
+            *name = to.to_string();
+        }
+        true
+    }
+
+    /// Deletes a profile; the servers that used it use the Default profile again.
+    pub fn delete_layout_profile(&mut self, name: &str) {
+        self.layout_profiles.retain(|p| p.name != name);
+        self.server_layouts.retain(|_, profile| profile != name);
+    }
+
     /// The saved servers, the default first. Settings from before the list only have `default_server`, which then
     /// is the list. Duplicates (ignoring case) are dropped.
     pub fn server_list(&self) -> Vec<String> {
@@ -282,6 +350,30 @@ pub fn relative_key(full_path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn layout_profiles_per_server() {
+        let mut settings = InstallerSettings { layout: Some(ServerLayout { octane: "/srv/Octane".into(), ..ServerLayout::default() }), ..InstallerSettings::default() };
+        settings.layout_profiles.push(LayoutProfile { name: "Test".into(), layout: ServerLayout { octane: "/home/hotel/Octane".into(), ..ServerLayout::default() } });
+        settings.set_layout_profile("test.example.com:2222", Some("Test"));
+        assert_eq!(settings.layout_profile_of("TEST.example.com:2222").as_deref(), Some("Test"));
+        assert_eq!(settings.layout_of(settings.layout_profile_of("test.example.com:2222").as_deref()).octane, "/home/hotel/Octane");
+        // Another server, and a profile name that is gone, use the Default profile.
+        assert_eq!(settings.layout_of(settings.layout_profile_of("hotel.example.com").as_deref()).octane, "/srv/Octane");
+        assert_eq!(settings.layout_of(Some("Gone")).octane, "/srv/Octane");
+        assert!(!settings.rename_layout_profile("Test", "default"), "Default is taken");
+        assert!(settings.rename_layout_profile("Test", "Staging"));
+        assert_eq!(settings.layout_profile_of("test.example.com:2222").as_deref(), Some("Staging"));
+        let saved = serde_json::to_string(&settings).unwrap();
+        assert!(saved.contains("\"LayoutProfiles\":") && saved.contains("\"ServerLayouts\":{\"test.example.com:2222\":\"Staging\"}"), "{saved}");
+        settings.delete_layout_profile("Staging");
+        assert!(settings.server_layouts.is_empty() && settings.layout_profile_of("test.example.com:2222").is_none());
+        settings.set_layout_profile("a", Some(DEFAULT_LAYOUT_PROFILE));
+        assert!(settings.server_layouts.is_empty());
+        // Settings from before profiles still read.
+        let old: InstallerSettings = serde_json::from_str(r#"{"Servers":["a"],"Branches":{},"Layout":{"Octane":"/x/Octane"}}"#).unwrap();
+        assert_eq!(old.layout_of(old.layout_profile_of("a").as_deref()).octane, "/x/Octane");
+    }
 
     #[test]
     fn the_first_retro_becomes_a_profile() {

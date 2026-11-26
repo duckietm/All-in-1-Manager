@@ -463,6 +463,13 @@ What it does:
      emulator account, `db.params=?characterEncoding=utf8&useSSL=false&serverTimezone=<your timezone>`, and
      generated secrets for `nitro.secure.master_key` and `login.remember.jwt.secret`. On a re-run only the
      database settings change; the rest of your `config.ini` is kept (with a `.bak-<date>` copy).
+   - **New settings** of a newer emulator: every `key=value` that `config example/config.ini.example` has and your
+     `config.ini` lacks is added at the end of `config.ini`, with the example's value and the comment above it,
+     under `# Added by All-in-1 Manager from config.ini.example on <date>` (after a `.bak-<date>` copy). A setting
+     already in your `config.ini` is never changed, also when the example has another value, and your own extra
+     settings stay. **Tools → Update emulator** does the same after every `git pull`: with new settings but no new
+     commits it restarts the emulator so it reads them; the log lists each setting it added. A new setting whose
+     example value is `change-me` is pointed out: set it yourself and restart the emulator.
    - Start script `Emulator/emulator`: runs the newest JAR in `target/` with JDK 25 and your memory, logs to
      `/var/log/emu/emulator.log`, keeps the previous log as `emulator.log.<time>` (30 days).
    - `/etc/systemd/system/emulator.service`: `User=emulator`, `SupplementaryGroups=www-data`, after and requiring
@@ -1888,7 +1895,17 @@ afterwards so the row shows the new version.
   The values go into scripts that run as root, so only plain absolute paths (letters, digits, `.`, `_`, `-`, `/`),
   Linux user names and simple database names are accepted; system folders such as `/var/www` itself and two parts
   in one folder are refused. A change does not move anything on the server (move the folder yourself, or install
-  again) and applies at the next start (**Restart now**). Stored in `configuration/settings.json` under `Layout`.
+  again). Stored in `configuration/settings.json` under `Layout`.
+
+  **Profiles, for servers laid out differently.** The paths above are the **Default** profile. **New profile** makes
+  another one (a copy of the profile shown, e.g. *Test server* with `/home/hotel/Octane`), **Rename** and **Delete**
+  manage it; **Profile** chooses which one the page shows and edits (save or undo changes before switching).
+  **Which profile each server uses** lists the servers of the login list with a profile for each; a server not set
+  uses Default. **Logging in to a server switches every path to its profile**: the status line says so
+  (*Server paths: profile Test server.*) and the card shows *In use now*. Saving the profile in use, or giving the
+  server you are logged in to another profile, applies at once: the next step or tool uses the new paths, no restart
+  needed. Deleting a profile puts its servers back on Default. Stored in `configuration/settings.json` under
+  `LayoutProfiles` (name and paths) and `ServerLayouts` (server → profile); the settings backup includes them.
 - **Repository branches**: the branch for Polaris, Octane and Octane-Renderer: **main** or **dev**. This is the
   one choice the whole program follows: the clone steps of Install New Server, **Tools → Update emulator** and
   **Tools → Update Octane**, and the update check that counts new commits. A clone that is on another branch is
@@ -1954,7 +1971,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 | **Recover SQL password** | gives MariaDB's root a new random 32-character password (asks first) and saves it in `configuration/database/<server>/mariadb.txt`; a changed file is kept as `mariadb.txt.bak-<time>`. Changes `root@localhost` (its socket login stays) and `root@'%'` when it exists. When root cannot log in through the socket any more, MariaDB is restarted for a moment with `--skip-grant-tables --skip-networking` to change it and then started normally. Then it tests the new password over 127.0.0.1 and the socket. Without a saved file, the CMS and emulator accounts are read from AtomCMS' `.env` and the emulator's `config.ini`, so the new file is complete. The emulator and AtomCMS use their own accounts and are not affected |
 | **Check for updates** | `git fetch` of the emulator, Octane, Octane-Renderer and AtomCMS, and per clone how many commits a `git pull` would bring in, with the newest one. The commits are counted against the branch chosen in **Settings → Repository branches**, not against the branch the clone happens to be on, so a clone still on `main` while `dev` is chosen reports what `dev` has and says `main → dev`. AtomCMS has no choice and is counted against its own branch. A fetch only fills the remote branches: no file on the server is changed and the hotel keeps running. The same check runs by itself right after you log in here, and again after an update, so **Update emulator** and **Update Octane** say `3 new commit(s)` or `up to date` before you press them |
 | **Update system** | `apt-get update`, `upgrade` and `dist-upgrade` (changed configuration files are kept); says when a reboot is needed |
-| **Update emulator** | `git pull` in `/var/www/emulator` on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first) and the missing files of its `Assets/` copied into gamedata (see Deploy Assets → Images); when there are new commits: `build.sh` and a restart. The start script runs the newest `target/*-jar-with-dependencies.jar`, so a new version number is picked up by itself; the result shows old → new version. No new commits: nothing is rebuilt or restarted |
+| **Update emulator** | `git pull` in `/var/www/emulator` on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first) and the missing files of its `Assets/` copied into gamedata (see Deploy Assets → Images); settings the new `config.ini.example` has and your `config.ini` lacks are added to it with the example's value (your values stay, a `.bak-<date>` copy is made, see step 4 of the Emulator step); when there are new commits: `build.sh` and a restart. The start script runs the newest `target/*-jar-with-dependencies.jar`, so a new version number is picked up by itself; the result shows old → new version. No new commits: nothing is rebuilt, and the emulator restarts only when `config.ini` got new settings |
 | **Update Octane** | `git pull` of Octane-Renderer and Octane, both on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first), then in both `rm -rf node_modules yarn.lock` and `yarn install`, then the configuration for the site (keeps AtomCMS' `/client` layout), `yarn build` and a test. The next pull puts the repository's `yarn.lock` back first |
 | **Update AtomCMS** | `git pull` in `/var/www/atomcms`, `composer install`, `php artisan migrate` (an installed AtomCMS only runs the new migrations; its settings and the hotel name stay) and the theme build. Octane is not touched |
 | **Update Traefik** | `docker compose pull` and `up -d` in `/opt/traefik`: the newest `traefik:v3` image, and a restart only when it changed (routes, settings and certificates stay; the players are disconnected for a few seconds). When Docker Hub does not answer nothing is changed, and it says so (also for Gitea and CrowdSec) |

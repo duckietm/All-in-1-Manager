@@ -1,5 +1,5 @@
-//! Where the hotel lives on the server and the account the emulator runs as (Settings → Server layout). Read once
-//! at startup, like the look, so every step of a run uses the same places. The values go into shell scripts that run
+//! Where the hotel lives on the server and the account the emulator runs as (Settings → Server layout). Each server can
+//! have a profile of its own: the layout in use switches when the login connects to a server ([`ServerLayout::use_layout`]). The values go into shell scripts that run
 //! as root, so [`ServerLayout::validate`] only lets plain paths and names through.
 
 use std::sync::OnceLock;
@@ -253,7 +253,9 @@ impl Default for ServerLayout {
 
 pub const ROOT_ACCOUNT: &str = "root";
 
-static CURRENT: OnceLock<ServerLayout> = OnceLock::new();
+/// The layout in use, and the profile it came from (None: the Default profile). A switch leaks the old layout on
+/// purpose: callers hold `&'static` references to it, and a switch happens at a login, a few times per session.
+static CURRENT: std::sync::RwLock<Option<(&'static ServerLayout, Option<String>)>> = std::sync::RwLock::new(None);
 
 /// The hotel database chosen during this run (a tool found the configured one missing and the user picked
 /// another): wins over the emulator's config.ini and the layout until the installer closes.
@@ -275,14 +277,36 @@ fn database_pattern() -> &'static Regex {
 }
 
 impl ServerLayout {
-    /// The layout this run of the installer uses: set once at startup from the settings (the defaults otherwise).
+    /// The layout in use: the profile of the server logged in to, else the Default profile of the settings.
     pub fn current() -> &'static ServerLayout {
-        CURRENT.get_or_init(|| crate::settings::InstallerSettings::load().layout.unwrap_or_default())
+        if let Some((layout, _)) = *CURRENT.read().unwrap() {
+            return layout;
+        }
+        let mut current = CURRENT.write().unwrap();
+        current.get_or_insert_with(|| (Box::leak(Box::new(crate::settings::InstallerSettings::load().layout.unwrap_or_default())), None)).0
     }
 
-    /// Fixes the layout for this run (startup, tests). Ignored when it was already read.
+    /// The profile the layout in use came from; None is the Default profile.
+    pub fn current_profile() -> Option<String> {
+        CURRENT.read().unwrap().as_ref().and_then(|(_, profile)| profile.clone())
+    }
+
+    /// Sets the layout for this run (startup, tests). Ignored when one is set already.
     pub fn init(layout: ServerLayout) {
-        let _ = CURRENT.set(layout);
+        let mut current = CURRENT.write().unwrap();
+        if current.is_none() {
+            *current = Some((Box::leak(Box::new(layout)), None));
+        }
+    }
+
+    /// Uses `layout` (of `profile`, None for the Default one) from now on: at a login, and when Settings saves the
+    /// profile in use. Nothing changes when it is the layout in use already.
+    pub fn use_layout(layout: ServerLayout, profile: Option<String>) {
+        let mut current = CURRENT.write().unwrap();
+        if current.as_ref().is_some_and(|(now, name)| **now == layout && *name == profile) {
+            return;
+        }
+        *current = Some((Box::leak(Box::new(layout)), profile));
     }
 
     /// Uses `name` as the hotel database for the rest of this run. False (and nothing changes) for a name that is

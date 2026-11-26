@@ -115,7 +115,7 @@ replacing the app keeps them; **Settings** can put `Habbo_Assets` anywhere else.
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
   [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
-- [Catalogue ripper](#catalogue-ripper)
+- [Catalogue ripper](#catalogue-ripper) · [Room ripper](#room-ripper)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [macOS](#macos) · [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -1848,6 +1848,44 @@ Rosetta).
 
 Use it on hotels whose catalogue you may copy, and keep the pause between pages reasonable: a hotel may disconnect a
 client that asks too fast.
+
+## Room ripper
+
+**Addons → Room ripper** copies rooms of official Habbo or of a retro (Flash or Nitro) through G-Earth and imports
+them into your hotel as **new** rooms: the floor plan, door, wallpaper, floor and landscape, name, description and
+tags, every floor and wall furni in its place with its state, and the **wired** with its settings where the hotel lets
+you read them. It shares the Catalogue ripper's G-Earth connection, hotel profiles and furnidata reader.
+
+1. **Capture.** Click **Start**, then walk into the rooms you want with your own client: every room you enter is saved
+   as `configuration/plugins/room-rip/captures/<hotel>_<room id>.json` and listed under **Captured rooms**. The capture
+   only listens: nothing in the other hotel changes. On a retro it asks for the door tile (what the floor plan editor
+   asks, read only); official Habbo does not send the door, so it is guessed from the floor plan and shown for you to
+   check. A retro needs its **furnidata** URL for the class names (official Habbo finds its own).
+2. **Read the wired** (optional, in the room you are in). The hotel sends a wired box's settings only to someone who may
+   inspect the room's wired: its owner, someone with rights, or everyone when the owner allows it. The ripper opens the
+   boxes one at a time (400 ms apart) with *Open* where the hotel has it (Polaris and official Habbo: nothing visible), else
+   with a double click (the box's light flips for everyone in the room). When the first box does not answer, it stops and
+   says you may not read the wired there. Boxes you open by hand while capturing are kept too.
+3. **Import ...** (logged in to your server; the MariaDB account the other database pages use). Choose the **owner** (a
+   user of your hotel), the **room name** and, if needed, the **door**. **Preview** shows what the import makes and leaves
+   out; **Import** writes it all in one transaction (all or nothing):
+   - a new room of that owner, **open to everyone**, with the hotel's default category, trade and chat settings;
+   - the hotel's model when it has the same floor plan and door, else a custom one (`room_models_custom`,
+     `override_model`);
+   - the furni, matched with your `items_base` by **class name** (by sprite id when the class name was not known);
+     furni you do not have are left out and listed. They become normal items of the owner, **cleaned** of what belongs
+     to the other hotel: LTD serials (the item is no LTD here), trophy engravings, group links, ads and badge displays,
+     all listed;
+   - the wired settings that were read, as Polaris' `wired_data`, their furni pointing at the new items. Converted now:
+     walks on/off furni, enters room, says something, periodically, at a set time, toggle state, move/rotate, show
+     message, teleport, match snapshot (action and condition), furni have users, trigger on furni, reset timers, give
+     score and call stacks. Other boxes, and boxes whose settings were not read, come empty and are listed.
+4. **Imported rooms → Undo** removes the room again: anyone in it is sent to the hotel view first (Polaris unloads a
+   room when its owner is set again over RCON), then the furni that came with it are deleted (also when they were picked
+   up since), furni placed there later go back to their owner's inventory, and the custom floor plan and the room go.
+   The record of each import is kept in `configuration/plugins/room-rip/imports/`.
+
+Use it on rooms you may copy.
 
 ## Settings
 

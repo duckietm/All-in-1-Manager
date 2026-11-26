@@ -31,6 +31,7 @@ pub fn entries() -> Vec<Entry> {
         entry("CrowdSec", t("Blocks attackers on every route through Traefik, with the community's blocklist. Cloudflare aware.").into(), Icon::Shield, "#7C3AED", Scene::Space, Page::CrowdSec),
         entry(t("Default catalogue"), t("A complete catalogue for a new hotel: pages, items, furniture and FurnitureData.json.").into(), Icon::Shopping, "#D97706", Scene::Disco, Page::DefaultCatalog),
         entry(t("Catalogue ripper"), t("The catalogue of Habbo or a retro hotel, copied through G-Earth: files to keep, or straight into the catalogue manager.").into(), Icon::Download, "#2563EB", Scene::Sky, Page::CatalogRip),
+        entry(t("Room ripper"), t("Rooms of Habbo or a retro hotel, copied through G-Earth with their floor plan, furni and wired, into your hotel as new rooms.").into(), Icon::Download, "#0E9F6E", Scene::Sky, Page::RoomRip),
         entry("SQL Editor", t("Like HeidiSQL: browse and edit tables, run queries, export to CSV.").into(), Icon::Database, "#0891B2", Scene::Snow, Page::SqlEditor),
     ]
 }

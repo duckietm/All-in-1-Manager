@@ -4163,6 +4163,7 @@
   "{room} is imported as room {id}.": "{room}, {id} numaralı oda olarak içe aktarıldı.",
   "{room} is in the hotel": "{room} otelde",
   "{room} is removed from the hotel.": "{room} otelden kaldırıldı.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Zaten yoktu (silinmiş veya geri dönüştürülmüş), atlandı: {ids}.",
   "Open the recording": "Kaydı aç",
   "Packet recording saved in {folder}": "Paket kaydı {folder} klasörüne kaydedildi",
   "Record every packet (developers)": "Her paketi kaydet (geliştiriciler)",

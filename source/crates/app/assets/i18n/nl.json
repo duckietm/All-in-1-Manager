@@ -4163,6 +4163,7 @@
   "{room} is imported as room {id}.": "{room} is geïmporteerd als kamer {id}.",
   "{room} is in the hotel": "{room} staat in het hotel",
   "{room} is removed from the hotel.": "{room} is uit het hotel verwijderd.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Al eerder weg (verwijderd of gerecycled), overgeslagen: {ids}.",
   "Open the recording": "De opname openen",
   "Packet recording saved in {folder}": "Pakketopname opgeslagen in {folder}",
   "Record every packet (developers)": "Elk pakket opnemen (ontwikkelaars)",

@@ -4163,6 +4163,7 @@
   "{room} is imported as room {id}.": "{room} tuotiin huoneeksi {id}.",
   "{room} is in the hotel": "{room} on hotellissa",
   "{room} is removed from the hotel.": "{room} poistettiin hotellista.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Jo aiemmin poissa (poistettu tai kierrätetty), ohitettu: {ids}.",
   "Open the recording": "Avaa tallenne",
   "Packet recording saved in {folder}": "Pakettitallenne tallennettu kansioon {folder}",
   "Record every packet (developers)": "Tallenna jokainen paketti (kehittäjät)",

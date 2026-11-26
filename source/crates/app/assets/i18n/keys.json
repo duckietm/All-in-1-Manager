@@ -266,6 +266,7 @@
   "Allows",
   "Already a gift",
   "Already cloned there? Then it is updated with git pull --ff-only (switching branch first when you picked another one); changed files are never overwritten.",
+  "Already gone before (deleted or recycled), skipped: {ids}.",
   "Already in items_base, but FurnitureData.json now has them under another id (Habbo took theirs): their sprite_id is updated, so the client keeps showing them.",
   "Already in the list",
   "Already there",

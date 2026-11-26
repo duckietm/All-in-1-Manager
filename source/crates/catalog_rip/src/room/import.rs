@@ -483,7 +483,8 @@ pub struct ItemNow {
 
 /// Why Undo must not run now, one line per kind with the furni concerned (empty: it may). Undo deletes only a room
 /// nobody is in, still of the owner it was imported for, with every furni that came with it still in it and still
-/// that owner's: a furni picked up, moved, traded or given since belongs to someone's game now.
+/// that owner's: a furni picked up, moved, traded or given since belongs to someone's game now. A furni no longer in
+/// the hotel (deleted or recycled) is nobody's: it does not stop Undo ([`undo_already_gone`] lists it).
 pub fn undo_problems(record: &ImportRecord, room: Option<&RoomNow>, items: &[ItemNow]) -> Vec<String> {
     let Some(room) = room else {
         return vec![format!("Room {} is no longer in the hotel.", record.room_id)];
@@ -495,10 +496,10 @@ pub fn undo_problems(record: &ImportRecord, room: Option<&RoomNow>, items: &[Ite
     if room.users > 0 {
         problems.push(format!("{} users are in the room now: try again when it is empty.", room.users));
     }
-    let (mut gone, mut picked_up, mut moved, mut traded) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut picked_up, mut moved, mut traded) = (Vec::new(), Vec::new(), Vec::new());
     for id in &record.item_ids {
         match items.iter().find(|i| i.id == *id) {
-            None => gone.push(id.to_string()),
+            None => {}
             Some(item) if item.user_id != record.owner_id => traded.push(format!("{id} (user {})", item.user_id)),
             Some(item) if item.room_id == 0 => picked_up.push(id.to_string()),
             Some(item) if item.room_id != record.room_id as i64 => moved.push(format!("{id} (room {})", item.room_id)),
@@ -516,13 +517,17 @@ pub fn undo_problems(record: &ImportRecord, room: Option<&RoomNow>, items: &[Ite
         (&picked_up, format!("Picked up since (in {}'s inventory)", record.owner_name)),
         (&moved, "Moved to another room".to_string()),
         (&traded, "Owned by another user now (traded or given)".to_string()),
-        (&gone, "No longer in the hotel (deleted or recycled)".to_string()),
     ] {
         if !ids.is_empty() {
             problems.push(format!("{what}: {}", listed(ids)));
         }
     }
     problems
+}
+
+/// The furni of the import no longer in the hotel (deleted or recycled since): Undo skips them.
+pub fn undo_already_gone(record: &ImportRecord, items: &[ItemNow]) -> Vec<u64> {
+    record.item_ids.iter().copied().filter(|id| !items.iter().any(|i| i.id == *id)).collect()
 }
 
 /// The statements that undo an import, once [`undo_problems`] found nothing: the furni that came with it are
@@ -706,7 +711,7 @@ mod tests {
     }
 
     #[test]
-    fn undo_lists_every_furni_that_moved_was_picked_up_traded_or_is_gone() {
+    fn undo_lists_every_furni_that_moved_was_picked_up_or_traded() {
         let mut record = record();
         record.item_ids = vec![1, 2, 3, 4, 5, 6];
         let room = RoomNow { owner_id: 1, users: 0 };
@@ -718,10 +723,19 @@ mod tests {
             ItemNow { id: 5, user_id: 9, room_id: 50 },
         ];
         let problems = undo_problems(&record, Some(&room), &items);
-        assert_eq!(problems.len(), 4, "{problems:?}");
+        assert_eq!(problems.len(), 3, "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("Picked up") && p.ends_with(": 2")), "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("another room") && p.ends_with(": 3 (room 88)")), "{problems:?}");
         assert!(problems.iter().any(|p| p.contains("another user") && p.ends_with(": 4 (user 9), 5 (user 9)")), "{problems:?}");
-        assert!(problems.iter().any(|p| p.contains("No longer in the hotel") && p.ends_with(": 6")), "{problems:?}");
+    }
+
+    #[test]
+    fn furni_already_gone_do_not_block_undo_and_are_listed() {
+        let mut record = record();
+        record.item_ids = vec![1, 2, 3, 6, 7];
+        let room = RoomNow { owner_id: 1, users: 0 };
+        let items = [in_room(1), in_room(2), in_room(3)];
+        assert!(undo_problems(&record, Some(&room), &items).is_empty());
+        assert_eq!(undo_already_gone(&record, &items), vec![6, 7]);
     }
 }

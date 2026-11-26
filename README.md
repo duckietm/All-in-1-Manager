@@ -1903,7 +1903,8 @@ everything sent in those rooms, chat too: share it only with people you trust.
 4. **Imported rooms → Undo** removes the room again, but only while it is as it was imported: the room is still in the
    hotel and still of its owner, nobody is in it (`rooms.users` is 0), and every furni that came with it is still in it
    and still the owner's (`items.room_id` and `items.user_id`). When the room was used since, Undo lists what changed
-   (furni picked up, moved to another room, traded or given, deleted; people in the room) and removes nothing. Then the
+   (furni picked up, moved to another room, traded or given; people in the room) and removes nothing; furni deleted or
+   recycled since are nobody's, so they do not stop it (they are listed as already gone). Then the
    emulator unloads the room (Polaris does when a room's owner is set again over RCON): when it refuses, or is running
    but does not answer on RCON, Undo stops; when it is not running, nothing has the room loaded and Undo goes on. The
    checks run again on what the emulator saved, then in one transaction the furni that came with it are deleted, furni

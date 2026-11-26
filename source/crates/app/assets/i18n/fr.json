@@ -4163,6 +4163,7 @@
   "{room} is imported as room {id}.": "{room} est importé comme appart {id}.",
   "{room} is in the hotel": "{room} est dans l'hôtel",
   "{room} is removed from the hotel.": "{room} est retiré de l'hôtel.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Déjà disparus avant (supprimés ou recyclés), ignorés : {ids}.",
   "Open the recording": "Ouvrir l'enregistrement",
   "Packet recording saved in {folder}": "Enregistrement des paquets sauvé dans {folder}",
   "Record every packet (developers)": "Enregistrer chaque paquet (développeurs)",

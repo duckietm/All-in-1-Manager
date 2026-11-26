@@ -357,7 +357,11 @@ impl App {
             self.shared.spawn(async move { old.disconnect().await });
         }
         let who = if user == "root" { "root".to_string() } else { tf("{user} (root through sudo)", &[("user", &user)]) };
-        self.shared.set_status(&tf("Connected to {host} as {who}.", &[("host", &login.host), ("who", &who)]));
+        let status = tf("Connected to {host} as {who}.", &[("host", &login.host), ("who", &who)]);
+        match use_layout_of(&login) {
+            Some(profile) => self.shared.set_status(&format!("{status} {}", tf("Server paths: profile {profile}.", &[("profile", &profile)]))),
+            None => self.shared.set_status(&status),
+        }
     }
 
     /// Notices a connection the server dropped, and opens the login again once nothing runs any more.
@@ -1129,6 +1133,28 @@ fn logo(ui: &mut egui::Ui) {
         painter.rect_filled(rect, 10.0, theme::hex("#4F5FE6"));
         icons::image(Icon::Server, 19.0, Color32::WHITE).paint_at(ui, egui::Rect::from_center_size(rect.center(), egui::vec2(19.0, 19.0)));
     }
+}
+
+/// Switches the server paths to the profile Settings gives this server (the Default profile when it has none) and
+/// returns the profile's name when it is not the Default one.
+pub fn use_layout_of(login: &aio_remote::ServerLogin) -> Option<String> {
+    let settings = aio_core::InstallerSettings::load();
+    let profile = layout_profile_of(&settings, &login.host, login.port);
+    aio_core::ServerLayout::use_layout(settings.layout_of(profile.as_deref()), profile.clone());
+    profile
+}
+
+/// The path profile Settings gives a server (None: the Default profile). The server is matched as the login list
+/// writes it, "host" or "host:port".
+pub fn layout_profile_of(settings: &aio_core::InstallerSettings, host: &str, port: u16) -> Option<String> {
+    settings
+        .server_layouts
+        .keys()
+        .find(|server| {
+            let (h, p) = aio_remote::ServerLogin::parse_host(server);
+            h.eq_ignore_ascii_case(host) && p == port
+        })
+        .and_then(|server| settings.layout_profile_of(server))
 }
 
 pub fn open_url(url: &str) {

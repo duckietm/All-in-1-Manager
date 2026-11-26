@@ -1895,7 +1895,17 @@ afterwards so the row shows the new version.
   The values go into scripts that run as root, so only plain absolute paths (letters, digits, `.`, `_`, `-`, `/`),
   Linux user names and simple database names are accepted; system folders such as `/var/www` itself and two parts
   in one folder are refused. A change does not move anything on the server (move the folder yourself, or install
-  again) and applies at the next start (**Restart now**). Stored in `configuration/settings.json` under `Layout`.
+  again). Stored in `configuration/settings.json` under `Layout`.
+
+  **Profiles, for servers laid out differently.** The paths above are the **Default** profile. **New profile** makes
+  another one (a copy of the profile shown, e.g. *Test server* with `/home/hotel/Octane`), **Rename** and **Delete**
+  manage it; **Profile** chooses which one the page shows and edits (save or undo changes before switching).
+  **Which profile each server uses** lists the servers of the login list with a profile for each; a server not set
+  uses Default. **Logging in to a server switches every path to its profile**: the status line says so
+  (*Server paths: profile Test server.*) and the card shows *In use now*. Saving the profile in use, or giving the
+  server you are logged in to another profile, applies at once: the next step or tool uses the new paths, no restart
+  needed. Deleting a profile puts its servers back on Default. Stored in `configuration/settings.json` under
+  `LayoutProfiles` (name and paths) and `ServerLayouts` (server → profile); the settings backup includes them.
 - **Repository branches**: the branch for Polaris, Octane and Octane-Renderer: **main** or **dev**. This is the
   one choice the whole program follows: the clone steps of Install New Server, **Tools → Update emulator** and
   **Tools → Update Octane**, and the update check that counts new commits. A clone that is on another branch is

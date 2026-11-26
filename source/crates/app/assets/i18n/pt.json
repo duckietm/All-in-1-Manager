@@ -4145,7 +4145,7 @@
   "The room capture stopped.": "A captura de quartos parou.",
   "The room, its floor plan and the furni that came with it are deleted.": "O quarto, a sua planta e os mobis que vieram com ele são eliminados.",
   "Undo failed: nothing was removed": "Anular falhou: nada foi removido",
-  "Undo removes the room and the furni that came with it, only while nobody is in the room and every one of those furni is still in it and still the owner's. When the room was used since (furni picked up, moved or traded), Undo lists what changed and removes nothing.": "Anular remove o quarto e os mobis que vieram com ele apenas se não houver ninguém no quarto e cada um desses mobis ainda estiver nele e ainda for do dono. Se o quarto foi usado desde então (mobis apanhados, movidos ou trocados), Anular mostra o que mudou e não remove nada.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Anular remove o quarto e os mobis que vieram com ele apenas se não houver ninguém no quarto, o dono estiver offline e cada um desses mobis ainda estiver nele e ainda for do dono; bots, animais e mobis que outros puseram lá voltam aos seus donos. Se o quarto foi usado desde então (mobis apanhados, movidos ou trocados), Anular mostra o que o impede e não remove nada.",
   "Undo the import": "Anular a importação",
   "Undone": "Anulado",
   "What the import makes": "O que a importação cria",

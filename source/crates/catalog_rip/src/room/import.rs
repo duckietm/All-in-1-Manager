@@ -464,12 +464,15 @@ pub fn plan(capture: &RoomCapture, target: &Target, choice: &ImportChoice) -> Re
     Ok(ImportPlan { statements, report, item_statements })
 }
 
-/// An imported room as the hotel has it now (`rooms.owner_id`, and `rooms.users`: who is inside, kept by Polaris while
-/// it runs and set to 0 when it starts), read before Undo.
+/// An imported room as the hotel has it now, read before Undo: `rooms.owner_id`, `rooms.users` (who is inside, kept
+/// by Polaris while it runs and set to 0 when it starts), `rooms.guild_id` (a group whose home it is), and whether its
+/// owner is online (`users.online` = '1'; Polaris keeps a room loaded while its owner is online).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomNow {
     pub owner_id: i64,
     pub users: i64,
+    pub guild_id: i64,
+    pub owner_online: bool,
 }
 
 /// A furni of an import as the hotel has it now: its owner (`items.user_id`) and room (`items.room_id`, 0 in an
@@ -481,10 +484,32 @@ pub struct ItemNow {
     pub room_id: i64,
 }
 
+/// The queries that read the room of `record` (owner, users, group, owner online) and its furni (id, owner, room,
+/// 500 ids a query) for [`undo_problems`].
+pub fn undo_check_queries(record: &ImportRecord) -> ((String, Vec<PlanValue>), Vec<(String, Vec<PlanValue>)>) {
+    let db = q(&record.database);
+    let room = (
+        format!(
+            "SELECT r.`owner_id`, r.`users`, r.`guild_id`, COALESCE(u.`online` = '1', 0) FROM {db}.`rooms` r LEFT JOIN {db}.`users` u ON u.`id` = r.`owner_id` WHERE r.`id` = ? LIMIT 1"
+        ),
+        vec![PlanValue::Int(record.room_id as i64)],
+    );
+    let items = record
+        .item_ids
+        .chunks(500)
+        .map(|chunk| {
+            let marks = vec!["?"; chunk.len()].join(", ");
+            (format!("SELECT `id`, `user_id`, `room_id` FROM {db}.`items` WHERE `id` IN ({marks})"), chunk.iter().map(|id| PlanValue::Int(*id as i64)).collect())
+        })
+        .collect();
+    (room, items)
+}
+
 /// Why Undo must not run now, one line per kind with the furni concerned (empty: it may). Undo deletes only a room
-/// nobody is in, still of the owner it was imported for, with every furni that came with it still in it and still
-/// that owner's: a furni picked up, moved, traded or given since belongs to someone's game now. A furni no longer in
-/// the hotel (deleted or recycled) is nobody's: it does not stop Undo ([`undo_already_gone`] lists it).
+/// nobody is in, whose owner is offline, no group's home, still of the owner it was imported for, with every furni
+/// that came with it still in it and still that owner's: a furni picked up, moved, traded or given since belongs to
+/// someone's game now. A furni no longer in the hotel (deleted or recycled) is nobody's: it does not stop Undo
+/// ([`undo_already_gone`] lists it).
 pub fn undo_problems(record: &ImportRecord, room: Option<&RoomNow>, items: &[ItemNow]) -> Vec<String> {
     let Some(room) = room else {
         return vec![format!("Room {} is no longer in the hotel.", record.room_id)];
@@ -494,16 +519,29 @@ pub fn undo_problems(record: &ImportRecord, room: Option<&RoomNow>, items: &[Ite
         problems.push(format!("Room {} belongs to user {} now, not to {}.", record.room_id, room.owner_id, record.owner_name));
     }
     if room.users > 0 {
-        problems.push(format!("{} users are in the room now: try again when it is empty.", room.users));
+        problems.push(format!(
+            "{} users are in the room now (or the emulator stopped without clearing the count: start it once): try again when it is empty.",
+            room.users
+        ));
+    }
+    if room.owner_online {
+        problems.push(format!(
+            "{owner} is online, and Polaris keeps the room loaded while its owner is: ask {owner} to log out, then try again.",
+            owner = record.owner_name
+        ));
+    }
+    if room.guild_id > 0 {
+        problems.push(format!("Group {} has the room as its home: remove the group first.", room.guild_id));
     }
     let (mut picked_up, mut moved, mut traded) = (Vec::new(), Vec::new(), Vec::new());
     for id in &record.item_ids {
-        match items.iter().find(|i| i.id == *id) {
-            None => {}
-            Some(item) if item.user_id != record.owner_id => traded.push(format!("{id} (user {})", item.user_id)),
-            Some(item) if item.room_id == 0 => picked_up.push(id.to_string()),
-            Some(item) if item.room_id != record.room_id as i64 => moved.push(format!("{id} (room {})", item.room_id)),
-            Some(_) => {}
+        let Some(item) = items.iter().find(|i| i.id == *id) else { continue };
+        if item.user_id != record.owner_id {
+            traded.push(format!("{id} (user {})", item.user_id));
+        } else if item.room_id == 0 {
+            picked_up.push(id.to_string());
+        } else if item.room_id != record.room_id as i64 {
+            moved.push(format!("{id} (room {})", item.room_id));
         }
     }
     let listed = |ids: &[String]| {
@@ -530,24 +568,35 @@ pub fn undo_already_gone(record: &ImportRecord, items: &[ItemNow]) -> Vec<u64> {
     record.item_ids.iter().copied().filter(|id| !items.iter().any(|i| i.id == *id)).collect()
 }
 
-/// The statements that undo an import, once [`undo_problems`] found nothing: the furni that came with it are
-/// deleted (only while they are in the room and the owner's, should anything change meanwhile), furni placed in the
-/// room afterwards go back to their owner's inventory, then the custom model and the room go.
+/// The statement of [`undo_statements`] that must change a row, else the whole transaction is rolled back: the room
+/// delete, which holds only while the room is still the owner's and nobody is in it.
+pub const UNDO_ROOM_STATEMENT: usize = 0;
+
+/// The statements that undo an import, once [`undo_problems`] found nothing, in one transaction. First the room goes,
+/// only while it is still the owner's and empty ([`UNDO_ROOM_STATEMENT`]); then the furni that came with it are
+/// deleted (only while they are in the room and the owner's); furni, bots and pets placed in the room by others go
+/// back to their owners' inventories; and the room's rights, votes, word filter and custom model go, as Polaris'
+/// RoomDeleter does. The room goes first because users_pets, room_rights, room_votes, room_wordfilter and
+/// room_models_custom are MyISAM tables a rollback cannot undo.
 pub fn undo_statements(record: &ImportRecord) -> Vec<(String, Vec<PlanValue>)> {
     let db = q(&record.database);
     let room = PlanValue::Int(record.room_id as i64);
-    let mut statements = Vec::new();
+    let mut statements = vec![(format!("DELETE FROM {db}.`rooms` WHERE `id` = ? AND `owner_id` = ? AND `users` = 0"), vec![room.clone(), PlanValue::Int(record.owner_id)])];
     for chunk in record.item_ids.chunks(500) {
         let marks = vec!["?"; chunk.len()].join(", ");
         let mut values: Vec<PlanValue> = chunk.iter().map(|id| PlanValue::Int(*id as i64)).collect();
         values.extend([room.clone(), PlanValue::Int(record.owner_id)]);
         statements.push((format!("DELETE FROM {db}.`items` WHERE `id` IN ({marks}) AND `room_id` = ? AND `user_id` = ?"), values));
     }
-    statements.push((format!("UPDATE {db}.`items` SET `room_id` = 0 WHERE `room_id` = ?"), vec![room.clone()]));
-    if record.custom_model {
-        statements.push((format!("DELETE FROM {db}.`room_models_custom` WHERE `id` = ?"), vec![room.clone()]));
+    for table in ["items", "bots", "users_pets"] {
+        statements.push((format!("UPDATE {db}.`{table}` SET `room_id` = 0 WHERE `room_id` = ?"), vec![room.clone()]));
     }
-    statements.push((format!("DELETE FROM {db}.`rooms` WHERE `id` = ?"), vec![room]));
+    for table in ["room_rights", "room_votes", "room_wordfilter"] {
+        statements.push((format!("DELETE FROM {db}.`{table}` WHERE `room_id` = ?"), vec![room.clone()]));
+    }
+    if record.custom_model {
+        statements.push((format!("DELETE FROM {db}.`room_models_custom` WHERE `id` = ?"), vec![room]));
+    }
     statements
 }
 
@@ -649,22 +698,44 @@ mod tests {
     #[test]
     fn heightmaps_are_padded_and_undo_removes_what_was_made() {
         assert_eq!(normalized_heightmap("xx\r\n0\r\n000"), "xxx\r0xx\r000");
-        let record = ImportRecord {
-            server: "s".into(),
-            database: "habbo".into(),
-            room_id: 50,
-            room_name: "Copy".into(),
-            owner_id: 1,
-            owner_name: "admin".into(),
-            item_ids: vec![1, 2, 3],
-            custom_model: true,
-            source: "habbo.nl 9".into(),
-            imported_at: String::new(),
-        };
+        let mut record = record();
+        record.custom_model = true;
         let statements = undo_statements(&record);
-        assert_eq!(statements.len(), 4);
-        assert!(statements[0].0.contains("DELETE FROM `habbo`.`items` WHERE `id` IN (?, ?, ?)"));
-        assert!(statements[3].0.contains("DELETE FROM `habbo`.`rooms`"));
+        let sql: Vec<&str> = statements.iter().map(|(sql, _)| sql.as_str()).collect();
+        assert_eq!(
+            sql,
+            [
+                "DELETE FROM `habbo`.`rooms` WHERE `id` = ? AND `owner_id` = ? AND `users` = 0",
+                "DELETE FROM `habbo`.`items` WHERE `id` IN (?, ?, ?) AND `room_id` = ? AND `user_id` = ?",
+                "UPDATE `habbo`.`items` SET `room_id` = 0 WHERE `room_id` = ?",
+                "UPDATE `habbo`.`bots` SET `room_id` = 0 WHERE `room_id` = ?",
+                "UPDATE `habbo`.`users_pets` SET `room_id` = 0 WHERE `room_id` = ?",
+                "DELETE FROM `habbo`.`room_rights` WHERE `room_id` = ?",
+                "DELETE FROM `habbo`.`room_votes` WHERE `room_id` = ?",
+                "DELETE FROM `habbo`.`room_wordfilter` WHERE `room_id` = ?",
+                "DELETE FROM `habbo`.`room_models_custom` WHERE `id` = ?",
+            ]
+        );
+        // The guarded statement is the room's, and holds only for its owner; bots and pets go back from this room.
+        assert_eq!(statements[UNDO_ROOM_STATEMENT].1, [PlanValue::Int(50), PlanValue::Int(1)]);
+        assert!(statements[3..5].iter().all(|(_, values)| values == &[PlanValue::Int(50)]));
+    }
+
+    #[test]
+    fn undo_reads_and_deletes_the_furni_500_at_a_time() {
+        let mut record = record();
+        record.item_ids = (1..=1001).collect();
+        let (room_query, item_queries) = undo_check_queries(&record);
+        assert!(room_query.0.contains("u.`online` = '1'") && room_query.0.contains("r.`guild_id`"), "{}", room_query.0);
+        assert_eq!(room_query.1, [PlanValue::Int(50)]);
+        assert_eq!(item_queries.iter().map(|(_, v)| v.len()).collect::<Vec<_>>(), [500, 500, 1]);
+        assert_eq!(item_queries[2].1, [PlanValue::Int(1001)]);
+        let deletes: Vec<usize> = undo_statements(&record).iter().filter(|(sql, _)| sql.starts_with("DELETE FROM `habbo`.`items`")).map(|(_, v)| v.len()).collect();
+        assert_eq!(deletes, [502, 502, 3]);
+    }
+
+    fn free() -> RoomNow {
+        RoomNow { owner_id: 1, users: 0, guild_id: 0, owner_online: false }
     }
 
     fn record() -> ImportRecord {
@@ -688,10 +759,9 @@ mod tests {
 
     #[test]
     fn undo_goes_ahead_when_the_room_is_as_it_was_imported() {
-        let room = RoomNow { owner_id: 1, users: 0 };
-        assert!(undo_problems(&record(), Some(&room), &[in_room(1), in_room(2), in_room(3)]).is_empty());
+        assert!(undo_problems(&record(), Some(&free()), &[in_room(1), in_room(2), in_room(3)]).is_empty());
         // Even then a furni deletes only while it is in the room and the owner's.
-        let (sql, values) = &undo_statements(&record())[0];
+        let (sql, values) = &undo_statements(&record())[1];
         assert!(sql.ends_with("WHERE `id` IN (?, ?, ?) AND `room_id` = ? AND `user_id` = ?"), "{sql}");
         assert_eq!(values[3..], [PlanValue::Int(50), PlanValue::Int(1)]);
     }
@@ -702,19 +772,25 @@ mod tests {
         let gone = undo_problems(&record(), None, &items);
         assert_eq!(gone.len(), 1);
         assert!(gone[0].contains("Room 50 is no longer in the hotel"), "{gone:?}");
-        let busy = undo_problems(&record(), Some(&RoomNow { owner_id: 1, users: 2 }), &items);
+        let busy = undo_problems(&record(), Some(&RoomNow { users: 2, ..free() }), &items);
         assert_eq!(busy.len(), 1);
-        assert!(busy[0].contains("2 users are in the room"), "{busy:?}");
-        let sold = undo_problems(&record(), Some(&RoomNow { owner_id: 7, users: 0 }), &items);
+        assert!(busy[0].contains("2 users are in the room") && busy[0].contains("start it once"), "{busy:?}");
+        let sold = undo_problems(&record(), Some(&RoomNow { owner_id: 7, ..free() }), &items);
         assert_eq!(sold.len(), 1);
         assert!(sold[0].contains("belongs to user 7"), "{sold:?}");
+        let online = undo_problems(&record(), Some(&RoomNow { owner_online: true, ..free() }), &items);
+        assert_eq!(online.len(), 1);
+        assert!(online[0].contains("ask admin to log out, then try again"), "{online:?}");
+        let group = undo_problems(&record(), Some(&RoomNow { guild_id: 4, ..free() }), &items);
+        assert_eq!(group.len(), 1);
+        assert!(group[0].contains("Group 4 has the room as its home"), "{group:?}");
     }
 
     #[test]
     fn undo_lists_every_furni_that_moved_was_picked_up_or_traded() {
         let mut record = record();
         record.item_ids = vec![1, 2, 3, 4, 5, 6];
-        let room = RoomNow { owner_id: 1, users: 0 };
+        let room = free();
         let items = [
             in_room(1),
             ItemNow { id: 2, user_id: 1, room_id: 0 },
@@ -733,9 +809,14 @@ mod tests {
     fn furni_already_gone_do_not_block_undo_and_are_listed() {
         let mut record = record();
         record.item_ids = vec![1, 2, 3, 6, 7];
-        let room = RoomNow { owner_id: 1, users: 0 };
         let items = [in_room(1), in_room(2), in_room(3)];
-        assert!(undo_problems(&record, Some(&room), &items).is_empty());
+        assert!(undo_problems(&record, Some(&free()), &items).is_empty());
         assert_eq!(undo_already_gone(&record, &items), vec![6, 7]);
+        // Gone furni mixed with one picked up: only the picked-up one is a problem, the gone ones are still listed.
+        let mixed = [in_room(1), ItemNow { id: 2, user_id: 1, room_id: 0 }, in_room(3)];
+        let problems = undo_problems(&record, Some(&free()), &mixed);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].contains("Picked up") && problems[0].ends_with(": 2"), "{problems:?}");
+        assert_eq!(undo_already_gone(&record, &mixed), vec![6, 7]);
     }
 }

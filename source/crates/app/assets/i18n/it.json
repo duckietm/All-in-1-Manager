@@ -4145,7 +4145,7 @@
   "The room capture stopped.": "La cattura delle stanze si è fermata.",
   "The room, its floor plan and the furni that came with it are deleted.": "La stanza, la sua pianta e i furni arrivati con essa vengono eliminati.",
   "Undo failed: nothing was removed": "Annullamento fallito: nulla è stato rimosso",
-  "Undo removes the room and the furni that came with it, only while nobody is in the room and every one of those furni is still in it and still the owner's. When the room was used since (furni picked up, moved or traded), Undo lists what changed and removes nothing.": "Annulla rimuove la stanza e i furni arrivati con essa solo se nella stanza non c'è nessuno e ognuno di quei furni è ancora lì e ancora del proprietario. Se la stanza è stata usata nel frattempo (furni raccolti, spostati o scambiati), Annulla elenca cosa è cambiato e non rimuove nulla.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Annulla rimuove la stanza e i furni arrivati con essa solo se nella stanza non c'è nessuno, il proprietario è offline e ognuno di quei furni è ancora lì e ancora del proprietario; bot, animali e furni messi lì da altri tornano ai loro proprietari. Se la stanza è stata usata nel frattempo (furni raccolti, spostati o scambiati), Annulla elenca cosa lo impedisce e non rimuove nulla.",
   "Undo the import": "Annulla l'importazione",
   "Undone": "Annullato",
   "What the import makes": "Cosa crea l'importazione",

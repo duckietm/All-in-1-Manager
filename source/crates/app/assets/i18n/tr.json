@@ -4145,7 +4145,7 @@
   "The room capture stopped.": "Oda yakalama durdu.",
   "The room, its floor plan and the furni that came with it are deleted.": "Oda, zemin planı ve onunla gelen mobilyalar silinir.",
   "Undo failed: nothing was removed": "Geri alma başarısız: hiçbir şey kaldırılmadı",
-  "Undo removes the room and the furni that came with it, only while nobody is in the room and every one of those furni is still in it and still the owner's. When the room was used since (furni picked up, moved or traded), Undo lists what changed and removes nothing.": "Geri Al, odayı ve onunla gelen mobilyaları yalnızca odada kimse yokken ve bu mobilyaların her biri hâlâ odada ve hâlâ sahibine aitken kaldırır. Oda o zamandan beri kullanıldıysa (mobilyalar toplandı, taşındı veya takas edildi), Geri Al neyin değiştiğini listeler ve hiçbir şey kaldırmaz.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Geri Al, odayı ve onunla gelen mobilyaları yalnızca odada kimse yokken, sahibi çevrimdışıyken ve bu mobilyaların her biri hâlâ odada ve hâlâ sahibine aitken kaldırır; botlar, evcil hayvanlar ve başkalarının oraya koyduğu mobilyalar sahiplerine döner. Oda o zamandan beri kullanıldıysa (mobilyalar toplandı, taşındı veya takas edildi), Geri Al engel olanları listeler ve hiçbir şey kaldırmaz.",
   "Undo the import": "İçe aktarmayı geri al",
   "Undone": "Geri alındı",
   "What the import makes": "İçe aktarmanın oluşturdukları",

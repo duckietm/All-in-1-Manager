@@ -554,7 +554,7 @@ impl RoomRipView {
         let mut undo: Option<usize> = None;
         widgets::card(ui, palette, egui::Margin::symmetric(24, 18), |ui| {
             ui.label(widgets::title_text(t("Imported rooms"), 17.0));
-            widgets::muted(ui, palette, t("Undo removes the room and the furni that came with it, only while nobody is in the room and every one of those furni is still in it and still the owner's. When the room was used since (furni picked up, moved or traded), Undo lists what changed and removes nothing."), 12.0);
+            widgets::muted(ui, palette, t("Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing."), 12.0);
             ui.add_space(6.0);
             egui::Grid::new("room-rip-imports").num_columns(4).striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
                 for (index, (_, record)) in self.imports.iter().enumerate() {
@@ -770,25 +770,29 @@ fn save_record(record: &ImportRecord) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Checks that the room can go ([`room::undo_problems`]: nobody in it, every furni that came with it still in it and
-/// still the owner's), makes the emulator unload it (Polaris unloads a room when its owner is set again over RCON,
-/// saving its furni first), checks again on what it saved, then deletes what the import made, in one transaction.
-/// Returns the furni of the import that were already gone (deleted or recycled since), skipped.
+/// Checks that the room can go ([`room::undo_problems`]: nobody in it, its owner offline, no group's home, every furni
+/// that came with it still in it and still the owner's), makes the emulator unload it (Polaris unloads a room when
+/// its owner is set again over RCON, saving its furni first), reads it again (the furni as the emulator saved them),
+/// then deletes what the import made in one transaction, which is rolled back when the room is no longer the owner's
+/// or `rooms.users` is no longer 0 by then. Returns the furni of the import that were already gone (deleted or
+/// recycled since), skipped.
 async fn undo_task(server: &dyn Server, record: &ImportRecord) -> anyhow::Result<Vec<u64>> {
     let (session, _) = open_hotel(server).await?;
     let result = async {
         undo_check(&session, record).await?;
         let request = aio_remote::rcon::request("changeroomowner", serde_json::json!({ "room_id": record.room_id, "user_id": record.owner_id, "username": record.owner_name }));
         let answer = aio_remote::rcon::send(server, &request).await;
-        // No answer: only an emulator that is not running has nothing loaded (and sets rooms.users to 0 when it starts).
+        // No answer: only an emulator that is surely not running has nothing loaded (it sets rooms.users to 0 when it
+        // starts).
         let running = match &answer {
             Ok(_) => true,
-            Err(_) => aio_remote::emulator::inspect(server).await?.running,
+            Err(_) => aio_remote::emulator::maybe_running(server).await?,
         };
         unloaded(answer.map_err(|e| e.to_string()), running)?;
         let gone = undo_check(&session, record).await?;
         let statements: Vec<(String, Vec<Linked>)> = room::undo_statements(record).iter().map(|(sql, values)| (sql.clone(), values.iter().map(to_linked).collect())).collect();
-        session.execute_linked(&statements).await?;
+        let guard = "The room changed meanwhile (someone entered it, or its owner changed): nothing was removed.";
+        session.execute_linked_guarded(&statements, &[(room::UNDO_ROOM_STATEMENT, guard)]).await?;
         Ok(gone)
     }
     .await;
@@ -796,23 +800,29 @@ async fn undo_task(server: &dyn Server, record: &ImportRecord) -> anyhow::Result
     result
 }
 
-/// Reads the room and the furni of `record` as the hotel has them now; an error listing what changed when Undo
-/// must not run, else the furni already gone ([`room::undo_already_gone`]).
+fn sql_values(values: &[PlanValue]) -> anyhow::Result<Vec<SqlValue>> {
+    values.iter().map(|v| to_linked(v).resolve(&[]).map_err(anyhow::Error::msg)).collect()
+}
+
+/// Reads the room and the furni of `record` as the hotel has them now ([`room::undo_check_queries`]); an error
+/// listing what is in the way when Undo must not run, else the furni already gone ([`room::undo_already_gone`]).
 async fn undo_check(session: &SqlSession, record: &ImportRecord) -> anyhow::Result<Vec<u64>> {
-    let db = aio_remote::sql_session::quote(&record.database);
-    let room_row = session.select(&format!("SELECT `owner_id`, `users` FROM {db}.`rooms` WHERE `id` = ? LIMIT 1"), vec![SqlValue::Int(record.room_id as i64)]).await?;
-    let room_now = room_row.first().map(|row| room::RoomNow { owner_id: row.first().and_then(int).unwrap_or(0), users: row.get(1).and_then(int).unwrap_or(0) });
+    let ((room_sql, room_values), item_queries) = room::undo_check_queries(record);
+    let room_row = session.select(&room_sql, sql_values(&room_values)?).await?;
+    let room_now = room_row.first().map(|row| {
+        let n = |i: usize| row.get(i).and_then(int).unwrap_or(0);
+        room::RoomNow { owner_id: n(0), users: n(1), guild_id: n(2), owner_online: n(3) != 0 }
+    });
     let mut items = Vec::new();
-    for chunk in record.item_ids.chunks(500) {
-        let marks = vec!["?"; chunk.len()].join(", ");
-        let rows = session.select(&format!("SELECT `id`, `user_id`, `room_id` FROM {db}.`items` WHERE `id` IN ({marks})"), chunk.iter().map(|id| SqlValue::Int(*id as i64)).collect()).await?;
+    for (sql, values) in item_queries {
+        let rows = session.select(&sql, sql_values(&values)?).await?;
         items.extend(rows.iter().filter_map(|row| {
             Some(room::ItemNow { id: u64::try_from(int(row.first()?)?).ok()?, user_id: row.get(1).and_then(int).unwrap_or(0), room_id: row.get(2).and_then(int).unwrap_or(0) })
         }));
     }
     let problems = room::undo_problems(record, room_now.as_ref(), &items);
     if !problems.is_empty() {
-        anyhow::bail!("The room was used since the import, so Undo would take what is someone's now:\n- {}", problems.join("\n- "));
+        anyhow::bail!("Undo cannot run now, so nothing was removed:\n- {}", problems.join("\n- "));
     }
     Ok(room::undo_already_gone(record, &items))
 }

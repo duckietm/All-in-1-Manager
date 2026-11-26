@@ -4145,7 +4145,7 @@
   "The room capture stopped.": "Huonetallennus pysähtyi.",
   "The room, its floor plan and the furni that came with it are deleted.": "Huone, sen pohjapiirros ja sen mukana tulleet kalusteet poistetaan.",
   "Undo failed: nothing was removed": "Kumoaminen epäonnistui: mitään ei poistettu",
-  "Undo removes the room and the furni that came with it, only while nobody is in the room and every one of those furni is still in it and still the owner's. When the room was used since (furni picked up, moved or traded), Undo lists what changed and removes nothing.": "Kumoa poistaa huoneen ja sen mukana tulleet kalusteet vain, kun huoneessa ei ole ketään ja jokainen niistä on yhä huoneessa ja yhä omistajan. Jos huonetta on käytetty sen jälkeen (kalusteita poimittu, siirretty tai vaihdettu), Kumoa luettelee mikä muuttui eikä poista mitään.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Kumoa poistaa huoneen ja sen mukana tulleet kalusteet vain, kun huoneessa ei ole ketään, omistaja on poissa linjoilta ja jokainen niistä on yhä huoneessa ja yhä omistajan; botit, lemmikit ja muiden sinne asettamat kalusteet palaavat omistajilleen. Jos huonetta on käytetty sen jälkeen (kalusteita poimittu, siirretty tai vaihdettu), Kumoa luettelee mikä on esteenä eikä poista mitään.",
   "Undo the import": "Kumoa tuonti",
   "Undone": "Kumottu",
   "What the import makes": "Mitä tuonti luo",

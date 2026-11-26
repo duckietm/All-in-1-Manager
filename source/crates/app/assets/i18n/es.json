@@ -4145,7 +4145,7 @@
   "The room capture stopped.": "La captura de salas se detuvo.",
   "The room, its floor plan and the furni that came with it are deleted.": "Se eliminan la sala, su plano y los furnis que vinieron con ella.",
   "Undo failed: nothing was removed": "Deshacer falló: no se quitó nada",
-  "Undo removes the room and the furni that came with it, only while nobody is in the room and every one of those furni is still in it and still the owner's. When the room was used since (furni picked up, moved or traded), Undo lists what changed and removes nothing.": "Deshacer elimina la sala y los furnis que llegaron con ella solo si no hay nadie en la sala y cada uno de esos furnis sigue en ella y sigue siendo del dueño. Si la sala se usó desde entonces (furnis recogidos, movidos o intercambiados), Deshacer muestra lo que cambió y no elimina nada.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Deshacer elimina la sala y los furnis que llegaron con ella solo si no hay nadie en la sala, su dueño está desconectado y cada uno de esos furnis sigue en ella y sigue siendo del dueño; los bots, mascotas y furnis que otros pusieron allí vuelven a sus dueños. Si la sala se usó desde entonces (furnis recogidos, movidos o intercambiados), Deshacer muestra lo que lo impide y no elimina nada.",
   "Undo the import": "Deshacer la importación",
   "Undone": "Deshecho",
   "What the import makes": "Lo que crea la importación",

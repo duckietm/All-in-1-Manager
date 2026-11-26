@@ -1442,6 +1442,7 @@
   "Item {number}",
   "Items",
   "Its SSH jail is set up with the settings below (port {ports}); the distribution's other jails stay as they are.",
+  "Its custom floor plan (room_models_custom {id}) could not be deleted: {error}",
   "Its data and enrollment stay in {directory}.",
   "Its data and enrollment stay in {directory}: Install CrowdSec brings it back without a new key.",
   "Its files stay in {folder}.",

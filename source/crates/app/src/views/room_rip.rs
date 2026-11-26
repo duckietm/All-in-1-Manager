@@ -590,13 +590,17 @@ impl RoomRipView {
                 s.working = false;
                 s.refresh = true;
                 match result {
-                    Ok(gone) => {
+                    Ok((gone, model_error)) => {
                         let _ = std::fs::remove_file(&path);
                         let mut text = tf("{room} is removed from the hotel.", &[("room", &record.room_name)]);
                         if !gone.is_empty() {
                             let ids = gone.iter().map(u64::to_string).collect::<Vec<_>>().join(", ");
                             text.push(' ');
                             text.push_str(&tf("Already gone before (deleted or recycled), skipped: {ids}.", &[("ids", &ids)]));
+                        }
+                        if let Some(error) = model_error {
+                            text.push(' ');
+                            text.push_str(&tf("Its custom floor plan (room_models_custom {id}) could not be deleted: {error}", &[("id", &record.room_id.to_string()), ("error", &error)]));
                         }
                         s.banner = banner(ResultKind::Success, t("Undone"), &text);
                     }
@@ -776,7 +780,9 @@ fn save_record(record: &ImportRecord) -> anyhow::Result<()> {
 /// then deletes what the import made in one transaction, which is rolled back when the room is no longer the owner's
 /// or `rooms.users` is no longer 0 by then. Returns the furni of the import that were already gone (deleted or
 /// recycled since), skipped.
-async fn undo_task(server: &dyn Server, record: &ImportRecord) -> anyhow::Result<Vec<u64>> {
+/// The custom floor plan is dropped after the commit; when that fails the room is gone anyway, and the error is
+/// returned with the furni already gone.
+async fn undo_task(server: &dyn Server, record: &ImportRecord) -> anyhow::Result<(Vec<u64>, Option<String>)> {
     let (session, _) = open_hotel(server).await?;
     let result = async {
         undo_check(&session, record).await?;
@@ -793,7 +799,11 @@ async fn undo_task(server: &dyn Server, record: &ImportRecord) -> anyhow::Result
         let statements: Vec<(String, Vec<Linked>)> = room::undo_statements(record).iter().map(|(sql, values)| (sql.clone(), values.iter().map(to_linked).collect())).collect();
         let guard = "The room changed meanwhile (someone entered it, or its owner changed): nothing was removed.";
         session.execute_linked_guarded(&statements, &[(room::UNDO_ROOM_STATEMENT, guard)]).await?;
-        Ok(gone)
+        let model_error = match room::undo_model_statement(record) {
+            Some((sql, values)) => session.execute(&[(sql, sql_values(&values)?)]).await.err().map(|e| e.to_string()),
+            None => None,
+        };
+        Ok((gone, model_error))
     }
     .await;
     session.close().await;

@@ -4164,6 +4164,7 @@
   "{room} is in the hotel": "{room} est dans l'hôtel",
   "{room} is removed from the hotel.": "{room} est retiré de l'hôtel.",
   "Already gone before (deleted or recycled), skipped: {ids}.": "Déjà disparus avant (supprimés ou recyclés), ignorés : {ids}.",
+  "Its custom floor plan (room_models_custom {id}) could not be deleted: {error}": "Son plan personnalisé (room_models_custom {id}) n'a pas pu être supprimé : {error}",
   "Open the recording": "Ouvrir l'enregistrement",
   "Packet recording saved in {folder}": "Enregistrement des paquets sauvé dans {folder}",
   "Record every packet (developers)": "Enregistrer chaque paquet (développeurs)",

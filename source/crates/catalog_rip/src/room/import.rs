@@ -575,9 +575,9 @@ pub const UNDO_ROOM_STATEMENT: usize = 0;
 /// The statements that undo an import, once [`undo_problems`] found nothing, in one transaction. First the room goes,
 /// only while it is still the owner's and empty ([`UNDO_ROOM_STATEMENT`]); then the furni that came with it are
 /// deleted (only while they are in the room and the owner's); furni, bots and pets placed in the room by others go
-/// back to their owners' inventories; and the room's rights, votes, word filter and custom model go, as Polaris'
-/// RoomDeleter does. The room goes first because users_pets, room_rights, room_votes, room_wordfilter and
-/// room_models_custom are MyISAM tables a rollback cannot undo.
+/// back to their owners' inventories; and the room's rights, votes and word filter go, as Polaris' RoomDeleter does.
+/// The room goes first because users_pets, room_rights, room_votes and room_wordfilter are MyISAM tables a rollback
+/// cannot undo. The custom floor plan goes only after the commit ([`undo_model_statement`]).
 pub fn undo_statements(record: &ImportRecord) -> Vec<(String, Vec<PlanValue>)> {
     let db = q(&record.database);
     let room = PlanValue::Int(record.room_id as i64);
@@ -594,10 +594,14 @@ pub fn undo_statements(record: &ImportRecord) -> Vec<(String, Vec<PlanValue>)> {
     for table in ["room_rights", "room_votes", "room_wordfilter"] {
         statements.push((format!("DELETE FROM {db}.`{table}` WHERE `room_id` = ?"), vec![room.clone()]));
     }
-    if record.custom_model {
-        statements.push((format!("DELETE FROM {db}.`room_models_custom` WHERE `id` = ?"), vec![room]));
-    }
     statements
+}
+
+/// The statement that drops the room's custom floor plan (None: it had none), run only once the transaction of
+/// [`undo_statements`] is committed: room_models_custom is MyISAM, so dropped inside a transaction that then fails
+/// it would leave the room without its floor plan.
+pub fn undo_model_statement(record: &ImportRecord) -> Option<(String, Vec<PlanValue>)> {
+    record.custom_model.then(|| (format!("DELETE FROM {}.`room_models_custom` WHERE `id` = ?", q(&record.database)), vec![PlanValue::Int(record.room_id as i64)]))
 }
 
 #[cfg(test)]
@@ -713,9 +717,14 @@ mod tests {
                 "DELETE FROM `habbo`.`room_rights` WHERE `room_id` = ?",
                 "DELETE FROM `habbo`.`room_votes` WHERE `room_id` = ?",
                 "DELETE FROM `habbo`.`room_wordfilter` WHERE `room_id` = ?",
-                "DELETE FROM `habbo`.`room_models_custom` WHERE `id` = ?",
             ]
         );
+        // The custom floor plan goes on its own, after the commit.
+        let (model_sql, model_values) = undo_model_statement(&record).unwrap();
+        assert_eq!(model_sql, "DELETE FROM `habbo`.`room_models_custom` WHERE `id` = ?");
+        assert_eq!(model_values, [PlanValue::Int(50)]);
+        record.custom_model = false;
+        assert!(undo_model_statement(&record).is_none());
         // The guarded statement is the room's, and holds only for its owner; bots and pets go back from this room.
         assert_eq!(statements[UNDO_ROOM_STATEMENT].1, [PlanValue::Int(50), PlanValue::Int(1)]);
         assert!(statements[3..5].iter().all(|(_, values)| values == &[PlanValue::Int(50)]));

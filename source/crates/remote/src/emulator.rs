@@ -188,10 +188,11 @@ fn running_check() -> String {
 
 /// Prints `yes` when the emulator may be running: its service or process ([`running_check`]), any
 /// `jar-with-dependencies` process, or anything accepting connections on its RCON port (config.ini `rcon.port`,
-/// default 3001).
+/// default 3001). `[j]ar` keeps pgrep from finding the shell that runs this script, whose command line holds the
+/// pattern.
 pub fn maybe_running_script() -> String {
     format!(
-        r#"if {check} || pgrep -f 'jar-with-dependencies' >/dev/null; then echo yes; exit 0; fi
+        r#"if {check} || pgrep -f '[j]ar-with-dependencies' >/dev/null; then echo yes; exit 0; fi
 port=$(grep -sE '^rcon.port=' {dir}/config.ini | cut -d= -f2 | tr -d '[:space:]') || true
 port=${{port:-3001}}
 if timeout 3 bash -c "exec 3<>/dev/tcp/127.0.0.1/$port" 2>/dev/null; then echo yes; fi
@@ -700,7 +701,7 @@ mod tests {
     fn maybe_running_looks_at_the_service_any_jar_and_the_rcon_port() {
         let script = maybe_running_script();
         assert!(script.contains(&running_check()));
-        assert!(script.contains("pgrep -f 'jar-with-dependencies'"));
+        assert!(script.contains("pgrep -f '[j]ar-with-dependencies'"));
         assert!(script.contains("port=${port:-3001}") && script.contains("/dev/tcp/127.0.0.1/$port"));
     }
 

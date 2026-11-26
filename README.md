@@ -1913,7 +1913,8 @@ everything sent in those rooms, chat too: share it only with people you trust.
    furni are read again, then one transaction deletes the room only while it is still the owner's with `rooms.users`
    at 0 (else everything is rolled back), deletes the furni that came with it only while they are in the room and the
    owner's, sends furni, bots and pets placed there by others back to their owners' inventories, and drops the room's
-   rights, votes, word filter and custom floor plan, as Polaris does when a room is deleted. `rooms.users` is a count
+   rights, votes and word filter, as Polaris does when a room is deleted; the custom floor plan is dropped once that
+   transaction is committed (should that fail, the room is gone anyway and Undo says so). `rooms.users` is a count
    the emulator keeps, so these checks narrow the window for someone entering but cannot rule it out.
    The record of each import is kept in `configuration/plugins/room-rip/imports/`.
 

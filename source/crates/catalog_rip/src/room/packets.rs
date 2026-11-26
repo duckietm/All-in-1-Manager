@@ -68,15 +68,13 @@ pub const WIRED_PERMISSIONS: Message = incoming("WiredPermissions", 0, &["WiredP
 pub const WIRED_OPEN: Message = outgoing("Open", 768, &["Open", "OpenMessageComposer", "OpenMessage"]);
 /// A double click on a floor furni: opens a wired box, but also flips its light for the room.
 pub const USE_FURNITURE: Message = outgoing("UseFurniture", 99, &["UseFurniture", "UseFurnitureMessageComposer"]);
-/// The door tile of the room (what the floor plan editor asks; it changes nothing).
-pub const GET_ROOM_ENTRY_TILE: Message = outgoing("GetRoomEntryTile", 3559, &["GetRoomEntryTile", "GetRoomEntryTileMessageComposer"]);
 
 pub const INCOMING: &[Message] = &[
     ROOM_READY, FLOOR_HEIGHT_MAP, ROOM_VISUALIZATION, ROOM_ENTRY_TILE, ROOM_PROPERTY, OBJECTS, OBJECT_ADD, OBJECT_UPDATE, OBJECT_REMOVE,
     OBJECT_REMOVE_MULTIPLE, OBJECT_DATA_UPDATE, OBJECTS_DATA_UPDATE, ITEMS, ITEM_ADD, ITEM_UPDATE, ITEM_REMOVE, ITEMS_STATE_UPDATE, ROOM_INFO,
     WIRED_TRIGGER, WIRED_ACTION, WIRED_CONDITION, WIRED_ADDON, WIRED_SELECTOR, WIRED_VARIABLE, WIRED_ROOM_SETTINGS, WIRED_PERMISSIONS,
 ];
-pub const OUTGOING: &[Message] = &[WIRED_OPEN, USE_FURNITURE, GET_ROOM_ENTRY_TILE];
+pub const OUTGOING: &[Message] = &[WIRED_OPEN, USE_FURNITURE];
 
 /// The ids in use for this connection, by message key.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

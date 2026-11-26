@@ -1,8 +1,8 @@
 //! The capture: a passive G-Earth extension that records every room the user enters, and on request reads the
 //! settings of the room's wired boxes.
 //!
-//! It never sends anything that changes the hotel. While capturing it only listens; the one packet it may send by
-//! itself is the door tile request of a retro (what the floor plan editor asks, read only). "Read the wired" opens
+//! It never sends anything that changes the hotel. While capturing it only listens and sends nothing by itself: a
+//! packet sent with the id of another client version can make the hotel close the connection. "Read the wired" opens
 //! the room's wired boxes one at a time, with Open where the hotel has it (no visible effect) and else UseFurniture
 //! (the box's light flips for everyone in the room, as when its owner opens it).
 
@@ -331,18 +331,13 @@ impl Capturer<'_> {
     }
 
     /// Handles an intercepted packet from the hotel.
-    fn packet(&mut self, key: &str, body: &[u8], session: &Session) {
+    fn packet(&mut self, key: &str, body: &[u8]) {
         if key == p::ROOM_READY.key {
             match p::parse_room_ready(body) {
-                Ok((model, room_id)) => {
-                    self.new_room(model, room_id);
-                    // A retro answers the door tile request; it changes nothing.
-                    if !self.official {
-                        if let Some(header) = self.headers.out(&p::GET_ROOM_ENTRY_TILE) {
-                            let _ = session.send_to_server(&crate::wire::Writer::new(header).packet());
-                        }
-                    }
-                }
+                // Nothing is sent: a packet sent with an id of another client version can make the hotel close
+                // the connection. The door comes from RoomEntryTile when the client asks for it (the floor plan
+                // editor), else it is guessed and shown for the user to check.
+                Ok((model, room_id)) => self.new_room(model, room_id),
                 Err(e) => self.problem("RoomReady", e),
             }
             return;
@@ -591,9 +586,25 @@ pub async fn capture(
     let hooks = RipHooks::new(log, ask, &progress);
     log("Start G-Earth, connect it to the hotel and log in with your own client: every room you enter is captured.");
     let (mut session, connection) = crate::rip::connect_to_hotel(&rip_options, &hooks, cancel).await?;
+    // The Arcturus/Nitro ids are only certain for a profile chosen by hand, found by the hotel's host or client
+    // revision, or for the Nitro client. A Flash retro of another revision matched by its client type alone has
+    // other ids: the capture then only uses ids its profile or G-Earth gives, and sends nothing.
+    let certain = match &choice {
+        ProfileChoice::Fixed(_) => true,
+        ProfileChoice::Detect(list) => crate::profiles::detect(list, &connection).is_some_and(|(profile, by)| {
+            profile.kind == HotelKind::Official || by != crate::profiles::DetectedBy::ClientType || connection.client_type.eq_ignore_ascii_case("NITRO")
+        }),
+    };
     let profile: HotelProfile = crate::rip::choose_profile(choice, &connection, &hooks);
     let official = profile.kind == HotelKind::Official;
-    let headers = RoomHeaders::resolve(&profile.extra_headers, &connection.packets, !official);
+    let retro_ids = !official && certain && profile.headers.is_complete();
+    let headers = RoomHeaders::resolve(&profile.extra_headers, &connection.packets, retro_ids);
+    if !official && !retro_ids {
+        log(&format!(
+            "The room packet ids of this client ({} {}) are not certain: choose a hotel profile for it (with its ids in extra_headers) to capture here.",
+            connection.client_type, connection.hotel_version
+        ));
+    }
     let missing = headers.missing_required();
     if !missing.is_empty() {
         anyhow::bail!(
@@ -664,7 +675,7 @@ pub async fn capture(
             event = session.next_event() => match event {
                 Some(Event::Packet(packet)) if !packet.to_server => {
                     if let Some(key) = capturer.headers.incoming_key(packet.packet.header).map(str::to_string) {
-                        capturer.packet(&key, &packet.packet.body, &session);
+                        capturer.packet(&key, &packet.packet.body);
                     }
                 }
                 Some(Event::ConnectionEnd) => {

@@ -1858,9 +1858,13 @@ you read them. It shares the Catalogue ripper's G-Earth connection, hotel profil
 
 1. **Capture.** Click **Start**, then walk into the rooms you want with your own client: every room you enter is saved
    as `configuration/plugins/room-rip/captures/<hotel>_<room id>.json` and listed under **Captured rooms**. The capture
-   only listens: nothing in the other hotel changes. On a retro it asks for the door tile (what the floor plan editor
-   asks, read only); official Habbo does not send the door, so it is guessed from the floor plan and shown for you to
-   check. A retro needs its **furnidata** URL for the class names (official Habbo finds its own).
+   only listens and sends nothing by itself (a packet sent with the id of another client version can make a hotel
+   close the connection). The door tile is kept when the hotel sends it (when you open the floor plan editor in that
+   room); otherwise it is guessed from the floor plan and shown for you to check. The packet ids come from G-Earth for
+   official Habbo, and from the profile for a retro: the built-in Arcturus/Nitro ids are only used when the hotel is
+   recognised by its host or client revision, or uses the Nitro client. A Flash retro of another revision needs a
+   profile with its room ids in `extra_headers` (the capture says so and sends nothing). A retro needs its
+   **furnidata** URL for the class names (official Habbo finds its own).
 2. **Read the wired** (optional, in the room you are in). The hotel sends a wired box's settings only to someone who may
    inspect the room's wired: its owner, someone with rights, or everyone when the owner allows it. The ripper opens the
    boxes one at a time (400 ms apart) with *Open* where the hotel has it (Polaris and official Habbo: nothing visible), else

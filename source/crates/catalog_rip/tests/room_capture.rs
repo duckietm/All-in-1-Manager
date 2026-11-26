@@ -79,7 +79,7 @@ struct Seen {
     echoed: usize,
 }
 
-async fn fake_gearth(listener: TcpListener, seen: Arc<Mutex<Seen>>) {
+async fn fake_gearth(listener: TcpListener, seen: Arc<Mutex<Seen>>, client: (&'static str, &'static str)) {
     let (mut s, _) = listener.accept().await.unwrap();
     s.write_all(&Writer::new(ids::INFO_REQUEST).to_bytes()).await.unwrap();
     let info = read_frame(&mut s).await.unwrap();
@@ -89,9 +89,9 @@ async fn fake_gearth(listener: TcpListener, seen: Arc<Mutex<Seen>>) {
     let connection = ConnectionInfo {
         host: "game.myretro.net".into(),
         port: 30000,
-        hotel_version: "NITRO-1".into(),
+        hotel_version: client.1.into(),
         client_identifier: String::new(),
-        client_type: "NITRO".into(),
+        client_type: client.0.into(),
         packets: Vec::new(),
     };
     s.write_all(&connection.message().to_bytes()).await.unwrap();
@@ -117,7 +117,6 @@ async fn fake_gearth(listener: TcpListener, seen: Arc<Mutex<Seen>>) {
                 let packet = Packet::from_bytes(r.bytes(len, "packet").unwrap()).unwrap();
                 seen.lock().unwrap().sent.push((packet.header, packet.body.clone()));
                 let answer = match packet.header {
-                    3559 => Some(Writer::new(1664).i32(0).i32(2).i32(2).packet()),
                     768 => Some(wired_answer()),
                     other => panic!("the capture sent packet {other} to the hotel"),
                 };
@@ -155,7 +154,7 @@ async fn captures_a_polaris_room_and_reads_its_wired() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let seen = Arc::new(Mutex::new(Seen::default()));
-    tokio::spawn(fake_gearth(listener, seen.clone()));
+    tokio::spawn(fake_gearth(listener, seen.clone(), ("NITRO", "NITRO-1")));
 
     let options = CaptureOptions {
         folder: dir.path().join("rooms"),
@@ -195,8 +194,10 @@ async fn captures_a_polaris_room_and_reads_its_wired() {
     let capture: &RoomCapture = &captures[0].1;
     assert_eq!(capture.name(), "Villa Rosa");
     assert_eq!((capture.wallpaper.as_str(), capture.landscape.as_str(), capture.floor.as_str()), ("101", "1.1", "0.0"));
-    assert_eq!(capture.door, Some(room::Door { x: 0, y: 2, dir: 2 }));
-    assert!(capture.door_from_hotel);
+    // The hotel was not asked for the door: it is guessed from the floor plan, for the user to check.
+    assert_eq!(capture.door, None);
+    assert!(!capture.door_from_hotel);
+    assert_eq!(capture.door_or_guess(), Some(room::Door { x: 0, y: 2, dir: 2 }));
     assert_eq!(capture.floor_items.len(), 3);
     assert_eq!(capture.floor_items[&11].stuff, StuffData::Legacy { data: "1".into() });
     assert_eq!(capture.floor_items[&12].class_name.as_deref(), Some("wf_act_toggle_state"));
@@ -206,10 +207,35 @@ async fn captures_a_polaris_room_and_reads_its_wired() {
     assert_eq!(capture.can_read_wired, Some(true));
     assert!(capture.problems.is_empty(), "{:?}", capture.problems);
     let seen = seen.lock().unwrap();
-    // The door request, then Open for box 12; nothing else went to the hotel.
+    // Only Open for box 12 went to the hotel: the capture sends nothing by itself.
     let sent: Vec<u16> = seen.sent.iter().map(|(h, _)| *h).collect();
-    assert_eq!(sent, vec![3559, 768]);
-    assert_eq!(seen.sent[1].1, 12i32.to_be_bytes().to_vec());
+    assert_eq!(sent, vec![768]);
+    assert_eq!(seen.sent[0].1, 12i32.to_be_bytes().to_vec());
     // Every room packet went on to the client.
     assert!(seen.echoed >= room_packets().len(), "echoed {}", seen.echoed);
+}
+
+/// A Flash retro of another client revision than Arcturus' is matched by its client type only: its room ids are not
+/// the Arcturus ones, so the capture must not use them (a packet sent with a wrong id can get the user disconnected).
+/// It stops with a clear message and sends nothing.
+#[tokio::test]
+async fn a_flash_retro_of_another_revision_sends_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    tokio::spawn(fake_gearth(listener, seen.clone(), ("FLASH", "PRODUCTION-201701242205-837386173")));
+    let options = CaptureOptions { folder: dir.path().join("rooms"), ports: vec![port], gearth_folder: None, ..CaptureOptions::default() };
+    let (_commands, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let log = |_: &str| {};
+    let ask = |_q: String| -> BoxFuture<'static, bool> { Box::pin(async { false }) };
+    let sink = |_: CaptureEvent| {};
+    let error = room::capture(&options, ProfileChoice::Detect(builtin_profiles()), &log, &ask, &sink, receiver, &CancellationToken::new())
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not known for this hotel"), "{error}");
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    assert!(seen.lock().unwrap().sent.is_empty(), "nothing may be sent");
+    assert!(room::list_captures(&dir.path().join("rooms")).is_empty());
 }

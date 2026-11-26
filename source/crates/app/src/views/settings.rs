@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use aio_core::config_dir;
 use aio_core::layout::{AtomCmsPresence, ROOT_ACCOUNT};
-use aio_core::settings::{self as core_settings, BRANCH_CHOICES, HOTEL_LOOK, PROFESSIONAL_LOOK};
+use aio_core::settings::{self as core_settings, LayoutProfile, BRANCH_CHOICES, DEFAULT_LAYOUT_PROFILE, HOTEL_LOOK, PROFESSIONAL_LOOK};
 use aio_core::{GamedataLayout, InstallerSettings, ServerLayout};
 use aio_remote::server_users::{self, ServerUser};
 use aio_remote::{Server, ServerLogin};
@@ -36,9 +36,17 @@ struct Inbox {
     /// "Create a new user": the chosen account and what to show.
     account: Option<(String, Banner, bool)>,
     layout_result: Option<Banner>,
+    /// What a path profile dialog decided.
+    profile_action: Option<ProfileAction>,
     import: Option<ImportOutcome>,
     creating: bool,
     importing: bool,
+}
+
+enum ProfileAction {
+    New(String),
+    Rename(String, String),
+    Delete(String),
 }
 
 struct ImportOutcome {
@@ -80,6 +88,13 @@ struct LayoutFields {
 }
 
 /// A gamedata layout entry's name in Settings.
+/// A profile's name on the page; None is the Default profile.
+fn profile_name(profile: Option<&str>) -> String {
+    const DEFAULT: &str = n("Default");
+    debug_assert_eq!(DEFAULT, DEFAULT_LAYOUT_PROFILE);
+    profile.map(str::to_string).unwrap_or_else(|| t(DEFAULT).to_string())
+}
+
 fn gamedata_label(key: &str) -> &'static str {
     match key {
         "furnidata" => t("Furniture data (FurnitureData.json)"),
@@ -120,7 +135,12 @@ pub struct SettingsView {
     users: Option<Vec<ServerUser>>,
     users_for: Option<usize>,
     layout_result: Banner,
-    layout_restart: bool,
+    /// The path profile shown (None: the Default one), the other profiles, and what the fields were filled with.
+    profile: Option<String>,
+    profiles: Vec<String>,
+    shown_layout: ServerLayout,
+    /// Each saved server and the profile it uses.
+    server_profiles: Vec<(String, Option<String>)>,
 
     branches: Vec<&'static str>,
     branches_result: Banner,
@@ -162,7 +182,10 @@ impl SettingsView {
             users: None,
             users_for: None,
             layout_result: None,
-            layout_restart: false,
+            profile: ServerLayout::current_profile().filter(|p| settings.layout_profiles.iter().any(|l| &l.name == p)),
+            profiles: Vec::new(),
+            shown_layout: ServerLayout::default(),
+            server_profiles: Vec::new(),
             branches: Vec::new(),
             branches_result: None,
             key_rows: Vec::new(),
@@ -171,7 +194,7 @@ impl SettingsView {
             import_result: None,
             inbox: Arc::new(Mutex::new(Inbox::default())),
         };
-        view.show_layout(&settings.layout.clone().unwrap_or_default());
+        view.show_layout(&settings.layout_of(view.profile.as_deref()));
         view.reload();
         view
     }
@@ -194,6 +217,19 @@ impl SettingsView {
         }
         self.branches = COMPONENTS.iter().map(|c| core_settings::choice_for(&settings.branch_for(c.2)).branch).collect();
         self.key_rows = key_rows(settings.default_key_path().as_deref());
+        self.show_profiles(&settings);
+    }
+
+    fn show_profiles(&mut self, settings: &InstallerSettings) {
+        self.profiles = settings.layout_profiles.iter().map(|p| p.name.clone()).collect();
+        if self.profile.as_ref().is_some_and(|p| !self.profiles.contains(p)) {
+            self.profile = None;
+            self.show_layout(&settings.layout_of(None));
+        }
+        self.server_profiles = settings.server_list().into_iter().map(|server| {
+            let profile = settings.layout_profile_of(&server);
+            (server, profile)
+        }).collect();
     }
 
     fn show_servers(&mut self, settings: &InstallerSettings) {
@@ -202,6 +238,7 @@ impl SettingsView {
     }
 
     fn show_layout(&mut self, layout: &ServerLayout) {
+        self.shown_layout = layout.clone();
         self.layout = LayoutFields {
             emulator: layout.emulator_repository.clone(),
             logs: layout.emulator_logs.clone(),
@@ -265,6 +302,11 @@ impl SettingsView {
         }
         if let Some(result) = inbox.layout_result.take() {
             self.layout_result = result;
+        }
+        if let Some(action) = inbox.profile_action.take() {
+            drop(inbox);
+            self.profile_action(action, shared);
+            inbox = self.inbox.lock();
         }
         let account = inbox.account.take();
         let import = inbox.import.take();
@@ -536,11 +578,15 @@ impl SettingsView {
     // ---- Server layout ----
 
     fn layout_card(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        // The screenshot of this card (AIO_SCREENSHOT_TAB=layout) scrolls to it.
+        if std::env::var_os("AIO_SCREENSHOT").is_some() && std::env::var("AIO_SCREENSHOT_TAB").as_deref() == Ok("layout") {
+            ui.scroll_to_cursor(Some(egui::Align::TOP));
+        }
         card_heading(
             ui,
             palette,
             t("Server layout"),
-            t("Where the hotel lives on the server and the account the emulator runs as. The installer installs to these places, and the tools, addons and the dashboard look for everything there. Changing a value does not move anything on the server: move the folder yourself (or install again). It applies when the installer starts again."),
+            t("Where the hotel lives on the server and the account the emulator runs as. The installer installs to these places, and the tools, addons and the dashboard look for everything there. Changing a value does not move anything on the server: move the folder yourself (or install again). A server laid out differently gets a profile of its own: logging in to it switches to its paths."),
         );
         let session = shared.session();
         let connected = session.is_some();
@@ -548,6 +594,8 @@ impl SettingsView {
         let items = account_items(users, connected, &self.account);
         let mut create = false;
         let creating = self.inbox.lock().creating;
+        ui.add_space(6.0);
+        self.profile_bar(ui, palette, shared);
         ui.add_space(6.0);
         egui::Grid::new("settings-layout").num_columns(2).spacing([14.0, 8.0]).show(ui, |ui| {
             let layout = &mut self.layout;
@@ -632,14 +680,13 @@ impl SettingsView {
         }
         ui.horizontal(|ui| {
             if ui.add(widgets::primary_button(t("Save"))).clicked() {
-                self.save_layout();
+                self.save_layout(shared);
             }
             if ui.add(widgets::secondary_button(t("Defaults"))).clicked() {
+                let shown = self.shown_layout.clone();
                 self.show_layout(&ServerLayout::default());
+                self.shown_layout = shown;
                 self.layout_result = banner(ResultKind::Info, t("The defaults are filled in"), t("Save to use them."));
-            }
-            if self.layout_restart && ui.add(widgets::primary_button(t("Restart now"))).clicked() {
-                shared.request(Request::RestartForLook);
             }
         });
         show_banner(ui, palette, &self.layout_result);
@@ -746,9 +793,10 @@ impl SettingsView {
         });
     }
 
-    fn save_layout(&mut self) {
+    /// The layout the fields hold now, as written (not normalized yet).
+    fn fields_layout(&self) -> ServerLayout {
         let fields = &self.layout;
-        let mut layout = ServerLayout {
+        ServerLayout {
             emulator_repository: fields.emulator.clone(),
             emulator_account: self.account.clone(),
             emulator_logs: fields.logs.clone(),
@@ -772,27 +820,243 @@ impl SettingsView {
             nginx_site: fields.nginx_site.clone(),
             nginx_logs: fields.nginx_logs.clone(),
             gamedata_layout: fields.gamedata_layout.clone(),
-        };
+        }
+    }
+
+    /// The fields differ from the profile they were filled from.
+    fn layout_changed(&self) -> bool {
+        let mut layout = self.fields_layout();
+        layout.normalize();
+        layout != self.shown_layout
+    }
+
+    fn save_layout(&mut self, shared: &Shared) {
+        let mut layout = self.fields_layout();
         layout.normalize();
         if let Some(problem) = layout.validate() {
             self.layout_result = banner(ResultKind::Error, t("Not saved"), t(&problem));
             return;
         }
         let mut settings = InstallerSettings::load();
-        settings.layout = Some(layout.clone());
+        match self.profile.as_deref() {
+            None => settings.layout = Some(layout.clone()),
+            Some(name) => match settings.layout_profiles.iter_mut().find(|p| p.name == name) {
+                Some(profile) => profile.layout = layout.clone(),
+                None => settings.layout_profiles.push(LayoutProfile { name: name.to_string(), layout: layout.clone() }),
+            },
+        }
         if let Err(error) = save(&settings) {
             self.layout_result = banner(ResultKind::Error, t("Not saved"), &error);
             return;
         }
         self.show_layout(&layout);
-        // Like the look, the layout is read once at startup.
-        let changed = &layout != ServerLayout::current();
-        self.layout_restart = changed;
-        self.layout_result = if changed {
-            banner(ResultKind::Info, t("Saved"), t("The installer uses the new layout from its next start: Restart now, or later."))
+        self.layout_result = if self.profile_in_use(&settings, shared) {
+            // The profile in use: the next step or tool already uses the new paths.
+            ServerLayout::use_layout(layout, self.profile.clone());
+            banner(ResultKind::Success, t("Saved"), t("These paths are in use now: the next step or tool uses them."))
         } else {
-            banner(ResultKind::Success, t("Saved"), t("This is the layout the installer uses now."))
+            banner(ResultKind::Success, t("Saved"), &tf("Used when you log in to a server with the profile {profile}.", &[("profile", &profile_name(self.profile.as_deref()))]))
         };
+    }
+
+    /// The profile shown is the one in use: the server logged in to has it, or nobody is logged in and it is the
+    /// Default one.
+    fn profile_in_use(&self, settings: &InstallerSettings, shared: &Shared) -> bool {
+        match shared.session() {
+            Some(server) => crate::gui::layout_profile_of(settings, &server.login().host, server.login().port) == self.profile,
+            None => self.profile.is_none(),
+        }
+    }
+
+    // ---- Path profiles ----
+
+    /// The profile chooser with New, Rename and Delete, and which profile each saved server uses.
+    fn profile_bar(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
+        let changed = self.layout_changed();
+        ui.horizontal(|ui| {
+            label(ui, palette, t("Profile"));
+            let mut chosen: Option<Option<String>> = None;
+            ui.add_enabled_ui(!changed, |ui| {
+                egui::ComboBox::from_id_salt("settings-layout-profile").selected_text(profile_name(self.profile.as_deref())).width(220.0).show_ui(ui, |ui| {
+                    for name in std::iter::once(None).chain(self.profiles.iter().cloned().map(Some)) {
+                        if ui.selectable_label(self.profile == name, profile_name(name.as_deref())).clicked() && self.profile != name {
+                            chosen = Some(name);
+                        }
+                    }
+                });
+            })
+            .response
+            .on_disabled_hover_text(t("Save or undo the changes first."));
+            if let Some(name) = chosen {
+                self.profile = name;
+                self.show_layout(&InstallerSettings::load().layout_of(self.profile.as_deref()));
+                self.layout_result = None;
+            }
+            if ui.add_enabled(!changed, widgets::secondary_button(t("New profile"))).clicked() {
+                self.ask_profile_name(shared, None);
+            }
+            if let Some(name) = self.profile.clone() {
+                if ui.add_enabled(!changed, widgets::secondary_button(t("Rename"))).clicked() {
+                    self.ask_profile_name(shared, Some(name.clone()));
+                }
+                if ui.add_enabled(!changed, widgets::secondary_button(t("Delete"))).clicked() {
+                    self.ask_delete_profile(shared, name);
+                }
+            }
+            if changed && ui.add(widgets::secondary_button(t("Undo changes"))).clicked() {
+                let shown = self.shown_layout.clone();
+                self.show_layout(&shown);
+            }
+        });
+        let settings = InstallerSettings::load();
+        let in_use = match shared.session() {
+            Some(server) => {
+                let login = server.login();
+                tf("In use now: {profile} (logged in to {host}).", &[("profile", &profile_name(crate::gui::layout_profile_of(&settings, &login.host, login.port).as_deref())), ("host", &login.host)])
+            }
+            None => tf("In use now: {profile} (not logged in).", &[("profile", &profile_name(ServerLayout::current_profile().as_deref()))]),
+        };
+        widgets::muted(ui, palette, &in_use, 12.0);
+        if self.server_profiles.is_empty() {
+            return;
+        }
+        egui::CollapsingHeader::new(RichText::new(t("Which profile each server uses")).size(13.0).strong())
+            .id_salt("settings-server-profiles")
+            .default_open(!self.profiles.is_empty())
+            .show(ui, |ui| {
+                widgets::muted(ui, palette, t("The servers of the login list. When you log in to one, the installer uses the paths of its profile."), 12.0);
+                let mut assign: Option<(String, Option<String>)> = None;
+                egui::Grid::new("settings-server-profiles-grid").num_columns(2).spacing([14.0, 6.0]).show(ui, |ui| {
+                    for (server, profile) in &self.server_profiles {
+                        ui.label(RichText::new(server).monospace().size(12.5));
+                        egui::ComboBox::from_id_salt(("settings-server-profile", server.as_str())).selected_text(profile_name(profile.as_deref())).width(220.0).show_ui(ui, |ui| {
+                            for name in std::iter::once(None).chain(self.profiles.iter().cloned().map(Some)) {
+                                if ui.selectable_label(*profile == name, profile_name(name.as_deref())).clicked() && *profile != name {
+                                    assign = Some((server.clone(), name));
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+                if let Some((server, profile)) = assign {
+                    self.assign_profile(shared, &server, profile);
+                }
+            });
+    }
+
+    fn assign_profile(&mut self, shared: &Shared, server: &str, profile: Option<String>) {
+        let mut settings = InstallerSettings::load();
+        settings.set_layout_profile(server, profile.as_deref());
+        if let Err(error) = save(&settings) {
+            self.layout_result = banner(ResultKind::Error, t("Not saved"), &error);
+            return;
+        }
+        self.show_profiles(&settings);
+        // The server logged in to: its new profile is in use from now on.
+        let now = shared.session().filter(|s| {
+            let (host, port) = ServerLogin::parse_host(server);
+            host.eq_ignore_ascii_case(&s.login().host) && port == s.login().port
+        });
+        let message = match now {
+            Some(session) => {
+                crate::gui::use_layout_of(session.login());
+                tf("{server} uses the paths of {profile}, from now on.", &[("server", server), ("profile", &profile_name(profile.as_deref()))])
+            }
+            None => tf("{server} uses the paths of {profile} from the next login.", &[("server", server), ("profile", &profile_name(profile.as_deref()))]),
+        };
+        self.layout_result = banner(ResultKind::Success, t("Saved"), &message);
+    }
+
+    /// New profile (`rename` None, a copy of the profile shown) or a new name for `rename`.
+    fn ask_profile_name(&mut self, shared: &Shared, rename: Option<String>) {
+        let dialogs = shared.dialogs.clone();
+        let inbox = self.inbox.clone();
+        let taken: Vec<String> = self.profiles.iter().filter(|p| Some(*p) != rename.as_ref()).cloned().collect();
+        let copy_of = profile_name(self.profile.as_deref());
+        shared.spawn(async move {
+            let check: Box<dyn Fn(&str) -> Option<String> + Send> = Box::new(move |text: &str| {
+                let name = text.trim();
+                if name.is_empty() {
+                    Some(t("Give the profile a name.").to_string())
+                } else if name.eq_ignore_ascii_case(DEFAULT_LAYOUT_PROFILE) || taken.iter().any(|p| p.eq_ignore_ascii_case(name)) {
+                    Some(t("There is a profile with this name already.").to_string())
+                } else if name.chars().count() > 40 {
+                    Some(t("Use 40 characters or fewer.").to_string())
+                } else {
+                    None
+                }
+            });
+            let (title, message, value, ok) = match &rename {
+                None => (
+                    t("New path profile"),
+                    tf("A profile for servers laid out differently. It starts as a copy of the paths of {profile}: change what differs and Save, then choose which servers use it.", &[("profile", &copy_of)]),
+                    String::new(),
+                    t("Create"),
+                ),
+                Some(old) => (t("Rename the profile"), tf("A new name for {profile}; the servers that use it keep it.", &[("profile", old)]), old.clone(), t("Rename")),
+            };
+            let Some(name) = dialogs.input(title, title, &message, t("Name"), &value, false, ok, Some(check)).await else { return };
+            let name = name.trim().to_string();
+            inbox.lock().profile_action = Some(match rename {
+                None => ProfileAction::New(name),
+                Some(old) => ProfileAction::Rename(old, name),
+            });
+        });
+    }
+
+    fn ask_delete_profile(&mut self, shared: &Shared, name: String) {
+        let dialogs = shared.dialogs.clone();
+        let inbox = self.inbox.clone();
+        let users: Vec<String> = self.server_profiles.iter().filter(|(_, p)| p.as_deref() == Some(name.as_str())).map(|(s, _)| s.clone()).collect();
+        shared.spawn(async move {
+            let message = if users.is_empty() {
+                tf("{profile} is used by no server.", &[("profile", &name)])
+            } else {
+                tf("{servers} then use the Default profile.", &[("servers", &users.join(", "))])
+            };
+            let options = vec![crate::gui::dialogs::Choice::new(t("Delete"), t("Nothing on a server changes."), true).primary()];
+            if dialogs.choose(t("Delete the profile"), &tf("Delete the path profile {profile}?", &[("profile", &name)]), &message, false, options).await {
+                inbox.lock().profile_action = Some(ProfileAction::Delete(name));
+            }
+        });
+    }
+
+    fn profile_action(&mut self, action: ProfileAction, shared: &Shared) {
+        let mut settings = InstallerSettings::load();
+        let result = match &action {
+            ProfileAction::New(name) => {
+                let layout = settings.layout_of(self.profile.as_deref());
+                settings.layout_profiles.push(LayoutProfile { name: name.clone(), layout });
+                banner(ResultKind::Success, &tf("{profile} is made", &[("profile", name)]), t("Change the paths that differ on that server and Save, then choose below which servers use it."))
+            }
+            ProfileAction::Rename(old, new) => {
+                if !settings.rename_layout_profile(old, new) {
+                    self.layout_result = banner(ResultKind::Error, t("Not saved"), t("There is a profile with this name already."));
+                    return;
+                }
+                banner(ResultKind::Success, t("Saved"), &tf("{old} is now called {new}.", &[("old", old), ("new", new)]))
+            }
+            ProfileAction::Delete(name) => {
+                settings.delete_layout_profile(name);
+                banner(ResultKind::Success, &tf("{profile} is deleted", &[("profile", name)]), t("Its servers use the Default profile."))
+            }
+        };
+        if let Err(error) = save(&settings) {
+            self.layout_result = banner(ResultKind::Error, t("Not saved"), &error);
+            return;
+        }
+        match action {
+            ProfileAction::New(name) | ProfileAction::Rename(_, name) => self.profile = Some(name),
+            ProfileAction::Delete(_) => self.profile = None,
+        }
+        self.show_layout(&settings.layout_of(self.profile.as_deref()));
+        self.show_profiles(&settings);
+        // A renamed or deleted profile may be the one in use.
+        if let Some(server) = shared.session() {
+            crate::gui::use_layout_of(server.login());
+        }
+        self.layout_result = result;
     }
 
     // ---- Branches ----

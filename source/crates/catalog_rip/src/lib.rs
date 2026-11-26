@@ -48,6 +48,7 @@ pub mod productdata;
 pub mod profiles;
 pub mod recording;
 pub mod rip;
+pub mod room;
 pub mod site_config;
 pub mod translations;
 pub mod wire;

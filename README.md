@@ -115,6 +115,7 @@ replacing the app keeps them; **Settings** can put `Habbo_Assets` anywhere else.
 - [Install New Server, step by step](#install-new-server-step-by-step)
 - [Addons](#addons): [CMS](#cms), [Gitea](#gitea), [Fail2Ban](#fail2ban), [CrowdSec](#crowdsec),
   [Habbo assets](#habbo-assets), [Nitro retro](#nitro-retro-custom-assets), [Asset tools](#asset-tools), [Deploy Assets](#deploy-assets), [Asset Explorer](#asset-explorer), [SQL Editor](#sql-editor)
+- [Catalogue ripper](#catalogue-ripper) · [Room ripper](#room-ripper)
 - [Settings](#settings) · [Debug](#debug) · [Tools](#tools) · [Health check and History](#health-check-and-history)
 - [macOS](#macos) · [Updating the installer itself](#updating-the-installer-itself) · [Building](#building) ·
   [Project layout](#project-layout) · [Credits](#credits)
@@ -463,6 +464,13 @@ What it does:
      emulator account, `db.params=?characterEncoding=utf8&useSSL=false&serverTimezone=<your timezone>`, and
      generated secrets for `nitro.secure.master_key` and `login.remember.jwt.secret`. On a re-run only the
      database settings change; the rest of your `config.ini` is kept (with a `.bak-<date>` copy).
+   - **New settings** of a newer emulator: every `key=value` that `config example/config.ini.example` has and your
+     `config.ini` lacks is added at the end of `config.ini`, with the example's value and the comment above it,
+     under `# Added by All-in-1 Manager from config.ini.example on <date>` (after a `.bak-<date>` copy). A setting
+     already in your `config.ini` is never changed, also when the example has another value, and your own extra
+     settings stay. **Tools → Update emulator** does the same after every `git pull`: with new settings but no new
+     commits it restarts the emulator so it reads them; the log lists each setting it added. A new setting whose
+     example value is `change-me` is pointed out: set it yourself and restart the emulator.
    - Start script `Emulator/emulator`: runs the newest JAR in `target/` with JDK 25 and your memory, logs to
      `/var/log/emu/emulator.log`, keeps the previous log as `emulator.log.<time>` (30 days).
    - `/etc/systemd/system/emulator.service`: `User=emulator`, `SupplementaryGroups=www-data`, after and requiring
@@ -1813,6 +1821,92 @@ under **Other**, marked *not loaded*. The newer example names (`client-mode.exam
 keeps the old one as `.bak-<time>`, and writes it to `public/configuration` (what the next build uses) and to
 `dist/configuration` (what the hotel serves), so players get it when they reload the hotel, without a rebuild.
 
+## Catalogue ripper
+
+**Addons → Catalogue ripper** copies the catalogue of official Habbo or of a retro hotel (Flash or Nitro) through
+[G-Earth](https://github.com/G-Realm/G-Earth). It is a G-Earth extension: start G-Earth, log in to the hotel with your
+own client through it, then click **Start**. The ripper asks the hotel for the catalogue index and every page (the
+normal catalogue and, where the hotel has one, Builders Club), a few per second, the way the client does when you
+browse; every other packet passes through unchanged. When G-Earth is not running it offers to download its official
+release into `configuration/plugins/catalog-rip/G-Earth/` and start it: `G-Earth-windows-x64.zip` on Windows (started
+as administrator: for the Flash client G-Earth edits the hosts file, Windows asks first), `G-Earth-linux-x64.tar.gz`
+on Linux, and `G-Earth-mac-x64.zip` on a Mac (`G-Earth.app`, started with `open`; it runs on Apple silicon through
+Rosetta).
+
+- **Hotel profiles** give the packet ids. Official Habbo needs none (G-Earth knows them). Built in: Arcturus
+  Morningstar (`PRODUCTION-201611291003-338511768`) and Nitro retros. **Detect from the connection** picks one by the
+  game server's host, then the client revision, then the client type. Your own profiles are JSON files in
+  `configuration/plugins/catalog-rip/profiles/` (**Profiles folder**); one with a built-in profile's name replaces it.
+- **Output**, in `Catalog/<hotel>_<time>/` next to the configuration folder: `catalog.json`, Arcturus SQL
+  (`catalog_pages.sql`, `catalog_items.sql`), `catalog_manager.sql`, the page images and icons, and `README.txt`.
+  A rip that stops early still saves what it read.
+- **Import into the hotel** (when logged in) opens the [Catalogue](#catalogue) manager with `catalog_manager.sql` as an
+  import preview: nothing is written until **Apply**, and it is recorded in the history. The file replaces the whole
+  catalogue (normal and Builders Club). With **Match the furni with items_base** the ripper reads the server's
+  items_base (with the saved MariaDB account) so the offers point at your furni; offers whose furni is not in
+  items_base are left out and listed in the file.
+
+Use it on hotels whose catalogue you may copy, and keep the pause between pages reasonable: a hotel may disconnect a
+client that asks too fast.
+
+## Room ripper
+
+**Addons → Room ripper** copies rooms of official Habbo or of a retro (Flash or Nitro) through G-Earth and imports
+them into your hotel as **new** rooms: the floor plan, door, wallpaper, floor and landscape, name, description and
+tags, every floor and wall furni in its place with its state, and the **wired** with its settings where the hotel lets
+you read them. It shares the Catalogue ripper's G-Earth connection, hotel profiles and furnidata reader.
+
+1. **Capture.** Click **Start**, then walk into the rooms you want with your own client: every room you enter is saved
+   as `configuration/plugins/room-rip/captures/<hotel>_<room id>.json` and listed under **Captured rooms**. The capture
+   only listens and sends nothing by itself (a packet sent with the id of another client version can make a hotel
+   close the connection). The door tile is kept when the hotel sends it (when you open the floor plan editor in that
+   room); otherwise it is guessed from the floor plan and shown for you to check. The packet ids come from G-Earth for
+   official Habbo, and from the profile for a retro: the built-in Arcturus/Nitro ids are only used when the hotel is
+   recognised by its host or client revision, or uses the Nitro client. A Flash retro of another revision needs a
+   profile with its room ids in `extra_headers` (the capture says so and sends nothing). A retro needs its
+   **furnidata** URL for the class names (official Habbo finds its own).
+2. **Read the wired** (optional, in the room you are in). The hotel sends a wired box's settings only to someone who may
+   inspect the room's wired: its owner, someone with rights, or everyone when the owner allows it. The ripper opens the
+   boxes one at a time (400 ms apart) with *Open* where the hotel has it (Polaris and official Habbo: nothing visible), else
+   with a double click (the box's light flips for everyone in the room). When the first box does not answer, it stops and
+   says you may not read the wired there. Boxes you open by hand while capturing are kept too.
+3. **Import ...** (logged in to your server; the MariaDB account the other database pages use). Choose the **owner** (a
+   user of your hotel), the **room name** and, if needed, the **door**. **Preview** shows what the import makes and leaves
+   out; **Import** writes it all in one transaction (all or nothing):
+   - a new room of that owner, **open to everyone**, with the hotel's default category, trade and chat settings;
+   - the hotel's model when it has the same floor plan and door, else a custom one (`room_models_custom`,
+     `override_model`);
+   - the furni, matched with your `items_base` by **class name** (by sprite id when the class name was not known);
+     furni you do not have are left out and listed. They become normal items of the owner, **cleaned** of what belongs
+     to the other hotel: LTD serials (the item is no LTD here), trophy engravings, group links, ads and badge displays,
+     all listed;
+   - the wired settings that were read, as Polaris' `wired_data`, their furni pointing at the new items. Converted now:
+     walks on/off furni, enters room, says something, periodically, at a set time, toggle state, move/rotate, show
+     message, teleport, match snapshot (action and condition), furni have users, trigger on furni, reset timers, give
+     score and call stacks. Other boxes, and boxes whose settings were not read, come empty and are listed.
+**Captured rooms → Open the folder** opens `configuration/plugins/room-rip/captures/`.
+
+**Record every packet (developers).** While capturing, this records every packet between your client and the hotel,
+both ways, for building the wired (or anything else) into the emulator. It starts in the **next room you enter**, so
+your login (and its SSO ticket) is never in it, and runs until **Stop recording** (or 500,000 packets). Each recording
+is a folder in `configuration/plugins/room-rip/packets/<hotel>_<time>/` (**Open the recording**):
+- `packets.jsonl`: one packet a line: `t` (ms since the start), `dir` (`out` client → hotel, `in` hotel → client),
+  `header`, `name` (from G-Earth's packet info, or the Room ripper's own names), `length` and `hex` (the body);
+- `wired.txt`: only the wired packets (box settings, the editor's save packets, opening a box, the box lights),
+  readable: the settings decoded where possible and a hex dump with offsets. Open and edit wired boxes with your own
+  client while recording to get the save packets too;
+- `README.txt`: the hotel, its client and revision, the profile and every known packet name with its id.
+
+The packets the ripper sends itself (opening boxes for **Read the wired**) are in it too. The recording holds
+everything sent in those rooms, chat too: share it only with people you trust.
+
+4. **Imported rooms → Undo** removes the room again: anyone in it is sent to the hotel view first (Polaris unloads a
+   room when its owner is set again over RCON), then the furni that came with it are deleted (also when they were picked
+   up since), furni placed there later go back to their owner's inventory, and the custom floor plan and the room go.
+   The record of each import is kept in `configuration/plugins/room-rip/imports/`.
+
+Use it on rooms you may copy.
+
 ## Settings
 
 **The dashboard's component list** shows what runs on the server, compared with what is newest: the emulator;
@@ -1888,7 +1982,17 @@ afterwards so the row shows the new version.
   The values go into scripts that run as root, so only plain absolute paths (letters, digits, `.`, `_`, `-`, `/`),
   Linux user names and simple database names are accepted; system folders such as `/var/www` itself and two parts
   in one folder are refused. A change does not move anything on the server (move the folder yourself, or install
-  again) and applies at the next start (**Restart now**). Stored in `configuration/settings.json` under `Layout`.
+  again). Stored in `configuration/settings.json` under `Layout`.
+
+  **Profiles, for servers laid out differently.** The paths above are the **Default** profile. **New profile** makes
+  another one (a copy of the profile shown, e.g. *Test server* with `/home/hotel/Octane`), **Rename** and **Delete**
+  manage it; **Profile** chooses which one the page shows and edits (save or undo changes before switching).
+  **Which profile each server uses** lists the servers of the login list with a profile for each; a server not set
+  uses Default. **Logging in to a server switches every path to its profile**: the status line says so
+  (*Server paths: profile Test server.*) and the card shows *In use now*. Saving the profile in use, or giving the
+  server you are logged in to another profile, applies at once: the next step or tool uses the new paths, no restart
+  needed. Deleting a profile puts its servers back on Default. Stored in `configuration/settings.json` under
+  `LayoutProfiles` (name and paths) and `ServerLayouts` (server → profile); the settings backup includes them.
 - **Repository branches**: the branch for Polaris, Octane and Octane-Renderer: **main** or **dev**. This is the
   one choice the whole program follows: the clone steps of Install New Server, **Tools → Update emulator** and
   **Tools → Update Octane**, and the update check that counts new commits. A clone that is on another branch is
@@ -1954,7 +2058,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 | **Recover SQL password** | gives MariaDB's root a new random 32-character password (asks first) and saves it in `configuration/database/<server>/mariadb.txt`; a changed file is kept as `mariadb.txt.bak-<time>`. Changes `root@localhost` (its socket login stays) and `root@'%'` when it exists. When root cannot log in through the socket any more, MariaDB is restarted for a moment with `--skip-grant-tables --skip-networking` to change it and then started normally. Then it tests the new password over 127.0.0.1 and the socket. Without a saved file, the CMS and emulator accounts are read from AtomCMS' `.env` and the emulator's `config.ini`, so the new file is complete. The emulator and AtomCMS use their own accounts and are not affected |
 | **Check for updates** | `git fetch` of the emulator, Octane, Octane-Renderer and AtomCMS, and per clone how many commits a `git pull` would bring in, with the newest one. The commits are counted against the branch chosen in **Settings → Repository branches**, not against the branch the clone happens to be on, so a clone still on `main` while `dev` is chosen reports what `dev` has and says `main → dev`. AtomCMS has no choice and is counted against its own branch. A fetch only fills the remote branches: no file on the server is changed and the hotel keeps running. The same check runs by itself right after you log in here, and again after an update, so **Update emulator** and **Update Octane** say `3 new commit(s)` or `up to date` before you press them |
 | **Update system** | `apt-get update`, `upgrade` and `dist-upgrade` (changed configuration files are kept); says when a reboot is needed |
-| **Update emulator** | `git pull` in `/var/www/emulator` on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first) and the missing files of its `Assets/` copied into gamedata (see Deploy Assets → Images); when there are new commits: `build.sh` and a restart. The start script runs the newest `target/*-jar-with-dependencies.jar`, so a new version number is picked up by itself; the result shows old → new version. No new commits: nothing is rebuilt or restarted |
+| **Update emulator** | `git pull` in `/var/www/emulator` on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first) and the missing files of its `Assets/` copied into gamedata (see Deploy Assets → Images); settings the new `config.ini.example` has and your `config.ini` lacks are added to it with the example's value (your values stay, a `.bak-<date>` copy is made, see step 4 of the Emulator step); when there are new commits: `build.sh` and a restart. The start script runs the newest `target/*-jar-with-dependencies.jar`, so a new version number is picked up by itself; the result shows old → new version. No new commits: nothing is rebuilt, and the emulator restarts only when `config.ini` got new settings |
 | **Update Octane** | `git pull` of Octane-Renderer and Octane, both on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first), then in both `rm -rf node_modules yarn.lock` and `yarn install`, then the configuration for the site (keeps AtomCMS' `/client` layout), `yarn build` and a test. The next pull puts the repository's `yarn.lock` back first |
 | **Update AtomCMS** | `git pull` in `/var/www/atomcms`, `composer install`, `php artisan migrate` (an installed AtomCMS only runs the new migrations; its settings and the hotel name stay) and the theme build. Octane is not touched |
 | **Update Traefik** | `docker compose pull` and `up -d` in `/opt/traefik`: the newest `traefik:v3` image, and a restart only when it changed (routes, settings and certificates stay; the players are disconnected for a few seconds). When Docker Hub does not answer nothing is changed, and it says so (also for Gitea and CrowdSec) |

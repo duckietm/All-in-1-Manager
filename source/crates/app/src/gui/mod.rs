@@ -60,6 +60,7 @@ pub enum Page {
     AssetExplorer,
     SqlEditor,
     CatalogRip,
+    RoomRip,
     CatalogManager,
     CatalogExplorer,
     BuildersExplorer,
@@ -243,6 +244,7 @@ pub struct App {
     history: views::history::HistoryView,
     about: views::about::AboutView,
     catalog_rip: views::catalog_rip::CatalogRipView,
+    room_rip: views::room_rip::RoomRipView,
     dashboard: views::dashboard::Dashboard,
     /// The connection was lost: the login opens again as soon as nothing runs any more.
     login_pending: bool,
@@ -297,6 +299,7 @@ impl App {
             history: views::history::HistoryView::new(&shared),
             about: views::about::AboutView::new(&shared),
                     catalog_rip: views::catalog_rip::CatalogRipView::new(&shared),
+                    room_rip: views::room_rip::RoomRipView::new(&shared),
             dashboard: views::dashboard::Dashboard::new(&shared),
             shared,
             login_pending: false,
@@ -328,6 +331,7 @@ impl App {
             || self.client_config.busy()
             || self.settings.busy()
             || self.catalog_rip.busy()
+            || self.room_rip.busy()
     }
 
     /// Opens the login (at startup, from a Log in button, or after a lost connection).
@@ -681,6 +685,10 @@ impl App {
                 t("Catalogue ripper").into(),
                 t("Copies the catalogue of Habbo or a retro hotel through G-Earth, as files and ready to import.").into(),
             ),
+            Page::RoomRip => (
+                t("Room ripper").into(),
+                t("Copies rooms of Habbo or a retro hotel through G-Earth, with their furni and wired, into your hotel.").into(),
+            ),
             Page::Settings => (t("Settings").into(), t("The look, the settings backup, your servers and default SSH key, and your own SSH keys.").into()),
             Page::Dashboard => (t("Dashboard").into(), t("Set up a complete hotel server over SSH.").into()),
             Page::Addons => (t("Addons").into(), t("Everything that goes on top of a finished server: pick one.").into()),
@@ -737,6 +745,7 @@ impl App {
                             | Page::DefaultCatalog
                             | Page::SqlEditor
                             | Page::CatalogRip
+                            | Page::RoomRip
                     ),
                     Page::Tools => matches!(current, Page::Tools | Page::ServerStatus | Page::EmulatorMonitor | Page::Terminal | Page::Doctor),
                     other => current == other,
@@ -855,7 +864,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     let wizard_status = match self.page {
-                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::ClientConfig | Page::Debug | Page::History | Page::CatalogRip => None,
+                        Page::Dashboard | Page::Tools | Page::Settings | Page::About | Page::AssetExplorer | Page::GetAssets | Page::RetroAssets | Page::AssetTools | Page::SqlEditor | Page::CatalogManager | Page::CatalogExplorer | Page::BuildersExplorer | Page::Content | Page::Logs | Page::Players | Page::Housekeeping | Page::HotelView | Page::Gamedata | Page::ClientConfig | Page::Debug | Page::History | Page::CatalogRip | Page::RoomRip => None,
                         _ => Some(()),
                     }
                     .and_then(|_| self.wizards.all().into_iter().find(|w| w.is_busy()).map(|w| w.status()))
@@ -982,6 +991,7 @@ impl App {
                     }
                 }
             }
+            Page::RoomRip => scroll(ui, |ui| self.room_rip.show(ui, palette, &shared)),
             Page::Addons => {
                 let mut clicked = None;
                 scroll(ui, |ui| clicked = views::addons::show(ui, palette));

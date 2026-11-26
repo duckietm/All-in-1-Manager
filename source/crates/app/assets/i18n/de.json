@@ -4172,5 +4172,14 @@
   "Recording: {packets} packets, {wired} of them wired": "Aufnahme: {packets} Pakete, davon {wired} Wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Nimmt jedes Paket zwischen deinem Client und dem Hotel auf, in beide Richtungen, ab dem nächsten Raum, den du betrittst: packets.jsonl (alle) und wired.txt (die Wired-Pakete, zerlegt). Um das Wired in den Emulator einzubauen.",
   "Stop recording": "Aufnahme stoppen",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Die Aufnahme enthält alles, was dein Client und das Hotel in diesen Räumen senden, auch Chat: teile sie nur mit Leuten, denen du vertraust."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Die Aufnahme enthält alles, was dein Client und das Hotel in diesen Räumen senden, auch Chat: teile sie nur mit Leuten, denen du vertraust.",
+  "Valuables (LTD and rares): {left} of {count} left out": "Wertvolles (LTD und Raritäten): {left} von {count} ausgelassen",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris kann ein einzelnes Möbel nicht als nicht handelbar markieren: Ein Wertgegenstand, den du einschließt, wird in deinem Hotel zu einer normalen, handelbaren Kopie (ein LTD verliert seine Seriennummer).",
+  "Include all": "Alle einschließen",
+  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Jedes LTD und jede Rarität des Raums wird in deinem Hotel zu einer handelbaren Kopie.",
+  "Leave all out": "Alle auslassen",
+  "LTD {serial} of {size}": "LTD {serial} von {size}",
+  "rare in the other hotel's furnidata": "selten in den Furnidata des anderen Hotels",
+  "your catalogue sells it only as LTD": "dein Katalog verkauft es nur als LTD",
+  "your catalogue does not sell it": "dein Katalog verkauft es nicht"
 }

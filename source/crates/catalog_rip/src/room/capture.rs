@@ -6,7 +6,7 @@
 //! the room's wired boxes one at a time, with Open where the hotel has it (no visible effect) and else UseFurniture
 //! (the box's light flips for everyone in the room, as when its owner opens it).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -66,6 +66,27 @@ pub struct RoomCapture {
     /// The packets that could not be read, for the report.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub problems: Vec<String>,
+    /// The class names (lower case) of the room's furni that the other hotel's furnidata marks `rare`.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub rare_classes: BTreeSet<String>,
+}
+
+/// The class names (lower case) of the room's furni that the furnidata marks `rare` (true, 1 or "1").
+pub fn furnidata_rares(room: &RoomCapture, furnidata: &Furnidata) -> BTreeSet<String> {
+    let rare = |kind: char, type_id: i32| {
+        furnidata.entries.get(&(kind, type_id)).and_then(|e| e.get("rare")).is_some_and(|v| match v {
+            serde_json::Value::Bool(b) => *b,
+            serde_json::Value::Number(n) => n.as_i64() == Some(1),
+            serde_json::Value::String(s) => matches!(s.trim().to_ascii_lowercase().as_str(), "1" | "true"),
+            _ => false,
+        })
+    };
+    let floor = room.floor_items.values().filter(|i| rare('s', i.type_id)).map(|i| (i.type_id, false));
+    let wall = room.wall_items.values().filter(|i| rare('i', i.type_id)).map(|i| (i.type_id, true));
+    floor
+        .chain(wall)
+        .filter_map(|(type_id, wall)| if wall { furnidata.wall.get(&type_id) } else { furnidata.floor.get(&type_id) }.map(|c| c.to_ascii_lowercase()))
+        .collect()
 }
 
 /// What the room list shows of a capture.
@@ -358,7 +379,10 @@ impl Capturer<'_> {
     }
 
     fn save(&mut self) {
-        let Some(room) = &self.room else { return };
+        let Some(room) = &mut self.room else { return };
+        if let Some(furnidata) = &self.furnidata {
+            room.rare_classes = furnidata_rares(room, furnidata);
+        }
         match room.save(&self.options.folder) {
             Ok(path) => (self.sink)(CaptureEvent::Room { path, summary: room.summary() }),
             Err(e) => (self.log)(&format!("The capture of {} could not be saved: {e:#}", room.name())),
@@ -809,6 +833,23 @@ pub async fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_furnidata_rares_in_the_room_are_kept() {
+        let data = Furnidata::parse(
+            r#"{"roomitemtypes":{"furnitype":[{"id":10,"classname":"Rare_Dragon","rare":true},{"id":11,"classname":"chair","rare":false},{"id":12,"classname":"rare_elsewhere","rare":true}]},
+                "wallitemtypes":{"furnitype":[{"id":20,"classname":"wall_rare","rare":"1"},{"id":21,"classname":"poster","rare":0}]}}"#,
+        )
+        .unwrap();
+        let mut room = RoomCapture::default();
+        for (id, type_id) in [(1, 10), (2, 11)] {
+            room.floor_items.insert(id, FloorItem { id, type_id, class_name: None, x: 0, y: 0, z: 0.0, dir: 0, stuff: p::StuffData::Empty, limited: None, owner_id: 1 });
+        }
+        for (id, type_id) in [(3, 20), (4, 21)] {
+            room.wall_items.insert(id, WallItem { id, type_id, class_name: None, location: String::new(), data: String::new(), owner_id: 1 });
+        }
+        assert_eq!(furnidata_rares(&room, &data), BTreeSet::from(["rare_dragon".to_string(), "wall_rare".to_string()]));
+    }
 
     #[test]
     fn the_door_is_guessed_from_the_heightmap() {

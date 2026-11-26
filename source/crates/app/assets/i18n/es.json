@@ -4172,5 +4172,14 @@
   "Recording: {packets} packets, {wired} of them wired": "Grabando: {packets} paquetes, {wired} de ellos wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Graba cada paquete entre tu cliente y el hotel, en ambos sentidos, desde la próxima sala en la que entres: packets.jsonl (todos) y wired.txt (los wired, descifrados). Para programar los wired en el emulador.",
   "Stop recording": "Detener la grabación",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "La grabación contiene todo lo que tu cliente y el hotel envían en esas salas, también el chat: compártela solo con personas de confianza."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "La grabación contiene todo lo que tu cliente y el hotel envían en esas salas, también el chat: compártela solo con personas de confianza.",
+  "Valuables (LTD and rares): {left} of {count} left out": "Objetos de valor (LTD y raros): {left} de {count} excluidos",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris no puede marcar un solo furni como no intercambiable: un objeto de valor que incluyas se convierte en una copia normal e intercambiable en tu hotel (un LTD pierde su número de serie).",
+  "Include all": "Incluir todos",
+  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Cada LTD y raro de la sala se convierte en una copia intercambiable en tu hotel.",
+  "Leave all out": "Excluir todos",
+  "LTD {serial} of {size}": "LTD {serial} de {size}",
+  "rare in the other hotel's furnidata": "raro en el furnidata del otro hotel",
+  "your catalogue sells it only as LTD": "tu catálogo solo lo vende como LTD",
+  "your catalogue does not sell it": "tu catálogo no lo vende"
 }

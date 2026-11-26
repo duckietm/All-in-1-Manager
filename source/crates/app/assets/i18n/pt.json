@@ -4172,5 +4172,14 @@
   "Recording: {packets} packets, {wired} of them wired": "A gravar: {packets} pacotes, {wired} deles wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Grava cada pacote entre o teu cliente e o hotel, nos dois sentidos, a partir do próximo quarto em que entrares: packets.jsonl (todos) e wired.txt (os wired, descodificados). Para programar os wired no emulador.",
   "Stop recording": "Parar a gravação",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "A gravação contém tudo o que o teu cliente e o hotel enviam nesses quartos, também o chat: partilha-a só com pessoas de confiança."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "A gravação contém tudo o que o teu cliente e o hotel enviam nesses quartos, também o chat: partilha-a só com pessoas de confiança.",
+  "Valuables (LTD and rares): {left} of {count} left out": "Itens de valor (LTD e raros): {left} de {count} deixados de fora",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "O Polaris não consegue marcar um único mobi como não negociável: um item de valor que incluíres torna-se uma cópia normal e negociável no teu hotel (um LTD perde o seu número de série).",
+  "Include all": "Incluir todos",
+  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Cada LTD e raro do quarto torna-se uma cópia negociável no teu hotel.",
+  "Leave all out": "Deixar todos de fora",
+  "LTD {serial} of {size}": "LTD {serial} de {size}",
+  "rare in the other hotel's furnidata": "raro no furnidata do outro hotel",
+  "your catalogue sells it only as LTD": "o teu catálogo só o vende como LTD",
+  "your catalogue does not sell it": "o teu catálogo não o vende"
 }

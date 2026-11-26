@@ -10,6 +10,6 @@ pub mod import;
 pub mod packet_log;
 pub mod packets;
 
-pub use capture::{capture, list_captures, CaptureEvent, CaptureOptions, CaptureSummary, Command, Recording, RoomCapture};
-pub use import::{plan, undo_already_gone, undo_check_queries, undo_model_statement, undo_problems, undo_statements, BaseItem, ImportChoice, ImportPlan, ImportRecord, ImportReport, ItemNow, PlanValue, RoomNow, Target, UNDO_ROOM_STATEMENT};
+pub use capture::{capture, furnidata_rares, list_captures, CaptureEvent, CaptureOptions, CaptureSummary, Command, Recording, RoomCapture};
+pub use import::{plan, undo_already_gone, undo_check_queries, undo_model_statement, undo_problems, undo_statements, BaseItem, Catalogue, ImportChoice, ImportPlan, ImportRecord, ImportReport, ItemNow, PlanValue, RoomNow, Target, Valuable, ValuableItem, UNDO_ROOM_STATEMENT};
 pub use packets::Door;

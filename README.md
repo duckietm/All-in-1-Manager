@@ -1880,6 +1880,14 @@ you read them. It shares the Catalogue ripper's G-Earth connection, hotel profil
      furni you do not have are left out and listed. They become normal items of the owner, **cleaned** of what belongs
      to the other hotel: LTD serials (the item is no LTD here), trophy engravings, group links, ads and badge displays,
      all listed;
+   - **valuables are left out** unless you include them: Polaris has no per-furni "not tradeable" mark (trading checks
+     only `items_base.allow_trade`), so a copied LTD or rare would be one more tradeable piece in your hotel. A valuable
+     is an **LTD** in the capture (it shows a serial), or a furni that can change hands here (`allow_trade` or
+     `allow_marketplace_sell` in your `items_base`) which the other hotel's furnidata marks `rare`, or which your
+     catalogue sells **only as LTD** or **does not sell** at all (only offers on pages that are enabled, visible and
+     open to rank 1 count as sold). The preview lists them with the reason; tick them one by one, or **Include all**:
+     an included one becomes a normal, tradeable copy (an LTD keeps no serial). A wired box that selected a furni left
+     out points at the others only, and the preview says so;
    - the wired settings that were read, as Polaris' `wired_data`, their furni pointing at the new items. Converted now:
      walks on/off furni, enters room, says something, periodically, at a set time, toggle state, move/rotate, show
      message, teleport, match snapshot (action and condition), furni have users, trigger on furni, reset timers, give

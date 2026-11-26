@@ -7,6 +7,9 @@
 //! * furni are matched to items_base by class name (by sprite id when the class name is not known) and become
 //!   normal items of the chosen owner, cleaned of what belongs to the source hotel: LTD serials, trophy
 //!   engravings, group links, ads and badge displays (listed in the report);
+//! * valuables (LTD and rares, see [`Valuable`]) are left out unless the user includes them one by one: Polaris has no
+//!   per-item "not tradeable" mark (trade checks only items_base.allow_trade and rent), so an included one becomes a
+//!   normal, tradeable copy;
 //! * a floor plan that is not one of the hotel's models becomes a custom one (room_models_custom, override_model);
 //! * the wired settings that were read become Polaris' wired_data, their furni pointing at the new items; boxes of
 //!   a kind not converted yet, or not read, come empty (listed);
@@ -42,6 +45,58 @@ pub struct BaseItem {
     /// `s` floor, `i` wall.
     pub item_type: String,
     pub interaction_type: String,
+    /// It can change hands: items_base `allow_trade` or `allow_marketplace_sell`.
+    pub tradeable: bool,
+}
+
+/// What the hotel's catalogue sells, by items_base id, counting only offers on pages players can open (enabled,
+/// visible, rank 1).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Catalogue {
+    /// In an offer that is no LTD.
+    pub sold: BTreeSet<u32>,
+    /// In an LTD offer (`limited_stack` > 0).
+    pub sold_limited: BTreeSet<u32>,
+}
+
+impl Catalogue {
+    /// From the offers' `catalog_items.item_ids` (`id` or `id:amount`, separated by `;`) and `limited_stack`. A bundle
+    /// that names other offers (`@offer`) adds nothing: what it hands out is not counted as sold.
+    pub fn from_offers<'a>(offers: impl IntoIterator<Item = (&'a str, i64)>) -> Self {
+        let mut catalogue = Self::default();
+        for (item_ids, limited_stack) in offers {
+            let set = if limited_stack > 0 { &mut catalogue.sold_limited } else { &mut catalogue.sold };
+            set.extend(item_ids.split(';').filter_map(|part| part.split(':').next()?.trim().parse::<u32>().ok()));
+        }
+        catalogue
+    }
+}
+
+/// Why a furni counts as a valuable, which the import leaves out unless the user includes it. The rule, conservative
+/// (when unsure, a valuable): an LTD of the other hotel always; otherwise only a furni that can change hands here
+/// ([`BaseItem::tradeable`]) and that the other hotel's furnidata marks rare, or that the hotel's catalogue sells
+/// only as LTD, or does not sell at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Valuable {
+    /// An LTD in the capture: its serial and series size.
+    Limited { serial: i32, size: i32 },
+    /// The other hotel's furnidata marks it rare.
+    Rare,
+    /// The hotel's catalogue sells it only as LTD.
+    SoldAsLimited,
+    /// The hotel's catalogue does not sell it.
+    NotSold,
+}
+
+/// A valuable of the capture and whether the user included it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValuableItem {
+    /// `s` floor or `i` wall and the furni's id in the capture, as [`ImportChoice::include`] names it.
+    pub key: (char, i32),
+    /// Its items_base item_name.
+    pub name: String,
+    pub why: Valuable,
+    pub included: bool,
 }
 
 /// What the import needs to know of the hotel.
@@ -56,6 +111,8 @@ pub struct Target {
     pub lengths: BTreeMap<String, usize>,
     /// The hotel's model of the captured model name, when it has one: its heightmap and door.
     pub model: Option<(String, Door)>,
+    /// The hotel's catalogue (None: not read; then only LTD and furnidata rares are told apart).
+    pub catalogue: Option<Catalogue>,
 }
 
 /// What the user chose for the new room.
@@ -67,6 +124,8 @@ pub struct ImportChoice {
     pub door: Door,
     /// Seconds since 1970, for date_created.
     pub now: i64,
+    /// The valuables to import all the same, by [`ValuableItem::key`].
+    pub include: BTreeSet<(char, i32)>,
 }
 
 /// What the import makes and leaves out.
@@ -87,6 +146,8 @@ pub struct ImportReport {
     pub model: String,
     pub custom_model: bool,
     pub notes: Vec<String>,
+    /// The valuables of the capture (LTD and rares), left out unless included.
+    pub valuables: Vec<ValuableItem>,
 }
 
 /// The statements and their report.
@@ -173,6 +234,27 @@ fn clean_extra(item: &FloorItem, base: &BaseItem) -> (String, Option<String>) {
         other => other.state(),
     };
     (data, None)
+}
+
+/// Why `base` (the match of a furni of the capture) is a valuable, if it is: see [`Valuable`].
+fn valuable(limited: Option<super::packets::Limited>, base: &BaseItem, capture: &RoomCapture, catalogue: Option<&Catalogue>) -> Option<Valuable> {
+    if let Some(l) = limited {
+        return Some(Valuable::Limited { serial: l.serial, size: l.size });
+    }
+    if !base.tradeable {
+        return None;
+    }
+    if capture.rare_classes.contains(&base.item_name.to_ascii_lowercase()) {
+        return Some(Valuable::Rare);
+    }
+    let catalogue = catalogue?;
+    if catalogue.sold.contains(&base.id) {
+        None
+    } else if catalogue.sold_limited.contains(&base.id) {
+        Some(Valuable::SoldAsLimited)
+    } else {
+        Some(Valuable::NotSold)
+    }
 }
 
 /// A placeholder for an item id in wired JSON, replaced by `{#N}` after serializing.
@@ -383,8 +465,22 @@ pub fn plan(capture: &RoomCapture, target: &Target, choice: &ImportChoice) -> Re
         statements.len() - 1
     };
 
+    // A valuable is listed, and left out unless the user included it.
+    let keep = |key: (char, i32), limited, base: &BaseItem, report: &mut ImportReport| -> bool {
+        let Some(why) = valuable(limited, base, capture, target.catalogue.as_ref()) else { return true };
+        let included = choice.include.contains(&key);
+        report.valuables.push(ValuableItem { key, name: base.item_name.clone(), why, included });
+        included
+    };
+    if target.catalogue.is_none() {
+        report.notes.push("The hotel's catalogue was not read: only LTD and the furnidata's rares are told apart as valuables.".into());
+    }
+
     for item in capture.floor_items.values() {
         let Some(base) = find(&item.class_name, item.type_id, "s", &mut report) else { continue };
+        if !keep(('s', item.id), item.limited, base, &mut report) {
+            continue;
+        }
         let (extra, cleaned) = clean_extra(item, base);
         if let Some(cleaned) = cleaned {
             report.cleaned.push(cleaned);
@@ -413,6 +509,9 @@ pub fn plan(capture: &RoomCapture, target: &Target, choice: &ImportChoice) -> Re
     }
     for item in capture.wall_items.values() {
         let Some(base) = find(&item.class_name, item.type_id, "i", &mut report) else { continue };
+        if !keep(('i', item.id), None, base, &mut report) {
+            continue;
+        }
         if item.location.chars().count() > wall_max {
             report.notes.push(format!("{}: its wall position {} does not fit the hotel's column, left out.", base.item_name, item.location));
             continue;
@@ -614,7 +713,7 @@ mod tests {
     }
 
     fn base(id: u32, name: &str, kind: &str, interaction: &str) -> BaseItem {
-        BaseItem { id, sprite_id: id as i32, item_name: name.into(), item_type: kind.into(), interaction_type: interaction.into() }
+        BaseItem { id, sprite_id: id as i32, item_name: name.into(), item_type: kind.into(), interaction_type: interaction.into(), tradeable: true }
     }
 
     fn capture() -> RoomCapture {
@@ -649,7 +748,14 @@ mod tests {
     }
 
     fn choice() -> ImportChoice {
-        ImportChoice { owner_id: 1, owner_name: "admin".into(), room_name: "Copy".into(), door: Door { x: 0, y: 1, dir: 2 }, now: 1_700_000_000 }
+        ImportChoice {
+            owner_id: 1,
+            owner_name: "admin".into(),
+            room_name: "Copy".into(),
+            door: Door { x: 0, y: 1, dir: 2 },
+            now: 1_700_000_000,
+            include: BTreeSet::from([('s', 2)]),
+        }
     }
 
     #[test]
@@ -827,5 +933,116 @@ mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("Picked up") && problems[0].ends_with(": 2"), "{problems:?}");
         assert_eq!(undo_already_gone(&record, &mixed), vec![6, 7]);
+    }
+
+    #[test]
+    fn an_ltd_is_left_out_unless_it_is_included() {
+        let default = ImportChoice { include: BTreeSet::new(), ..choice() };
+        let plan_out = plan(&capture(), &target(), &default).unwrap();
+        let r = &plan_out.report;
+        assert_eq!(r.valuables, vec![ValuableItem { key: ('s', 2), name: "rare_dragon".into(), why: Valuable::Limited { serial: 3, size: 50 }, included: false }]);
+        assert_eq!(r.floor_items, 3);
+        assert!(!plan_out.statements.iter().any(|(_, v)| v.contains(&PlanValue::Int(12))), "no rare_dragon row");
+        assert!(!r.cleaned.iter().any(|c| c.contains("LTD")));
+        // Chosen: it comes as the maintainer's normal item, limited_data 0:0, and the report says so.
+        let plan_in = plan(&capture(), &target(), &choice()).unwrap();
+        assert_eq!(plan_in.report.valuables.len(), 1);
+        assert!(plan_in.report.valuables[0].included);
+        assert_eq!(plan_in.report.floor_items, 4);
+        let row = plan_in.statements.iter().find(|(_, v)| v.contains(&PlanValue::Int(12))).unwrap();
+        assert!(row.1.contains(&PlanValue::Text("0:0".into())));
+        assert!(plan_in.report.cleaned.iter().any(|c| c.contains("LTD 3 of 50")));
+    }
+
+    fn rares() -> (RoomCapture, Target) {
+        let mut c = RoomCapture { room_id: 9, model_name: "model_x".into(), heightmap: "xxx
+000
+x00".into(), door_from_hotel: true, ..RoomCapture::default() };
+        for (id, class) in [(1, "chair"), (2, "ltd_only"), (3, "event_prize"), (4, "untradeable_prize"), (5, "furnidata_rare")] {
+            c.floor_items.insert(id, floor(id, class, 1, StuffData::Empty));
+        }
+        c.wall_items.insert(7, WallItem { id: 7, type_id: 4000, class_name: Some("poster".into()), location: ":w=1,2 l=3,4 r".into(), data: String::new(), owner_id: 5 });
+        c.wall_items.insert(8, WallItem { id: 8, type_id: 4001, class_name: Some("wall_prize".into()), location: ":w=1,2 l=3,4 r".into(), data: String::new(), owner_id: 5 });
+        c.rare_classes.insert("furnidata_rare".into());
+        let mut untradeable = base(14, "untradeable_prize", "s", "default");
+        untradeable.tradeable = false;
+        let target = Target {
+            database: "habbo".into(),
+            items_base: vec![
+                base(11, "chair", "s", "default"),
+                base(12, "ltd_only", "s", "default"),
+                base(13, "event_prize", "s", "default"),
+                untradeable,
+                base(15, "furnidata_rare", "s", "default"),
+                base(16, "poster", "i", "default"),
+                base(17, "wall_prize", "i", "default"),
+            ],
+            catalogue: Some(Catalogue { sold: BTreeSet::from([11, 15, 16]), sold_limited: BTreeSet::from([12]) }),
+            ..Target::default()
+        };
+        (c, target)
+    }
+
+    #[test]
+    fn rares_are_told_by_the_catalogue_the_furnidata_and_items_base() {
+        let (c, target) = rares();
+        let none = ImportChoice { include: BTreeSet::new(), ..choice() };
+        let plan = plan(&c, &target, &none).unwrap();
+        let found: Vec<((char, i32), &str, Valuable)> = plan.report.valuables.iter().map(|v| (v.key, v.name.as_str(), v.why)).collect();
+        assert_eq!(
+            found,
+            vec![
+                (('s', 2), "ltd_only", Valuable::SoldAsLimited),
+                (('s', 3), "event_prize", Valuable::NotSold),
+                (('s', 5), "furnidata_rare", Valuable::Rare),
+                (('i', 8), "wall_prize", Valuable::NotSold),
+            ]
+        );
+        assert!(plan.report.valuables.iter().all(|v| !v.included));
+        // The chair and the poster the hotel sells, and the prize nobody can trade or sell, come.
+        assert_eq!((plan.report.floor_items, plan.report.wall_items), (2, 1));
+        for id in [11, 14, 16] {
+            assert!(plan.statements.iter().any(|(_, v)| v.contains(&PlanValue::Int(id))), "{id} comes");
+        }
+        // Included one by one.
+        let some = ImportChoice { include: BTreeSet::from([('s', 3), ('i', 8)]), ..choice() };
+        let plan = plan_of(&c, &target, &some);
+        assert_eq!((plan.report.floor_items, plan.report.wall_items), (3, 2));
+        assert_eq!(plan.report.valuables.iter().filter(|v| v.included).map(|v| v.key).collect::<Vec<_>>(), [('s', 3), ('i', 8)]);
+    }
+
+    fn plan_of(c: &RoomCapture, target: &Target, choice: &ImportChoice) -> ImportPlan {
+        plan(c, target, choice).unwrap()
+    }
+
+    #[test]
+    fn without_the_catalogue_only_ltd_and_the_furnidata_rares_are_told_and_a_note_says_so() {
+        let (c, mut target) = rares();
+        target.catalogue = None;
+        let plan = plan_of(&c, &target, &ImportChoice { include: BTreeSet::new(), ..choice() });
+        assert_eq!(plan.report.valuables.iter().map(|v| v.key).collect::<Vec<_>>(), [('s', 5)]);
+        assert!(plan.report.notes.iter().any(|n| n.contains("catalogue")), "{:?}", plan.report.notes);
+    }
+
+    #[test]
+    fn a_wired_box_drops_the_valuables_left_out() {
+        let mut c = capture();
+        c.wired.get_mut(&3).unwrap().stuff_ids = vec![1, 2];
+        let plan = plan_of(&c, &target(), &ImportChoice { include: BTreeSet::new(), ..choice() });
+        let chair_statement = plan.statements.iter().position(|(_, v)| v.contains(&PlanValue::Int(11))).unwrap();
+        let (sql, values) = plan.statements.last().unwrap();
+        assert!(sql.starts_with("UPDATE `habbo`.`items` SET `wired_data`"));
+        assert_eq!(values[0], PlanValue::Template(format!("{{\"delay\":2,\"itemIds\":[{{#{chair_statement}}}],\"toggleType\":0,\"furniSource\":100}}")));
+        assert!(plan.report.notes.iter().any(|n| n.starts_with("wf_act_toggle_state: 1 of its furni")), "{:?}", plan.report.notes);
+        // Included, the box keeps it.
+        let plan = plan_of(&c, &target(), &choice());
+        assert!(!plan.report.notes.iter().any(|n| n.contains("of its furni")), "{:?}", plan.report.notes);
+    }
+
+    #[test]
+    fn the_catalogue_reads_offers_and_bundles() {
+        let c = Catalogue::from_offers([("11", 0), ("12;13:2", 0), ("14", 100), ("11", 50), ("@20", 0), (" 15 ; x", 0)]);
+        assert_eq!(c.sold, BTreeSet::from([11, 12, 13, 15]));
+        assert_eq!(c.sold_limited, BTreeSet::from([11, 14]));
     }
 }

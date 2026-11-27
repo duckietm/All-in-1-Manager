@@ -667,7 +667,7 @@ fn text(value: &SqlValue) -> String {
 /// The hotel's database through MariaDB, with the saved account (as the other database pages).
 async fn open_hotel(server: &dyn Server) -> anyhow::Result<(SqlSession, String)> {
     let host = server.login().host.clone();
-    let saved = aio_core::config_dir::load_database_credentials(&host)
+    let saved = aio_core::config_dir::load_sql_login(&host)
         .ok_or_else(|| anyhow::anyhow!("No saved MariaDB account for {host}: open the Catalogue manager once to log in to MariaDB."))?;
     let user = if saved.root_user.is_empty() { "root".to_string() } else { saved.root_user.clone() };
     let port = if saved.port > 0 { saved.port } else { 3306 };

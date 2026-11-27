@@ -45,12 +45,76 @@ pub struct BaseItem {
     /// `s` floor, `i` wall.
     pub item_type: String,
     pub interaction_type: String,
-    /// It can change hands: items_base `allow_trade` or `allow_marketplace_sell`.
+    /// It can change hands: see [`can_change_hands`].
     pub tradeable: bool,
 }
 
-/// What the hotel's catalogue sells, by items_base id, counting only offers on pages players can open (enabled,
-/// visible, rank 1).
+/// Whether a furni of items_base can leave its owner's hands: `allow_trade`, `allow_marketplace_sell` or
+/// `allow_recycle` (None: the column is missing or NULL, taken as yes).
+pub fn can_change_hands(allow_trade: Option<bool>, allow_marketplace_sell: Option<bool>, allow_recycle: Option<bool>) -> bool {
+    [allow_trade, allow_marketplace_sell, allow_recycle].iter().any(|v| v.unwrap_or(true))
+}
+
+/// Whether Polaris redeems a furni of this items_base name for currency (RedeemItemEvent: `CF_`, `CFC_` (where the
+/// hotel allows it; counted always), `CF_diamond_`, `DF_`, `PF_`; RedeemEmeraldFurniEvent: `nft_emerald...`).
+pub fn redeemable(item_name: &str) -> bool {
+    ["CF_", "CFC_", "DF_", "PF_"].iter().any(|p| item_name.starts_with(p)) || item_name.starts_with("nft_emerald")
+}
+
+/// A catalog_pages row, as far as who can open the page goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CatalogPage {
+    pub id: i64,
+    /// -1 under the root.
+    pub parent_id: i64,
+    pub enabled: bool,
+    pub visible: bool,
+    pub min_rank: i64,
+    /// `catalog_mode` = 'BUILDER': a Builders Club page, whose furni are lent, not sold.
+    pub builder: bool,
+}
+
+/// The pages a player (rank 1) reaches from the root: the page and every parent up to the root (-1) enabled, visible,
+/// rank 1 and no Builders Club page. A page whose parent is missing, or in a loop, is not reached (Polaris leaves it
+/// out too).
+pub fn reachable_pages(pages: &[CatalogPage]) -> BTreeSet<i64> {
+    let by_id: BTreeMap<i64, &CatalogPage> = pages.iter().map(|p| (p.id, p)).collect();
+    let open = |p: &CatalogPage| p.enabled && p.visible && p.min_rank <= 1 && !p.builder;
+    pages
+        .iter()
+        .filter(|page| {
+            let mut current = *page;
+            for _ in 0..=pages.len() {
+                if !open(current) {
+                    return false;
+                }
+                if current.parent_id == -1 {
+                    return true;
+                }
+                match by_id.get(&current.parent_id) {
+                    Some(parent) => current = parent,
+                    None => return false,
+                }
+            }
+            false
+        })
+        .map(|p| p.id)
+        .collect()
+}
+
+/// The query of the catalogue's pages for [`CatalogPage`] (`with_mode`: the table has `catalog_mode`).
+pub fn catalog_pages_query(database: &str, with_mode: bool) -> String {
+    let mode = if with_mode { "`catalog_mode`" } else { "'NORMAL'" };
+    format!("SELECT `id`, `parent_id`, `enabled`, `visible`, `min_rank`, {mode} FROM {}.`catalog_pages`", q(database))
+}
+
+/// The query of the catalogue's offers for [`Catalogue::new`]: page, item_ids and limited_stack.
+pub fn catalog_offers_query(database: &str) -> String {
+    format!("SELECT `page_id`, `item_ids`, `limited_stack` FROM {}.`catalog_items`", q(database))
+}
+
+/// What the hotel's catalogue sells, by items_base id, counting only offers on pages players reach
+/// ([`reachable_pages`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Catalogue {
     /// In an offer that is no LTD.
@@ -60,11 +124,16 @@ pub struct Catalogue {
 }
 
 impl Catalogue {
-    /// From the offers' `catalog_items.item_ids` (`id` or `id:amount`, separated by `;`) and `limited_stack`. A bundle
-    /// that names other offers (`@offer`) adds nothing: what it hands out is not counted as sold.
-    pub fn from_offers<'a>(offers: impl IntoIterator<Item = (&'a str, i64)>) -> Self {
+    /// From the pages and the offers (page id, `catalog_items.item_ids`: `id` or `id:amount` separated by `;`, and
+    /// `limited_stack`). An offer on a page players do not reach adds nothing, nor does a bundle that names other
+    /// offers (`@offer`): what it hands out is not counted as sold.
+    pub fn new<'a>(pages: &[CatalogPage], offers: impl IntoIterator<Item = (i64, &'a str, i64)>) -> Self {
+        let reachable = reachable_pages(pages);
         let mut catalogue = Self::default();
-        for (item_ids, limited_stack) in offers {
+        for (page, item_ids, limited_stack) in offers {
+            if !reachable.contains(&page) {
+                continue;
+            }
             let set = if limited_stack > 0 { &mut catalogue.sold_limited } else { &mut catalogue.sold };
             set.extend(item_ids.split(';').filter_map(|part| part.split(':').next()?.trim().parse::<u32>().ok()));
         }
@@ -73,13 +142,16 @@ impl Catalogue {
 }
 
 /// Why a furni counts as a valuable, which the import leaves out unless the user includes it. The rule, conservative
-/// (when unsure, a valuable): an LTD of the other hotel always; otherwise only a furni that can change hands here
-/// ([`BaseItem::tradeable`]) and that the other hotel's furnidata marks rare, or that the hotel's catalogue sells
-/// only as LTD, or does not sell at all.
+/// (when unsure, a valuable): an LTD of the other hotel, and a furni Polaris redeems for currency, always; otherwise
+/// only a furni that can change hands here ([`BaseItem::tradeable`]) and that the other hotel's furnidata marks rare,
+/// or that the hotel's catalogue sells only as LTD, or does not sell at all (a name counts as sold when any items_base
+/// row of that name and type is; a colour variant `name*n` is a name of its own).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Valuable {
     /// An LTD in the capture: its serial and series size.
     Limited { serial: i32, size: i32 },
+    /// Polaris redeems it for currency (credits, pixels, points, diamonds, emeralds).
+    Currency,
     /// The other hotel's furnidata marks it rare.
     Rare,
     /// The hotel's catalogue sells it only as LTD.
@@ -237,9 +309,13 @@ fn clean_extra(item: &FloorItem, base: &BaseItem) -> (String, Option<String>) {
 }
 
 /// Why `base` (the match of a furni of the capture) is a valuable, if it is: see [`Valuable`].
-fn valuable(limited: Option<super::packets::Limited>, base: &BaseItem, capture: &RoomCapture, catalogue: Option<&Catalogue>) -> Option<Valuable> {
+/// `sold`: whether the catalogue sells the name (as a normal offer, as an LTD), None when it was not read.
+fn valuable(limited: Option<super::packets::Limited>, base: &BaseItem, capture: &RoomCapture, sold: Option<(bool, bool)>) -> Option<Valuable> {
     if let Some(l) = limited {
         return Some(Valuable::Limited { serial: l.serial, size: l.size });
+    }
+    if redeemable(&base.item_name) {
+        return Some(Valuable::Currency);
     }
     if !base.tradeable {
         return None;
@@ -247,13 +323,10 @@ fn valuable(limited: Option<super::packets::Limited>, base: &BaseItem, capture: 
     if capture.rare_classes.contains(&base.item_name.to_ascii_lowercase()) {
         return Some(Valuable::Rare);
     }
-    let catalogue = catalogue?;
-    if catalogue.sold.contains(&base.id) {
-        None
-    } else if catalogue.sold_limited.contains(&base.id) {
-        Some(Valuable::SoldAsLimited)
-    } else {
-        Some(Valuable::NotSold)
+    match sold? {
+        (true, _) => None,
+        (false, true) => Some(Valuable::SoldAsLimited),
+        (false, false) => Some(Valuable::NotSold),
     }
 }
 
@@ -466,14 +539,32 @@ pub fn plan(capture: &RoomCapture, target: &Target, choice: &ImportChoice) -> Re
     };
 
     // A valuable is listed, and left out unless the user included it.
+    // Sold (normal, LTD) by items_base name and type: a name is sold when any row of it is.
+    let mut sold_names: BTreeMap<(String, String), (bool, bool)> = BTreeMap::new();
+    if let Some(catalogue) = &target.catalogue {
+        for base in &target.items_base {
+            let entry = sold_names.entry((base.item_name.to_ascii_lowercase(), base.item_type.to_ascii_lowercase())).or_default();
+            entry.0 |= catalogue.sold.contains(&base.id);
+            entry.1 |= catalogue.sold_limited.contains(&base.id);
+        }
+    }
     let keep = |key: (char, i32), limited, base: &BaseItem, report: &mut ImportReport| -> bool {
-        let Some(why) = valuable(limited, base, capture, target.catalogue.as_ref()) else { return true };
+        let sold = target
+            .catalogue
+            .as_ref()
+            .map(|_| sold_names.get(&(base.item_name.to_ascii_lowercase(), base.item_type.to_ascii_lowercase())).copied().unwrap_or_default());
+        let Some(why) = valuable(limited, base, capture, sold) else { return true };
         let included = choice.include.contains(&key);
         report.valuables.push(ValuableItem { key, name: base.item_name.clone(), why, included });
         included
     };
     if target.catalogue.is_none() {
-        report.notes.push("The hotel's catalogue was not read: only LTD and the furnidata's rares are told apart as valuables.".into());
+        report.notes.push("The hotel's catalogue was not read: only LTD, currency furni and the furnidata's rares are told apart as valuables.".into());
+    }
+    if !capture.rares_checked {
+        report.notes.push(
+            "The capture does not say which furni the other hotel calls rare (captured without its furnidata, or before this was recorded): those are told apart only by your catalogue.".into(),
+        );
     }
 
     for item in capture.floor_items.values() {
@@ -955,9 +1046,7 @@ mod tests {
     }
 
     fn rares() -> (RoomCapture, Target) {
-        let mut c = RoomCapture { room_id: 9, model_name: "model_x".into(), heightmap: "xxx
-000
-x00".into(), door_from_hotel: true, ..RoomCapture::default() };
+        let mut c = RoomCapture { room_id: 9, model_name: "model_x".into(), heightmap: "xxx\r000\rx00".into(), door_from_hotel: true, ..RoomCapture::default() };
         for (id, class) in [(1, "chair"), (2, "ltd_only"), (3, "event_prize"), (4, "untradeable_prize"), (5, "furnidata_rare")] {
             c.floor_items.insert(id, floor(id, class, 1, StuffData::Empty));
         }
@@ -1039,10 +1128,102 @@ x00".into(), door_from_hotel: true, ..RoomCapture::default() };
         assert!(!plan.report.notes.iter().any(|n| n.contains("of its furni")), "{:?}", plan.report.notes);
     }
 
+    fn page(id: i64, parent_id: i64) -> CatalogPage {
+        CatalogPage { id, parent_id, enabled: true, visible: true, min_rank: 1, builder: false }
+    }
+
     #[test]
-    fn the_catalogue_reads_offers_and_bundles() {
-        let c = Catalogue::from_offers([("11", 0), ("12;13:2", 0), ("14", 100), ("11", 50), ("@20", 0), (" 15 ; x", 0)]);
+    fn the_catalogue_counts_only_pages_a_player_reaches() {
+        let pages = [
+            page(1, -1),
+            page(2, 1),
+            CatalogPage { visible: false, ..page(3, -1) },
+            page(4, 3),
+            CatalogPage { min_rank: 5, ..page(5, -1) },
+            page(6, 5),
+            CatalogPage { builder: true, ..page(7, -1) },
+            page(8, 7),
+            page(9, 99),
+            CatalogPage { enabled: false, ..page(10, 1) },
+            page(11, 12),
+            page(12, 11),
+        ];
+        assert_eq!(reachable_pages(&pages), BTreeSet::from([1, 2]));
+        let c = Catalogue::new(
+            &pages,
+            [
+                (1, "11", 0),
+                (2, "12;13:2", 0),
+                (2, "14", 100),
+                (1, "11", 50),
+                (1, "@20", 0),
+                (2, " 15 ; x", 0),
+                (4, "30", 0),
+                (6, "31", 0),
+                (8, "32", 0),
+                (9, "33", 0),
+                (10, "34", 0),
+                (11, "35", 0),
+            ],
+        );
         assert_eq!(c.sold, BTreeSet::from([11, 12, 13, 15]));
         assert_eq!(c.sold_limited, BTreeSet::from([11, 14]));
+        assert_eq!(catalog_pages_query("habbo", true), "SELECT `id`, `parent_id`, `enabled`, `visible`, `min_rank`, `catalog_mode` FROM `habbo`.`catalog_pages`");
+        assert!(catalog_pages_query("habbo", false).contains(", 'NORMAL' FROM"));
+        assert_eq!(catalog_offers_query("habbo"), "SELECT `page_id`, `item_ids`, `limited_stack` FROM `habbo`.`catalog_items`");
+    }
+
+    #[test]
+    fn trade_marketplace_or_recycle_lets_a_furni_change_hands() {
+        assert!(!can_change_hands(Some(false), Some(false), Some(false)));
+        assert!(can_change_hands(Some(false), Some(false), Some(true)));
+        assert!(can_change_hands(Some(false), Some(true), Some(false)));
+        assert!(can_change_hands(Some(true), Some(false), Some(false)));
+        assert!(can_change_hands(Some(false), None, Some(false)), "a missing column counts as yes");
+    }
+
+    #[test]
+    fn currency_furni_are_valuables_even_when_sold_and_not_tradeable() {
+        for name in ["CF_50_goldbar", "CFC_200_moneybag", "CF_diamond_10", "DF_5_100", "PF_100", "nft_emerald_emerhand", "nft_emerald_5"] {
+            assert!(redeemable(name), "{name}");
+        }
+        for name in ["chair", "rare_CF_x", "nft_ruby_5"] {
+            assert!(!redeemable(name), "{name}");
+        }
+        let (mut c, mut target) = rares();
+        c.floor_items.insert(6, floor(6, "CF_50_goldbar", 1, StuffData::Empty));
+        let mut gold = base(18, "CF_50_goldbar", "s", "default");
+        gold.tradeable = false;
+        target.items_base.push(gold);
+        target.catalogue.as_mut().unwrap().sold.insert(18);
+        let plan = plan_of(&c, &target, &ImportChoice { include: BTreeSet::new(), ..choice() });
+        assert!(plan.report.valuables.iter().any(|v| v.key == ('s', 6) && v.why == Valuable::Currency), "{:?}", plan.report.valuables);
+        assert!(!plan.statements.iter().any(|(_, v)| v.contains(&PlanValue::Int(18))));
+    }
+
+    #[test]
+    fn a_name_is_sold_when_any_row_of_it_is_and_a_colour_variant_is_its_own_name() {
+        let mut c = RoomCapture { room_id: 9, model_name: "model_x".into(), heightmap: "xxx\r000\rx00".into(), door_from_hotel: true, ..RoomCapture::default() };
+        c.floor_items.insert(1, floor(1, "chair", 1, StuffData::Empty));
+        c.floor_items.insert(2, floor(2, "chair*2", 1, StuffData::Empty));
+        let target = Target {
+            database: "habbo".into(),
+            // The class name matches the first row (21), which no offer sells; row 11 of the same name is sold.
+            items_base: vec![base(21, "chair", "s", "default"), base(11, "chair", "s", "default"), base(22, "chair*2", "s", "default")],
+            catalogue: Some(Catalogue { sold: BTreeSet::from([11]), sold_limited: BTreeSet::new() }),
+            ..Target::default()
+        };
+        let plan = plan_of(&c, &target, &ImportChoice { include: BTreeSet::new(), ..choice() });
+        assert_eq!(plan.report.valuables.iter().map(|v| (v.key, v.why)).collect::<Vec<_>>(), [(('s', 2), Valuable::NotSold)]);
+        assert!(plan.statements.iter().any(|(_, v)| v.contains(&PlanValue::Int(21))));
+    }
+
+    #[test]
+    fn a_note_says_when_the_furnidata_rares_could_not_be_checked() {
+        let (mut c, target) = rares();
+        let none = ImportChoice { include: BTreeSet::new(), ..choice() };
+        assert!(plan_of(&c, &target, &none).report.notes.iter().any(|n| n.contains("calls rare")));
+        c.rares_checked = true;
+        assert!(!plan_of(&c, &target, &none).report.notes.iter().any(|n| n.contains("calls rare")));
     }
 }

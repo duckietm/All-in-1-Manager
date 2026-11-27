@@ -4174,12 +4174,14 @@
   "Stop recording": "Arrêter l'enregistrement",
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "L'enregistrement contient tout ce que ton client et l'hôtel envoient dans ces apparts, le chat aussi : ne le partage qu'avec des personnes de confiance.",
   "Valuables (LTD and rares): {left} of {count} left out": "Objets de valeur (LTD et rares) : {left} sur {count} laissés de côté",
-  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris ne peut pas marquer un seul furni comme non échangeable : un objet de valeur que vous incluez devient une copie normale et échangeable dans votre hôtel (un LTD perd son numéro de série).",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris ne peut pas marquer un seul furni comme non échangeable : un objet de valeur que tu inclus devient une copie normale et échangeable dans ton hôtel (un LTD perd son numéro de série).",
   "Include all": "Tout inclure",
-  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Chaque LTD et rare de l'appart devient une copie échangeable dans votre hôtel.",
+  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Chaque LTD et rare de l'appart devient une copie échangeable dans ton hôtel.",
   "Leave all out": "Tout laisser de côté",
-  "LTD {serial} of {size}": "LTD {serial} sur {size}",
   "rare in the other hotel's furnidata": "rare dans le furnidata de l'autre hôtel",
-  "your catalogue sells it only as LTD": "votre catalogue ne le vend qu'en LTD",
-  "your catalogue does not sell it": "votre catalogue ne le vend pas"
+  "your catalogue sells it only as LTD": "ton catalogue ne le vend qu'en LTD",
+  "your catalogue does not sell it": "ton catalogue ne le vend pas",
+  "Include every one: {reason}": "Tout inclure : {reason}",
+  "LTD in the other hotel": "LTD dans l'autre hôtel",
+  "can be redeemed for currency": "peut être échangé contre de la monnaie"
 }

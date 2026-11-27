@@ -1882,12 +1882,16 @@ you read them. It shares the Catalogue ripper's G-Earth connection, hotel profil
      all listed;
    - **valuables are left out** unless you include them: Polaris has no per-furni "not tradeable" mark (trading checks
      only `items_base.allow_trade`), so a copied LTD or rare would be one more tradeable piece in your hotel. A valuable
-     is an **LTD** in the capture (it shows a serial), or a furni that can change hands here (`allow_trade` or
-     `allow_marketplace_sell` in your `items_base`) which the other hotel's furnidata marks `rare`, or which your
-     catalogue sells **only as LTD** or **does not sell** at all (only offers on pages that are enabled, visible and
-     open to rank 1 count as sold). The preview lists them with the reason; tick them one by one, or **Include all**:
-     an included one becomes a normal, tradeable copy (an LTD keeps no serial). A wired box that selected a furni left
-     out points at the others only, and the preview says so;
+     is an **LTD** in the capture (it shows a serial); a furni Polaris **redeems for currency** (`CF_`, `CFC_`,
+     `CF_diamond_`, `DF_`, `PF_`, `nft_emerald...`); or a furni that can change hands here (`allow_trade`,
+     `allow_marketplace_sell` or `allow_recycle` in your `items_base`) which the other hotel's furnidata marks `rare`,
+     or which your catalogue sells **only as LTD** or **does not sell** at all. Only offers on pages a player reaches
+     count as sold: the page and every parent up to the root enabled, visible and open to rank 1, and no Builders Club
+     page (`catalog_mode` BUILDER). A name is sold when any `items_base` row of that name is; a colour variant
+     (`name*2`) is a name of its own. The furnidata's rares are known only for rooms captured with the furnidata (the
+     preview says when they could not be checked). The preview lists them by class name and reason; tick a group,
+     every one of a reason, or **Include all**: an included one becomes a normal, tradeable copy (an LTD keeps no
+     serial). A wired box that selected a furni left out points at the others only, and the preview says so;
    - the wired settings that were read, as Polaris' `wired_data`, their furni pointing at the new items. Converted now:
      walks on/off furni, enters room, says something, periodically, at a set time, toggle state, move/rotate, show
      message, teleport, match snapshot (action and condition), furni have users, trigger on furni, reset timers, give

@@ -4178,8 +4178,10 @@
   "Include all": "Alle einschließen",
   "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Jedes LTD und jede Rarität des Raums wird in deinem Hotel zu einer handelbaren Kopie.",
   "Leave all out": "Alle auslassen",
-  "LTD {serial} of {size}": "LTD {serial} von {size}",
   "rare in the other hotel's furnidata": "selten in den Furnidata des anderen Hotels",
   "your catalogue sells it only as LTD": "dein Katalog verkauft es nur als LTD",
-  "your catalogue does not sell it": "dein Katalog verkauft es nicht"
+  "your catalogue does not sell it": "dein Katalog verkauft es nicht",
+  "Include every one: {reason}": "Alle einschließen: {reason}",
+  "LTD in the other hotel": "LTD im anderen Hotel",
+  "can be redeemed for currency": "kann in Währung eingelöst werden"
 }

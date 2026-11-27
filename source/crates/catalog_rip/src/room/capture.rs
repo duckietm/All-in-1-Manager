@@ -69,6 +69,9 @@ pub struct RoomCapture {
     /// The class names (lower case) of the room's furni that the other hotel's furnidata marks `rare`.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub rare_classes: BTreeSet<String>,
+    /// The furnidata was there to fill `rare_classes` (false for a capture without it, or made before).
+    #[serde(default)]
+    pub rares_checked: bool,
 }
 
 /// The class names (lower case) of the room's furni that the furnidata marks `rare` (true, 1 or "1").
@@ -382,6 +385,7 @@ impl Capturer<'_> {
         let Some(room) = &mut self.room else { return };
         if let Some(furnidata) = &self.furnidata {
             room.rare_classes = furnidata_rares(room, furnidata);
+            room.rares_checked = true;
         }
         match room.save(&self.options.folder) {
             Ok(path) => (self.sink)(CaptureEvent::Room { path, summary: room.summary() }),

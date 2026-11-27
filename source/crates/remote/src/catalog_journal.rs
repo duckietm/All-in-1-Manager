@@ -538,6 +538,14 @@ pub fn write_statement(database: &str, entity: Entity, state: Option<&Value>) ->
     }
 }
 
+/// The statement that creates an entity as `state`: a plain INSERT (not [`write_statement`]'s upsert), so a row made at
+/// the same id in the meantime fails the whole transaction instead of being overwritten.
+pub fn insert_statement(database: &str, entity: Entity, state: &Value) -> (String, Vec<SqlValue>) {
+    let (sql, params) = write_statement(database, entity, Some(state));
+    let plain = sql.split(" ON DUPLICATE KEY UPDATE ").next().unwrap_or(&sql).to_string();
+    (plain, params)
+}
+
 /// Why the operation cannot be undone, or None: a page or offer it changed was changed again since (by anyone, in
 /// the history or not).
 pub async fn undo_problem(session: &SqlSession, database: &str, operation: &Operation) -> Result<Option<String>> {

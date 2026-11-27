@@ -182,6 +182,14 @@ pub const TABLES_SQL: &str = "SELECT TABLE_NAME, TABLE_TYPE, TABLE_ROWS, DATA_LE
 pub const PRIMARY_KEY_SQL: &str = "SELECT COLUMN_NAME FROM information_schema.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = @db AND TABLE_NAME = @table AND CONSTRAINT_NAME = 'PRIMARY' ORDER BY ORDINAL_POSITION";
 pub const CURRENT_DATABASE_SQL: &str = "SELECT DATABASE()";
 
+/// The MariaDB error number of a failed statement (1146: no such table), when the error came from the server.
+pub fn server_error_code(error: &anyhow::Error) -> Option<u16> {
+    error.chain().find_map(|e| match e.downcast_ref::<mysql_async::Error>() {
+        Some(mysql_async::Error::Server(server)) => Some(server.code),
+        _ => None,
+    })
+}
+
 pub fn quote(identifier: &str) -> String {
     format!("`{}`", identifier.replace('`', "``"))
 }

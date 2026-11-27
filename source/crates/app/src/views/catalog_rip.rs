@@ -485,6 +485,8 @@ impl rip::ItemsSource for HotelItems {
             Box::pin(async move { reader.select(&sql, Vec::new()).await })
         };
         let existing = load_existing(&select, &database).await;
+        // The closure holds a reference to the session: let it go so the session can close.
+        drop(select);
         if let Ok(session) = Arc::try_unwrap(session) {
             session.close().await;
         }
@@ -498,8 +500,11 @@ type Select = dyn Fn(String) -> futures::future::BoxFuture<'static, anyhow::Resu
 /// Rows per read: the Manager's reads stop at 10,000 rows.
 const WINDOW: usize = aio_remote::sql_session::MAX_QUERY_ROWS;
 
-/// MariaDB's ER_NO_SUCH_TABLE.
+/// MariaDB's ER_NO_SUCH_TABLE (1146): by the server's error number, else by its text.
 fn missing_table(error: &anyhow::Error) -> bool {
+    if let Some(code) = aio_remote::sql_session::server_error_code(error) {
+        return code == 1146;
+    }
     let text = format!("{error:#}");
     text.contains("1146") || text.contains("doesn't exist")
 }
@@ -533,7 +538,7 @@ async fn load_existing(select: &Select, database: &str) -> anyhow::Result<rip::E
     let (mut pages, mut offers) = (Vec::new(), Vec::new());
     for (kind, page_table, offer_table, optional) in [("NORMAL", "catalog_pages", "catalog_items", false), ("BUILDER", "catalog_pages_bc", "catalog_items_bc", true)] {
         let Some(page_rows) = read_windowed(select, &format!("{db}.`{page_table}`"), "id, parent_id, caption, order_num", optional).await? else { continue };
-        let offer_rows = read_windowed(select, &format!("{db}.`{offer_table}`"), "id, page_id, item_ids", optional).await?.unwrap_or_default();
+        let offer_rows = read_windowed(select, &format!("{db}.`{offer_table}`"), "id, page_id, item_ids, extradata, order_number", optional).await?.unwrap_or_default();
         for row in page_rows {
             let Some(id) = row.first().and_then(sql_int) else { continue };
             pages.push(rip::ExistingPage {
@@ -551,10 +556,21 @@ async fn load_existing(select: &Select, database: &str) -> anyhow::Result<rip::E
                 page_id: row.get(1).and_then(sql_int).unwrap_or(0),
                 catalog_type: kind.into(),
                 item_ids: row.get(2).map(sql_text).unwrap_or_default(),
+                extradata: row.get(3).map(sql_text).unwrap_or_default(),
+                order_number: row.get(4).and_then(sql_int).unwrap_or(0),
             });
         }
     }
-    Ok(rip::ExistingCatalogue::from_rows(pages, offers))
+    // Catalog Studio's id sequences (an emulator without them: none).
+    let sequences = match select(format!("SELECT entity_type, catalog_type, next_id FROM {db}.`catalog_id_sequences`")).await {
+        Ok(rows) => rows
+            .iter()
+            .filter_map(|r| Some((sql_text(r.first()?), sql_text(r.get(1)?), sql_int(r.get(2)?)?)))
+            .collect(),
+        Err(error) if missing_table(&error) => Vec::new(),
+        Err(error) => return Err(error.context("reading catalog_id_sequences")),
+    };
+    Ok(rip::ExistingCatalogue::from_rows(pages, offers).with_sequences(&sequences))
 }
 
 fn sql_int(v: &SqlValue) -> Option<i64> {
@@ -600,13 +616,16 @@ mod tests {
                 if sql.contains("_bc`") {
                     anyhow::bail!("{bc_error}");
                 }
+                if sql.contains("catalog_id_sequences") {
+                    return Ok(vec![vec![SqlValue::Text("PAGE".into()), SqlValue::Text("NORMAL".into()), SqlValue::Int(30_000)]]);
+                }
                 let after: i64 = sql.split("WHERE id > ").nth(1).and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok()).unwrap();
                 let limit: usize = sql.rsplit("LIMIT ").next().and_then(|s| s.trim().parse().ok()).unwrap();
                 let ids = (1..=pages).filter(|id| *id > after).take(limit);
                 Ok(if sql.contains("`catalog_pages`") {
                     ids.map(|id| vec![SqlValue::UInt(id as u64), SqlValue::Int(if id == 1 { -1 } else { 1 }), SqlValue::Bytes(format!("Page {id}").into_bytes()), SqlValue::Int(id)]).collect()
                 } else {
-                    ids.map(|id| vec![SqlValue::Int(id), SqlValue::Int(id), SqlValue::Text(format!("{}:2;7", id + 100))]).collect()
+                    ids.map(|id| vec![SqlValue::Int(id), SqlValue::Int(id), SqlValue::Text(format!("{}:2;7", id + 100)), SqlValue::Null, SqlValue::Int(4)]).collect()
                 })
             })();
             Box::pin(async move { result })
@@ -622,21 +641,25 @@ mod tests {
         assert_eq!(existing.max_page("NORMAL"), 25_000);
         assert_eq!(existing.max_offer("NORMAL"), 25_000);
         assert_eq!(existing.page_path("NORMAL", 3).unwrap(), vec!["page 1", "page 3"]);
-        assert_eq!(existing.offers_by_page["NORMAL"][&3], vec![vec![7, 103]]);
+        assert_eq!(existing.offers_by_page["NORMAL"][&3], vec![(vec![7, 103], String::new())]);
+        assert_eq!(existing.max_order["NORMAL"][&3], 4);
+        assert_eq!(existing.first_free_page("NORMAL"), 30_000, "the emulator's sequence is ahead");
         assert!(!existing.pages.contains_key("BUILDER"), "no warehouse");
         let seen = seen.lock().clone();
-        // 3 windows per table (10,000 + 10,000 + 5,000), then the one missing BC table (its offers are not read).
-        assert_eq!(seen.len(), 7, "{seen:#?}");
+        // 3 windows per table (10,000 + 10,000 + 5,000), then the one missing BC table (its offers are not read),
+        // then the id sequences.
+        assert_eq!(seen.len(), 8, "{seen:#?}");
         assert_eq!(seen[0], format!("SELECT id, parent_id, caption, order_num FROM `habbo`.`catalog_pages` WHERE id > {} ORDER BY id LIMIT 10000", i64::MIN));
         assert!(seen[1].contains("WHERE id > 10000 ORDER BY id LIMIT 10000"), "{}", seen[1]);
-        assert!(seen[3].starts_with("SELECT id, page_id, item_ids FROM `habbo`.`catalog_items` WHERE"), "{}", seen[3]);
+        assert!(seen[3].starts_with("SELECT id, page_id, item_ids, extradata, order_number FROM `habbo`.`catalog_items` WHERE"), "{}", seen[3]);
+        assert!(seen[7].contains("catalog_id_sequences"));
         assert!(seen[6].contains("`catalog_pages_bc`"));
         assert!(seen.iter().all(|s| s.starts_with("SELECT ")), "read-only");
 
         // An exact multiple of the window needs one more (empty) read.
         let (seen, select) = fake_database(10_000, "ERROR 42S02 (1146): no such table");
         load_existing(&*select, "habbo").await.unwrap();
-        assert_eq!(seen.lock().len(), 5);
+        assert_eq!(seen.lock().len(), 6);
 
         // Any other error fails the load.
         let (_, select) = fake_database(5, "ERROR 1142 (42000): SELECT command denied");

@@ -20,7 +20,9 @@
 //!   page tree and the furni each page sells: [`ExistingCatalogue`]). A ripped page whose path
 //!   (captions from the root, trimmed, case-insensitive, per catalog_type) the hotel has is
 //!   joined: only its offers are added there, and an offer whose items_base ids (bundles: the
-//!   same set) that page already sells is skipped. The other pages go under one page "Imported
+//!   same set) that page already sells is skipped. Amounts are not compared (a ripped 5-pack of a
+//!   furni the page sells singly is skipped); a single furni is compared with its extradata too
+//!   (posters, wallpapers, floors and landscapes share one items_base id). The other pages go under one page "Imported
 //!   from <hotel>" per catalogue, keeping the rip's shape; merging the same rip again adds
 //!   nothing.
 //!
@@ -87,6 +89,23 @@ pub struct ExistingOffer {
     pub catalog_type: String,
     /// As in catalog_items: `12`, `12;13`, `12:2;13:1`, ...
     pub item_ids: String,
+    /// catalog_items.extradata: what tells posters, wallpapers, floors and landscapes of one
+    /// items_base id apart.
+    pub extradata: String,
+    pub order_number: i64,
+}
+
+/// What an offer sells, for the merge's "already sold" check: its items_base ids (sorted, no
+/// repeats, amounts ignored) and, for a single furni, its extradata (a poster's number, a
+/// wallpaper's pattern; "0" counts as empty); a bundle's extradata is not compared.
+pub type SoldKey = (Vec<i64>, String);
+
+/// The [`SoldKey`] of an offer.
+pub fn sold_key(item_ids: &str, extradata: &str) -> SoldKey {
+    let ids = offer_item_ids(item_ids);
+    let extra = extradata.trim();
+    let extra = if ids.len() == 1 && extra != "0" { extra.to_string() } else { String::new() };
+    (ids, extra)
 }
 
 /// The hotel's catalogue, per `catalog_type` ("NORMAL" / "BUILDER"): the ids (for
@@ -98,8 +117,13 @@ pub struct ExistingCatalogue {
     pub offers: BTreeMap<String, BTreeSet<i64>>,
     /// Every page with its parent and caption; empty when only the ids are known.
     pub page_tree: Vec<ExistingPage>,
-    /// Per catalog_type, page id → the items_base ids of each offer on it (sorted, no repeats).
-    pub offers_by_page: BTreeMap<String, BTreeMap<i64, Vec<Vec<i64>>>>,
+    /// Per catalog_type, page id → what each offer on it sells.
+    pub offers_by_page: BTreeMap<String, BTreeMap<i64, Vec<SoldKey>>>,
+    /// Per catalog_type, page id → the highest order_number of its offers.
+    pub max_order: BTreeMap<String, BTreeMap<i64, i64>>,
+    /// Per catalog_type, the emulator's next ids (`catalog_id_sequences`, Catalog Studio):
+    /// (next page id, next offer id); 0 when unknown.
+    pub sequences: BTreeMap<String, (i64, i64)>,
 }
 
 /// The items_base ids an offer sells, sorted, without repeats or counts (`12:2;13` → 12, 13).
@@ -138,9 +162,40 @@ impl ExistingCatalogue {
                 .or_default()
                 .entry(offer.page_id)
                 .or_default()
-                .push(offer_item_ids(&offer.item_ids));
+                .push(sold_key(&offer.item_ids, &offer.extradata));
+            let max = existing
+                .max_order
+                .entry(kind.to_string())
+                .or_default()
+                .entry(offer.page_id)
+                .or_insert(0);
+            *max = (*max).max(offer.order_number);
         }
         existing
+    }
+
+    /// With the rows of `catalog_id_sequences`: (entity_type PAGE / OFFER, catalog_type, next_id).
+    pub fn with_sequences(mut self, rows: &[(String, String, i64)]) -> Self {
+        for (entity, kind, next) in rows {
+            let ids = self.sequences.entry(catalog_type(kind.trim()).to_string()).or_default();
+            if entity.trim().eq_ignore_ascii_case("PAGE") {
+                ids.0 = ids.0.max(*next);
+            } else if entity.trim().eq_ignore_ascii_case("OFFER") {
+                ids.1 = ids.1.max(*next);
+            }
+        }
+        self
+    }
+
+    /// The first id a new page of `kind` may take: above the highest, and not below the
+    /// emulator's sequence (as `catalog_journal::reserve_ids` does).
+    pub fn first_free_page(&self, kind: &str) -> i64 {
+        (self.max_page(kind) + 1).max(self.sequences.get(kind).map(|s| s.0).unwrap_or(0))
+    }
+
+    /// The first id a new offer of `kind` may take (see [`Self::first_free_page`]).
+    pub fn first_free_offer(&self, kind: &str) -> i64 {
+        (self.max_offer(kind) + 1).max(self.sequences.get(kind).map(|s| s.1).unwrap_or(0))
     }
 
     /// Whether the page tree was read (an empty catalogue counts as read).
@@ -508,6 +563,12 @@ fn page_label(node: &IndexNode) -> &str {
     }
 }
 
+/// The caption a merged page is matched by and written with: [`page_label`] as the import keeps it
+/// (128 characters).
+fn merge_caption(node: &IndexNode) -> String {
+    fit(page_label(node), 128, &mut 0)
+}
+
 /// A ripped page's columns (all but id and catalog_type).
 fn page_columns(
     row: &NumberedPage,
@@ -676,7 +737,7 @@ struct Merger<'a, 'e> {
     /// The hotel's pages: (parent, caption).
     owner_pages: HashMap<i64, (i64, String)>,
     /// The items_base sets each page sells (the hotel's and the ones this file adds), by page.
-    sold: HashMap<i64, HashSet<Vec<i64>>>,
+    sold: HashMap<i64, HashSet<SoldKey>>,
     /// The next order_number per page.
     next_order: HashMap<i64, usize>,
     next_page: i64,
@@ -704,6 +765,7 @@ impl<'a, 'e> Merger<'a, 'e> {
         hotel: &str,
         existing: &ExistingCatalogue,
         export: &'e ManagerExport<'e>,
+        (next_page, next_offer): (i64, i64),
     ) -> Self {
         let mut ordered: Vec<&ExistingPage> = existing
             .page_tree
@@ -725,11 +787,11 @@ impl<'a, 'e> Merger<'a, 'e> {
                 .push(page.id);
             owner_pages.insert(page.id, (parent, page.caption.clone()));
         }
-        let folder_caption = format!("Imported from {}", hotel.trim());
+        let folder_caption = fit(&format!("Imported from {}", hotel.trim()), 128, &mut 0);
         let old_folder = children
             .get(&(ROOT, caption_key(&folder_caption)))
             .and_then(|ids| ids.first().copied());
-        let by_page = existing.offers_by_page.get(kind);
+        let by_page = existing.max_order.get(kind);
         Merger {
             kind,
             export,
@@ -738,10 +800,10 @@ impl<'a, 'e> Merger<'a, 'e> {
             owner_pages,
             sold: HashMap::new(),
             next_order: by_page
-                .map(|m| m.iter().map(|(page, offers)| (*page, offers.len() + 1)).collect())
+                .map(|m| m.iter().map(|(page, max)| (*page, (*max).max(0) as usize + 1)).collect())
                 .unwrap_or_default(),
-            next_page: existing.max_page(kind) + 1,
-            next_offer: existing.max_offer(kind) + 1,
+            next_page,
+            next_offer,
             root_order,
             old_folder,
             new_folder: None,
@@ -877,7 +939,7 @@ impl<'a, 'e> Merger<'a, 'e> {
         }
         // A joined page with new sub-pages: a page of the same name under the folder keeps their path.
         let parent = self.location(placed.row.parent_id, stats);
-        let (id, created) = self.create(&placed.row, parent, stats);
+        let (id, created) = self.create(&placed.row, parent, true, stats);
         if created {
             self.notes.push(format!(
                 "merge: new {} page {id} '{}' (keeps the path of ripped page {}, whose offers went to page {})",
@@ -894,22 +956,38 @@ impl<'a, 'e> Merger<'a, 'e> {
     }
 
     /// A new page for ripped page `row` under `parent`, or the one this file already creates there
-    /// with the same caption (false).
-    fn create(&mut self, row: &NumberedPage, parent: i64, stats: &mut ManagerStats) -> (i64, bool) {
-        let label = page_label(row.node);
+    /// with the same caption (false). A `path_copy` (a page only there to keep the path of new
+    /// sub-pages; the ripped page's offers went to the hotel's page) gets a plain layout and no texts.
+    fn create(&mut self, row: &NumberedPage, parent: i64, path_copy: bool, stats: &mut ManagerStats) -> (i64, bool) {
+        let label = merge_caption(row.node);
+        let label = label.as_str();
         let key = (parent, caption_key(label));
         if let Some(id) = self.created.get(&key) {
             return (*id, false);
         }
         let id = self.page_id();
-        let columns = page_columns(row, self.kind, parent, row.order, stats);
+        let mut columns = page_columns(row, self.kind, parent, row.order, stats);
+        for (column, value) in columns.iter_mut() {
+            match *column {
+                // Matched by this caption, so written with it (the rip's caption may be empty).
+                "caption" => *value = manager_str(label, &mut stats.adjusted_values),
+                "page_layout" if path_copy => *value = "'default_3x3'".into(),
+                "page_headline" | "page_teaser" | "page_special" | "page_text1" | "page_text2" | "page_text_details"
+                | "page_text_teaser"
+                    if path_copy =>
+                {
+                    *value = "''".into()
+                }
+                _ => {}
+            }
+        }
         self.pages.push(ManagerRow {
             page: true,
             kind: self.kind,
             id,
             columns,
             label: label.to_string(),
-            has_content: row.page.is_some(),
+            has_content: row.page.is_some() && !path_copy,
         });
         let path = format!("{} › {}", self.path(parent), label.trim());
         self.created_paths.insert(id, path);
@@ -920,7 +998,7 @@ impl<'a, 'e> Merger<'a, 'e> {
     }
 
     fn place(&mut self, row: NumberedPage<'a>, stats: &mut ManagerStats) {
-        let key = caption_key(page_label(row.node));
+        let key = caption_key(&merge_caption(row.node));
         let (parent_owner, parent_mirror) = match self.placed.get(&row.parent_id) {
             Some(parent) => (parent.owner, parent.mirror),
             None => (Some(ROOT), self.old_folder),
@@ -940,7 +1018,7 @@ impl<'a, 'e> Merger<'a, 'e> {
             }
             None => {
                 let parent = self.location(row.parent_id, stats);
-                let (id, created) = self.create(&row, parent, stats);
+                let (id, created) = self.create(&row, parent, false, stats);
                 let what = if created { "new" } else { "same caption, joined new" };
                 (id, true, format!("merge: {what} {} page {id} '{}' ← ripped page {}", self.kind, self.path(id), row.id))
             }
@@ -970,7 +1048,8 @@ impl<'a, 'e> Merger<'a, 'e> {
                     continue;
                 }
             };
-            let set = offer_item_ids(&literal);
+            // The extradata as the file writes it (a poster's number, a wallpaper's pattern).
+            let set = sold_key(&literal, &fit(&offer.products[0].extra_param, 500, &mut 0));
             if !new {
                 let sold = self.sold.entry(dest).or_insert_with(|| {
                     self.export
@@ -983,9 +1062,10 @@ impl<'a, 'e> Merger<'a, 'e> {
                 if !sold.insert(set.clone()) {
                     skipped += 1;
                     self.summary.offers_skipped += 1;
-                    let ids: Vec<String> = set.iter().map(i64::to_string).collect();
+                    let ids: Vec<String> = set.0.iter().map(i64::to_string).collect();
+                    let extra = if set.1.is_empty() { String::new() } else { format!(" ({})", comment(&set.1)) };
                     self.skipped.push(format!(
-                        "skipped: {} offer {} '{}' on page {}: page {dest} already sells items_base {}",
+                        "skipped: {} offer {} '{}' on page {}: page {dest} already sells items_base {}{extra}",
                         self.kind,
                         offer.offer_id,
                         offer.localization_id,
@@ -1028,16 +1108,20 @@ fn merge_rows(
     let hotel = if catalog.hotel.trim().is_empty() { &catalog.host } else { &catalog.hotel };
     let mut summary = MergeSummary::default();
     let (mut pages, mut offers, mut notes) = (Vec::new(), Vec::new(), Vec::new());
-    // Both catalogues in one rip share nothing: each is merged into the hotel's of its type.
+    // Both catalogues in one rip share nothing: each is merged into the hotel's of its type. The id
+    // counters are per catalog_type, shared by every ripped mode of that type.
+    let mut counters: HashMap<&'static str, (i64, i64)> = HashMap::new();
     for ripped in &catalog.modes {
         let kind = catalog_type(&ripped.mode);
-        let mut merger = Merger::new(kind, hotel, existing, export);
+        let start = *counters.entry(kind).or_insert_with(|| (existing.first_free_page(kind), existing.first_free_offer(kind)));
+        let mut merger = Merger::new(kind, hotel, existing, export, start);
         let mut next = first_free_page_id([ripped]);
         let numbered = numbered_pages(ripped, &mut next, &mut stats.synthetic_page_ids);
         let mut seen = HashSet::new();
         for row in numbered.into_iter().filter(|r| seen.insert(r.id)) {
             merger.place(row, &mut stats);
         }
+        counters.insert(kind, (merger.next_page, merger.next_offer));
         pages.append(&mut merger.pages);
         offers.append(&mut merger.offers);
         notes.extend(merger.summary.ambiguous.iter().map(|a| format!("merge: ambiguous: {a}")));
@@ -1143,7 +1227,7 @@ pub fn readme_section(stats: &ManagerStats, with_items_base: bool) -> String {
         ManagerMode::Replace => "It starts with DELETE FROM catalog_items / catalog_pages, so it REPLACES the whole\n  catalogue (normal and Builders Club).",
         ManagerMode::ReplaceRipped => "It deletes the hotel's pages and offers of the ripped catalogues first, so those are\n  REPLACED; the other catalogue stays as it is.",
         ManagerMode::Add => "It deletes nothing: the ripped pages and offers are ADDED next to the existing\n  catalogue, with ids above the hotel's highest.",
-        ManagerMode::Merge => "It deletes and changes nothing: the rip is MERGED into the existing catalogue. A ripped\n  page with the same path (captions from the root) as one of the hotel's is joined to it: only\n  offers are added there, and an offer whose furni that page already sells is skipped. The other\n  pages go under a page \"Imported from <hotel>\". New ids are above the hotel's highest.",
+        ManagerMode::Merge => "It deletes and changes nothing: the rip is MERGED into the existing catalogue. A ripped\n  page with the same path (captions from the root) as one of the hotel's is joined to it: only\n  offers are added there, and an offer whose furni that page already sells is skipped (amounts are\n  not compared: a 5-pack of a furni sold there singly is skipped; posters, wallpapers, floors and\n  landscapes are compared with their number too). The other pages go under a page \"Imported from\n  <hotel>\". New ids are above the hotel's highest.",
     };
     let mut text = format!(
         "\nALL-IN-1 MANAGER IMPORT (catalog_manager.sql)\n\
@@ -1237,7 +1321,7 @@ mod tests {
     }
 
     fn offer(id: i64, page_id: i64, kind: &str, item_ids: &str) -> ExistingOffer {
-        ExistingOffer { id, page_id, catalog_type: kind.into(), item_ids: item_ids.into() }
+        ExistingOffer { id, page_id, catalog_type: kind.into(), item_ids: item_ids.into(), extradata: String::new(), order_number: 1 }
     }
 
     #[test]
@@ -1270,8 +1354,11 @@ mod tests {
         assert_eq!(existing.max_page("NORMAL"), 9);
         assert_eq!(existing.max_page("BUILDER"), 6);
         assert_eq!(existing.max_offer("NORMAL"), 11);
-        assert_eq!(existing.offers_by_page["NORMAL"][&2], vec![vec![300, 301], vec![302]]);
-        assert_eq!(existing.offers_by_page["BUILDER"][&2], vec![vec![400]]);
+        assert_eq!(existing.offers_by_page["NORMAL"][&2], vec![(vec![300, 301], String::new()), (vec![302], String::new())]);
+        assert_eq!(existing.offers_by_page["BUILDER"][&2], vec![(vec![400], String::new())]);
+        assert_eq!(sold_key("12", " 7 "), (vec![12], "7".to_string()), "a poster's number");
+        assert_eq!(sold_key("12", "0"), (vec![12], String::new()));
+        assert_eq!(sold_key("12;13", "7"), (vec![12, 13], String::new()), "a bundle's extradata is not compared");
         assert_eq!(offer_item_ids(" 12 : 1 ; x;0;12,7"), vec![7, 12]);
 
         // Only ids (an older source): no tree.
@@ -1434,6 +1521,8 @@ mod merge_tests {
                 page_id: *page,
                 catalog_type: kind.to_string(),
                 item_ids: item_ids.to_string(),
+                extradata: String::new(),
+                order_number: 1,
             });
         }
         Hotel { existing: ExistingCatalogue::from_rows(page_rows, offer_rows), current }
@@ -1441,7 +1530,11 @@ mod merge_tests {
 
     /// The hotel after importing `text`.
     fn imported(hotel: &Hotel, text: &str) -> Hotel {
-        let current = catalog_transfer::target(&hotel.current, text).unwrap_or_else(|e| panic!("{e}\n{text}"));
+        from_current(catalog_transfer::target(&hotel.current, text).unwrap_or_else(|e| panic!("{e}\n{text}")))
+    }
+
+    /// The hotel as its snapshots say.
+    fn from_current(current: BTreeMap<Entity, Value>) -> Hotel {
         let (mut pages, mut offers) = (Vec::new(), Vec::new());
         for (entity, value) in &current {
             let kind = if entity.builders { "BUILDER" } else { "NORMAL" };
@@ -1459,6 +1552,8 @@ mod merge_tests {
                     page_id: value["pageId"].as_i64().unwrap(),
                     catalog_type: kind.into(),
                     item_ids: value["itemIds"].as_str().unwrap().into(),
+                    extradata: value["extradata"].as_str().unwrap_or("").into(),
+                    order_number: value["orderNumber"].as_i64().unwrap_or(0),
                 });
             }
         }
@@ -1862,15 +1957,120 @@ mod merge_tests {
         assert_eq!(s.offers_skipped, 25 * 70 * 5);
         assert_eq!(s.offers_added, 50 * 70 * 9 - 25 * 70 * 5);
 
-        // The whole file through the import's tokenizer, every 97th statement through its parser (the
-        // whole import, catalog_transfer::target, takes about 30 s in a debug build: it compiles its
-        // regexes per statement).
+        // The whole file through the import (catalog_transfer::target) on the hotel's catalogue.
         let started = Instant::now();
-        let statements = catalog_transfer::statements(&file.text).unwrap();
-        assert_eq!(statements.len(), s.new_pages + s.offers_added);
-        for statement in statements.iter().step_by(97) {
-            catalog_transfer::parse_statement(statement).unwrap_or_else(|e| panic!("{e}: {statement}"));
+        let target = catalog_transfer::target(&hotel.current, &file.text).unwrap_or_else(|e| panic!("{e}"));
+        let took = started.elapsed();
+        println!("imported by catalog_transfer::target in {took:?}");
+        assert_eq!(target.len(), hotel.current.len() + s.new_pages + s.offers_added);
+        assert!(took.as_secs_f64() < 20.0, "{took:?}");
+    }
+
+    /// A wall furni (poster) with class id `class` and its number.
+    fn poster(id: i32, class: i32, number: &str) -> Offer {
+        let mut offer = rip_offer(id, &[class]);
+        offer.products[0].product_type = "i".into();
+        offer.products[0].extra_param = number.into();
+        offer
+    }
+
+    #[test]
+    fn posters_are_told_apart_by_their_number() {
+        let mut hotel = hotel(&[(1, -1, "Posters", "NORMAL")], &[(5, 1, "NORMAL", "1001")]);
+        // The hotel sells poster 7 (one items_base id for every poster, the number in extradata).
+        hotel.current.get_mut(&Entity { builders: false, page: false, id: 5 }).unwrap()["extradata"] = json!("7");
+        hotel = from_current(hotel.current);
+        let mut items = ItemsBase::default();
+        items.add(1001, 1, "i", "poster", 0);
+        let catalog = rip(vec![mode(
+            "NORMAL",
+            vec![node(10, "Posters", vec![])],
+            vec![(10, vec![poster(1, 1, "7"), poster(2, 1, "8"), poster(3, 1, "8")])],
+        )]);
+        let file = merge_with(&catalog, &hotel, &items);
+        let created = created(&hotel, &file.text);
+        let added: Vec<&Value> = created.iter().filter(|(e, _)| !e.page).map(|(_, v)| v).collect();
+        assert_eq!(added.len(), 1, "{}", file.text);
+        assert_eq!(added[0]["extradata"], "8");
+        assert_eq!(summary(&file).offers_skipped, 2);
+        assert!(file.text.contains("already sells items_base 1001 (7)"), "{}", file.text);
+        // Merged again: nothing.
+        let again = merge_with(&catalog, &imported(&hotel, &file.text), &items);
+        assert!(!again.text.contains("INSERT"), "{}", again.text);
+    }
+
+    #[test]
+    fn empty_and_long_captions_merge_twice_add_nothing() {
+        let hotel = hotel(&[(1, -1, "Shop", "NORMAL")], &[]);
+        let long = "L".repeat(130);
+        let mut unnamed = node(11, "", vec![]);
+        unnamed.name = "hidden_name".into();
+        let catalog = rip(vec![mode(
+            "NORMAL",
+            vec![node(10, &long, vec![]), unnamed],
+            vec![(10, vec![rip_offer(1, &[1])]), (11, vec![rip_offer(2, &[2])])],
+        )]);
+        let first = merge(&catalog, &hotel);
+        let created = created(&hotel, &first.text);
+        page_of(&created, &"L".repeat(128));
+        page_of(&created, "hidden_name");
+        let second = merge(&catalog, &imported(&hotel, &first.text));
+        assert!(!second.text.contains("INSERT"), "{}", second.text);
+        assert_eq!(summary(&second).joined_pages, 2);
+    }
+
+    #[test]
+    fn ids_and_order_follow_the_hotel() {
+        let mut hotel = hotel(&[(1, -1, "Shop", "NORMAL")], &[(5, 1, "NORMAL", "1001"), (6, 1, "NORMAL", "1002")]);
+        hotel.current.get_mut(&Entity { builders: false, page: false, id: 6 }).unwrap()["orderNumber"] = json!(9);
+        hotel = from_current(hotel.current);
+        // Catalog Studio's sequences are ahead of the tables (ids handed out, rows deleted since).
+        hotel.existing = hotel.existing.clone().with_sequences(&[
+            ("PAGE".into(), "NORMAL".into(), 50),
+            ("OFFER".into(), "NORMAL".into(), 900),
+            ("OFFER".into(), "BUILDER".into(), 3),
+        ]);
+        let catalog = rip(vec![mode("NORMAL", vec![node(10, "Shop", vec![]), node(20, "New", vec![])], vec![(10, vec![rip_offer(1, &[3])]), (20, vec![rip_offer(2, &[4])])])]);
+        let file = merge(&catalog, &hotel);
+        let created = created(&hotel, &file.text);
+        let on_shop = created.iter().find(|(e, v)| !e.page && v["pageId"] == 1).unwrap();
+        assert_eq!(on_shop.1["orderNumber"], 10, "after the highest order_number, not the count");
+        assert_eq!(created.keys().filter(|e| !e.page).map(|e| e.id).min(), Some(900));
+        assert_eq!(created.keys().filter(|e| e.page).map(|e| e.id).min(), Some(50));
+    }
+
+    #[test]
+    fn two_ripped_modes_of_one_type_share_the_ids() {
+        let hotel = hotel(&[(1, -1, "Blocks", "BUILDER")], &[]);
+        let catalog = rip(vec![
+            mode("BUILDERS_CLUB", vec![node(10, "Walls", vec![])], vec![(10, vec![rip_offer(1, &[1])])]),
+            mode("BUILDER", vec![node(10, "Floors", vec![])], vec![(10, vec![rip_offer(1, &[2])])]),
+        ]);
+        let file = merge(&catalog, &hotel);
+        created(&hotel, &file.text);
+    }
+
+    #[test]
+    fn path_copies_are_plain_pages() {
+        let hotel = hotel(&[(1, -1, "Furniture", "NORMAL")], &[]);
+        let mut catalog = rip(vec![mode(
+            "NORMAL",
+            vec![node(10, "Furniture", vec![node(11, "Iced", vec![])])],
+            vec![(10, vec![rip_offer(1, &[1])]), (11, vec![rip_offer(2, &[2])])],
+        )]);
+        for page in catalog.modes[0].pages.values_mut() {
+            page.layout = "pets".into();
+            page.images = vec!["header".into(), "teaser".into()];
+            page.texts = vec!["Text one".into(), "Text two".into(), "Details".into(), "Teaser".into()];
         }
-        println!("read back by the import's tokenizer in {:?}", started.elapsed());
+        let file = merge(&catalog, &hotel);
+        let created = created(&hotel, &file.text);
+        let (_, copy) = page_of(&created, "Furniture");
+        assert_eq!(copy["pageLayout"], "default_3x3");
+        for text in ["pageHeadline", "pageTeaser", "pageText1", "pageText2", "pageTextDetails", "pageTextTeaser"] {
+            assert!(copy.get(text).is_none_or(|v| v == ""), "{text}: {copy}");
+        }
+        let (_, iced) = page_of(&created, "Iced");
+        assert_ne!(iced["pageLayout"], "default_3x3", "a new page keeps the rip's layout");
     }
 }

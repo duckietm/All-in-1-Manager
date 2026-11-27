@@ -479,7 +479,17 @@ pub fn apply_statements(database: &str, changes: &[Change], summary: Option<&str
         (false, false) => 2,
         (false, true) => 3,
     });
-    let mut statements: Vec<(String, Vec<SqlValue>)> = ordered.iter().map(|c| journal::write_statement(database, c.entity, c.after.as_ref())).collect();
+    let mut statements: Vec<(String, Vec<SqlValue>)> = Vec::new();
+    if summary.is_some() {
+        // Holds Catalog Studio's writes (they raise the revision too) until this transaction ends.
+        statements.push((format!("SELECT revision FROM {}.catalog_manager_state WHERE singleton_id = 1 FOR UPDATE", quote(database)), Vec::new()));
+    }
+    // New rows with a plain INSERT: a page or offer made at the same id since the preview fails the whole transaction
+    // (nothing is written) instead of being overwritten.
+    statements.extend(ordered.iter().map(|c| match (&c.before, &c.after) {
+        (None, Some(after)) => journal::insert_statement(database, c.entity, after),
+        _ => journal::write_statement(database, c.entity, c.after.as_ref()),
+    }));
     if let Some(summary) = summary {
         let db = quote(database);
         for (kind, cat, table) in [("PAGE", "NORMAL", "catalog_pages"), ("OFFER", "NORMAL", "catalog_items"), ("PAGE", "BUILDER", "catalog_pages_bc"), ("OFFER", "BUILDER", "catalog_items_bc")] {
@@ -573,6 +583,26 @@ mod tests {
             assert!(target(&all, bad).is_err(), "{bad} was accepted");
         }
         assert_eq!(statements("SELECT 'a;b'; -- c\nx").unwrap(), vec!["SELECT 'a;b'".to_string(), "x".to_string()]);
+    }
+
+    #[test]
+    fn new_rows_never_overwrite_one_made_since_the_preview() {
+        let all = catalogue();
+        let file = "INSERT INTO catalog_items (id, catalog_type, item_ids, page_id, catalog_name) VALUES (6, 'NORMAL', '11', 1, 'lamp');\n\
+                    UPDATE catalog_items SET cost_credits = 10 WHERE id = 5";
+        let found = changes(&all, &target(&all, file).unwrap());
+        let statements = apply_statements("hotel", &found, Some("import"));
+        assert!(statements[0].0.ends_with("FOR UPDATE"), "the history's state row is locked first");
+        let create = statements.iter().find(|(_, p)| p.first() == Some(&SqlValue::Int(6))).unwrap();
+        // A plain INSERT: if offer 6 was made meanwhile, MariaDB refuses it (duplicate key) and the transaction is
+        // rolled back as a whole, so nothing of the import is written and the other row stays as it is.
+        assert!(create.0.starts_with("INSERT INTO `hotel`.catalog_items (") && !create.0.contains("ON DUPLICATE KEY"), "{}", create.0);
+        assert_eq!(create.1.len(), create.0.matches('?').count());
+        let update = statements.iter().find(|(_, p)| p.first() == Some(&SqlValue::Int(5))).unwrap();
+        assert!(update.0.contains("ON DUPLICATE KEY UPDATE"), "a change of an existing row is written as before");
+        // Without the history: no lock, no history row.
+        let plain = apply_statements("hotel", &found, None);
+        assert_eq!(plain.len(), 2);
     }
 
     #[test]

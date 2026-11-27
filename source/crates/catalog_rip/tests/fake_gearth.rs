@@ -1174,7 +1174,7 @@ impl ItemsSource for HotelWithCatalogue {
 
     async fn existing_catalogue(&self) -> anyhow::Result<Option<ExistingCatalogue>> {
         let page = |id, parent_id, caption: &str| aio_catalog_rip::ExistingPage { id, parent_id, caption: caption.into(), catalog_type: "NORMAL".into(), order_num: 1 };
-        let offer = aio_catalog_rip::ExistingOffer { id: 70, page_id: 11, catalog_type: "NORMAL".into(), item_ids: "500".into() };
+        let offer = aio_catalog_rip::ExistingOffer { id: 70, page_id: 11, catalog_type: "NORMAL".into(), item_ids: "500".into(), extradata: String::new(), order_number: 1 };
         Ok(Some(ExistingCatalogue::from_rows(vec![page(10, -1, "Furni"), page(11, 10, "shop 3X3")], vec![offer])))
     }
 }

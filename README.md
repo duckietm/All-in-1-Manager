@@ -1481,7 +1481,8 @@ page has the rest:
   `items_base`, and fits the rip into them. A ripped page with the same path as one of yours (the same captions from
   the root, trimmed, any case) is **joined**: only offers are added to it, never its own settings. The other pages go
   under a new page **Imported from <hotel>** at the end of the catalogue, keeping the rip's shape. An offer whose furni
-  that page already sells (the same `items_base` ids; amounts are not compared) is **skipped**; offers whose furni is
+  that page already sells (the same `items_base` ids, a poster, wallpaper, floor or landscape also with the same
+  number; amounts are not compared, so a 5-pack of a furni sold there singly is skipped) is **skipped**; offers whose furni is
   not in `items_base` are **left out** (give the rip's `missing_furnidata.json` to the furni import first, then merge
   again). Merging the same rip twice adds nothing. The preview lists the joined and new pages, the skipped and left out
   offers with the reason, and every page and offer created.

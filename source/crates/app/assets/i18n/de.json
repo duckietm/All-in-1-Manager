@@ -4170,5 +4170,6 @@
   "Recording: {packets} packets, {wired} of them wired": "Aufnahme: {packets} Pakete, davon {wired} Wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Nimmt jedes Paket zwischen deinem Client und dem Hotel auf, in beide Richtungen, ab dem nächsten Raum, den du betrittst: packets.jsonl (alle) und wired.txt (die Wired-Pakete, zerlegt). Um das Wired in den Emulator einzubauen.",
   "Stop recording": "Aufnahme stoppen",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Die Aufnahme enthält alles, was dein Client und das Hotel in diesen Räumen senden, auch Chat: teile sie nur mit Leuten, denen du vertraust."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Die Aufnahme enthält alles, was dein Client und das Hotel in diesen Räumen senden, auch Chat: teile sie nur mit Leuten, denen du vertraust.",
+  "The newest Gitea image (docker.gitea.com/gitea:latest); the repositories stay": "Das neueste Gitea-Image (docker.gitea.com/gitea:latest); die Repositories bleiben"
 }

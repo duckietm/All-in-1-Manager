@@ -1,10 +1,38 @@
 === root
 command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 || exit 0
 hub_digest() {
-  hub_remote=; hub_limited=
+  hub_remote=; hub_limited=; hub_registry="Docker Hub"
   command -v curl >/dev/null 2>&1 || return 0
-  local ref=$1 repo tag token head try
-  repo=${ref%%:*}; tag=${ref##*:}; [ "$repo" = "$ref" ] && tag=latest
+  local ref=$1 repo tag token head try host challenge realm service scope accept
+  accept='Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json'
+  repo=${ref%:*}; tag=${ref##*:}
+  case $tag in */*) repo=$ref; tag=latest ;; esac
+  [ "$repo" = "$ref" ] && tag=latest
+  host=${repo%%/*}
+  case $host in
+    *.*|*:*|localhost)
+      hub_registry=$host
+      repo=${repo#*/}
+      for try in 1 2; do
+        head=$(curl -sS -I -m 15 -H "$accept" "https://$host/v2/$repo/manifests/$tag" 2>/dev/null | tr -d '\r')
+        if echo "$head" | grep -q '^HTTP/[0-9.]* 401'; then
+          challenge=$(echo "$head" | sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *[Bb]earer *//p' | head -1)
+          realm=$(echo "$challenge" | sed -n 's/.*realm="\([^"]*\)".*/\1/p')
+          service=$(echo "$challenge" | sed -n 's/.*service="\([^"]*\)".*/\1/p')
+          scope=$(echo "$challenge" | sed -n 's/.*scope="\([^"]*\)".*/\1/p')
+          [ -n "$scope" ] || scope="repository:$repo:pull"
+          [ -n "$realm" ] || continue
+          token=$(curl -fsS -m 15 -G "$realm" --data-urlencode "service=$service" --data-urlencode "scope=$scope" 2>/dev/null \
+            | sed -n 's/.*"\(access_\)\{0,1\}token": *"\([^"]*\)".*/\2/p' | head -1)
+          [ -n "$token" ] || continue
+          head=$(curl -sS -I -m 15 -H "Authorization: Bearer $token" -H "$accept" "https://$host/v2/$repo/manifests/$tag" 2>/dev/null | tr -d '\r')
+        fi
+        echo "$head" | grep -q '^HTTP/[0-9.]* 429' && { hub_limited=yes; return 0; }
+        hub_remote=$(echo "$head" | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: *//p' | head -1)
+        [ -n "$hub_remote" ] && return 0
+      done
+      return 0 ;;
+  esac
   case $repo in */*) ;; *) repo=library/$repo ;; esac
   # Twice: a slow answer on a busy connection is not a verdict.
   for try in 1 2; do
@@ -34,7 +62,7 @@ if docker inspect traefik >/dev/null 2>&1; then
   mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' traefik:v3 2>/dev/null | sed -n 's/.*@//p' | head -1)
   newest=
   if [ -z "$remote" ]; then
-    newer=; problem="Docker Hub did not answer${hub_limited:+ (it limits the requests from this server right now)}"
+    newer=; problem="$hub_registry did not answer${hub_limited:+ (it limits the requests from this server right now)}"
   else
     problem=
     newer=$([ "$remote" != "$mine" ] && echo yes)
@@ -48,21 +76,21 @@ if docker inspect gitea >/dev/null 2>&1; then
   version=$(docker exec gitea gitea --version 2>/dev/null | awk '{print $3}')
   # A newer image downloaded, but the container still runs the old one.
   current=$(docker inspect -f '{{.Image}}' gitea 2>/dev/null)
-  downloaded=$(docker image inspect -f '{{.Id}}' gitea/gitea:1 2>/dev/null)
+  downloaded=$(docker image inspect -f '{{.Id}}' docker.gitea.com/gitea:latest 2>/dev/null)
   restart=$([ -n "$downloaded" ] && [ "$current" != "$downloaded" ] && echo yes)
   # The digest Docker Hub has for the tag now, against the one this server pulled.
   # A HEAD request does not count against Docker Hub's pull limit; buildx (a GET) only when that gives nothing.
-  hub_digest gitea/gitea:1
+  hub_digest docker.gitea.com/gitea:latest
   remote=$hub_remote
-  [ -n "$remote" ] || remote=$(timeout 30 docker buildx imagetools inspect gitea/gitea:1 --format '{{.Manifest.Digest}}' 2>/dev/null)
-  mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' gitea/gitea:1 2>/dev/null | sed -n 's/.*@//p' | head -1)
+  [ -n "$remote" ] || remote=$(timeout 30 docker buildx imagetools inspect docker.gitea.com/gitea:latest --format '{{.Manifest.Digest}}' 2>/dev/null)
+  mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' docker.gitea.com/gitea:latest 2>/dev/null | sed -n 's/.*@//p' | head -1)
   newest=
   if [ -z "$remote" ]; then
-    newer=; problem="Docker Hub did not answer${hub_limited:+ (it limits the requests from this server right now)}"
+    newer=; problem="$hub_registry did not answer${hub_limited:+ (it limits the requests from this server right now)}"
   else
     problem=
     newer=$([ "$remote" != "$mine" ] && echo yes)
-    [ -n "$newer" ] && newest=$(timeout 30 docker buildx imagetools inspect gitea/gitea:1 --format '{{json .Image}}' 2>/dev/null \
+    [ -n "$newer" ] && newest=$(timeout 30 docker buildx imagetools inspect docker.gitea.com/gitea:latest --format '{{json .Image}}' 2>/dev/null \
       | grep -oE '"org.opencontainers.image.version": *"[^"]+"' | head -1 | cut -d'"' -f4)
   fi
   echo "image1 $running|$version|$newer|$restart|$newest|$problem"
@@ -82,7 +110,7 @@ if docker inspect crowdsec >/dev/null 2>&1; then
   mine=$(docker image inspect -f '{{range .RepoDigests}}{{println .}}{{end}}' crowdsecurity/crowdsec:latest 2>/dev/null | sed -n 's/.*@//p' | head -1)
   newest=
   if [ -z "$remote" ]; then
-    newer=; problem="Docker Hub did not answer${hub_limited:+ (it limits the requests from this server right now)}"
+    newer=; problem="$hub_registry did not answer${hub_limited:+ (it limits the requests from this server right now)}"
   else
     problem=
     newer=$([ "$remote" != "$mine" ] && echo yes)

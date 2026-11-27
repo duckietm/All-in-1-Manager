@@ -103,7 +103,7 @@ impl Tool {
             Tool::UpdateOctane => (n("Update Octane"), n("Octane-Renderer first, then Octane: git pull, fresh yarn install, build"), Icon::Cube),
             Tool::UpdateAtomCms => (n("Update AtomCMS"), n("git pull, composer install, migrations, theme build"), Icon::Puzzle),
             Tool::UpdateTraefik => (n("Update Traefik"), n("The newest traefik:v3 image (Docker Hub)"), Icon::Swap),
-            Tool::UpdateGitea => (n("Update Gitea"), n("The newest gitea/gitea:1 image; the repositories stay"), Icon::Git),
+            Tool::UpdateGitea => (n("Update Gitea"), n("The newest Gitea image (docker.gitea.com/gitea:latest); the repositories stay"), Icon::Git),
             Tool::UpdateCrowdSec => (n("Update CrowdSec"), n("The newest image and detection rules; bans and enrollment stay"), Icon::Shield),
         }
     }
@@ -917,12 +917,12 @@ mod tests {
         assert_eq!(captions[&Tool::UpdateOctane], "to dev, 2 new · Octane-Renderer first, then Octane: git pull, fresh yarn install, build");
         assert_eq!(captions[&Tool::UpdateAtomCms], "up to date · git pull, composer install, migrations, theme build");
         assert_eq!(captions[&Tool::UpdateTraefik], "The newest traefik:v3 image (Docker Hub)");
-        assert_eq!(captions[&Tool::UpdateGitea], "1.23 available · The newest gitea/gitea:1 image; the repositories stay");
+        assert_eq!(captions[&Tool::UpdateGitea], "1.23 available · The newest Gitea image (docker.gitea.com/gitea:latest); the repositories stay");
         assert_eq!(captions[&Tool::UpdateCrowdSec], "1.6 · The newest image and detection rules; bans and enrollment stay");
 
         let none = update_captions(&[], &[], &dirs());
         assert_eq!(none[&Tool::UpdateEmulator], "git pull, build.sh, start the new version");
-        assert_eq!(none[&Tool::UpdateGitea], "not installed · The newest gitea/gitea:1 image; the repositories stay");
+        assert_eq!(none[&Tool::UpdateGitea], "not installed · The newest Gitea image (docker.gitea.com/gitea:latest); the repositories stay");
     }
 
     #[test]

@@ -974,7 +974,7 @@ It asks for:
 
 What it sets up:
 
-- **Docker** in `/opt/gitea` (`compose.yaml`, `.env`, `data/`), image `gitea/gitea:1`, with SQLite: no database to set up.
+- **Docker** in `/opt/gitea` (`compose.yaml`, `.env`, `data/`), image `docker.gitea.com/gitea:latest` (Gitea's own registry, the newest release), with SQLite: no database to set up.
   Gitea has a Docker network of its own (the image always starts an SSH server inside, which must not meet the
   server's SSH), and only its web port is published, on **127.0.0.1**, on the first free port from 85 to 95 (the
   same check as for a CMS, which also recognises Gitea's own port on a later run).
@@ -1913,9 +1913,10 @@ Use it on rooms you may copy.
 **Octane and Octane Renderer** as one row (they depend on each other: both versions are shown, the new commits of both
 are counted together, and **Update** updates the renderer first, then Octane, then builds the client); AtomCMS when it is
 installed; and the Docker services **Traefik** and, once installed, **Gitea**. For those the check compares the image on
-the server with Docker Hub's newest for the same tag (a `HEAD` request of the tag's manifest, which does not count
-against Docker Hub's pull limit; `docker buildx imagetools inspect` only when that gives nothing, and to read the newest
-version number; nothing is downloaded or changed), shows **NOT CHECKED** with the reason when Docker Hub does not answer
+the server with its registry's newest for the same tag (Docker Hub; for Gitea its own registry `docker.gitea.com`,
+with the anonymous token its `WWW-Authenticate` answer points to): a `HEAD` request of the tag's manifest, which does
+not count against Docker Hub's pull limit; `docker buildx imagetools inspect` only when that gives nothing, and to read
+the newest version number; nothing is downloaded or changed. It shows **NOT CHECKED** with the reason when the registry does not answer
 or limits the server's requests, and shows **NEW IMAGE WAITING** when a newer image is downloaded but
 the old container still runs (a `docker restart` keeps the image the container was made from; **Update** and
 **Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page. For Traefik
@@ -2062,7 +2063,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 | **Update Octane** | `git pull` of Octane-Renderer and Octane, both on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first), then in both `rm -rf node_modules yarn.lock` and `yarn install`, then the configuration for the site (keeps AtomCMS' `/client` layout), `yarn build` and a test. The next pull puts the repository's `yarn.lock` back first |
 | **Update AtomCMS** | `git pull` in `/var/www/atomcms`, `composer install`, `php artisan migrate` (an installed AtomCMS only runs the new migrations; its settings and the hotel name stay) and the theme build. Octane is not touched |
 | **Update Traefik** | `docker compose pull` and `up -d` in `/opt/traefik`: the newest `traefik:v3` image, and a restart only when it changed (routes, settings and certificates stay; the players are disconnected for a few seconds). When Docker Hub does not answer nothing is changed, and it says so (also for Gitea and CrowdSec) |
-| **Update Gitea** | the same for Gitea in `/opt/gitea` (`gitea/gitea:1`); the repositories and accounts stay |
+| **Update Gitea** | the same for Gitea in `/opt/gitea` (`docker.gitea.com/gitea:latest`, Gitea's own registry); an install from before with `gitea/gitea:1` is moved to it first (`compose.yaml` is kept as `.bak-<time>`, the old image is removed afterwards); the repositories and accounts stay |
 | **Update CrowdSec** | the same for CrowdSec in `/opt/crowdsec` (`crowdsecurity/crowdsec:latest`), then the newest detection rules (`cscli hub update` and `upgrade`; CrowdSec restarts only when a rule changed). The bans, whitelist and enrollment stay, Traefik is not restarted and the hotel stays reachable. It also says when Traefik's CrowdSec plugin is older than the one this installer knows (run Addons → CrowdSec again to update it) |
 
 ### Import Plus database

@@ -4170,5 +4170,6 @@
   "Recording: {packets} packets, {wired} of them wired": "Tallennetaan: {packets} pakettia, joista {wired} wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Tallentaa jokaisen paketin clientisi ja hotellin välillä molempiin suuntiin seuraavasta huoneesta alkaen: packets.jsonl (kaikki) ja wired.txt (wired-paketit purettuina). Wiredien rakentamiseen emulaattoriin.",
   "Stop recording": "Lopeta tallennus",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille.",
+  "The newest Gitea image (docker.gitea.com/gitea:latest); the repositories stay": "Uusin Gitea-image (docker.gitea.com/gitea:latest); repositoriot säilyvät"
 }

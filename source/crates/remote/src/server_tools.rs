@@ -87,7 +87,7 @@ echo "> docker compose pull ({{name}} ${before:-?})"
 if ! compose_in "$d" pull >"$d/.pull.log" 2>&1; then
   grep -vE '^ *$' "$d/.pull.log" | tail -3 | sed 's/^/  /'
   rm -f "$d/.pull.log"
-  fail "Docker Hub did not answer (see above): nothing was changed, {{name}} keeps running ${before:-as it was}. Try again later."
+  fail "The image registry did not answer (see above): nothing was changed, {{name}} keeps running ${before:-as it was}. Try again later."
 fi
 grep -vE '^ *$' "$d/.pull.log" | tail -3 | sed 's/^/  /'
 rm -f "$d/.pull.log"

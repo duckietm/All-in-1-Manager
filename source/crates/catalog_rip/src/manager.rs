@@ -1056,6 +1056,22 @@ fn merge_rows(
     (pages, stats, notes)
 }
 
+/// The items_base ids every offer of the rip resolves to (the offers the import adds and the ones
+/// it skips because the page already sells them), sorted.
+pub fn referenced_items(catalog: &RippedCatalog, export: &ManagerExport) -> BTreeSet<i64> {
+    let mut ids = BTreeSet::new();
+    for ripped in &catalog.modes {
+        for page in ripped.pages.values() {
+            for offer in &page.offers {
+                if let OfferIds::Literal(literal) = resolve_offer(offer, export) {
+                    ids.extend(offer_item_ids(&literal));
+                }
+            }
+        }
+    }
+    ids
+}
+
 /// The whole rip as one file for the Manager's catalogue import.
 pub fn manager_sql_with(catalog: &RippedCatalog, export: &ManagerExport) -> ManagerSql {
     let (rows, mut stats, notes) = manager_rows(catalog, export);

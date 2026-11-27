@@ -561,6 +561,12 @@ pub async fn undo_problem(session: &SqlSession, database: &str, operation: &Oper
 /// Undoes the operation: every page and offer back as it was before, in one transaction, recorded in the history as
 /// an undo. Check [`undo_problem`] first.
 pub async fn undo(session: &SqlSession, database: &str, operation: &Operation) -> Result<()> {
+    session.execute(&undo_statements(database, operation)).await?;
+    Ok(())
+}
+
+/// The statements of [`undo`]: the rows back, the revision raised, the undo's history row.
+pub fn undo_statements(database: &str, operation: &Operation) -> Vec<(String, Vec<SqlValue>)> {
     let mut statements: Vec<(String, Vec<SqlValue>)> = Vec::new();
     let mut inverse = Vec::new();
     for change in operation.entries.iter().rev() {
@@ -581,8 +587,7 @@ pub async fn undo(session: &SqlSession, database: &str, operation: &Operation) -
         ),
         vec![SqlValue::Text(summary), SqlValue::Text(Value::Array(inverse).to_string())],
     ));
-    session.execute(&statements).await?;
-    Ok(())
+    statements
 }
 
 #[cfg(test)]

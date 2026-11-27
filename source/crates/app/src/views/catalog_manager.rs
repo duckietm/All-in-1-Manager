@@ -9,10 +9,12 @@ use std::sync::Arc;
 mod bundles;
 mod club_gifts;
 mod front_page;
+mod merge;
 
 use aio_remote::catalog_admin::{self, CatalogBackup, Catalogue, Featured, LimitedAction, LimitedSeries, Offer, Page, Voucher, VoucherUse};
 use aio_remote::catalog_health::{self, Kind};
 use aio_remote::catalog_journal;
+use aio_remote::catalog_merge;
 use aio_remote::catalog_transfer;
 use aio_remote::sql_session::SqlSession;
 use aio_remote::Server;
@@ -54,6 +56,7 @@ enum Tab {
     Checks,
     History,
     Backups,
+    Merge,
 }
 
 /// A front page slot as edited: its expiry as typed.
@@ -79,8 +82,12 @@ struct Transfer {
 
 #[derive(Default)]
 struct State {
-    /// A file to preview as an import once the database is open (the Catalogue ripper's "Import into the hotel").
-    pending_import: Option<std::path::PathBuf>,
+    /// A rip folder to preview as a merge once the database is open (the Catalogue ripper's "Import into the hotel").
+    pending_merge: Option<std::path::PathBuf>,
+    /// The Merge a rip tab.
+    merge: merge::MergeTool,
+    /// The furni interactions merges changed, by the history revision they were written with (for undo).
+    interaction_records: std::collections::BTreeMap<i64, Vec<catalog_merge::InteractionChange>>,
     tab: Tab,
     /// The front page slots as loaded, and as edited (None until the tab is opened).
     featured: Option<Vec<FeaturedRow>>,
@@ -282,6 +289,7 @@ impl Ctl {
             Tab::Checks => self.load_checks().await,
             Tab::History => self.load_history().await,
             Tab::Backups => self.load_backups().await,
+            Tab::Merge => {}
         }
     }
 
@@ -731,8 +739,10 @@ impl Ctl {
         let Some((generation, session, database)) = self.session() else { return };
         self.with(generation, |s| s.busy = true);
         let history = if catalog_journal::has_history(&session, &database).await { catalog_journal::load_history(&session, &database, 150).await.map(Some) } else { Ok(None) };
+        let records = catalog_merge::records(&session, &database).await;
         self.with(generation, |s| {
             s.busy = false;
+            s.interaction_records = records;
             match history {
                 Ok(history) => s.history = Some(history),
                 Err(error) => s.status = Status::error(error.to_string()),
@@ -743,9 +753,14 @@ impl Ctl {
     /// Asks first, then undoes one operation of the history, when its pages and offers are still as it left them.
     async fn undo_operation(self, id: i64) {
         let Some((generation, session, database)) = self.session() else { return };
-        let operation = self.lock().history.clone().flatten().and_then(|h| h.into_iter().find(|o| o.id == id));
+        let (operation, interactions) = {
+            let s = self.lock();
+            let operation = s.history.clone().flatten().and_then(|h| h.into_iter().find(|o| o.id == id));
+            let interactions = operation.as_ref().and_then(|o| s.interaction_records.get(&o.revision).cloned()).unwrap_or_default();
+            (operation, interactions)
+        };
         let Some(operation) = operation else { return };
-        match catalog_journal::undo_problem(&session, &database, &operation).await {
+        match catalog_merge::undo_problem(&session, &database, &operation, &interactions).await {
             Ok(None) => {}
             Ok(Some(problem)) => {
                 self.with(generation, |s| s.status = Status::error(tf("Operation #{id} cannot be undone: {problem}", &[("id", &id.to_string()), ("problem", &problem)])));
@@ -757,12 +772,16 @@ impl Ctl {
             }
         }
         let options = vec![Choice::new(t("Undo it"), t("Put every page and offer it changed back as it was before."), true).primary(), Choice::new(t("Cancel"), t("Leave it."), false)];
-        let message = tf("{count} pages and offers go back to how they were before operation #{id}. The undo is recorded in the history too.", &[("count", &operation.entries.len().to_string()), ("id", &id.to_string())]);
+        let mut message = tf("{count} pages and offers go back to how they were before operation #{id}. The undo is recorded in the history too.", &[("count", &operation.entries.len().to_string()), ("id", &id.to_string())]);
+        if !interactions.is_empty() {
+            message.push(' ');
+            message.push_str(&tf("The interaction of {count} furni goes back too.", &[("count", &interactions.len().to_string())]));
+        }
         if !self.shared.dialogs.choose(t("Undo operation"), &operation.summary, &message, false, options).await {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let result = catalog_journal::undo(&session, &database, &operation).await;
+        let result = catalog_merge::undo(&session, &database, &operation, &interactions).await;
         self.with(generation, |s| {
             s.busy = false;
             match result {
@@ -930,9 +949,10 @@ impl CatalogManagerView {
         Ctl { state: self.state.clone(), shared: shared.clone() }
     }
 
-    /// Previews `path` as an import as soon as the hotel database is open; nothing is written until Apply.
-    pub fn import_file(&mut self, path: std::path::PathBuf) {
-        self.state.lock().pending_import = Some(path);
+    /// Opens Merge a rip with this rip folder and previews it as soon as the hotel database is open; nothing is written
+    /// until Apply.
+    pub fn merge_rip(&mut self, folder: std::path::PathBuf) {
+        self.state.lock().open_merge(folder);
     }
 
     fn connect_if_needed(&mut self, shared: &Shared) {
@@ -994,6 +1014,11 @@ enum Action {
     RestoreBackup(String),
     DeleteBackup(String),
     MergePages(i64, Vec<i64>),
+    PickRip,
+    PickMergeFurniture,
+    PreviewMerge(std::path::PathBuf),
+    ApplyMerge,
+    ImportFile(std::path::PathBuf),
     Publish,
 }
 
@@ -1010,10 +1035,10 @@ impl View for CatalogManagerView {
         self.connect_if_needed(shared);
         let pending = {
             let mut state = self.state.lock();
-            if state.session.is_some() && !state.busy && !state.opening { state.pending_import.take() } else { None }
+            if state.session.is_some() && !state.busy && !state.opening { state.pending_merge.take() } else { None }
         };
-        if let Some(path) = pending {
-            self.ctl(shared).spawn(|ctl| ctl.import_path(path));
+        if let Some(folder) = pending {
+            self.ctl(shared).spawn(|ctl| ctl.preview_merge(folder));
         }
         self.images.new_frame(ui.ctx());
         let ctx = ui.ctx().clone();
@@ -1074,6 +1099,11 @@ impl View for CatalogManagerView {
                 Action::RestoreBackup(file) => ctl.spawn(move |c| c.restore_backup(file)),
                 Action::DeleteBackup(file) => ctl.spawn(move |c| c.delete_backup(file)),
                 Action::MergePages(target, sources) => ctl.spawn(move |c| c.merge_pages(target, sources)),
+                Action::PickRip => ctl.spawn(|c| c.pick_rip()),
+                Action::PickMergeFurniture => ctl.spawn(|c| c.pick_furniture()),
+                Action::PreviewMerge(folder) => ctl.spawn(move |c| c.preview_merge(folder)),
+                Action::ApplyMerge => ctl.spawn(|c| c.apply_merge()),
+                Action::ImportFile(file) => ctl.spawn(move |c| c.import_path(file)),
                 Action::Publish => ctl.spawn(|c| c.publish()),
             }
         }
@@ -1123,7 +1153,7 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
 
 fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontImages, actions: &mut Vec<Action>) {
     ui.horizontal(|ui| {
-        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::ClubGifts, t("Club gifts")), (Tab::Bundles, t("Bundles")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::History, t("History")), (Tab::Backups, t("Backups"))] {
+        for (tab, label) in [(Tab::FrontPage, t("Front page")), (Tab::ClubGifts, t("Club gifts")), (Tab::Bundles, t("Bundles")), (Tab::Limited, t("Limited")), (Tab::Vouchers, t("Vouchers")), (Tab::Checks, t("Checks")), (Tab::History, t("History")), (Tab::Backups, t("Backups")), (Tab::Merge, t("Merge a rip"))] {
             if ui.selectable_label(s.tab == tab, RichText::new(label).size(15.0)).clicked() && s.tab != tab {
                 s.tab = tab;
                 if tab == Tab::FrontPage && s.featured.is_none() && s.session.is_some() {
@@ -1151,6 +1181,12 @@ fn body(ui: &mut egui::Ui, palette: &Palette, s: &mut State, images: &mut FrontI
         }
     });
     ui.add_space(6.0);
+    if s.tab == Tab::Merge {
+        egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
+            egui::ScrollArea::vertical().id_salt("catalog-merge").auto_shrink([false, false]).show(ui, |ui| merge::show(ui, palette, s, actions));
+        });
+        return;
+    }
     if s.tab == Tab::History {
         egui::CentralPanel::default().frame(frame(palette)).show_inside(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("catalog-history").auto_shrink([false, false]).show(ui, |ui| history(ui, palette, s, actions));
@@ -1811,19 +1847,23 @@ fn history(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Ve
         return;
     }
     for operation in history {
+        let interactions = s.interaction_records.get(&operation.revision).map(Vec::len).unwrap_or(0);
         widgets::card_frame(palette).inner_margin(8).corner_radius(8).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(RichText::new(format!("#{}", operation.revision)).size(12.5).monospace().color(palette.muted));
                 ui.label(RichText::new(&operation.summary).size(13.0).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(!busy && !operation.entries.is_empty(), small(t("Undo ..."))).clicked() {
+                    if ui.add_enabled(!busy && (!operation.entries.is_empty() || interactions > 0), small(t("Undo ..."))).clicked() {
                         actions.push(Action::UndoOperation(operation.id));
                     }
                 });
             });
             let who = if operation.actor.is_empty() { t("no player (All-in-1 Manager or a script)").to_string() } else { operation.actor.clone() };
             ui.label(RichText::new(format!("{} · {} · {}", operation.created_at, who, operation.source)).size(11.5).color(palette.muted));
+            if interactions > 0 {
+                ui.label(RichText::new(tf("and the interaction of {count} furni (undone with it here)", &[("count", &interactions.to_string())])).size(11.5).color(palette.muted));
+            }
             egui::CollapsingHeader::new(RichText::new(tf("{count} pages and offers", &[("count", &operation.entries.len().to_string())])).size(12.0))
                 .id_salt(("catalog-history-op", operation.id))
                 .show(ui, |ui| {

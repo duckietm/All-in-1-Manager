@@ -462,6 +462,15 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
     if journal::capture_all(session, database).await? != *previewed {
         return Err(ServerError("The catalogue changed since the preview: preview the file again.".into()).into());
     }
+    let history = journal::has_history(session, database).await;
+    let summary = format!("All-in-1 Manager: SQL import, {} changes", changes.len());
+    session.execute(&apply_statements(database, changes, history.then_some(summary.as_str()))).await?;
+    Ok(())
+}
+
+/// The statements that write `changes` (pages before their offers when added, offers before their pages when
+/// deleted) and, with a `summary` (the database has the history), raise the id sequences and add one history row.
+pub fn apply_statements(database: &str, changes: &[Change], summary: Option<&str>) -> Vec<(String, Vec<SqlValue>)> {
     let mut ordered: Vec<&Change> = changes.iter().collect();
     // Pages before their offers when added; offers before their pages when deleted.
     ordered.sort_by_key(|c| match (c.after.is_some(), c.entity.page) {
@@ -471,7 +480,7 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
         (false, true) => 3,
     });
     let mut statements: Vec<(String, Vec<SqlValue>)> = ordered.iter().map(|c| journal::write_statement(database, c.entity, c.after.as_ref())).collect();
-    if journal::has_history(session, database).await {
+    if let Some(summary) = summary {
         let db = quote(database);
         for (kind, cat, table) in [("PAGE", "NORMAL", "catalog_pages"), ("OFFER", "NORMAL", "catalog_items"), ("PAGE", "BUILDER", "catalog_pages_bc"), ("OFFER", "BUILDER", "catalog_items_bc")] {
             statements.push((
@@ -482,7 +491,7 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
         let before: BTreeMap<Entity, Option<Value>> = changes.iter().map(|c| (c.entity, c.before.clone())).collect();
         let after: BTreeMap<Entity, Option<Value>> = changes.iter().map(|c| (c.entity, c.after.clone())).collect();
         let entries = journal::entries(&before, &after);
-        let summary = format!("All-in-1 Manager: SQL import, {} changes", changes.len());
+        let summary: String = summary.chars().take(255).collect();
         statements.push((format!("UPDATE {db}.catalog_manager_state SET revision = revision + 1 WHERE singleton_id = 1"), Vec::new()));
         statements.push((
             format!(
@@ -492,8 +501,7 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
             vec![SqlValue::Text(summary), SqlValue::Text(Value::Array(entries).to_string())],
         ));
     }
-    session.execute(&statements).await?;
-    Ok(())
+    statements
 }
 
 #[cfg(test)]

@@ -66,7 +66,7 @@ pub use profiles::{
 };
 pub use diff::CatalogDiff;
 pub use missing::MissingFurni;
-pub use rip::{reexport, rip, rip_every, rip_with, ProfileChoice, RipOptions, RipResult};
+pub use rip::{merge_plan, reexport, rip, rip_every, rip_with, MergePlan, ProfileChoice, RipOptions, RipResult};
 
 /// A log line (the same shape as `aio_remote::server::Log`).
 pub type Log<'a> = &'a (dyn Fn(&str) + Send + Sync);

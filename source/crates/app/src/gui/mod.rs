@@ -984,10 +984,10 @@ impl App {
             Page::CatalogRip => {
                 let mut click = None;
                 scroll(ui, |ui| click = self.catalog_rip.show(ui, palette, &shared));
-                if let Some(views::catalog_rip::Click::Import(path)) = click {
+                if let Some(views::catalog_rip::Click::Merge(folder)) = click {
                     self.go(Page::CatalogManager);
                     if self.page == Page::CatalogManager {
-                        self.catalog.import_file(path);
+                        self.catalog.merge_rip(folder);
                     }
                 }
             }

@@ -1,8 +1,8 @@
 //! The Catalogue ripper plugin: copies the catalogue of Habbo or a retro hotel (Flash or Nitro) through G-Earth, with
 //! the aio-catalog-rip crate. The user runs G-Earth and logs in to the hotel with their own client; the ripper is a
 //! G-Earth extension that asks for the catalogue index and every page, a few per second. The result is a folder of
-//! files (catalog.json, Arcturus SQL, catalog_manager.sql, images, README.txt); "Import into the hotel" previews
-//! catalog_manager.sql in the Catalogue manager, where nothing is written until Apply.
+//! files (catalog.json, Arcturus SQL, catalog_manager.sql, images, README.txt); "Import into the hotel" opens the
+//! Catalogue manager's "Merge a rip" with the rip folder, where nothing is written until Apply.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,8 +23,8 @@ use crate::i18n::{t, tf};
 
 /// What the page asks the window to do.
 pub enum Click {
-    /// Open the Catalogue manager and preview this file as an import.
-    Import(PathBuf),
+    /// Open the Catalogue manager's "Merge a rip" with this rip folder.
+    Merge(PathBuf),
 }
 
 /// configuration/plugins/catalog-rip/: the hotel profiles and G-Earth.
@@ -389,25 +389,62 @@ fn result_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, result: &R
     ));
     widgets::result_banner(ui, palette, kind, &heading, &lines.join("\n"));
     ui.add_space(6.0);
-    let manager_file = result.folder.join("catalog_manager.sql");
     ui.horizontal(|ui| {
         if ui.add(widgets::secondary_button(t("Open the folder"))).on_hover_text(result.folder.display().to_string()).clicked() {
             open_folder(&result.folder);
         }
-        let can_import = manager_file.is_file() && shared.session().is_some();
+        let can_import = result.folder.join("packets").is_dir() && shared.session().is_some();
         let hint = if shared.session().is_none() {
             t("Log in to the hotel's server first")
         } else {
-            t("Opens the Catalogue manager with what the import would change; nothing is written until you click Apply there. The import replaces the whole catalogue.")
+            t("Opens the Catalogue manager's Merge a rip with this rip: it is fitted into your catalogue and you see every change first; nothing is written until you click Apply there.")
         };
         if ui.add_enabled(can_import, widgets::primary_button(t("Import into the hotel ..."))).on_hover_text(hint).on_disabled_hover_text(hint).clicked() {
-            click = Some(Click::Import(manager_file.clone()));
+            click = Some(import_click(&result.folder));
         }
         if shared.session().is_none() && ui.add(widgets::secondary_button(t("Log in"))).clicked() {
             shared.request(crate::gui::Request::Login);
         }
     });
     click
+}
+
+/// What "Import into the hotel" asks for: the Catalogue manager's Merge a rip, with the rip folder.
+pub fn import_click(folder: &Path) -> Click {
+    Click::Merge(folder.to_path_buf())
+}
+
+/// items_base and the catalogue of the hotel database through an open SQL session (the Catalogue manager's).
+pub struct SessionItems {
+    pub session: Arc<SqlSession>,
+    pub database: String,
+}
+
+#[async_trait::async_trait]
+impl rip::ItemsSource for SessionItems {
+    async fn items_base(&self) -> anyhow::Result<Vec<ItemsBaseRow>> {
+        read_items_base(&self.session, &self.database).await
+    }
+
+    async fn existing_catalogue(&self) -> anyhow::Result<Option<rip::ExistingCatalogue>> {
+        let reader = self.session.clone();
+        let select = move |sql: String| -> futures::future::BoxFuture<'static, anyhow::Result<Vec<Vec<SqlValue>>>> {
+            let reader = reader.clone();
+            Box::pin(async move { reader.select(&sql, Vec::new()).await })
+        };
+        load_existing(&select, &self.database).await.map(Some)
+    }
+}
+
+/// items_base's id, sprite_id, type, item_name and effect_id_male (0 without that column).
+async fn read_items_base(session: &SqlSession, database: &str) -> anyhow::Result<Vec<ItemsBaseRow>> {
+    let table = format!("{}.`items_base`", aio_remote::sql_session::quote(database));
+    let rows = match session.select(&format!("SELECT id, sprite_id, type, item_name, effect_id_male FROM {table}"), Vec::new()).await {
+        Ok(rows) => Ok(rows),
+        // An emulator without effect_id_male.
+        Err(_) => session.select(&format!("SELECT id, sprite_id, type, item_name, 0 FROM {table}"), Vec::new()).await,
+    };
+    Ok(rows?.into_iter().filter_map(|row| items_row(&row)).collect())
 }
 
 /// items_base of the hotel database on the logged-in server, through MariaDB with the saved account (the one the
@@ -433,14 +470,9 @@ impl HotelItems {
 impl rip::ItemsSource for HotelItems {
     async fn items_base(&self) -> anyhow::Result<Vec<ItemsBaseRow>> {
         let (session, database) = self.session().await?;
-        let table = format!("{}.`items_base`", aio_remote::sql_session::quote(&database));
-        let rows = match session.select(&format!("SELECT id, sprite_id, type, item_name, effect_id_male FROM {table}"), Vec::new()).await {
-            Ok(rows) => Ok(rows),
-            // An emulator without effect_id_male.
-            Err(_) => session.select(&format!("SELECT id, sprite_id, type, item_name, 0 FROM {table}"), Vec::new()).await,
-        };
+        let rows = read_items_base(&session, &database).await;
         session.close().await;
-        Ok(rows?.into_iter().filter_map(|row| items_row(&row)).collect())
+        rows
     }
 
     /// The hotel's pages and offers (both catalogues), for the merge and the id ranges.

@@ -963,10 +963,11 @@ impl App {
                     // Nitro retro: the catalogue rip that goes with the download, with the Catalogue ripper's job.
                     if retro {
                         if let Some(request) = self.get_assets.take_rip_request() {
-                            self.catalog_rip.start_with(&shared, Some(request));
+                            // Not started (a rip is running, or no catalogue is chosen): the card says why.
+                            let _ = self.catalog_rip.start_with(&shared, Some(request));
                         }
                         let download = self.get_assets.finished_retro_download();
-                        click = self.catalog_rip.retro_panel(ui, palette, &shared, download.as_deref());
+                        click = self.catalog_rip.retro_panel(ui, palette, &shared, download.as_ref());
                     }
                 });
                 if let Some(views::catalog_rip::Click::Merge(folder)) = click {

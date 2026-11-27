@@ -4237,5 +4237,11 @@
   "Wait for the download to finish.": "Warte, bis der Download fertig ist.",
   "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "Warte auf G-Earth: starte es und verbinde es mit dem Hotel (der Ripper kann es für dich herunterladen und starten).",
   "When the download is finished too, the furni it lacks are listed here.": "Wenn auch der Download fertig ist, werden hier die Möbel aufgelistet, die ihm fehlen.",
-  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} Möbel, die der Katalog verkauft, wurden nicht heruntergeladen (kein .hab oder .nitro): {names}"
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} Möbel, die der Katalog verkauft, wurden nicht heruntergeladen (kein .hab oder .nitro): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Eine Katalogkopie läuft bereits (Seite Catalogue ripper).",
+  "No catalogue rip with this download": "Keine Katalogkopie mit diesem Download",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "Der Download der eigenen Möbel ist fehlgeschlagen, daher werden die fehlenden Möbel nicht aufgelistet.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Die eigenen Möbel waren nicht Teil dieses Downloads, daher werden die fehlenden Möbel nicht aufgelistet.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Schalte zuerst Normal und/oder Builders Club in den Optionen des Catalogue rippers ein.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} sind als .swf in source/ aufbewahrt: Die aufbewahrten .swf-Dateien umwandeln erstellt ihre .hab: {names}"
 }

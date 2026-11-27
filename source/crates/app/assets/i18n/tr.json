@@ -4237,5 +4237,11 @@
   "Wait for the download to finish.": "İndirmenin bitmesini bekle.",
   "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "G-Earth bekleniyor: başlat ve otele bağla (ripper senin için indirip başlatabilir).",
   "When the download is finished too, the furni it lacks are listed here.": "İndirme de bitince, eksik mobilyalar burada listelenir.",
-  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "Kataloğun sattığı {count} mobilya indirilmedi (.hab veya .nitro yok): {names}"
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "Kataloğun sattığı {count} mobilya indirilmedi (.hab veya .nitro yok): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Zaten bir katalog kopyası çalışıyor (Catalogue ripper sayfası).",
+  "No catalogue rip with this download": "Bu indirmeyle katalog kopyası yok",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "Özel mobilya indirmesi başarısız oldu, bu yüzden eksik mobilyalar listelenmiyor.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Özel mobilyalar bu indirmenin parçası değildi, bu yüzden eksik mobilyalar listelenmiyor.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Önce Catalogue ripper seçeneklerinde Normal ve/veya Builders Club'ı aç.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} tanesi source/ içinde .swf olarak saklanıyor: Saklanan .swf dosyalarını dönüştür onların .hab dosyasını yapar: {names}"
 }

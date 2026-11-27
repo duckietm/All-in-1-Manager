@@ -21,7 +21,7 @@ use crate::gui::theme::Palette;
 use crate::gui::widgets::{self, ResultKind};
 use crate::gui::{Page, Request, Shared, View};
 use crate::i18n::{n, t, tf};
-use crate::views::catalog_rip::RetroRip;
+use crate::views::catalog_rip::{RetroDownload, RetroRip};
 
 /// Title and what it gets, per download (the converter's menu texts).
 fn texts(asset: Asset) -> (&'static str, &'static str) {
@@ -129,7 +129,7 @@ struct State {
     /// A JSON file chosen for one of the retro's fields: (field index, path).
     picked_retro: Option<(usize, PathBuf)>,
     /// The gamedata folder of the last retro download, once it finished (for the catalogue rip's summary).
-    retro_finished: Option<PathBuf>,
+    retro_finished: Option<RetroDownload>,
 }
 
 pub struct GetAssetsView {
@@ -223,8 +223,8 @@ impl GetAssetsView {
         self.rip_request.take()
     }
 
-    /// The gamedata folder of the last retro download, once it finished.
-    pub fn finished_retro_download(&self) -> Option<PathBuf> {
+    /// The last retro download, once it finished without being stopped.
+    pub fn finished_retro_download(&self) -> Option<RetroDownload> {
         self.state.lock().retro_finished.clone()
     }
 
@@ -292,13 +292,14 @@ impl GetAssetsView {
         }
     }
 
-    fn start(&mut self, shared: &Shared, jobs: Vec<Job>) {
-        let Some(hotel) = furniture_language::language(self.hotel) else { return };
+    /// Starts the jobs; false when nothing was started (a run is going on).
+    fn start(&mut self, shared: &Shared, jobs: Vec<Job>) -> bool {
+        let Some(hotel) = furniture_language::language(self.hotel) else { return false };
         let cancel = CancellationToken::new();
         {
             let mut state = self.state.lock();
             if state.running {
-                return;
+                return false;
             }
             state.running = true;
             state.stopped = false;
@@ -342,6 +343,8 @@ impl GetAssetsView {
                 let names: Vec<&str> = options.headers.iter().map(|(name, _)| name.as_str()).collect();
                 log(&format!("  with the headers {}", names.join(", ")));
             }
+            // Whether the custom furniture came down (None: not part of this run).
+            let mut furniture: Option<bool> = None;
             let result = match header_error {
                 Some(e) => Err(anyhow::anyhow!(e)),
                 None => Downloader::new(&root, Urls::habbo(hotel), options, &log, cancel.clone()),
@@ -367,6 +370,9 @@ impl GetAssetsView {
                             Ok(summary) => log(&format!("  {summary}")),
                             Err(e) => log(&format!("! {title}: {e}")),
                         }
+                        if job == Job::RetroFurniture {
+                            furniture = Some(outcome.is_ok());
+                        }
                         state.lock().results.push((title, outcome));
                     }
                 }
@@ -375,12 +381,13 @@ impl GetAssetsView {
             s.running = false;
             s.stopped = cancel.is_cancelled();
             s.cancel = None;
-            if retro_run {
-                s.retro_finished = Some(gamedata);
+            if retro_run && !cancel.is_cancelled() {
+                s.retro_finished = Some(RetroDownload { gamedata, furniture });
             }
             drop(s);
             task_shared.set_status(t("Ready."));
         });
+        true
     }
 
     fn take_picked(&mut self) {
@@ -895,7 +902,10 @@ impl View for GetAssetsView {
             self.scroll_top = true;
         }
         if let Some(assets) = start {
-            self.start(shared, assets);
+            if !self.start(shared, assets) {
+                // Not started: neither is its catalogue rip.
+                self.rip_request = None;
+            }
         }
     }
 

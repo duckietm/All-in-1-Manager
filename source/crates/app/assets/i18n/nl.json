@@ -4237,5 +4237,11 @@
   "Wait for the download to finish.": "Wacht tot de download klaar is.",
   "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "Wachten op G-Earth: start het en verbind het met het hotel (de ripper kan het voor je downloaden en starten).",
   "When the download is finished too, the furni it lacks are listed here.": "Als de download ook klaar is, staan hier de meubels die hij mist.",
-  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} meubels die de catalogus verkoopt zijn niet gedownload (geen .hab of .nitro): {names}"
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} meubels die de catalogus verkoopt zijn niet gedownload (geen .hab of .nitro): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Er loopt al een cataloguskopie (pagina Catalogue ripper).",
+  "No catalogue rip with this download": "Geen cataloguskopie bij deze download",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "De download van de eigen meubels is mislukt, dus de meubels die hij mist worden niet opgesomd.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "De eigen meubels hoorden niet bij deze download, dus de meubels die hij mist worden niet opgesomd.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Zet eerst Normaal en/of Builders Club aan in de opties van de Catalogue ripper.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} zijn als .swf bewaard in source/: De bewaarde .swf-bestanden omzetten maakt hun .hab: {names}"
 }

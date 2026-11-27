@@ -4237,5 +4237,11 @@
   "Wait for the download to finish.": "Odota, että lataus valmistuu.",
   "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "Odotetaan G-Earthia: käynnistä se ja yhdistä se hotelliin (ripper voi ladata ja käynnistää sen puolestasi).",
   "When the download is finished too, the furni it lacks are listed here.": "Kun myös lataus on valmis, siitä puuttuvat huonekalut luetellaan tässä.",
-  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} katalogin myymää huonekalua jäi lataamatta (ei .hab- tai .nitro-tiedostoa): {names}"
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} katalogin myymää huonekalua jäi lataamatta (ei .hab- tai .nitro-tiedostoa): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Katalogin kopio on jo käynnissä (Catalogue ripper -sivu).",
+  "No catalogue rip with this download": "Tällä latauksella ei kopioida katalogia",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "Omien huonekalujen lataus epäonnistui, joten siitä puuttuvia huonekaluja ei luetella.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Omat huonekalut eivät kuuluneet tähän lataukseen, joten siitä puuttuvia huonekaluja ei luetella.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Kytke ensin Normaali ja/tai Builders Club päälle Catalogue ripperin asetuksista.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} on säilytetty .swf-tiedostoina kansiossa source/: Muunna säilytetyt .swf-tiedostot tekee niiden .hab-tiedostot: {names}"
 }

@@ -414,9 +414,9 @@ fn result_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, result: &R
 /// other database pages use); without a saved account the rip goes on without it.
 struct HotelItems(Arc<dyn Server>);
 
-#[async_trait::async_trait]
-impl rip::ItemsSource for HotelItems {
-    async fn items_base(&self) -> anyhow::Result<Vec<ItemsBaseRow>> {
+impl HotelItems {
+    /// A MariaDB session with the saved account, and the hotel database's name.
+    async fn session(&self) -> anyhow::Result<(SqlSession, String)> {
         let server = &*self.0;
         let host = server.login().host.clone();
         let saved = aio_core::config_dir::load_database_credentials(&host)
@@ -425,46 +425,192 @@ impl rip::ItemsSource for HotelItems {
         let port = if saved.port > 0 { saved.port } else { 3306 };
         let database = aio_remote::catalog_admin::hotel_database(server).await?;
         let session = SqlSession::open(server, &user, &saved.root_password, port).await?;
+        Ok((session, database))
+    }
+}
+
+#[async_trait::async_trait]
+impl rip::ItemsSource for HotelItems {
+    async fn items_base(&self) -> anyhow::Result<Vec<ItemsBaseRow>> {
+        let (session, database) = self.session().await?;
         let table = format!("{}.`items_base`", aio_remote::sql_session::quote(&database));
         let rows = match session.select(&format!("SELECT id, sprite_id, type, item_name, effect_id_male FROM {table}"), Vec::new()).await {
-            Ok(rows) => rows,
+            Ok(rows) => Ok(rows),
             // An emulator without effect_id_male.
-            Err(_) => session.select(&format!("SELECT id, sprite_id, type, item_name, 0 FROM {table}"), Vec::new()).await?,
+            Err(_) => session.select(&format!("SELECT id, sprite_id, type, item_name, 0 FROM {table}"), Vec::new()).await,
         };
         session.close().await;
-        Ok(rows.into_iter().filter_map(|row| items_row(&row)).collect())
+        Ok(rows?.into_iter().filter_map(|row| items_row(&row)).collect())
+    }
+
+    /// The hotel's pages and offers (both catalogues), for the merge and the id ranges.
+    async fn existing_catalogue(&self) -> anyhow::Result<Option<rip::ExistingCatalogue>> {
+        let (session, database) = self.session().await?;
+        let session = Arc::new(session);
+        let reader = session.clone();
+        let select = move |sql: String| -> futures::future::BoxFuture<'static, anyhow::Result<Vec<Vec<SqlValue>>>> {
+            let reader = reader.clone();
+            Box::pin(async move { reader.select(&sql, Vec::new()).await })
+        };
+        let existing = load_existing(&select, &database).await;
+        if let Ok(session) = Arc::try_unwrap(session) {
+            session.close().await;
+        }
+        existing.map(Some)
+    }
+}
+
+/// One read-only SELECT on the hotel database.
+type Select = dyn Fn(String) -> futures::future::BoxFuture<'static, anyhow::Result<Vec<Vec<SqlValue>>>> + Send + Sync;
+
+/// Rows per read: the Manager's reads stop at 10,000 rows.
+const WINDOW: usize = aio_remote::sql_session::MAX_QUERY_ROWS;
+
+/// MariaDB's ER_NO_SUCH_TABLE.
+fn missing_table(error: &anyhow::Error) -> bool {
+    let text = format!("{error:#}");
+    text.contains("1146") || text.contains("doesn't exist")
+}
+
+/// Every row of `columns` (the first one the id) of `table`, read WINDOW rows at a time in id order. None: the table
+/// does not exist and `optional` (the Builders Club warehouse of an emulator without one); any other error fails.
+async fn read_windowed(select: &Select, table: &str, columns: &str, optional: bool) -> anyhow::Result<Option<Vec<Vec<SqlValue>>>> {
+    let mut all = Vec::new();
+    let mut after = i64::MIN;
+    loop {
+        let sql = format!("SELECT {columns} FROM {table} WHERE id > {after} ORDER BY id LIMIT {WINDOW}");
+        let rows = match select(sql).await {
+            Ok(rows) => rows,
+            Err(error) if optional && all.is_empty() && missing_table(&error) => return Ok(None),
+            Err(error) => return Err(error.context(format!("reading {table}"))),
+        };
+        let count = rows.len();
+        if let Some(last) = rows.last() {
+            after = last.first().and_then(sql_int).ok_or_else(|| anyhow::anyhow!("{table}: an id that is not a number"))?;
+        }
+        all.extend(rows);
+        if count < WINDOW {
+            return Ok(Some(all));
+        }
+    }
+}
+
+/// The hotel's catalogue pages and offers, normal and Builders Club, with only the columns the merge needs.
+async fn load_existing(select: &Select, database: &str) -> anyhow::Result<rip::ExistingCatalogue> {
+    let db = aio_remote::sql_session::quote(database);
+    let (mut pages, mut offers) = (Vec::new(), Vec::new());
+    for (kind, page_table, offer_table, optional) in [("NORMAL", "catalog_pages", "catalog_items", false), ("BUILDER", "catalog_pages_bc", "catalog_items_bc", true)] {
+        let Some(page_rows) = read_windowed(select, &format!("{db}.`{page_table}`"), "id, parent_id, caption, order_num", optional).await? else { continue };
+        let offer_rows = read_windowed(select, &format!("{db}.`{offer_table}`"), "id, page_id, item_ids", optional).await?.unwrap_or_default();
+        for row in page_rows {
+            let Some(id) = row.first().and_then(sql_int) else { continue };
+            pages.push(rip::ExistingPage {
+                id,
+                parent_id: row.get(1).and_then(sql_int).unwrap_or(-1),
+                caption: row.get(2).map(sql_text).unwrap_or_default(),
+                catalog_type: kind.into(),
+                order_num: row.get(3).and_then(sql_int).unwrap_or(0),
+            });
+        }
+        for row in offer_rows {
+            let Some(id) = row.first().and_then(sql_int) else { continue };
+            offers.push(rip::ExistingOffer {
+                id,
+                page_id: row.get(1).and_then(sql_int).unwrap_or(0),
+                catalog_type: kind.into(),
+                item_ids: row.get(2).map(sql_text).unwrap_or_default(),
+            });
+        }
+    }
+    Ok(rip::ExistingCatalogue::from_rows(pages, offers))
+}
+
+fn sql_int(v: &SqlValue) -> Option<i64> {
+    match v {
+        SqlValue::Int(i) => Some(*i),
+        SqlValue::UInt(u) => i64::try_from(*u).ok(),
+        SqlValue::Text(s) | SqlValue::Decimal(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn sql_text(v: &SqlValue) -> String {
+    match v {
+        SqlValue::Text(s) => s.clone(),
+        SqlValue::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
+        SqlValue::Null => String::new(),
+        other => sql_int(other).map(|i| i.to_string()).unwrap_or_default(),
     }
 }
 
 fn items_row(row: &[SqlValue]) -> Option<ItemsBaseRow> {
-    let int = |v: &SqlValue| -> Option<i64> {
-        match v {
-            SqlValue::Int(i) => Some(*i),
-            SqlValue::UInt(u) => i64::try_from(*u).ok(),
-            SqlValue::Text(s) | SqlValue::Decimal(s) => s.trim().parse().ok(),
-            _ => None,
-        }
-    };
-    let text = |v: &SqlValue| -> String {
-        match v {
-            SqlValue::Text(s) => s.clone(),
-            SqlValue::Bytes(b) => String::from_utf8_lossy(b).into_owned(),
-            SqlValue::Null => String::new(),
-            other => int(other).map(|i| i.to_string()).unwrap_or_default(),
-        }
-    };
     Some(ItemsBaseRow {
-        id: u32::try_from(int(row.first()?)?).ok()?,
-        sprite_id: int(row.get(1)?).unwrap_or(0) as i32,
-        item_type: text(row.get(2)?),
-        item_name: text(row.get(3)?),
-        effect_id: row.get(4).and_then(int).unwrap_or(0) as i32,
+        id: u32::try_from(sql_int(row.first()?)?).ok()?,
+        sprite_id: sql_int(row.get(1)?).unwrap_or(0) as i32,
+        item_type: sql_text(row.get(2)?),
+        item_name: sql_text(row.get(3)?),
+        effect_id: row.get(4).and_then(sql_int).unwrap_or(0) as i32,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A database of `pages` normal pages (one offer each) and no Builders Club tables, answering windowed SELECTs
+    /// and recording them.
+    fn fake_database(pages: i64, bc_error: &'static str) -> (Arc<Mutex<Vec<String>>>, Box<Select>) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let select = move |sql: String| -> futures::future::BoxFuture<'static, anyhow::Result<Vec<Vec<SqlValue>>>> {
+            log.lock().push(sql.clone());
+            let result = (|| {
+                if sql.contains("_bc`") {
+                    anyhow::bail!("{bc_error}");
+                }
+                let after: i64 = sql.split("WHERE id > ").nth(1).and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok()).unwrap();
+                let limit: usize = sql.rsplit("LIMIT ").next().and_then(|s| s.trim().parse().ok()).unwrap();
+                let ids = (1..=pages).filter(|id| *id > after).take(limit);
+                Ok(if sql.contains("`catalog_pages`") {
+                    ids.map(|id| vec![SqlValue::UInt(id as u64), SqlValue::Int(if id == 1 { -1 } else { 1 }), SqlValue::Bytes(format!("Page {id}").into_bytes()), SqlValue::Int(id)]).collect()
+                } else {
+                    ids.map(|id| vec![SqlValue::Int(id), SqlValue::Int(id), SqlValue::Text(format!("{}:2;7", id + 100))]).collect()
+                })
+            })();
+            Box::pin(async move { result })
+        };
+        (seen, Box::new(select))
+    }
+
+    #[tokio::test]
+    async fn loader_windows_and_missing_bc_table() {
+        let (seen, select) = fake_database(25_000, "ERROR 42S02 (1146): Table 'habbo.catalog_pages_bc' doesn't exist");
+        let existing = load_existing(&*select, "habbo").await.unwrap();
+        assert_eq!(existing.page_tree.len(), 25_000);
+        assert_eq!(existing.max_page("NORMAL"), 25_000);
+        assert_eq!(existing.max_offer("NORMAL"), 25_000);
+        assert_eq!(existing.page_path("NORMAL", 3).unwrap(), vec!["page 1", "page 3"]);
+        assert_eq!(existing.offers_by_page["NORMAL"][&3], vec![vec![7, 103]]);
+        assert!(!existing.pages.contains_key("BUILDER"), "no warehouse");
+        let seen = seen.lock().clone();
+        // 3 windows per table (10,000 + 10,000 + 5,000), then the one missing BC table (its offers are not read).
+        assert_eq!(seen.len(), 7, "{seen:#?}");
+        assert_eq!(seen[0], format!("SELECT id, parent_id, caption, order_num FROM `habbo`.`catalog_pages` WHERE id > {} ORDER BY id LIMIT 10000", i64::MIN));
+        assert!(seen[1].contains("WHERE id > 10000 ORDER BY id LIMIT 10000"), "{}", seen[1]);
+        assert!(seen[3].starts_with("SELECT id, page_id, item_ids FROM `habbo`.`catalog_items` WHERE"), "{}", seen[3]);
+        assert!(seen[6].contains("`catalog_pages_bc`"));
+        assert!(seen.iter().all(|s| s.starts_with("SELECT ")), "read-only");
+
+        // An exact multiple of the window needs one more (empty) read.
+        let (seen, select) = fake_database(10_000, "ERROR 42S02 (1146): no such table");
+        load_existing(&*select, "habbo").await.unwrap();
+        assert_eq!(seen.lock().len(), 5);
+
+        // Any other error fails the load.
+        let (_, select) = fake_database(5, "ERROR 1142 (42000): SELECT command denied");
+        let error = load_existing(&*select, "habbo").await.unwrap_err();
+        assert!(format!("{error:#}").contains("1142"), "{error:#}");
+    }
 
     #[test]
     fn items_base_rows_are_read_from_the_values() {

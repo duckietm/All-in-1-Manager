@@ -59,7 +59,7 @@ use std::path::PathBuf;
 use futures::future::BoxFuture;
 
 pub use export::ItemsBase;
-pub use manager::{ExistingCatalogue, ManagerMode};
+pub use manager::{ExistingCatalogue, ExistingOffer, ExistingPage, ManagerMode};
 pub use packets::Headers;
 pub use profiles::{
     load_profiles, profiles, save_profile, DetectedBy, HeaderMap, HotelKind, HotelProfile,

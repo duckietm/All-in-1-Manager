@@ -19,7 +19,7 @@
 //!
 //! The Manager previews every change of the file before writing anything.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use serde::{Deserialize, Serialize};
@@ -53,14 +53,113 @@ impl ManagerMode {
     }
 }
 
-/// The ids already in the hotel, per `catalog_type` ("NORMAL" / "BUILDER").
+/// One page of the hotel's catalogue, as read for the merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingPage {
+    pub id: i64,
+    /// -1 (or 0) for a page at the root.
+    pub parent_id: i64,
+    pub caption: String,
+    /// "NORMAL" or "BUILDER".
+    pub catalog_type: String,
+    pub order_num: i64,
+}
+
+/// One offer of the hotel's catalogue, as read for the merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingOffer {
+    pub id: i64,
+    pub page_id: i64,
+    /// "NORMAL" or "BUILDER".
+    pub catalog_type: String,
+    /// As in catalog_items: `12`, `12;13`, `12:2;13:1`, ...
+    pub item_ids: String,
+}
+
+/// The hotel's catalogue, per `catalog_type` ("NORMAL" / "BUILDER"): the ids (for
+/// `ReplaceRipped` / `Add`) and, when it was read whole, the page tree and the furni each
+/// page's offers sell (for `Merge`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExistingCatalogue {
     pub pages: BTreeMap<String, BTreeSet<i64>>,
     pub offers: BTreeMap<String, BTreeSet<i64>>,
+    /// Every page with its parent and caption; empty when only the ids are known.
+    pub page_tree: Vec<ExistingPage>,
+    /// Per catalog_type, page id → the items_base ids of each offer on it (sorted, no repeats).
+    pub offers_by_page: BTreeMap<String, BTreeMap<i64, Vec<Vec<i64>>>>,
+}
+
+/// The items_base ids an offer sells, sorted, without repeats or counts (`12:2;13` → 12, 13).
+pub fn offer_item_ids(item_ids: &str) -> Vec<i64> {
+    let mut ids: Vec<i64> = item_ids
+        .split([';', ','])
+        .filter_map(|part| part.split(':').next()?.trim().parse().ok())
+        .filter(|id| *id > 0)
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// A caption as pages are matched by: trimmed, case-insensitive.
+pub fn caption_key(caption: &str) -> String {
+    caption.trim().to_lowercase()
 }
 
 impl ExistingCatalogue {
+    /// The catalogue from the rows read: ids, page tree and offers per page, per catalog_type.
+    pub fn from_rows(pages: Vec<ExistingPage>, offers: Vec<ExistingOffer>) -> Self {
+        let mut existing = ExistingCatalogue::default();
+        for mut page in pages {
+            let kind = catalog_type(page.catalog_type.trim());
+            page.catalog_type = kind.to_string();
+            existing.pages.entry(kind.to_string()).or_default().insert(page.id);
+            existing.page_tree.push(page);
+        }
+        for offer in offers {
+            let kind = catalog_type(offer.catalog_type.trim());
+            existing.offers.entry(kind.to_string()).or_default().insert(offer.id);
+            existing
+                .offers_by_page
+                .entry(kind.to_string())
+                .or_default()
+                .entry(offer.page_id)
+                .or_default()
+                .push(offer_item_ids(&offer.item_ids));
+        }
+        existing
+    }
+
+    /// Whether the page tree was read (an empty catalogue counts as read).
+    pub fn has_tree(&self) -> bool {
+        !self.page_tree.is_empty() || self.pages.values().all(BTreeSet::is_empty)
+    }
+
+    /// The matching keys of the captions from the root down to page `id` of `kind`; None when the
+    /// page is not there or does not hang from the root (a missing parent or a loop).
+    pub fn page_path(&self, kind: &str, id: i64) -> Option<Vec<String>> {
+        let by_id: HashMap<i64, &ExistingPage> = self
+            .page_tree
+            .iter()
+            .filter(|p| p.catalog_type == kind)
+            .map(|p| (p.id, p))
+            .collect();
+        let mut path = Vec::new();
+        let mut current = by_id.get(&id)?;
+        loop {
+            path.push(caption_key(&current.caption));
+            if current.parent_id <= 0 {
+                break;
+            }
+            if path.len() > by_id.len() {
+                return None;
+            }
+            current = by_id.get(&current.parent_id)?;
+        }
+        path.reverse();
+        Some(path)
+    }
+
     fn max(map: &BTreeMap<String, BTreeSet<i64>>, kind: &str) -> i64 {
         map.get(kind)
             .and_then(|ids| ids.iter().next_back().copied())
@@ -592,5 +691,54 @@ mod tests {
         e.pages.insert("NORMAL".into(), [3, 90, 7].into_iter().collect());
         e.offers.insert("BUILDER".into(), [5].into_iter().collect());
         assert_eq!((e.max_page("NORMAL"), e.max_offer("BUILDER"), e.max_offer("NORMAL")), (90, 5, 0));
+    }
+
+    fn page(id: i64, parent_id: i64, caption: &str, kind: &str) -> ExistingPage {
+        ExistingPage { id, parent_id, caption: caption.into(), catalog_type: kind.into(), order_num: id }
+    }
+
+    fn offer(id: i64, page_id: i64, kind: &str, item_ids: &str) -> ExistingOffer {
+        ExistingOffer { id, page_id, catalog_type: kind.into(), item_ids: item_ids.into() }
+    }
+
+    #[test]
+    fn page_paths_are_built_per_catalog_type() {
+        let existing = ExistingCatalogue::from_rows(
+            vec![
+                page(1, -1, " Furniture ", "NORMAL"),
+                page(2, 1, "ICED", "NORMAL"),
+                page(3, 0, "Root page", "NORMAL"),
+                page(9, 77, "Orphan", "NORMAL"),
+                // The same ids in the Builders Club warehouse are other pages.
+                page(1, -1, "Blocks", "BUILDER"),
+                page(2, 1, "Walls", "BUILDERS_CLUB"),
+                page(5, 6, "Loop a", "BUILDER"),
+                page(6, 5, "Loop b", "BUILDER"),
+            ],
+            vec![
+                offer(10, 2, "NORMAL", "300:2;301;300"),
+                offer(11, 2, "NORMAL", "302"),
+                offer(10, 2, "BUILDER", "400"),
+            ],
+        );
+        assert!(existing.has_tree());
+        assert_eq!(existing.page_path("NORMAL", 2).unwrap(), vec!["furniture", "iced"]);
+        assert_eq!(existing.page_path("NORMAL", 3).unwrap(), vec!["root page"]);
+        assert_eq!(existing.page_path("BUILDER", 2).unwrap(), vec!["blocks", "walls"]);
+        assert_eq!(existing.page_path("NORMAL", 9), None, "a missing parent");
+        assert_eq!(existing.page_path("BUILDER", 5), None, "a loop");
+        assert_eq!(existing.page_path("BUILDER", 3), None);
+        assert_eq!(existing.max_page("NORMAL"), 9);
+        assert_eq!(existing.max_page("BUILDER"), 6);
+        assert_eq!(existing.max_offer("NORMAL"), 11);
+        assert_eq!(existing.offers_by_page["NORMAL"][&2], vec![vec![300, 301], vec![302]]);
+        assert_eq!(existing.offers_by_page["BUILDER"][&2], vec![vec![400]]);
+        assert_eq!(offer_item_ids(" 12 : 1 ; x;0;12,7"), vec![7, 12]);
+
+        // Only ids (an older source): no tree.
+        let mut ids = ExistingCatalogue::default();
+        ids.pages.insert("NORMAL".into(), [1].into_iter().collect());
+        assert!(!ids.has_tree());
+        assert!(ExistingCatalogue::default().has_tree());
     }
 }

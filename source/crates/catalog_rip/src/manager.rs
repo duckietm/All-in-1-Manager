@@ -707,6 +707,8 @@ pub struct MergeSummary {
     pub offers_skipped: usize,
     /// The hotel has the same caption twice under one parent: the first page was joined.
     pub ambiguous: Vec<String>,
+    /// The items_base ids of the offers added (not of the skipped ones).
+    pub added_items: BTreeSet<i64>,
 }
 
 const ROOT: i64 = -1;
@@ -1091,6 +1093,7 @@ impl<'a, 'e> Merger<'a, 'e> {
                 has_content: true,
             });
             added += 1;
+            self.summary.added_items.extend(set.0.iter().copied());
             self.summary.offers_added += 1;
             stats.offers += 1;
         }
@@ -1134,26 +1137,11 @@ fn merge_rows(
         summary.offers_added += s.offers_added;
         summary.offers_skipped += s.offers_skipped;
         summary.ambiguous.extend(s.ambiguous);
+        summary.added_items.extend(s.added_items);
     }
     stats.merge = Some(summary);
     pages.extend(offers);
     (pages, stats, notes)
-}
-
-/// The items_base ids every offer of the rip resolves to (the offers the import adds and the ones
-/// it skips because the page already sells them), sorted.
-pub fn referenced_items(catalog: &RippedCatalog, export: &ManagerExport) -> BTreeSet<i64> {
-    let mut ids = BTreeSet::new();
-    for ripped in &catalog.modes {
-        for page in ripped.pages.values() {
-            for offer in &page.offers {
-                if let OfferIds::Literal(literal) = resolve_offer(offer, export) {
-                    ids.extend(offer_item_ids(&literal));
-                }
-            }
-        }
-    }
-    ids
 }
 
 /// The whole rip as one file for the Manager's catalogue import.
@@ -1742,6 +1730,7 @@ mod merge_tests {
         assert_eq!(offers_on(&created, false, 1), vec!["1002"]);
         let s = summary(&file);
         assert_eq!((s.offers_added, s.offers_skipped), (1, 3));
+        assert_eq!(s.added_items.iter().copied().collect::<Vec<_>>(), vec![1002], "only the furni of offers added, never of the skipped ones");
         assert_eq!((file.stats.offers_unresolved, file.stats.offers_without_products), (1, 1));
         let text = &file.text;
         assert!(text.contains("-- skipped: NORMAL offer 500 'offer_500' on page 10: page 1 already sells items_base 1001"), "{text}");

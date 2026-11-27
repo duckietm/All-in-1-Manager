@@ -1718,6 +1718,19 @@ pub async fn reload_catalog(server: &dyn Server) -> Result<()> {
     Err(ServerError(format!("The emulator did not reload the catalogue: {}", if answer.message.is_empty() { format!("status {}", answer.status) } else { answer.message })).into())
 }
 
+/// The RCON request that makes Polaris load items_base again (`UpdateItems` → `ItemManager.loadItems`): furni
+/// interactions changed in the database count only after it (or a restart).
+pub const ITEMS_RELOAD_REQUEST: &str = r#"{"key":"updateitems","data":{}}"#;
+
+/// Makes the running emulator load items_base again (the furni interactions a merge changed).
+pub async fn reload_items(server: &dyn Server) -> Result<()> {
+    let answer = crate::rcon::send(server, ITEMS_RELOAD_REQUEST).await?;
+    if answer.ok() {
+        return Ok(());
+    }
+    Err(ServerError(format!("The emulator did not reload the furni: {}", if answer.message.is_empty() { format!("status {}", answer.status) } else { answer.message })).into())
+}
+
 // ---- Catalogue explorer: offers dragged onto a page --------------------------------------------------------
 
 /// A page's offer ids after `dragged` are put before `before` (None, or an id not on the page: at the end). An id

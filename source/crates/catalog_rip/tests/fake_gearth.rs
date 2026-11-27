@@ -1209,7 +1209,9 @@ async fn merge_preview_of_a_rip_folder() {
     assert_eq!(plan.stats.offers_unresolved, 3);
     assert!(plan.notes.iter().any(|n| n.starts_with("skipped:") && n.contains("already sells items_base 500")), "{:?}", plan.notes);
     assert!(plan.notes.iter().filter(|n| n.starts_with("skipped:") && n.contains("not in items_base")).count() == 3, "{:?}", plan.notes);
-    assert_eq!(plan.items.iter().copied().collect::<Vec<_>>(), vec![500, 501, 502, 503], "every furni the offers resolve to");
+    // The interactions are looked at only for the furni of the offers added: not the dragon, which the hotel sells.
+    assert_eq!(plan.items.iter().copied().collect::<Vec<_>>(), vec![501, 502, 503]);
+    assert!(!plan.notes.iter().any(|n| n.starts_with("note:")), "the furnidata was read: {:?}", plan.notes);
 
     // The import preview on the hotel's catalogue: only creations, as many as the merge says.
     let current = aio_remote::catalog_transfer::target(&Default::default(), HOTEL_CATALOGUE).unwrap();
@@ -1221,6 +1223,13 @@ async fn merge_preview_of_a_rip_folder() {
     assert!(changes.iter().any(|c| c.entity.page && c.name() == format!("Imported from {}", plan.hotel)));
     // The added offers on the joined page 11.
     assert!(changes.iter().filter(|c| !c.entity.page).any(|c| c.after.as_ref().unwrap()["pageId"] == 11));
+
+    // A furnidata that cannot be read is said in the preview, not only in a log.
+    let broken = RipOptions { use_furnidata: true, furnidata_url: Some(dir.path().join("gone.xml").display().to_string()), ..RipOptions::default() };
+    let plan = aio_catalog_rip::merge_plan(&first.folder, &broken, &HotelWithCatalogue, &log).await.unwrap();
+    let notes: Vec<&String> = plan.notes.iter().filter(|n| n.starts_with("note:")).collect();
+    assert!(notes.iter().any(|n| n.contains("furnidata could not be read")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("by sprite id")), "{notes:?}");
 }
 
 #[tokio::test]

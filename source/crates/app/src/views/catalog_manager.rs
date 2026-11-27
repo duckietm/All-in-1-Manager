@@ -137,6 +137,10 @@ struct State {
     busy: bool,
     /// Saved since the last publish: the hotel still shows the old catalogue.
     unpublished: bool,
+    /// Furni interactions changed since the last publish: Publish also makes the emulator load items_base again.
+    items_unpublished: bool,
+    /// The record of the merges' interactions cannot be read (not just missing): no undo until it can.
+    records_error: Option<String>,
     status: Status,
 }
 
@@ -742,7 +746,16 @@ impl Ctl {
         let records = catalog_merge::records(&session, &database).await;
         self.with(generation, |s| {
             s.busy = false;
-            s.interaction_records = records;
+            match records {
+                Ok(records) => {
+                    s.interaction_records = records;
+                    s.records_error = None;
+                }
+                Err(error) => {
+                    s.interaction_records.clear();
+                    s.records_error = Some(format!("{error:#}"));
+                }
+            }
             match history {
                 Ok(history) => s.history = Some(history),
                 Err(error) => s.status = Status::error(error.to_string()),
@@ -755,38 +768,55 @@ impl Ctl {
         let Some((generation, session, database)) = self.session() else { return };
         let (operation, interactions) = {
             let s = self.lock();
+            if let Some(error) = s.records_error.clone() {
+                drop(s);
+                self.with(generation, |s| s.status = Status::error(tf("Nothing can be undone while the record of the merges' furni interactions cannot be read: {error}", &[("error", &error)])));
+                return;
+            }
             let operation = s.history.clone().flatten().and_then(|h| h.into_iter().find(|o| o.id == id));
             let interactions = operation.as_ref().and_then(|o| s.interaction_records.get(&o.revision).cloned()).unwrap_or_default();
             (operation, interactions)
         };
         let Some(operation) = operation else { return };
-        match catalog_merge::undo_problem(&session, &database, &operation, &interactions).await {
-            Ok(None) => {}
-            Ok(Some(problem)) => {
+        let plan = match catalog_merge::undo_plan(&session, &database, &operation, &interactions).await {
+            Ok(catalog_merge::UndoPlan::Blocked(problem)) => {
                 self.with(generation, |s| s.status = Status::error(tf("Operation #{id} cannot be undone: {problem}", &[("id", &id.to_string()), ("problem", &problem)])));
                 return;
             }
+            Ok(plan) => plan,
             Err(error) => {
                 self.with(generation, |s| s.status = Status::error(error.to_string()));
                 return;
             }
-        }
-        let options = vec![Choice::new(t("Undo it"), t("Put every page and offer it changed back as it was before."), true).primary(), Choice::new(t("Cancel"), t("Leave it."), false)];
-        let mut message = tf("{count} pages and offers go back to how they were before operation #{id}. The undo is recorded in the history too.", &[("count", &operation.entries.len().to_string()), ("id", &id.to_string())]);
+        };
+        let only = plan == catalog_merge::UndoPlan::InteractionsOnly;
+        let options = if only {
+            vec![Choice::new(t("Undo the interactions only"), t("Put the furni interactions the merge changed back as they were."), true).primary(), Choice::new(t("Cancel"), t("Leave it."), false)]
+        } else {
+            vec![Choice::new(t("Undo it"), t("Put every page and offer it changed back as it was before."), true).primary(), Choice::new(t("Cancel"), t("Leave it."), false)]
+        };
+        let mut message = if only {
+            tf("The pages and offers of operation #{id} are already back as they were (undone in Octane's Catalog Studio).", &[("id", &id.to_string())])
+        } else {
+            tf("{count} pages and offers go back to how they were before operation #{id}. The undo is recorded in the history too.", &[("count", &operation.entries.len().to_string()), ("id", &id.to_string())])
+        };
         if !interactions.is_empty() {
             message.push(' ');
             message.push_str(&tf("The interaction of {count} furni goes back too.", &[("count", &interactions.len().to_string())]));
+            message.push(' ');
+            message.push_str(t("Publish afterwards: it also makes the emulator load the furni again."));
         }
         if !self.shared.dialogs.choose(t("Undo operation"), &operation.summary, &message, false, options).await {
             return;
         }
         self.with(generation, |s| s.busy = true);
-        let result = catalog_merge::undo(&session, &database, &operation, &interactions).await;
+        let result = catalog_merge::undo(&session, &database, &operation, &interactions, &plan).await;
         self.with(generation, |s| {
             s.busy = false;
             match result {
                 Ok(()) => {
                     s.unpublished = true;
+                    s.items_unpublished |= !interactions.is_empty();
                     s.status = Status::ok(tf("Operation #{id} undone. Publish to show it in the hotel.", &[("id", &id.to_string())]));
                 }
                 Err(error) => s.status = Status::error(error.to_string()),
@@ -926,15 +956,29 @@ impl Ctl {
             s.busy = true;
             s.status = Status::ok(t("Asking the emulator to load the catalogue again ...").into());
         });
+        // Furni interactions changed (a merge or its undo): items_base first (RCON updateitems), the catalogue after.
+        let items = if self.lock().items_unpublished { Some(catalog_admin::reload_items(&*server).await) } else { None };
         let result = catalog_admin::reload_catalog(&*server).await;
         self.with(generation, |s| {
             s.busy = false;
-            match result {
-                Ok(()) => {
+            match (result, items) {
+                (Ok(()), Some(Err(error))) => {
                     s.unpublished = false;
-                    s.status = Status::ok(t("Published: the emulator loaded the catalogue again and the players online were told to refresh it.").into());
+                    s.status = Status::error(tf(
+                        "The catalogue is published, but the emulator did not load the furni again ({error}): restart the emulator so the new furni interactions count.",
+                        &[("error", &error.to_string())],
+                    ));
                 }
-                Err(error) => s.status = Status::error(error.to_string()),
+                (Ok(()), items) => {
+                    s.unpublished = false;
+                    s.items_unpublished = false;
+                    s.status = Status::ok(if items.is_some() {
+                        t("Published: the emulator loaded the furni and the catalogue again and the players online were told to refresh it.").into()
+                    } else {
+                        t("Published: the emulator loaded the catalogue again and the players online were told to refresh it.").into()
+                    });
+                }
+                (Err(error), _) => s.status = Status::error(error.to_string()),
             }
         });
     }
@@ -1129,7 +1173,12 @@ fn header(ui: &mut egui::Ui, palette: &Palette, s: &mut State, shared: &Shared, 
             }
             let ready = s.session.is_some() && !s.busy;
             let publish = if s.unpublished { t("Publish changes") } else { t("Publish") };
-            if ui.add_enabled(ready, widgets::primary_button(publish)).on_hover_text(t("The emulator loads the catalogue again and tells the players online to refresh it.")).clicked() {
+            let hint = if s.items_unpublished {
+                t("The emulator loads the furni (items_base, for the furni interactions changed) and the catalogue again and tells the players online to refresh it.")
+            } else {
+                t("The emulator loads the catalogue again and tells the players online to refresh it.")
+            };
+            if ui.add_enabled(ready, widgets::primary_button(publish)).on_hover_text(hint).clicked() {
                 actions.push(Action::Publish);
             }
             if ui.add_enabled(ready, small(t("Refresh"))).clicked() {
@@ -1846,6 +1895,12 @@ fn history(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Ve
         widgets::muted(ui, palette, t("No changes recorded yet."), 12.5);
         return;
     }
+    if let Some(error) = &s.records_error {
+        let text = tf("The record of the merges' furni interactions cannot be read, so nothing can be undone here until it can: {error}", &[("error", error)]);
+        ui.label(RichText::new(text).size(12.0).color(palette.error_text));
+        ui.add_space(4.0);
+    }
+    let blocked = s.records_error.is_some();
     for operation in history {
         let interactions = s.interaction_records.get(&operation.revision).map(Vec::len).unwrap_or(0);
         widgets::card_frame(palette).inner_margin(8).corner_radius(8).show(ui, |ui| {
@@ -1854,7 +1909,7 @@ fn history(ui: &mut egui::Ui, palette: &Palette, s: &mut State, actions: &mut Ve
                 ui.label(RichText::new(format!("#{}", operation.revision)).size(12.5).monospace().color(palette.muted));
                 ui.label(RichText::new(&operation.summary).size(13.0).strong());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(!busy && (!operation.entries.is_empty() || interactions > 0), small(t("Undo ..."))).clicked() {
+                    if ui.add_enabled(!busy && !blocked && (!operation.entries.is_empty() || interactions > 0), small(t("Undo ..."))).clicked() {
                         actions.push(Action::UndoOperation(operation.id));
                     }
                 });

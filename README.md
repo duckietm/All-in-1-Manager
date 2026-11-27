@@ -1487,14 +1487,20 @@ page has the rest:
   again). Merging the same rip twice adds nothing. The preview lists the joined and new pages, the skipped and left out
   offers with the reason, and every page and offer created.
   **Furniture bundles**: your hotel's `bundled/furniture` folder on this computer (the `.nitro` / `.hab` files, as in
-  Nitro-Files; remembered). With it, the preview also lists **furni interactions**: for every furni the rip's offers
-  use whose `items_base.interaction_type` is `default` (or empty), the interaction its bundle's logic gives (the
-  same mapping as the furni import: dice, trophy, postit, ...). A furni with an interaction of its own is never
-  changed. **Apply N changes** writes the pages, offers and interactions in one transaction, when nothing changed
-  since the preview, and records it in the History tab. **Undo** there puts the pages and offers back and, in the same
-  go, the old interactions (only where `items_base` still holds what the merge wrote): the Manager keeps them in a
-  small table of its own, `aio_manager_items_history`, made the first time a merge changes an interaction (Octane's
-  Catalog Studio undoes only pages and offers). **Import catalog_manager.sql as written ...** imports the file the
+  Nitro-Files; remembered). With it, the preview also lists **furni interactions**: for every furni of the offers the
+  merge adds (never the furni of offers skipped as already sold) whose `items_base.interaction_type` is `default` (or
+  empty), the interaction its bundle's logic gives (the same mapping as the furni import: dice, trophy, postit, ...).
+  A furni with an interaction of its own is never changed. The preview also says when the ripped hotel's furnidata
+  could not be read (then products are matched by sprite id). **Apply N changes** writes the pages, offers and
+  interactions in one transaction, when nothing changed since the preview (a merge only creates pages and offers:
+  anything else is refused), and records it in the History tab. **Publish** afterwards also asks the emulator to load
+  `items_base` again (RCON `updateitems`), so the new interactions count; if that fails, restart the emulator.
+  **Undo** in the History tab puts the pages and offers back and, in the same go, the old interactions (only where
+  `items_base` still holds what the merge wrote): the Manager keeps them in a small table of its own,
+  `aio_manager_items_history`, made the first time a merge changes an interaction (the MariaDB account needs the
+  CREATE privilege for that; without it the merge says so and writes nothing). Octane's Catalog Studio undoes only
+  pages and offers: after that, **Undo ...** here offers **Undo the interactions only**. When that table exists but
+  cannot be read, the History tab says so and allows no undo. **Import catalog_manager.sql as written ...** imports the file the
   ripper wrote instead, in its own mode (Replace deletes your whole catalogue first), through the usual import preview.
 - In **Checks**, **Merge into #id** moves the offers, sub-pages and front page tiles of pages that share an internal
   name to the first one, then deletes the others, after asking.

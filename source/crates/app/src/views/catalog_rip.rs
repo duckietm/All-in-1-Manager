@@ -396,6 +396,8 @@ fn result_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, result: &R
         let can_import = result.folder.join("packets").is_dir() && shared.session().is_some();
         let hint = if shared.session().is_none() {
             t("Log in to the hotel's server first")
+        } else if !result.folder.join("packets").is_dir() {
+            t("This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.")
         } else {
             t("Opens the Catalogue manager's Merge a rip with this rip: it is fitted into your catalogue and you see every change first; nothing is written until you click Apply there.")
         };

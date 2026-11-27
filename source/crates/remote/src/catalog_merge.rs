@@ -105,13 +105,29 @@ pub async fn read_items(session: &SqlSession, database: &str, ids: &[i64]) -> Re
     Ok(rows)
 }
 
-/// What the file changes in the catalogue; a file with no statements (a rip already merged) changes nothing.
+/// What the file changes in the catalogue; a file with no statements (a rip already merged) changes nothing. A merge
+/// only creates pages and offers: a file that would change or delete one of the hotel's is refused.
 pub fn catalogue_changes(current: &BTreeMap<Entity, Value>, sql: &str) -> std::result::Result<Vec<Change>, String> {
     if catalog_transfer::statements(sql)?.is_empty() {
         return Ok(Vec::new());
     }
     let target = catalog_transfer::target(current, sql)?;
-    Ok(catalog_transfer::changes(current, &target))
+    let changes = catalog_transfer::changes(current, &target);
+    only_creations(&changes)?;
+    Ok(changes)
+}
+
+/// Err when a change is not the creation of a new page or offer.
+fn only_creations(changes: &[Change]) -> std::result::Result<(), String> {
+    match changes.iter().find(|c| c.before.is_some()) {
+        Some(c) => Err(format!(
+            "a merge only adds pages and offers, but this file would {} the hotel's {} #{}",
+            if c.after.is_some() { "change" } else { "delete" },
+            if c.entity.page { "page" } else { "offer" },
+            c.entity.id
+        )),
+        None => Ok(()),
+    }
 }
 
 /// The preview of a merge: the catalogue as it was, what the file changes, the interactions changed.
@@ -235,6 +251,7 @@ fn moved_on(changes: &[InteractionChange], now: &[ItemRow], after: bool) -> Opti
 
 /// Writes the previewed merge in one transaction, when the catalogue and the furni are still as at the preview.
 pub async fn apply(session: &SqlSession, database: &str, preview: &Preview, summary: &str) -> Result<()> {
+    only_creations(&preview.changes).map_err(ServerError)?;
     if journal::capture_all(session, database).await? != preview.current {
         return Err(ServerError("The catalogue changed since the preview: preview the merge again.".into()).into());
     }
@@ -244,37 +261,96 @@ pub async fn apply(session: &SqlSession, database: &str, preview: &Preview, summ
             return Err(ServerError(format!("A furni changed since the preview ({problem}): preview the merge again.")).into());
         }
         if preview.history {
-            session.execute(&[(record_table_sql(database), Vec::new())]).await?;
+            if let Err(error) = session.execute(&[(record_table_sql(database), Vec::new())]).await {
+                return Err(record_table_error(error));
+            }
         }
     }
     session.execute(&apply_statements(database, preview, summary)).await?;
     Ok(())
 }
 
-/// The interaction records not undone yet, by history revision (none when the table is not there).
-pub async fn records(session: &SqlSession, database: &str) -> BTreeMap<i64, Vec<InteractionChange>> {
+/// The error of creating [`RECORD_TABLE`], said plainly when the MariaDB account may not create tables.
+fn record_table_error(error: anyhow::Error) -> anyhow::Error {
+    let denied = matches!(crate::sql_session::server_error_code(&error), Some(1142 | 1044)) || format!("{error:#}").contains("command denied");
+    if denied {
+        return ServerError(format!(
+            "The MariaDB account may not create the table {RECORD_TABLE}, which keeps the old furni interactions so the merge can be undone \
+             (it needs the CREATE privilege on the hotel database). Log in to MariaDB with an account that may create tables, or empty \
+             the Furniture bundles field to merge without changing interactions. Nothing was written. ({error:#})"
+        ))
+        .into();
+    }
+    error.context(format!("creating {RECORD_TABLE}"))
+}
+
+/// The interaction records not undone yet, by history revision: none when the table is not there (MariaDB 1146, no
+/// merge changed interactions yet); any other error is returned (then nothing may be undone: an undo without the
+/// record would leave the interactions behind).
+pub async fn records(session: &SqlSession, database: &str) -> Result<BTreeMap<i64, Vec<InteractionChange>>> {
     let sql = format!("SELECT revision, changes_json FROM {}.{RECORD_TABLE} WHERE undone = 0", quote(database));
-    let Ok(rows) = session.select(&sql, Vec::new()).await else { return BTreeMap::new() };
-    rows.iter().map(|r| (int(r.first()), parse_record(&text(r.get(1)).unwrap_or_default()))).filter(|(_, c)| !c.is_empty()).collect()
+    let rows = match session.select(&sql, Vec::new()).await {
+        Ok(rows) => rows,
+        Err(error) if crate::sql_session::server_error_code(&error) == Some(1146) => return Ok(BTreeMap::new()),
+        Err(error) => return Err(error.context(format!("reading {RECORD_TABLE}"))),
+    };
+    Ok(rows.iter().map(|r| (int(r.first()), parse_record(&text(r.get(1)).unwrap_or_default()))).filter(|(_, c)| !c.is_empty()).collect())
 }
 
-/// Why the operation (with its interaction record) cannot be undone, or None.
-pub async fn undo_problem(session: &SqlSession, database: &str, operation: &Operation, interactions: &[InteractionChange]) -> Result<Option<String>> {
-    if !operation.entries.is_empty() {
-        if let Some(problem) = journal::undo_problem(session, database, operation).await? {
-            return Ok(Some(problem));
+/// What an undo of an operation (with its interaction record) can do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UndoPlan {
+    /// Pages, offers and interactions back.
+    Whole,
+    /// The pages and offers are already back as they were (undone in Octane's Catalog Studio): only the interactions.
+    InteractionsOnly,
+    /// Why it cannot be undone.
+    Blocked(String),
+}
+
+/// The undo plan from the operation's entries as they are `now`, and its furni as they are `items`.
+pub fn plan_undo(operation: &Operation, now: &BTreeMap<Entity, Option<Value>>, interactions: &[InteractionChange], items: &[ItemRow]) -> UndoPlan {
+    let mut last: BTreeMap<Entity, (Option<Value>, Option<Value>)> = BTreeMap::new();
+    for change in &operation.entries {
+        let entry = last.entry(change.entity).or_insert((change.before.clone(), None));
+        entry.1 = change.after.clone();
+    }
+    let state = |e: &Entity| now.get(e).and_then(Option::as_ref);
+    let as_left = last.iter().all(|(e, (_, after))| journal::still_as_left(after.as_ref(), state(e)));
+    let back = !last.is_empty() && last.iter().all(|(e, (before, _))| journal::still_as_left(before.as_ref(), state(e)));
+    if let Some(problem) = moved_on(interactions, items, true) {
+        return UndoPlan::Blocked(format!("{problem}, not what the merge wrote: change it back by hand first."));
+    }
+    if as_left {
+        UndoPlan::Whole
+    } else if back && !interactions.is_empty() {
+        UndoPlan::InteractionsOnly
+    } else {
+        let changed = last.iter().find(|(e, (_, after))| !journal::still_as_left(after.as_ref(), state(e))).map(|(e, _)| *e);
+        let what = changed.map(|e| format!("{} #{}", if e.page { "Page" } else { "Offer" }, e.id)).unwrap_or_default();
+        UndoPlan::Blocked(format!("{what} was changed after this operation: undo that first, or change it back by hand."))
+    }
+}
+
+/// What an undo of the operation can do now.
+pub async fn undo_plan(session: &SqlSession, database: &str, operation: &Operation, interactions: &[InteractionChange]) -> Result<UndoPlan> {
+    let entities: Vec<Entity> = operation.entries.iter().map(|c| c.entity).collect::<BTreeSet<_>>().into_iter().collect();
+    let now = if entities.is_empty() {
+        BTreeMap::new()
+    } else {
+        match journal::capture(session, database, &entities).await {
+            Some(now) => now,
+            None => return Ok(UndoPlan::Blocked("The catalogue's history cannot be read.".into())),
         }
-    }
-    if interactions.is_empty() {
-        return Ok(None);
-    }
+    };
     let ids: Vec<i64> = interactions.iter().map(|c| c.item_id).collect();
-    let now = read_items(session, database, &ids).await?;
-    Ok(moved_on(interactions, &now, true).map(|p| format!("{p}, not what the merge wrote: change it back by hand first.")))
+    let items = if ids.is_empty() { Vec::new() } else { read_items(session, database, &ids).await? };
+    Ok(plan_undo(operation, &now, interactions, &items))
 }
 
-/// The statements that undo the operation and its interaction changes in one transaction.
-pub fn undo_statements(database: &str, operation: &Operation, interactions: &[InteractionChange]) -> Vec<(String, Vec<SqlValue>)> {
+/// The statements that undo the operation and its interaction changes in one transaction; with
+/// [`UndoPlan::InteractionsOnly`] only the interactions (the pages and offers are back already).
+pub fn undo_statements(database: &str, operation: &Operation, interactions: &[InteractionChange], plan: &UndoPlan) -> Vec<(String, Vec<SqlValue>)> {
     let db = quote(database);
     let mut statements: Vec<(String, Vec<SqlValue>)> = interactions
         .iter()
@@ -288,13 +364,18 @@ pub fn undo_statements(database: &str, operation: &Operation, interactions: &[In
     if !interactions.is_empty() {
         statements.push((format!("UPDATE {db}.{RECORD_TABLE} SET undone = 1 WHERE revision = ?"), vec![SqlValue::Int(operation.revision)]));
     }
-    statements.extend(journal::undo_statements(database, operation));
+    if *plan == UndoPlan::Whole {
+        statements.extend(journal::undo_statements(database, operation));
+    }
     statements
 }
 
-/// Undoes the operation and its interaction changes. Check [`undo_problem`] first.
-pub async fn undo(session: &SqlSession, database: &str, operation: &Operation, interactions: &[InteractionChange]) -> Result<()> {
-    session.execute(&undo_statements(database, operation, interactions)).await?;
+/// Undoes the operation and its interaction changes as `plan` ([`undo_plan`]) says; a blocked plan writes nothing.
+pub async fn undo(session: &SqlSession, database: &str, operation: &Operation, interactions: &[InteractionChange], plan: &UndoPlan) -> Result<()> {
+    if let UndoPlan::Blocked(problem) = plan {
+        return Err(ServerError(problem.clone()).into());
+    }
+    session.execute(&undo_statements(database, operation, interactions, plan)).await?;
     Ok(())
 }
 
@@ -368,7 +449,7 @@ mod tests {
         assert!(!apply_statements("hotel", &without, "x").iter().any(|(s, _)| s.contains(RECORD_TABLE) || s.contains("catalog_manager_history")));
 
         let operation = Operation { id: 9, revision: 41, actor: String::new(), summary: "merge".into(), source: "SQL".into(), created_at: String::new(), entries: Vec::new() };
-        let undo = undo_statements("hotel", &operation, &changes);
+        let undo = undo_statements("hotel", &operation, &changes, &UndoPlan::Whole);
         assert_eq!(undo[0].0, "UPDATE `hotel`.items_base SET interaction_type = ? WHERE id = ? AND interaction_type = ?");
         assert_eq!(undo[0].1, vec![SqlValue::Text("default".into()), SqlValue::Int(1), SqlValue::Text("dice".into())]);
         assert_eq!(undo[1].1[0], SqlValue::Null, "back to NULL");
@@ -387,5 +468,59 @@ mod tests {
         let file = "-- Catalog Studio restricted SQL export.\n-- skipped: NORMAL offer 1 'x' on page 2: page 7 already sells items_base 5\n";
         assert_eq!(catalogue_changes(&BTreeMap::new(), file).unwrap(), Vec::new());
         assert!(catalogue_changes(&BTreeMap::new(), "DROP TABLE x").is_err());
+    }
+
+    fn snapshot(caption: &str) -> Value {
+        json!({"catalogType": "NORMAL", "pageId": 7, "parentId": -1, "caption": caption})
+    }
+
+    #[test]
+    fn a_missing_create_privilege_is_said_plainly() {
+        let error = record_table_error(anyhow::anyhow!("ERROR 1142 (42000): CREATE command denied to user 'hotel'@'localhost' for table 'aio_manager_items_history'"));
+        let text = format!("{error:#}");
+        assert!(text.contains("CREATE privilege") && text.contains("Nothing was written"), "{text}");
+        let other = format!("{:#}", record_table_error(anyhow::anyhow!("lost connection")));
+        assert!(!other.contains("CREATE privilege") && other.contains("creating aio_manager_items_history"), "{other}");
+    }
+
+    #[test]
+    fn a_merge_never_changes_or_deletes_the_hotels_rows() {
+        let page = Entity { builders: false, page: true, id: 7 };
+        let current = BTreeMap::from([(page, snapshot("Mine"))]);
+        let error = catalogue_changes(&current, "UPDATE catalog_pages SET caption = 'Theirs' WHERE id = 7").unwrap_err();
+        assert!(error.contains("would change the hotel's page #7"), "{error}");
+        assert!(catalogue_changes(&current, "DELETE FROM catalog_pages WHERE id = 7").unwrap_err().contains("delete"));
+        assert_eq!(catalogue_changes(&current, "INSERT INTO catalog_pages (id, caption) VALUES (8, 'New')").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn undo_after_octane_undid_the_pages_puts_back_the_interactions_only() {
+        let page = Entity { builders: false, page: true, id: 8 };
+        let operation = Operation {
+            id: 9,
+            revision: 41,
+            actor: String::new(),
+            summary: "merge".into(),
+            source: "SQL".into(),
+            created_at: String::new(),
+            entries: vec![Change { entity: page, operation: "CREATE".into(), before: None, after: Some(snapshot("New")) }],
+        };
+        let changes = vec![InteractionChange { item_id: 1, item_name: "dice_master".into(), before: Some("default".into()), after: "dice".into() }];
+        let merged = [row(1, "dice_master", Some("dice"))];
+        let still = BTreeMap::from([(page, Some(snapshot("New")))]);
+        let gone = BTreeMap::from([(page, None)]);
+        let edited = BTreeMap::from([(page, Some(snapshot("Edited")))]);
+        assert_eq!(plan_undo(&operation, &still, &changes, &merged), UndoPlan::Whole);
+        // Octane undid the pages: the interactions alone go back, without another catalogue undo.
+        let only = plan_undo(&operation, &gone, &changes, &merged);
+        assert_eq!(only, UndoPlan::InteractionsOnly);
+        let statements = undo_statements("hotel", &operation, &changes, &only);
+        assert_eq!(statements.len(), 2, "{statements:?}");
+        assert!(statements[0].0.contains("items_base") && statements[1].0.contains("SET undone = 1"));
+        // Pages changed since, or a furni no longer as the merge left it: nothing.
+        assert!(matches!(plan_undo(&operation, &edited, &changes, &merged), UndoPlan::Blocked(p) if p.contains("Page #8")));
+        assert!(matches!(plan_undo(&operation, &still, &changes, &[row(1, "dice_master", Some("wf_x"))]), UndoPlan::Blocked(p) if p.contains("#1")));
+        // Without interactions an operation already undone is not "undone" again.
+        assert!(matches!(plan_undo(&operation, &gone, &[], &[]), UndoPlan::Blocked(_)));
     }
 }

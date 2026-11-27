@@ -131,6 +131,10 @@ impl Ctl {
             "{changes} pages and offers are created and {interactions} furni interactions changed, in one go. Your own pages and offers are not changed.",
             &[("changes", &changes.to_string()), ("interactions", &interactions.to_string())],
         );
+        if interactions > 0 {
+            message.push(' ');
+            message.push_str(t("Publish afterwards: it also makes the emulator load the furni again, so the new interactions count."));
+        }
         message.push(' ');
         message.push_str(if history { t("It is recorded in the history, so it can be undone there.") } else { t("This database has no catalogue history: it cannot be undone. Make a backup first.") });
         if !self.shared.dialogs.choose(t("Merge a rip"), &hotel, &message, false, options).await {
@@ -146,7 +150,15 @@ impl Ctl {
                 Ok(()) => {
                     s.unpublished = true;
                     s.history = None;
-                    s.status = Status::ok(tf("The rip of {hotel} is merged. Publish to show it in the hotel.", &[("hotel", &preview.hotel)]));
+                    if interactions > 0 {
+                        s.items_unpublished = true;
+                        s.status = Status::ok(tf(
+                            "The rip of {hotel} is merged. Publish to show it in the hotel: Publish also makes the emulator load the furni again, so the new interactions count (else restart the emulator).",
+                            &[("hotel", &preview.hotel)],
+                        ));
+                    } else {
+                        s.status = Status::ok(tf("The rip of {hotel} is merged. Publish to show it in the hotel.", &[("hotel", &preview.hotel)]));
+                    }
                 }
                 Err(error) => {
                     s.status = Status::error(error.to_string());
@@ -271,6 +283,9 @@ fn preview_card(ui: &mut egui::Ui, palette: &Palette, preview: &MergePreview, bu
     );
     if !preview.stats.note.is_empty() {
         widgets::muted(ui, palette, &preview.stats.note, 12.0);
+    }
+    for note in preview.notes.iter().filter_map(|n| n.strip_prefix("note: ")) {
+        ui.label(RichText::new(format!("⚠ {note}")).size(12.0).color(palette.error_text));
     }
     for ambiguous in &merge.ambiguous {
         widgets::muted(ui, palette, &tf("Same caption twice: {what}", &[("what", ambiguous)]), 12.0);

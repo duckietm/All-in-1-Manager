@@ -125,6 +125,22 @@ pub fn load_database_credentials(host: &str) -> Option<DatabaseCredentials> {
     std::fs::read_to_string(path).ok().and_then(|text| DatabaseCredentials::parse(&text))
 }
 
+/// The root account for the SQL tools: a file without the CMS password is enough.
+pub fn load_sql_login(host: &str) -> Option<DatabaseCredentials> {
+    let path = database_credentials_path(host);
+    std::fs::read_to_string(path).ok().and_then(|text| DatabaseCredentials::parse_root(&text))
+}
+
+/// Keeps an SQL login that worked in mariadb.txt: its account and port, the rest of the file as it was.
+pub fn remember_sql_login(host: &str, user: &str, password: &str, port: u16) -> std::io::Result<PathBuf> {
+    let old = std::fs::read_to_string(database_credentials_path(host)).ok();
+    let credentials = DatabaseCredentials::with_root_login(old.as_deref(), host, user, password, port);
+    if old.as_deref().and_then(DatabaseCredentials::parse_root).as_ref() == Some(&credentials) {
+        return Ok(database_credentials_path(host));
+    }
+    save_database_credentials(&credentials)
+}
+
 /// A changed file is backed up as mariadb.txt.bak-<time>.
 pub fn save_database_credentials(credentials: &DatabaseCredentials) -> std::io::Result<PathBuf> {
     let path = database_credentials_path(&credentials.host);

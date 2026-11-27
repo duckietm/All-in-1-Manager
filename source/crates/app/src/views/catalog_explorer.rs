@@ -14,7 +14,7 @@ use aio_remote::Server;
 use eframe::egui::{self, Color32, CornerRadius, RichText, Sense, Stroke};
 use parking_lot::Mutex;
 
-use super::sql_editor::login::{Login, Prompt};
+use super::sql_editor::login::{remember_sql_login, Login, Prompt};
 use super::sql_editor::text;
 use crate::gui::dialogs::Choice;
 use crate::gui::image_loader::{ImageLoader, Source, State as LoadState};
@@ -575,11 +575,12 @@ impl Ctl {
             }
         };
         let host = server.login().host.clone();
-        let saved = aio_core::config_dir::load_database_credentials(&host);
+        let saved = aio_core::config_dir::load_sql_login(&host);
         let mut login = Login {
             user: saved.as_ref().map(|s| s.root_user.clone()).filter(|u| !u.is_empty()).unwrap_or_else(|| "root".into()),
             password: saved.as_ref().map(|s| s.root_password.clone()).unwrap_or_default(),
             port: saved.as_ref().map(|s| s.port).filter(|p| *p > 0).unwrap_or(3306),
+            remember: false,
         };
         let mut problem = saved.is_none().then(|| t("No saved MariaDB password for this server on this computer: enter an account.").to_string());
         let mut ask = ask_first || saved.is_none();
@@ -602,7 +603,10 @@ impl Ctl {
             }
             self.with(generation, |s| s.subtitle = tf("Connecting to MariaDB as {user} ...", &[("user", &login.user)]));
             match SqlSession::open(&*server, &login.user, &login.password, login.port).await {
-                Ok(session) => break session,
+                Ok(session) => {
+                    remember_sql_login(&self.shared, &host, &login);
+                    break session;
+                }
                 Err(error) => {
                     let message = error.to_string();
                     problem = Some(if text::is_access_denied(&message) {

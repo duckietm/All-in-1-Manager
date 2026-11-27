@@ -20,7 +20,7 @@ use crate::gui::theme::{Fixed, Palette};
 use crate::gui::{widgets, Page, Request, Shared, View};
 use crate::i18n::{t, tf};
 use grid::{Grid, GridAction};
-use login::{Login, Prompt};
+use login::{remember_sql_login, Login, Prompt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -248,11 +248,12 @@ impl Ctl {
 
     async fn open_inner(&self, server: Arc<dyn Server>, ask_first: bool, generation: u64) {
         let host = server.login().host.clone();
-        let saved = aio_core::config_dir::load_database_credentials(&host);
+        let saved = aio_core::config_dir::load_sql_login(&host);
         let mut login = Login {
             user: saved.as_ref().map(|s| s.root_user.clone()).filter(|u| !u.is_empty()).unwrap_or_else(|| "root".into()),
             password: saved.as_ref().map(|s| s.root_password.clone()).unwrap_or_default(),
             port: saved.as_ref().map(|s| s.port).filter(|p| *p > 0).unwrap_or(3306),
+            remember: false,
         };
         let mut problem = saved.is_none().then(|| t("No saved MariaDB password for this server on this computer: enter an account.").to_string());
         let mut ask = ask_first || saved.is_none();
@@ -281,7 +282,10 @@ impl Ctl {
                 SqlSession::open(&*server, &login.user, &login.password, login.port).await
             };
             match opened {
-                Ok(session) => break session,
+                Ok(session) => {
+                    remember_sql_login(&self.shared, &host, &login);
+                    break session;
+                }
                 Err(error) => {
                     let message = error_text(&error);
                     problem = Some(if text::is_access_denied(&message) {

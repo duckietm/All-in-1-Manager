@@ -5,7 +5,7 @@ use eframe::egui::{self, RichText};
 use tokio::sync::oneshot;
 
 use crate::gui::theme::Palette;
-use crate::gui::widgets;
+use crate::gui::{widgets, Shared};
 use crate::i18n::{t, tf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,6 +13,8 @@ pub struct Login {
     pub user: String,
     pub password: String,
     pub port: u16,
+    /// "Remember for this server": saved in configuration/database once the login works.
+    pub remember: bool,
 }
 
 /// The dialog on screen.
@@ -21,6 +23,7 @@ pub struct Prompt {
     user: String,
     password: String,
     port: String,
+    remember: bool,
     error: String,
     focus_password: bool,
     focused: bool,
@@ -35,6 +38,7 @@ impl Prompt {
             user: initial.user.clone(),
             password: initial.password.clone(),
             port: initial.port.to_string(),
+            remember: true,
             error: problem.unwrap_or_default(),
             focus_password: initial.password.is_empty(),
             focused: false,
@@ -80,6 +84,8 @@ impl Prompt {
             let password = ui.add(egui::TextEdit::singleline(&mut self.password).password(true).hint_text(t("Password")).font(egui::FontId::proportional(14.0)).margin(egui::Margin::symmetric(12, 9)).desired_width(f32::INFINITY));
             let password = field(ui, password);
             let _ = port;
+            ui.add_space(6.0);
+            ui.checkbox(&mut self.remember, t("Remember for this server"));
             if !self.focused {
                 self.focused = true;
                 if self.focus_password { password.request_focus() } else { user.request_focus() }
@@ -95,7 +101,7 @@ impl Prompt {
                 if cancel || escape {
                     answer = Some(None);
                 } else if ok || enter {
-                    match check(&self.user, &self.password, &self.port) {
+                    match check(&self.user, &self.password, &self.port, self.remember) {
                         Ok(login) => answer = Some(Some(login)),
                         Err(problem) => self.error = problem.to_string(),
                     }
@@ -117,13 +123,25 @@ impl Prompt {
     }
 }
 
+/// Call when the session opened: keeps a login from the dialog in configuration/database/<server>/mariadb.txt when
+/// "Remember for this server" was ticked. A login that failed never gets here.
+pub fn remember_sql_login(shared: &Shared, host: &str, login: &Login) {
+    if !login.remember {
+        return;
+    }
+    match aio_core::config_dir::remember_sql_login(host, &login.user, &login.password, login.port) {
+        Ok(path) => shared.set_status(&tf("Saved in {path}", &[("path", &path.display().to_string())])),
+        Err(error) => shared.set_status(&tf("Could not save the MariaDB login: {message}", &[("message", &error.to_string())])),
+    }
+}
+
 /// The checks of Accept: a user, and a port from 1 to 65535.
-pub fn check(user: &str, password: &str, port: &str) -> Result<Login, &'static str> {
+pub fn check(user: &str, password: &str, port: &str, remember: bool) -> Result<Login, &'static str> {
     if user.trim().is_empty() {
         return Err(t("Enter a user, such as root."));
     }
     match port.trim().parse::<u16>() {
-        Ok(number) if number >= 1 => Ok(Login { user: user.trim().to_string(), password: password.to_string(), port: number }),
+        Ok(number) if number >= 1 => Ok(Login { user: user.trim().to_string(), password: password.to_string(), port: number, remember }),
         _ => Err(t("The port is a number from 1 to 65535.")),
     }
 }
@@ -134,10 +152,17 @@ mod tests {
 
     #[test]
     fn checks() {
-        assert_eq!(check(" ", "x", "3306"), Err("Enter a user, such as root."));
-        assert_eq!(check("root", "x", "0"), Err("The port is a number from 1 to 65535."));
-        assert_eq!(check("root", "x", "70000"), Err("The port is a number from 1 to 65535."));
-        assert_eq!(check("root", "x", "abc"), Err("The port is a number from 1 to 65535."));
-        assert_eq!(check(" root ", "p w", "3307"), Ok(Login { user: "root".into(), password: "p w".into(), port: 3307 }));
+        assert_eq!(check(" ", "x", "3306", true), Err("Enter a user, such as root."));
+        assert_eq!(check("root", "x", "0", true), Err("The port is a number from 1 to 65535."));
+        assert_eq!(check("root", "x", "70000", true), Err("The port is a number from 1 to 65535."));
+        assert_eq!(check("root", "x", "abc", true), Err("The port is a number from 1 to 65535."));
+        assert_eq!(check(" root ", "p w", "3307", true), Ok(Login { user: "root".into(), password: "p w".into(), port: 3307, remember: true }));
+        assert!(!check("root", "", "3306", false).unwrap().remember);
+    }
+
+    #[test]
+    fn remember_is_on_by_default() {
+        let initial = Login { user: "root".into(), password: String::new(), port: 3306, remember: false };
+        assert!(Prompt::new("h", &initial, None).0.remember);
     }
 }

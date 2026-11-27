@@ -4170,5 +4170,8 @@
   "Recording: {packets} packets, {wired} of them wired": "A gravar: {packets} pacotes, {wired} deles wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Grava cada pacote entre o teu cliente e o hotel, nos dois sentidos, a partir do próximo quarto em que entrares: packets.jsonl (todos) e wired.txt (os wired, descodificados). Para programar os wired no emulador.",
   "Stop recording": "Parar a gravação",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "A gravação contém tudo o que o teu cliente e o hotel enviam nesses quartos, também o chat: partilha-a só com pessoas de confiança."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "A gravação contém tudo o que o teu cliente e o hotel enviam nesses quartos, também o chat: partilha-a só com pessoas de confiança.",
+  "Remember for this server": "Lembrar para este servidor",
+  "Saved in {path}": "Salvo em {path}",
+  "Could not save the MariaDB login: {message}": "Não foi possível salvar o login do MariaDB: {message}"
 }

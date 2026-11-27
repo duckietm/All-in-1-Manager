@@ -97,6 +97,36 @@ pub fn missing_furni(
     list
 }
 
+/// The class names of the floor and wall furni a rip's catalog.json sells (every page of every
+/// catalogue), through `furnidata`; a class id it does not list is left out.
+pub fn sold_classnames(catalog_json: &Value, furnidata: &Furnidata) -> BTreeSet<String> {
+    fn walk(page: &Value, furnidata: &Furnidata, out: &mut BTreeSet<String>) {
+        let offers = page["offers"].as_array().into_iter().flatten();
+        for product in offers.flat_map(|o| o["products"].as_array().into_iter().flatten()) {
+            let class_id = product["class_id"].as_i64().and_then(|id| i32::try_from(id).ok());
+            let kind = product["product_type"].as_str().unwrap_or("").to_lowercase();
+            let name = match (kind.as_str(), class_id) {
+                ("s", Some(id)) => furnidata.floor.get(&id),
+                ("i", Some(id)) => furnidata.wall.get(&id),
+                _ => None,
+            };
+            if let Some(name) = name {
+                out.insert(name.clone());
+            }
+        }
+        for child in page["children"].as_array().into_iter().flatten() {
+            walk(child, furnidata, out);
+        }
+    }
+    let mut out = BTreeSet::new();
+    for catalog in catalog_json["catalogs"].as_array().into_iter().flatten() {
+        for page in catalog["pages"].as_array().into_iter().flatten() {
+            walk(page, furnidata, &mut out);
+        }
+    }
+    out
+}
+
 /// A furni whose id the hotel's FurnitureData.json already gives another furni.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Renumbered {
@@ -337,6 +367,29 @@ mod tests {
     use crate::export::RippedMode;
     use crate::packets::{CatalogIndex, CatalogPage, IndexNode, Offer, Product};
     use std::collections::HashMap;
+
+    #[test]
+    fn sold_classnames_walk_every_page_of_catalog_json() {
+        let furnidata = Furnidata::parse(
+            r#"{"roomitemtypes":{"furnitype":[{"id":13,"classname":"chair_x"},{"id":14,"classname":"lamp*2"}]},
+                "wallitemtypes":{"furnitype":[{"id":13,"classname":"poster_y"}]}}"#,
+        )
+        .unwrap();
+        let catalog = json!({"catalogs": [
+            {"mode": "NORMAL", "pages": [{"id": 1, "offers": [{"products": [{"product_type": "s", "class_id": 13}]}], "children": [
+                {"id": 2, "offers": [{"products": [
+                    {"product_type": "i", "class_id": 13},
+                    {"product_type": "b", "class_id": null, "extra_param": "ADM"},
+                    {"product_type": "s", "class_id": 99}
+                ]}], "children": []},
+                {"id": -1, "page_status": "not requestable (disabled page, id -1)", "children": []}
+            ]}]},
+            {"mode": "BUILDERS_CLUB", "pages": [{"id": 5, "offers": [{"products": [{"product_type": "s", "class_id": 14}]}], "children": []}]}
+        ]});
+        let names: Vec<String> = sold_classnames(&catalog, &furnidata).into_iter().collect();
+        assert_eq!(names, ["chair_x", "lamp*2", "poster_y"], "badges and unknown ids are left out");
+        assert!(sold_classnames(&json!({}), &furnidata).is_empty());
+    }
 
     fn product(kind: &str, class_id: Option<i32>, extra: &str) -> Product {
         Product {

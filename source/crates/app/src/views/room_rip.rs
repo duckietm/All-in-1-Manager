@@ -681,7 +681,7 @@ fn valuables(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan, include: &
     }
     let reasons: BTreeMap<u8, Valuable> = items.iter().map(|v| (reason_order(v.why), v.why)).collect();
     let left_out = items.iter().filter(|v| !include.contains(&v.key)).count();
-    let heading = tf("Valuables (LTD and rares): {left} of {count} left out", &[("left", &left_out.to_string()), ("count", &items.len().to_string())]);
+    let heading = tf("Valuables (LTD, rares and currency furni): {left} of {count} left out", &[("left", &left_out.to_string()), ("count", &items.len().to_string())]);
     egui::CollapsingHeader::new(RichText::new(heading).size(12.5).color(palette.warning_text)).default_open(true).show(ui, |ui| {
         ui.label(
             RichText::new(t("Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial)."))
@@ -691,7 +691,7 @@ fn valuables(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan, include: &
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(left_out > 0, widgets::secondary_button(t("Include all")))
-                .on_hover_text(t("Every LTD and rare of the room becomes a tradeable copy in your hotel."))
+                .on_hover_text(t("Every LTD, rare and currency furni of the room becomes a tradeable copy in your hotel."))
                 .clicked()
             {
                 set(include, &mut items.iter().map(|v| v.key), true);
@@ -831,7 +831,12 @@ async fn import_task(
         let catalogue_error = |e: anyhow::Error| anyhow::anyhow!("The catalogue could not be read, and the import needs it to tell the rares apart: {e:#}");
         let pages = match session.select(&room::catalog_pages_query(&database, true), Vec::new()).await {
             Ok(rows) => rows,
-            Err(_) => session.select(&room::catalog_pages_query(&database, false), Vec::new()).await.map_err(catalogue_error)?,
+            // Only an old table without `catalog_mode` gets the query without it: on any other error the Builders
+            // Club pages could not be told apart, and their furni would count as sold.
+            Err(e) if room::missing_catalog_mode(&format!("{e:#}")) => {
+                session.select(&room::catalog_pages_query(&database, false), Vec::new()).await.map_err(catalogue_error)?
+            }
+            Err(e) => return Err(catalogue_error(e)),
         };
         let pages: Vec<CatalogPage> = pages
             .iter()

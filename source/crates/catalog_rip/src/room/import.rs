@@ -108,6 +108,14 @@ pub fn catalog_pages_query(database: &str, with_mode: bool) -> String {
     format!("SELECT `id`, `parent_id`, `enabled`, `visible`, `min_rank`, {mode} FROM {}.`catalog_pages`", q(database))
 }
 
+/// Whether the pages query failed only because the table has no `catalog_mode` column (MariaDB 1054, "Unknown column
+/// 'catalog_mode'"): then the query without it may run. Any other error must stop the import, or Builders Club
+/// offers would count as sold.
+pub fn missing_catalog_mode(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("catalog_mode") && (error.contains("1054") || error.contains("unknown column"))
+}
+
 /// The query of the catalogue's offers for [`Catalogue::new`]: page, item_ids and limited_stack.
 pub fn catalog_offers_query(database: &str) -> String {
     format!("SELECT `page_id`, `item_ids`, `limited_stack` FROM {}.`catalog_items`", q(database))
@@ -1170,6 +1178,10 @@ mod tests {
         assert_eq!(c.sold_limited, BTreeSet::from([11, 14]));
         assert_eq!(catalog_pages_query("habbo", true), "SELECT `id`, `parent_id`, `enabled`, `visible`, `min_rank`, `catalog_mode` FROM `habbo`.`catalog_pages`");
         assert!(catalog_pages_query("habbo", false).contains(", 'NORMAL' FROM"));
+        assert!(missing_catalog_mode("ERROR 42S22 (1054): Unknown column 'catalog_mode' in 'field list'"));
+        assert!(!missing_catalog_mode("ERROR 42S22 (1054): Unknown column 'min_rank' in 'field list'"));
+        assert!(!missing_catalog_mode("ERROR 2013 (HY000): Lost connection to MySQL server during query"));
+        assert!(!missing_catalog_mode("ERROR 1142 (42000): SELECT command denied to user for table 'catalog_pages'"));
         assert_eq!(catalog_offers_query("habbo"), "SELECT `page_id`, `item_ids`, `limited_stack` FROM `habbo`.`catalog_items`");
     }
 

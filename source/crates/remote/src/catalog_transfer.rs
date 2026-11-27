@@ -5,6 +5,7 @@
 //! shows what would change; applying writes those changes in one transaction and records them in the shared history.
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -282,6 +283,16 @@ fn check_column(page: bool, column: &str) -> std::result::Result<(), String> {
     }
 }
 
+// Compiled once: a Habbo-size file has tens of thousands of statements.
+static INSERT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)^INSERT\s+INTO\s+(catalog_pages|catalog_items)\s*\(([^)]*)\)\s*VALUES\s*\((.*)\)$").unwrap());
+static UPDATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^UPDATE\s+(catalog_pages|catalog_items)\s+SET\s+(.+)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap()
+});
+static DELETE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap()
+});
+static DELETE_ALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s*$").unwrap());
+
 /// One statement, as the emulator's import reads it.
 pub fn parse_statement(sql: &str) -> std::result::Result<Statement, String> {
     let upper = outside_literals(sql).to_uppercase();
@@ -290,10 +301,7 @@ pub fn parse_statement(sql: &str) -> std::result::Result<Statement, String> {
             return Err(format!("Forbidden SQL: {}", token.trim()));
         }
     }
-    let insert = Regex::new(r"(?is)^INSERT\s+INTO\s+(catalog_pages|catalog_items)\s*\(([^)]*)\)\s*VALUES\s*\((.*)\)$").unwrap();
-    let update = Regex::new(r"(?is)^UPDATE\s+(catalog_pages|catalog_items)\s+SET\s+(.+)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap();
-    let delete = Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap();
-    let delete_all = Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s*$").unwrap();
+    let (insert, update, delete, delete_all) = (&*INSERT, &*UPDATE, &*DELETE, &*DELETE_ALL);
     if let Some(m) = insert.captures(sql) {
         let page = m[1].eq_ignore_ascii_case("catalog_pages");
         let columns = split_comma(&m[2])?;
@@ -557,5 +565,27 @@ mod tests {
             assert!(target(&all, bad).is_err(), "{bad} was accepted");
         }
         assert_eq!(statements("SELECT 'a;b'; -- c\nx").unwrap(), vec!["SELECT 'a;b'".to_string(), "x".to_string()]);
+    }
+
+    #[test]
+    fn a_habbo_size_file_reads_quickly() {
+        let mut file = String::new();
+        for id in 1..=3_550 {
+            file.push_str(&format!(
+                "INSERT INTO catalog_pages (id, catalog_type, parent_id, caption, page_layout, visible, enabled) VALUES ({id}, 'NORMAL', -1, 'Page {id}', 'default_3x3', 1, 1);\n"
+            ));
+        }
+        for id in 1..=31_500 {
+            let page = id % 3_550 + 1;
+            file.push_str(&format!(
+                "INSERT INTO catalog_items (id, catalog_type, item_ids, page_id, catalog_name, cost_credits, amount, offer_id) VALUES ({id}, 'NORMAL', '{id}', {page}, 'furni_{id}', 3, 1, -1);\n"
+            ));
+        }
+        let started = std::time::Instant::now();
+        let result = target(&BTreeMap::new(), &file).unwrap();
+        let took = started.elapsed();
+        eprintln!("habbo-size target(): {took:?}");
+        assert_eq!(result.len(), 3_550 + 31_500);
+        assert!(took.as_secs() < 10, "took {took:?}");
     }
 }

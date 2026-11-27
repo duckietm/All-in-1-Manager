@@ -261,17 +261,70 @@ fn tail_fits(r: &Reader<'_>, owners: &BTreeMap<i32, String>) -> bool {
     )
 }
 
+/// Whether the furni can end at `r`: a plausible tail (expires, usage policy, owner id, the layout's extra ints, the
+/// class name), then the end of the packet for the `last` furni, or else the start of the next one (its position, a
+/// number for z, a stack height and a known stuff data format).
+fn item_ends_at(r: &Reader<'_>, extra_ints: usize, type_id: i32, last: bool) -> bool {
+    let mut r = r.clone();
+    let mut read = || -> Result<bool> {
+        let (expires, policy) = (r.i32("expires")?, r.i32("usage policy")?);
+        r.i32("owner id")?;
+        for _ in 0..extra_ints {
+            r.i32("polaris field")?;
+        }
+        if type_id < 0 {
+            r.string("class name")?;
+        }
+        if expires < -1 || !(0..=2).contains(&policy) {
+            return Ok(false);
+        }
+        if last {
+            return Ok(r.is_empty());
+        }
+        for what in ["item id", "type id", "x", "y", "direction"] {
+            r.i32(what)?;
+        }
+        let z = r.string_bytes("z")?;
+        let z_is_number = z.len() <= 32 && std::str::from_utf8(z).is_ok_and(|z| z.replace(',', ".").trim().parse::<f64>().is_ok());
+        r.string("stack height")?;
+        r.i32("extra")?;
+        Ok(z_is_number && (r.i32("stuff data flags")? & 0xFF) <= 7)
+    };
+    read().unwrap_or(false)
+}
+
+/// Where a floor item is in its packet, for checking where its stuff data ends.
+#[derive(Clone, Copy)]
+struct InList<'o> {
+    owners: &'o BTreeMap<i32, String>,
+    extra_ints: usize,
+    type_id: i32,
+    last: bool,
+}
+
+impl InList<'_> {
+    /// A tail with a listed owner, or one the next furni (or the end of the packet) follows.
+    fn may_end_at(&self, r: &Reader<'_>) -> bool {
+        tail_fits(r, self.owners) || item_ends_at(r, self.extra_ints, self.type_id, self.last)
+    }
+
+    /// Stricter, for a place found by skipping bytes: a tail with a listed owner that the next furni follows.
+    fn ends_at(&self, r: &Reader<'_>) -> bool {
+        tail_fits(r, self.owners) && item_ends_at(r, self.extra_ints, self.type_id, self.last)
+    }
+}
+
 /// Stuff data whose payload is not in the layout its format says (some hotels send a highscore board with more
 /// fields): reads the flags and the state string, then skips to where the item's tail fits. Only the state is kept.
-fn resync_stuff(r: &mut Reader<'_>, owners: &BTreeMap<i32, String>) -> Result<(i32, String)> {
+fn resync_stuff(r: &mut Reader<'_>, at: InList<'_>) -> Result<(i32, String)> {
     let flags = r.i32("stuff data flags")?;
     if !matches!(flags & 0xFF, 0 | 3 | 6 | 7) {
-        bail!("unknown stuff data format {}", flags & 0xFF);
+        bail!("stuff data format {} has no state string to skip from", flags & 0xFF);
     }
     let state = r.string("stuff data state")?;
     let mut probe = r.clone();
     for _ in 0..=RESYNC_BYTES.min(r.remaining()) {
-        if tail_fits(&probe, owners) {
+        if at.ends_at(&probe) {
             *r = probe;
             return Ok((flags, state));
         }
@@ -279,12 +332,12 @@ fn resync_stuff(r: &mut Reader<'_>, owners: &BTreeMap<i32, String>) -> Result<(i
             break;
         }
     }
-    bail!("no expires, usage policy and owner id follow its state within {RESYNC_BYTES} bytes")
+    bail!("no expires, usage policy and owner id followed by the next furni within {RESYNC_BYTES} bytes after its state")
 }
 
-/// Reads a floor item. With the packet's `owners`, stuff data the reader does not know the layout of is read loosely
-/// (see [`resync_stuff`]) and the second value says how.
-fn read_floor_item(r: &mut Reader<'_>, extra_ints: usize, owners: Option<&BTreeMap<i32, String>>) -> Result<(FloorItem, Option<String>)> {
+/// Reads a floor item. Within a furni list (`last`: whether it is the list's last one), stuff data the reader does not
+/// know the layout of is read loosely (see [`resync_stuff`]) and the second value says how.
+fn read_floor_item(r: &mut Reader<'_>, extra_ints: usize, list: Option<(&BTreeMap<i32, String>, bool)>) -> Result<(FloorItem, Option<String>)> {
     let id = r.i32("item id")?;
     let type_id = r.i32("type id")?;
     let x = r.i32("x")?;
@@ -293,40 +346,37 @@ fn read_floor_item(r: &mut Reader<'_>, extra_ints: usize, owners: Option<&BTreeM
     let z = r.string("z")?;
     r.string("stack height")?;
     r.i32("extra")?;
-    let (stuff, limited, loose) = match owners {
+    let (stuff, limited, loose) = match list {
         None => {
             let (stuff, limited) = read_stuff(r)?;
             (stuff, limited, None)
         }
-        Some(owners) => {
+        Some((owners, last)) => {
+            let at = InList { owners, extra_ints, type_id, last };
             let mut strict = r.clone();
             let read = read_stuff(&mut strict);
             match read {
-                Ok((stuff, limited)) if tail_fits(&strict, owners) => {
+                Ok((stuff, limited)) if at.may_end_at(&strict) => {
                     *r = strict;
                     (stuff, limited, None)
                 }
                 read => {
                     let mut loose = r.clone();
-                    match (resync_stuff(&mut loose, owners), read) {
+                    match (resync_stuff(&mut loose, at), read) {
                         (Ok((flags, state)), _) => {
                             *r = loose;
                             let ltd = if flags & 256 != 0 { " (its LTD number is dropped)" } else { "" };
                             let note = format!("stuff data (flags {flags}) not in a known layout, only its state \"{state}\" kept{ltd}");
                             (StuffData::Legacy { data: state }, None, Some(note))
                         }
-                        // Read as before when only the tail looks odd (an owner the list misses).
+                        // Read as before when only the tail looks odd.
                         (Err(_), Ok((stuff, limited))) => {
                             *r = strict;
                             (stuff, limited, None)
                         }
                         (Err(resync), Err(e)) => {
                             *r = strict;
-                            let (e, resync) = (format!("{e:#}"), format!("{resync:#}"));
-                            if e == resync {
-                                bail!("{e}")
-                            }
-                            bail!("{e} ({resync})")
+                            bail!("{e:#} ({resync:#})")
                         }
                     }
                 }
@@ -428,7 +478,7 @@ fn read_objects(body: &[u8], extra: usize) -> std::result::Result<ObjectsRead, (
     let mut stopped = None;
     for n in 1..=count {
         let (start, id) = (r.position(), r.clone().i32("item id").unwrap_or(0));
-        match read_floor_item(&mut r, extra, Some(&owners)) {
+        match read_floor_item(&mut r, extra, Some((&owners, n == count))) {
             Ok((item, note)) => {
                 if let Some(note) = note {
                     notes.push(format!("item {n} (id {id}) read loosely: {note}"));
@@ -850,6 +900,20 @@ pub(crate) mod tests {
         assert_eq!(items[4].stuff.state(), "0");
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("item 4 (id 4)"), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_owner_missing_from_the_list_does_not_swallow_the_next_furni() {
+        // Owner 8 owns items 2 and 4 but the packet only lists owner 7: the stuff data is standard, so the reader must
+        // not skip ahead to the next item's tail.
+        let entry = |w: Writer, id: i32, owner: i32| {
+            w.i32(id).i32(3736).i32(1).i32(2).i32(0).string("0.0").string("0.01").i32(1).i32(0).string("0").i32(-1).i32(0).i32(owner)
+        };
+        let w = Writer::new(1).i32(1).i32(7).string("a").i32(4);
+        let w = entry(entry(entry(entry(w, 1, 7), 2, 8), 3, 7), 4, 8);
+        let (_, items, notes) = parse_objects(&w.packet().body).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(items.iter().map(|i| (i.id, i.owner_id)).collect::<Vec<_>>(), vec![(1, 7), (2, 8), (3, 7), (4, 8)]);
     }
 
     #[test]

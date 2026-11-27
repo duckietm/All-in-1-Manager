@@ -446,7 +446,11 @@ impl Capturer<'_> {
                     }
                 }
                 k if k == p::OBJECTS.key => {
-                    let (owners, items) = p::parse_objects(body)?;
+                    let (owners, items, notes) = p::parse_objects(body)?;
+                    // A furni read loosely or skipped is noted; the others are kept.
+                    for note in notes {
+                        self.problem(p::OBJECTS.key, anyhow::anyhow!(note));
+                    }
                     let items: Vec<FloorItem> = items.into_iter().map(|i| self.name_floor(i)).collect();
                     let room = self.room.as_mut().unwrap();
                     room.owners.extend(owners);

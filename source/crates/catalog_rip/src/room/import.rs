@@ -199,6 +199,8 @@ pub struct Target {
     pub catalogue: Option<Catalogue>,
     /// The room categories a normal user may pick ([`room_categories_query`]), in the navigator's order.
     pub categories: Vec<RoomCategory>,
+    /// Why the categories could not be read (then the room gets the column's default).
+    pub categories_error: Option<String>,
 }
 
 /// A room category of the navigator (`navigator_flatcats`).
@@ -211,11 +213,10 @@ pub struct RoomCategory {
 }
 
 /// The categories a normal user (rank 1) may give a room, in the navigator's order: not the staff ("public") ones.
-pub fn room_categories_query(database: &str) -> String {
-    format!(
-        "SELECT `id`, `caption`, `max_user_count` FROM {}.`navigator_flatcats` WHERE `min_rank` <= 1 AND `public` = '0' ORDER BY `order_num`, `id`",
-        q(database)
-    )
+/// Without `full` (a table without `public` or `order_num`): only by rank, in id order.
+pub fn room_categories_query(database: &str, full: bool) -> String {
+    let (filter, order) = if full { (" AND `public` = '0'", "`order_num`, `id`") } else { ("", "`id`") };
+    format!("SELECT `id`, `caption`, `max_user_count` FROM {}.`navigator_flatcats` WHERE `min_rank` <= 1{filter} ORDER BY {order}", q(database))
 }
 
 /// The most users Polaris lets a room's settings have (RoomSettingsSaveEvent).
@@ -510,7 +511,10 @@ pub fn plan(capture: &RoomCapture, target: &Target, choice: &ImportChoice) -> Re
     report.category = category.map(|c| c.id);
     match category {
         Some(category) => columns.push(("category", PlanValue::Int(category.id))),
-        None => report.notes.push("The hotel has no room category a user may pick: the room gets the default one.".into()),
+        None => report.notes.push(match &target.categories_error {
+            Some(error) => format!("The room categories could not be read ({error}): the room gets the default one."),
+            None => "The hotel has no room category a user may pick: the room gets the default one.".into(),
+        }),
     }
     if info.max_users > 0 {
         let most = category.map(|c| c.max_users).filter(|m| *m > 0).map_or(MAX_USERS, |m| m.min(MAX_USERS));
@@ -932,10 +936,15 @@ mod tests {
         let plan = plan_of(&capture(), &target, &ImportChoice { category: Some(99), ..choice() });
         assert_eq!(room_value(&plan, "category"), Some(PlanValue::Int(3)));
         // None at all: the column's default, and a note.
-        let plan = plan_of(&capture(), &Target { categories: Vec::new(), ..target }, &choice());
+        let plan = plan_of(&capture(), &Target { categories: Vec::new(), ..target.clone() }, &choice());
         assert_eq!((room_value(&plan, "category"), plan.report.category), (None, None));
         assert!(plan.report.notes.iter().any(|n| n.contains("category")), "{:?}", plan.report.notes);
-        assert!(room_categories_query("habbo").contains("FROM `habbo`.`navigator_flatcats` WHERE `min_rank` <= 1 AND `public` = '0'"));
+        assert!(room_categories_query("habbo", true).contains("FROM `habbo`.`navigator_flatcats` WHERE `min_rank` <= 1 AND `public` = '0' ORDER BY `order_num`"));
+        assert!(room_categories_query("habbo", false).ends_with("WHERE `min_rank` <= 1 ORDER BY `id`"));
+        // Not readable: the error is in the notes.
+        let unread = Target { categories: Vec::new(), categories_error: Some("Unknown column 'min_rank'".into()), ..target };
+        let plan = plan_of(&capture(), &unread, &choice());
+        assert!(plan.report.notes.iter().any(|n| n.contains("could not be read (Unknown column 'min_rank')")), "{:?}", plan.report.notes);
     }
 
     #[test]

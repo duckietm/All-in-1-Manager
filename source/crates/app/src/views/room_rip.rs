@@ -926,14 +926,21 @@ async fn import_task(
             let n = |i: usize| row.get(i).and_then(int).unwrap_or(0) as i32;
             (row.first().map(text).unwrap_or_default(), Door { x: n(1), y: n(2), dir: n(3) })
         });
-        // The categories a user may pick (a hotel without navigator_flatcats: the rooms table's default).
-        target.categories = session
-            .select(&room::room_categories_query(&database), Vec::new())
-            .await
-            .unwrap_or_default()
-            .iter()
-            .filter_map(|row| Some(RoomCategory { id: row.first().and_then(int)?, caption: row.get(1).map(text).unwrap_or_default(), max_users: row.get(2).and_then(int).unwrap_or(0) }))
-            .collect();
+        // The categories a user may pick; a table without `public` or `order_num` by rank only; not readable at all: the
+        // rooms table's default, and the preview says why.
+        let categories = match session.select(&room::room_categories_query(&database, true), Vec::new()).await {
+            Ok(rows) => Ok(rows),
+            Err(_) => session.select(&room::room_categories_query(&database, false), Vec::new()).await,
+        };
+        match categories {
+            Ok(rows) => {
+                target.categories = rows
+                    .iter()
+                    .filter_map(|row| Some(RoomCategory { id: row.first().and_then(int)?, caption: row.get(1).map(text).unwrap_or_default(), max_users: row.get(2).and_then(int).unwrap_or(0) }))
+                    .collect();
+            }
+            Err(e) => target.categories_error = Some(format!("{e:#}")),
+        }
         let choice = ImportChoice { owner_id, owner_name: owner_name.clone(), room_name: name.to_string(), door, now: chrono::Utc::now().timestamp(), include, category };
         let plan = room::plan(capture, &target, &choice)?;
         if !write {

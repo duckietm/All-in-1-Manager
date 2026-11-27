@@ -4127,6 +4127,8 @@
   "Official Habbo and retros (Flash and Nitro) work. Nothing in the other hotel is changed: the capture only listens, and reading the wired opens the boxes the way their owner does. Copy only rooms you may copy.": "Resmi Habbo ve retrolar (Flash ve Nitro) çalışır. Diğer otelde hiçbir şey değişmez: yakalama yalnızca dinler, wired okumak kutuları sahiplerinin yaptığı gibi açar. Yalnızca kopyalamana izin verilen odaları kopyala.",
   "Owner (user name)": "Sahip (kullanıcı adı)",
   "Read the wired": "Wired'ları oku",
+  "Double click where Open does not work": "Open'ın çalışmadığı yerde çift tıkla",
+  "Off: the boxes are opened only with Open, which nobody sees. On: where the hotel does not answer Open, each box is double clicked instead, and its light blinks for everyone in the room.": "Kapalı: kutular yalnızca kimsenin görmediği Open ile açılır. Açık: otelin Open'a yanıt vermediği yerde her kutuya çift tıklanır ve ışığı odadaki herkes için yanıp söner.",
   "Remove the room": "Odayı kaldır",
   "Remove {room} (room {id}) from the hotel again?": "{room} (oda {id}) otelden yeniden kaldırılsın mı?",
   "Room name": "Oda adı",

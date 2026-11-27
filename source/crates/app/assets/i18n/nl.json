@@ -4127,6 +4127,8 @@
   "Official Habbo and retros (Flash and Nitro) work. Nothing in the other hotel is changed: the capture only listens, and reading the wired opens the boxes the way their owner does. Copy only rooms you may copy.": "Officieel Habbo en retro's (Flash en Nitro) werken. In het andere hotel verandert niets: de opname luistert alleen, en wired lezen opent de boxen zoals hun eigenaar dat doet. Kopieer alleen kamers die je mag kopiëren.",
   "Owner (user name)": "Eigenaar (gebruikersnaam)",
   "Read the wired": "Wired lezen",
+  "Double click where Open does not work": "Dubbelklikken waar Open niet werkt",
+  "Off: the boxes are opened only with Open, which nobody sees. On: where the hotel does not answer Open, each box is double clicked instead, and its light blinks for everyone in the room.": "Uit: de boxen worden alleen met Open geopend, wat niemand ziet. Aan: waar het hotel niet op Open antwoordt, wordt elke box in plaats daarvan dubbelgeklikt, en het lampje knippert voor iedereen in de kamer.",
   "Remove the room": "De kamer verwijderen",
   "Remove {room} (room {id}) from the hotel again?": "{room} (kamer {id}) weer uit het hotel verwijderen?",
   "Room name": "Kamernaam",

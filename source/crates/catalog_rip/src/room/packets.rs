@@ -455,9 +455,52 @@ pub struct RoomInfo {
     pub trade_mode: i32,
     pub category: i32,
     pub tags: Vec<String>,
+    /// The chat settings, when the packet carries them (it does on Polaris, Arcturus and official Habbo).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat: Option<ChatSettings>,
 }
 
-/// GetGuestRoomResult, up to the tags (what follows is not needed).
+/// A room's chat settings (Nitro's `RoomChatSettings`): mode (0 free flow, 1 line by line), bubble width, scroll
+/// speed, hearing distance and flood protection.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChatSettings {
+    pub mode: i32,
+    pub weight: i32,
+    pub speed: i32,
+    pub distance: i32,
+    pub protection: i32,
+}
+
+/// What follows the tags of GetGuestRoomResult, up to the chat settings: the flags with the thumbnail (1), group (2)
+/// and ad (4) fields they announce, forward, staff pick, group member, all muted, the moderation settings (mute,
+/// kick, ban), can mute, then the chat settings.
+fn read_chat_settings(r: &mut Reader<'_>) -> Result<ChatSettings> {
+    let flags = r.i32("room flags")?;
+    if flags & 1 != 0 {
+        r.string("official room picture")?;
+    }
+    if flags & 2 != 0 {
+        r.i32("group id")?;
+        r.string("group name")?;
+        r.string("group badge")?;
+    }
+    if flags & 4 != 0 {
+        r.string("ad name")?;
+        r.string("ad description")?;
+        r.i32("ad minutes left")?;
+    }
+    for what in ["room forward", "staff pick", "group member", "all muted"] {
+        r.bool(what)?;
+    }
+    for what in ["who can mute", "who can kick", "who can ban"] {
+        r.i32(what)?;
+    }
+    r.bool("can mute")?;
+    Ok(ChatSettings { mode: r.i32("chat mode")?, weight: r.i32("chat weight")?, speed: r.i32("chat speed")?, distance: r.i32("chat distance")?, protection: r.i32("chat protection")? })
+}
+
+/// GetGuestRoomResult, up to the chat settings (what follows is not needed). The chat settings are left out when what
+/// follows the tags does not read as expected.
 pub fn parse_room_info(body: &[u8]) -> Result<RoomInfo> {
     let mut r = Reader::new(body);
     let entering = r.bool("room enter")?;
@@ -475,7 +518,8 @@ pub fn parse_room_info(body: &[u8]) -> Result<RoomInfo> {
     let category = r.i32("category")?;
     let n = r.count(2, "tags")?;
     let tags = (0..n).map(|_| r.string("tag")).collect::<Result<_>>()?;
-    Ok(RoomInfo { room_id, entering, name, owner_name, door_mode, max_users, description, trade_mode, category, tags })
+    let chat = read_chat_settings(&mut r).ok();
+    Ok(RoomInfo { room_id, entering, name, owner_name, door_mode, max_users, description, trade_mode, category, tags, chat })
 }
 
 // ---------------------------------------------------------------------------------------------- wired
@@ -677,6 +721,21 @@ pub(crate) mod tests {
         let info = Writer::new(1).bool(true).i32(42).string("Villa").i32(1).string("me").i32(2).i32(3).i32(25).string("desc").i32(1).i32(0).i32(0).i32(5).i32(2).string("a").string("b").i32(0).packet();
         let info = parse_room_info(&info.body).unwrap();
         assert_eq!((info.room_id, info.name.as_str(), info.door_mode, info.tags.len()), (42, "Villa", 2, 2));
+        assert_eq!(info.chat, None, "a packet cut after the tags has no chat settings");
+    }
+
+    #[test]
+    fn the_chat_settings_follow_the_tags_flags_and_moderation() {
+        let head = |w: Writer| w.bool(true).i32(42).string("Villa").i32(1).string("me").i32(0).i32(3).i32(40).string("desc").i32(1).i32(0).i32(0).i32(5).i32(1).string("a");
+        let tail = |w: Writer| w.bool(false).bool(false).bool(false).bool(false).i32(0).i32(1).i32(1).bool(true).i32(1).i32(0).i32(2).i32(14).i32(1);
+        // Polaris: a group room (flags 2 | 8 | 16), then its time zone, time and furni limit.
+        let polaris = tail(head(Writer::new(1)).i32(2 | 8 | 16).i32(7).string("Club").string("b01")).string("Europe/Rome").string("1700000000000").i32(2500).packet();
+        let info = parse_room_info(&polaris.body).unwrap();
+        assert_eq!(info.max_users, 40);
+        assert_eq!(info.chat, Some(ChatSettings { mode: 1, weight: 0, speed: 2, distance: 14, protection: 1 }));
+        // Official Habbo: an official room picture and an ad.
+        let official = tail(head(Writer::new(1)).i32(1 | 4).string("pic.png").string("Ad").string("text").i32(30)).packet();
+        assert_eq!(parse_room_info(&official.body).unwrap().chat.map(|c| c.distance), Some(14));
     }
 
     #[test]

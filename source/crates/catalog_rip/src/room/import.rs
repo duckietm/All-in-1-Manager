@@ -3,7 +3,9 @@
 //! anything is written. Pure: the caller reads the hotel and runs the statements.
 //!
 //! What the owner decided (November 2026):
-//! * the room is always a new one; access is reset (open, the hotel's default category, trade and chat settings);
+//! * the room is always a new one; access is reset (open, no password or doorbell, the hotel's trade setting); the
+//!   category is the one chosen in the preview (one a normal user may pick), the most users and the chat settings
+//!   come from the capture, within what the hotel allows;
 //! * furni are matched to items_base by class name (by sprite id when the class name is not known) and become
 //!   normal items of the chosen owner, cleaned of what belongs to the source hotel: LTD serials, trophy
 //!   engravings, group links, ads and badge displays (listed in the report);
@@ -23,6 +25,8 @@ use serde_json::{json, Value};
 
 use super::capture::{rows, RoomCapture};
 use super::packets::{Door, FloorItem, StuffData, WiredSettings};
+#[cfg(test)]
+use super::packets::{ChatSettings, RoomInfo};
 
 /// A parameter of a planned statement: a value, or what an earlier statement of the plan inserted.
 #[derive(Debug, Clone, PartialEq)]
@@ -193,7 +197,29 @@ pub struct Target {
     pub model: Option<(String, Door)>,
     /// The hotel's catalogue (None: not read; then only LTD and furnidata rares are told apart).
     pub catalogue: Option<Catalogue>,
+    /// The room categories a normal user may pick ([`room_categories_query`]), in the navigator's order.
+    pub categories: Vec<RoomCategory>,
 }
+
+/// A room category of the navigator (`navigator_flatcats`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomCategory {
+    pub id: i64,
+    pub caption: String,
+    /// The most users a room of this category may take (0: no limit of its own).
+    pub max_users: i64,
+}
+
+/// The categories a normal user (rank 1) may give a room, in the navigator's order: not the staff ("public") ones.
+pub fn room_categories_query(database: &str) -> String {
+    format!(
+        "SELECT `id`, `caption`, `max_user_count` FROM {}.`navigator_flatcats` WHERE `min_rank` <= 1 AND `public` = '0' ORDER BY `order_num`, `id`",
+        q(database)
+    )
+}
+
+/// The most users Polaris lets a room's settings have (RoomSettingsSaveEvent).
+const MAX_USERS: i64 = 200;
 
 /// What the user chose for the new room.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,6 +232,8 @@ pub struct ImportChoice {
     pub now: i64,
     /// The valuables to import all the same, by [`ValuableItem::key`].
     pub include: BTreeSet<(char, i32)>,
+    /// The category chosen (None, or one the hotel does not offer: the first of [`Target::categories`]).
+    pub category: Option<i64>,
 }
 
 /// What the import makes and leaves out.
@@ -228,6 +256,9 @@ pub struct ImportReport {
     pub notes: Vec<String>,
     /// The valuables of the capture (LTD and rares), left out unless included.
     pub valuables: Vec<ValuableItem>,
+    /// The categories to choose from, and the one the room gets (None: the hotel's default).
+    pub categories: Vec<RoomCategory>,
+    pub category: Option<i64>,
 }
 
 /// The statements and their report.
@@ -473,6 +504,26 @@ pub fn plan(capture: &RoomCapture, target: &Target, choice: &ImportChoice) -> Re
         columns.push(("thickness_floor", PlanValue::Int(floor.clamp(-2, 1).into())));
     }
     columns.push(("wall_height", PlanValue::Int(capture.wall_height.clamp(-1, 15).into())));
+    // The category chosen, or the first one; the most users within what it and Polaris allow.
+    let category = choice.category.and_then(|id| target.categories.iter().find(|c| c.id == id)).or(target.categories.first());
+    report.categories = target.categories.clone();
+    report.category = category.map(|c| c.id);
+    match category {
+        Some(category) => columns.push(("category", PlanValue::Int(category.id))),
+        None => report.notes.push("The hotel has no room category a user may pick: the room gets the default one.".into()),
+    }
+    if info.max_users > 0 {
+        let most = category.map(|c| c.max_users).filter(|m| *m > 0).map_or(MAX_USERS, |m| m.min(MAX_USERS));
+        columns.push(("users_max", PlanValue::Int(i64::from(info.max_users).clamp(1, most))));
+    }
+    // The chat settings, within the ranges Polaris accepts when a room's settings are saved.
+    if let Some(chat) = info.chat {
+        columns.push(("chat_mode", PlanValue::Int(chat.mode.clamp(0, 2).into())));
+        columns.push(("chat_weight", PlanValue::Int(chat.weight.clamp(0, 2).into())));
+        columns.push(("chat_speed", PlanValue::Int(chat.speed.clamp(0, 2).into())));
+        columns.push(("chat_hearing_distance", PlanValue::Int(chat.distance.clamp(1, 99).into())));
+        columns.push(("chat_protection", PlanValue::Int(chat.protection.clamp(0, 2).into())));
+    }
     columns.push(("date_created", PlanValue::Int(choice.now)));
     columns.retain(|(column, _)| has(&target.room_columns, column));
     statements.push((
@@ -854,7 +905,66 @@ mod tests {
             door: Door { x: 0, y: 1, dir: 2 },
             now: 1_700_000_000,
             include: BTreeSet::from([('s', 2)]),
+            category: None,
         }
+    }
+
+    /// The value the room's INSERT gives a column.
+    fn room_value(plan: &ImportPlan, column: &str) -> Option<PlanValue> {
+        let (sql, values) = &plan.statements[0];
+        let list = &sql[sql.find('(')? + 1..sql.find(')')?];
+        list.split(", ").position(|c| c == format!("`{column}`")).map(|i| values[i].clone())
+    }
+
+    fn categories() -> Vec<RoomCategory> {
+        vec![RoomCategory { id: 3, caption: "Chat".into(), max_users: 50 }, RoomCategory { id: 5, caption: "Games".into(), max_users: 0 }]
+    }
+
+    #[test]
+    fn the_category_is_the_chosen_one_or_the_first() {
+        let target = Target { categories: categories(), ..target() };
+        let plan = plan_of(&capture(), &target, &choice());
+        assert_eq!(room_value(&plan, "category"), Some(PlanValue::Int(3)));
+        assert_eq!((plan.report.category, plan.report.categories.len()), (Some(3), 2));
+        let plan = plan_of(&capture(), &target, &ImportChoice { category: Some(5), ..choice() });
+        assert_eq!(room_value(&plan, "category"), Some(PlanValue::Int(5)));
+        // One the hotel does not offer (a staff category, or gone): the first.
+        let plan = plan_of(&capture(), &target, &ImportChoice { category: Some(99), ..choice() });
+        assert_eq!(room_value(&plan, "category"), Some(PlanValue::Int(3)));
+        // None at all: the column's default, and a note.
+        let plan = plan_of(&capture(), &Target { categories: Vec::new(), ..target }, &choice());
+        assert_eq!((room_value(&plan, "category"), plan.report.category), (None, None));
+        assert!(plan.report.notes.iter().any(|n| n.contains("category")), "{:?}", plan.report.notes);
+        assert!(room_categories_query("habbo").contains("FROM `habbo`.`navigator_flatcats` WHERE `min_rank` <= 1 AND `public` = '0'"));
+    }
+
+    #[test]
+    fn the_most_users_and_the_chat_settings_come_within_the_hotels_limits_and_access_stays_open() {
+        let mut c = capture();
+        c.info = Some(RoomInfo {
+            max_users: 75,
+            door_mode: 2,
+            trade_mode: 0,
+            chat: Some(ChatSettings { mode: 1, weight: 9, speed: 2, distance: 0, protection: 1 }),
+            ..RoomInfo::default()
+        });
+        let target = Target { categories: categories(), ..target() };
+        // The chat category takes 50 at most.
+        let plan = plan_of(&c, &target, &choice());
+        assert_eq!(room_value(&plan, "users_max"), Some(PlanValue::Int(50)));
+        for (column, value) in [("chat_mode", 1), ("chat_weight", 2), ("chat_speed", 2), ("chat_hearing_distance", 1), ("chat_protection", 1)] {
+            assert_eq!(room_value(&plan, column), Some(PlanValue::Int(value)), "{column}");
+        }
+        assert_eq!(room_value(&plan, "state"), Some(PlanValue::Text("open".into())));
+        assert_eq!(room_value(&plan, "password"), Some(PlanValue::Text(String::new())));
+        assert_eq!(room_value(&plan, "trade_mode"), None);
+        // Games has no limit of its own: Polaris' 200.
+        c.info.as_mut().unwrap().max_users = 500;
+        let plan = plan_of(&c, &target, &ImportChoice { category: Some(5), ..choice() });
+        assert_eq!(room_value(&plan, "users_max"), Some(PlanValue::Int(200)));
+        // Nothing captured: the hotel's defaults.
+        let plan = plan_of(&capture(), &target, &choice());
+        assert_eq!((room_value(&plan, "users_max"), room_value(&plan, "chat_mode")), (None, None));
     }
 
     #[test]

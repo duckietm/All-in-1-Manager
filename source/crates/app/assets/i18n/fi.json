@@ -4127,6 +4127,8 @@
   "Official Habbo and retros (Flash and Nitro) work. Nothing in the other hotel is changed: the capture only listens, and reading the wired opens the boxes the way their owner does. Copy only rooms you may copy.": "Virallinen Habbo ja retrot (Flash ja Nitro) toimivat. Toisessa hotellissa mikään ei muutu: tallennus vain kuuntelee, ja wiredien lukeminen avaa laatikot kuten niiden omistaja. Kopioi vain huoneita, joita saat kopioida.",
   "Owner (user name)": "Omistaja (käyttäjänimi)",
   "Read the wired": "Lue wiredit",
+  "Double click where Open does not work": "Kaksoisnapsauta, jos Open ei toimi",
+  "Off: the boxes are opened only with Open, which nobody sees. On: where the hotel does not answer Open, each box is double clicked instead, and its light blinks for everyone in the room.": "Pois: laatikot avataan vain Openilla, jota kukaan ei näe. Päällä: jos hotelli ei vastaa Openiin, jokaista laatikkoa kaksoisnapsautetaan, ja sen valo vilkkuu kaikille huoneessa.",
   "Remove the room": "Poista huone",
   "Remove {room} (room {id}) from the hotel again?": "Poistetaanko {room} (huone {id}) hotellista?",
   "Room name": "Huoneen nimi",

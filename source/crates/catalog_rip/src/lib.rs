@@ -237,8 +237,9 @@ pub struct ItemsBaseRow {
 pub trait ItemsSource: Send + Sync {
     async fn items_base(&self) -> anyhow::Result<Vec<ItemsBaseRow>>;
 
-    /// The page and offer ids already in the catalogue, per catalog_type (NORMAL / BUILDER), for
-    /// [`ManagerMode::ReplaceRipped`] and [`ManagerMode::Add`]. `None`: not known.
+    /// The pages and offers already in the catalogue, per catalog_type (NORMAL / BUILDER): their
+    /// ids for [`ManagerMode::ReplaceRipped`] and [`ManagerMode::Add`], and the page tree with the
+    /// furni of each page for [`ManagerMode::Merge`]. `None`: not known.
     async fn existing_catalogue(&self) -> anyhow::Result<Option<ExistingCatalogue>> {
         Ok(None)
     }

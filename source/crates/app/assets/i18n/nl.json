@@ -4224,5 +4224,18 @@
   "The record of the merges' furni interactions cannot be read, so nothing can be undone here until it can: {error}": "De vastlegging van de furni-interacties van het samenvoegen kan niet gelezen worden, dus hier kan niets ongedaan worden gemaakt tot dat wel kan: {error}",
   "The rip of {hotel} is merged. Publish to show it in the hotel: Publish also makes the emulator load the furni again, so the new interactions count (else restart the emulator).": "De rip van {hotel} is samengevoegd. Publiceer om hem in het hotel te tonen: Publiceren laat de emulator ook de furni opnieuw laden, zodat de nieuwe interacties gelden (anders herstart de emulator).",
   "This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.": "Deze rip heeft geen map packets/ (hij is gemaakt zonder de pakketten vast te leggen), dus hij kan niet worden samengevoegd: open Rip samenvoegen van de catalogusbeheerder en gebruik in plaats daarvan catalog_manager.sql importeren zoals hij is.",
-  "Undo the interactions only": "Alleen de interacties ongedaan maken"
+  "Undo the interactions only": "Alleen de interacties ongedaan maken",
+  "Also rip the catalogue (needs G-Earth with the hotel open)": "Ook de catalogus kopiëren (G-Earth met het hotel open nodig)",
+  "Catalogue rip": "Cataloguskopie",
+  "Every furni the catalogue sells was downloaded.": "Elk meubel dat de catalogus verkoopt is gedownload.",
+  "G-Earth is connected: log in to the hotel with your own client, through G-Earth.": "G-Earth is verbonden: log in op het hotel met je eigen client, via G-Earth.",
+  "Merge into my catalogue": "Samenvoegen met mijn catalogus",
+  "Optional: the retro's renderer-config.json (or its site), where the catalogue images are found. Empty: the hotel profile's. Saved with the profile.": "Optioneel: de renderer-config.json van de retro (of zijn site), waar de catalogusafbeeldingen staan. Leeg: die van het hotelprofiel. Wordt met het profiel bewaard.",
+  "Ripping the catalogue of {host} ...": "De catalogus van {host} wordt gekopieerd ...",
+  "The Catalogue ripper copies the hotel's catalogue through G-Earth while the files download, into {folder}. Without G-Earth the download still runs; the rip waits for it.": "De Catalogue ripper kopieert de catalogus van het hotel via G-Earth terwijl de bestanden downloaden, naar {folder}. Zonder G-Earth gaat de download gewoon door; de kopie wacht erop.",
+  "The furni the download lacks could not be listed: {error}": "De meubels die de download mist konden niet worden opgesomd: {error}",
+  "Wait for the download to finish.": "Wacht tot de download klaar is.",
+  "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "Wachten op G-Earth: start het en verbind het met het hotel (de ripper kan het voor je downloaden en starten).",
+  "When the download is finished too, the furni it lacks are listed here.": "Als de download ook klaar is, staan hier de meubels die hij mist.",
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} meubels die de catalogus verkoopt zijn niet gedownload (geen .hab of .nitro): {names}"
 }

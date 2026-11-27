@@ -4224,5 +4224,18 @@
   "The record of the merges' furni interactions cannot be read, so nothing can be undone here until it can: {error}": "O registo das interações dos furnis das junções não pode ser lido, por isso nada pode ser anulado aqui até que possa: {error}",
   "The rip of {hotel} is merged. Publish to show it in the hotel: Publish also makes the emulator load the furni again, so the new interactions count (else restart the emulator).": "O rip de {hotel} foi junto. Publique para o mostrar no hotel: Publicar também faz o emulador carregar de novo os furnis, para as novas interações contarem (senão reinicie o emulador).",
   "This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.": "Este rip não tem a pasta packets/ (foi feito sem gravar os pacotes), por isso não pode ser junto: abra Juntar um rip do gestor do catálogo e use antes Importar catalog_manager.sql tal como está.",
-  "Undo the interactions only": "Anular só as interações"
+  "Undo the interactions only": "Anular só as interações",
+  "Also rip the catalogue (needs G-Earth with the hotel open)": "Copiar também o catálogo (precisa do G-Earth com o hotel aberto)",
+  "Catalogue rip": "Cópia do catálogo",
+  "Every furni the catalogue sells was downloaded.": "Cada mobi que o catálogo vende foi baixado.",
+  "G-Earth is connected: log in to the hotel with your own client, through G-Earth.": "O G-Earth está conectado: entra no hotel com o teu próprio cliente, através do G-Earth.",
+  "Merge into my catalogue": "Mesclar no meu catálogo",
+  "Optional: the retro's renderer-config.json (or its site), where the catalogue images are found. Empty: the hotel profile's. Saved with the profile.": "Opcional: o renderer-config.json do retro (ou o seu site), onde estão as imagens do catálogo. Vazio: as do perfil do hotel. Guardado com o perfil.",
+  "Ripping the catalogue of {host} ...": "Copiando o catálogo de {host} ...",
+  "The Catalogue ripper copies the hotel's catalogue through G-Earth while the files download, into {folder}. Without G-Earth the download still runs; the rip waits for it.": "O Catalogue ripper copia o catálogo do hotel através do G-Earth enquanto os ficheiros são baixados, para {folder}. Sem o G-Earth o download continua; a cópia espera por ele.",
+  "The furni the download lacks could not be listed: {error}": "Não foi possível listar os mobis que faltam ao download: {error}",
+  "Wait for the download to finish.": "Espera até o download terminar.",
+  "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "À espera do G-Earth: inicia-o e conecta-o ao hotel (o ripper pode baixá-lo e iniciá-lo por ti).",
+  "When the download is finished too, the furni it lacks are listed here.": "Quando o download também terminar, os mobis que lhe faltam aparecem aqui.",
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} mobis que o catálogo vende não foram baixados (nenhum .hab ou .nitro): {names}"
 }

@@ -1233,6 +1233,16 @@ compilers ported to Rust, the JSON and sprite sheet as it makes them; the sheet 
 converted is kept in `custom/<name>/source/`; **Convert the kept .swf files** tries those again without downloading. The bundle formats and conversions live in their own crate, `aio-assets`, so other parts of the
 installer can use them too.
 
+**Also rip the catalogue (needs G-Earth with the hotel open)** (off by default, remembered) makes **Download** also
+start the [Catalogue ripper](#catalogue-ripper) with its own options, for the same hotel: the profile's
+FurnitureData.json matches the products by class name, and the optional **Client configuration** (the retro's
+`renderer-config.json` or its site, saved with the profile) gives the catalogue image URLs. The rip goes into
+`custom/<name>/catalogue/<hotel>_<time>/`, next to `custom/<name>/gamedata/`. The download never waits for it:
+without G-Earth the rip says what to do and waits, and the page shows its G-Earth state, progress and **Cancel**.
+When both are done, the page lists the furni the ripped catalogue sells that the download did not get (no `.hab` or
+`.nitro` in `gamedata/furniture/`), and **Merge into my catalogue** opens the Catalogue manager's **Merge a rip**
+with that rip (preview, then Apply, then Undo, as always).
+
 ### Asset tools
 
 **Asset tools** (sidebar → ASSETS) works on files on this computer, in `Habbo_Assets/Assets_tools`, the All-in-1
@@ -1868,7 +1878,10 @@ Rosetta).
   `configuration/plugins/catalog-rip/profiles/` (**Profiles folder**); one with a built-in profile's name replaces it.
 - **Output**, in `Catalog/<hotel>_<time>/` next to the configuration folder: `catalog.json`, Arcturus SQL
   (`catalog_pages.sql`, `catalog_items.sql`), `catalog_manager.sql`, the page images and icons, and `README.txt`.
-  A rip that stops early still saves what it read.
+  A rip that stops early still saves what it read. A rip started from [Nitro retro](#nitro-retro-custom-assets) goes
+  into that profile's `custom/<name>/catalogue/` instead, and its `README.txt` gets a NITRO RETRO section that points
+  at the download's `gamedata/`. The ripper page shows where a running rip is (waiting for G-Earth, for the hotel,
+  ripping).
 - **Import into the hotel** (when logged in) opens the [Catalogue](#catalogue) manager's **Merge a rip** with the rip
   folder: the rip is merged into your catalogue (joined pages, new pages under "Imported from <hotel>", offers already
   sold skipped) and, with your furniture bundles folder, the furni interactions are fixed in the same go. Nothing is

@@ -1,6 +1,8 @@
 //! Get Assets: Habbo's own assets downloaded on this computer into a folder laid out like the server's gamedata, so
 //! Deploy Assets copies it as it is; and a Nitro retro's custom furniture and clothes, into a folder of their own to
 //! upload by hand. No server connection is needed. (All-in-1 Converter: Habbo Original and Nitro Custom Downloads)
+//! A retro download can also rip the hotel's catalogue (the Catalogue ripper's job, through G-Earth) into
+//! `custom/<name>/catalogue/`, next to its gamedata/.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -19,6 +21,7 @@ use crate::gui::theme::Palette;
 use crate::gui::widgets::{self, ResultKind};
 use crate::gui::{Page, Request, Shared, View};
 use crate::i18n::{n, t, tf};
+use crate::views::catalog_rip::RetroRip;
 
 /// Title and what it gets, per download (the converter's menu texts).
 fn texts(asset: Asset) -> (&'static str, &'static str) {
@@ -125,6 +128,8 @@ struct State {
     picked_source: Option<PathBuf>,
     /// A JSON file chosen for one of the retro's fields: (field index, path).
     picked_retro: Option<(usize, PathBuf)>,
+    /// The gamedata folder of the last retro download, once it finished (for the catalogue rip's summary).
+    retro_finished: Option<PathBuf>,
 }
 
 pub struct GetAssetsView {
@@ -145,6 +150,10 @@ pub struct GetAssetsView {
     edit: RetroProfile,
     retro_furniture: bool,
     retro_clothes: bool,
+    /// Also rip the retro's catalogue with the download (Catalogue ripper, through G-Earth); kept in Settings.
+    catalog_rip: bool,
+    /// A rip for the window to start with the Catalogue ripper (taken with [`GetAssetsView::take_rip_request`]).
+    rip_request: Option<RetroRip>,
     /// Done was pressed: back to the top of the page on the next frame.
     scroll_top: bool,
 }
@@ -174,6 +183,8 @@ impl GetAssetsView {
             edit: RetroProfile::default(),
             retro_furniture: true,
             retro_clothes: true,
+            catalog_rip: aio_core::InstallerSettings::load().retro_catalog_rip,
+            rip_request: None,
             scroll_top: false,
         }
         .with_folder_from_settings()
@@ -205,6 +216,16 @@ impl GetAssetsView {
     /// Habbo assets or Nitro retro: the sidebar's two pages share this view (and its run and log).
     pub fn set_retro(&mut self, retro: bool) {
         self.tab = if retro { Tab::Retro } else { Tab::Habbo };
+    }
+
+    /// The catalogue rip the Download button asked for, for the window to start with the Catalogue ripper.
+    pub fn take_rip_request(&mut self) -> Option<RetroRip> {
+        self.rip_request.take()
+    }
+
+    /// The gamedata folder of the last retro download, once it finished.
+    pub fn finished_retro_download(&self) -> Option<PathBuf> {
+        self.state.lock().retro_finished.clone()
     }
 
     /// The edited profile differs from what is saved (or is a new one with something in it).
@@ -285,10 +306,12 @@ impl GetAssetsView {
             state.cancel = Some(cancel.clone());
             state.results.clear();
             state.log.clear();
+            state.retro_finished = None;
         }
         let retro_run = jobs.iter().any(|j| !matches!(j, Job::Habbo(_)));
         let root = if retro_run { retro::custom_folder(&self.folder, &self.edit) } else { self.folder.clone() };
         self.state.lock().last_root = root.clone();
+        let gamedata = habbo_assets::gamedata_folder(&root);
         let retro_urls = self.edit.urls.clone();
         // The profile's Referer and custom headers, for a retro run only (Habbo's CDN needs none).
         let headers = if retro_run { retro_urls.request_headers() } else { Ok(Vec::new()) };
@@ -352,6 +375,9 @@ impl GetAssetsView {
             s.running = false;
             s.stopped = cancel.is_cancelled();
             s.cancel = None;
+            if retro_run {
+                s.retro_finished = Some(gamedata);
+            }
             drop(s);
             task_shared.set_status(t("Ready."));
         });
@@ -573,6 +599,39 @@ impl GetAssetsView {
                 ui.indent("retro_clothes", |ui| {
                     ui.label(RichText::new(t("FigureData.json, FigureMap.json and every clothing bundle")).size(11.5).color(palette.muted));
                 });
+                if ui.checkbox(&mut self.catalog_rip, RichText::new(t("Also rip the catalogue (needs G-Earth with the hotel open)")).size(13.5).strong()).changed() {
+                    let mut settings = aio_core::InstallerSettings::load();
+                    settings.retro_catalog_rip = self.catalog_rip;
+                    let _ = settings.save();
+                }
+                ui.indent("retro_catalog_rip", |ui| {
+                    let catalogue = retro::custom_folder(&self.folder, &self.edit).join("catalogue");
+                    ui.label(
+                        RichText::new(tf(
+                            "The Catalogue ripper copies the hotel's catalogue through G-Earth while the files download, into {folder}. Without G-Earth the download still runs; the rip waits for it.",
+                            &[("folder", &catalogue.display().to_string())],
+                        ))
+                        .size(11.5)
+                        .color(palette.muted),
+                    );
+                    if self.catalog_rip {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(t("Client configuration")).size(12.5));
+                            let width = (ui.available_width() - 4.0).max(200.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.edit.urls.client_config)
+                                    .hint_text(example("https://example.com/client/renderer-config.json", palette))
+                                    .desired_width(width)
+                                    .margin(egui::vec2(8.0, 6.0)),
+                            );
+                        });
+                        ui.label(
+                            RichText::new(t("Optional: the retro's renderer-config.json (or its site), where the catalogue images are found. Empty: the hotel profile's. Saved with the profile."))
+                                .size(11.5)
+                                .color(palette.muted),
+                        );
+                    }
+                });
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -585,6 +644,9 @@ impl GetAssetsView {
                     // What is downloaded from is kept too.
                     if self.retro_changed() {
                         self.save_retro();
+                    }
+                    if self.catalog_rip {
+                        self.rip_request = Some(RetroRip::from_profile(&retro::custom_folder(&self.folder, &self.edit), &self.edit.urls));
                     }
                     *start = Some(jobs);
                 }

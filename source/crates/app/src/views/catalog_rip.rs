@@ -50,9 +50,106 @@ fn open_folder(path: &Path) {
     crate::gui::open_url(&path.display().to_string());
 }
 
+/// A rip started by the Nitro retro page with its download: the profile's URLs, and the rip folder next to the
+/// download's gamedata/ (`<custom>/catalogue/<hotel>_<timestamp>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetroRip {
+    /// `<custom>/catalogue`, where the rip makes its folder.
+    pub output: PathBuf,
+    /// `<custom>/gamedata`: what the download saves.
+    pub gamedata: PathBuf,
+    /// The retro's FurnitureData.json: products are matched by class name through it.
+    pub furnidata_url: Option<String>,
+    /// The retro's renderer-config.json: the catalogue image URLs.
+    pub site_config_url: Option<String>,
+}
+
+impl RetroRip {
+    pub fn from_profile(custom: &Path, urls: &aio_core::settings::RetroUrls) -> Self {
+        let filled = |value: &str| Some(value.trim().to_string()).filter(|v| !v.is_empty());
+        Self {
+            output: custom.join("catalogue"),
+            gamedata: aio_remote::habbo_assets::gamedata_folder(custom),
+            furnidata_url: filled(&urls.furnidata),
+            site_config_url: filled(&urls.client_config),
+        }
+    }
+
+    /// The ripper's options with the retro's folder and URLs; an empty URL leaves the hotel profile's.
+    pub fn apply(&self, options: RipOptions) -> RipOptions {
+        RipOptions {
+            output_folder: self.output.clone(),
+            furnidata_url: self.furnidata_url.clone().or(options.furnidata_url.clone()),
+            site_config_url: self.site_config_url.clone().or(options.site_config_url.clone()),
+            ..options
+        }
+    }
+}
+
+/// Where a running rip is: G-Earth, the hotel, then the pages.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum Stage {
+    #[default]
+    WaitingForGearth,
+    WaitingForHotel,
+    Ripping(String),
+}
+
+impl Stage {
+    fn after(self, event: &rip::RipEvent) -> Self {
+        match event {
+            rip::RipEvent::GearthConnected { .. } => Stage::WaitingForHotel,
+            rip::RipEvent::HotelConnected { host, .. } => Stage::Ripping(host.clone()),
+            _ => self,
+        }
+    }
+
+    fn text(&self) -> String {
+        match self {
+            Stage::WaitingForGearth => t("Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).").to_string(),
+            Stage::WaitingForHotel => t("G-Earth is connected: log in to the hotel with your own client, through G-Earth.").to_string(),
+            Stage::Ripping(host) => tf("Ripping the catalogue of {host} ...", &[("host", host)]),
+        }
+    }
+}
+
+/// The furni a rip's catalogue sells (catalog.json, named through the download's FurnitureData.json) whose library
+/// has no .hab or .nitro in the download's furniture/ folder; sorted.
+pub fn not_downloaded(rip_folder: &Path, gamedata: &Path) -> anyhow::Result<Vec<String>> {
+    use anyhow::Context;
+    let furnidata_path = gamedata.join("config").join("FurnitureData.json");
+    let text = std::fs::read_to_string(&furnidata_path).with_context(|| format!("reading {}", furnidata_path.display()))?;
+    let furnidata = rip::furnidata::Furnidata::parse(&text).with_context(|| format!("reading {}", furnidata_path.display()))?;
+    let catalog_path = rip_folder.join("catalog.json");
+    let catalog: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&catalog_path).with_context(|| format!("reading {}", catalog_path.display()))?)?;
+    let furniture = gamedata.join("furniture");
+    Ok(rip::missing::sold_classnames(&catalog, &furnidata)
+        .into_iter()
+        .filter(|classname| {
+            let library = classname.split('*').next().unwrap_or(classname);
+            !["hab", "nitro"].iter().any(|ext| furniture.join(format!("{library}.{ext}")).is_file())
+        })
+        .collect())
+}
+
+/// What README.txt of a rip made with the Nitro retro download adds (English, like the rest of it).
+fn retro_readme_section(gamedata: &Path) -> String {
+    format!(
+        "\nNITRO RETRO\n  Ripped together with the Nitro retro download of the same hotel: its furniture, clothes and\n  FurnitureData.json are in {}.\n",
+        gamedata.display()
+    )
+}
+
 #[derive(Default)]
 struct State {
     running: bool,
+    /// Where the running rip is.
+    stage: Stage,
+    /// The rip was started by the Nitro retro page (its card shows it).
+    retro: Option<RetroRip>,
+    /// The furni of the retro rip the download lacks, per rip folder (read once).
+    not_downloaded: Option<(PathBuf, Result<Vec<String>, String>)>,
     log: LogLines,
     progress: Option<rip::RipProgress>,
     result: Option<RipResult>,
@@ -160,33 +257,13 @@ impl CatalogRipView {
                     }
                 }
             } else if ui.add_enabled(self.normal || self.builders_club, widgets::primary_button(t("Start"))).clicked() {
-                self.start(shared);
+                self.start_with(shared, None);
             }
         });
         ui.add_space(8.0);
 
         let mut state = self.state.lock();
-        if let Some(progress) = state.progress.clone().filter(|_| state.running) {
-            if progress.total > 0 {
-                ui.add(
-                    egui::ProgressBar::new(progress.done as f32 / progress.total as f32)
-                        .text(tf("{done} of {total} pages · {page}", &[("done", &progress.done.to_string()), ("total", &progress.total.to_string()), ("page", &progress.label)])),
-                );
-            } else {
-                widgets::indeterminate_bar(ui, 8.0, palette.muted);
-            }
-            ui.add_space(8.0);
-        }
-        if let Some(error) = state.error.clone() {
-            widgets::result_banner(ui, palette, ResultKind::Error, t("The rip stopped"), &error);
-            if let Some(folder) = state.partial.clone() {
-                ui.add_space(4.0);
-                if ui.add(widgets::secondary_button(t("Open the folder"))).on_hover_text(folder.display().to_string()).clicked() {
-                    open_folder(&folder);
-                }
-            }
-            ui.add_space(8.0);
-        }
+        progress_and_error(ui, palette, &state);
         if let Some(result) = state.result.clone() {
             click = result_card(ui, palette, shared, &result);
             ui.add_space(8.0);
@@ -195,6 +272,114 @@ impl CatalogRipView {
         click
     }
 
+    /// The Nitro retro page's card of the rip it started with its download: G-Earth's state, the progress, Cancel and
+    /// the result; once the download (`download`: its gamedata folder) is finished too, the furni the catalogue sells
+    /// that the download lacks, and "Merge into my catalogue". Nothing while no retro rip was started.
+    pub fn retro_panel(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared, download: Option<&Path>) -> Option<Click> {
+        let mut click = None;
+        let finished = self.state.lock().result.as_ref().map(|r| r.folder.clone());
+        // Read once per rip folder, when both are finished (again after another download).
+        if download.is_none() {
+            self.state.lock().not_downloaded = None;
+        }
+        if let (Some(folder), Some(gamedata)) = (&finished, download) {
+            let known = self.state.lock().not_downloaded.as_ref().is_some_and(|(f, _)| f == folder);
+            if !known {
+                let list = not_downloaded(folder, gamedata).map_err(|e| format!("{e:#}"));
+                self.state.lock().not_downloaded = Some((folder.clone(), list));
+            }
+        }
+        let mut state = self.state.lock();
+        state.retro.as_ref()?;
+        widgets::card(ui, palette, egui::Margin::symmetric(24, 20), |ui| {
+            ui.spacing_mut().item_spacing.y = 8.0;
+            ui.label(widgets::title_text(t("Catalogue rip"), 15.0));
+            if state.running {
+                ui.horizontal(|ui| {
+                    if ui.add(widgets::secondary_button(t("Cancel"))).clicked() {
+                        if let Some(cancel) = &state.cancel {
+                            cancel.cancel();
+                        }
+                    }
+                    ui.spinner();
+                });
+            }
+            progress_and_error(ui, palette, &state);
+            if let Some(result) = state.result.clone() {
+                result_banner(ui, palette, &result);
+                match (&state.not_downloaded, download) {
+                    (Some((_, Ok(names))), Some(_)) if names.is_empty() => widgets::muted(ui, palette, t("Every furni the catalogue sells was downloaded."), 12.5),
+                    (Some((_, Ok(names))), Some(_)) => {
+                        let shown: Vec<&str> = names.iter().take(40).map(String::as_str).collect();
+                        let more = if names.len() > shown.len() { tf(" and {count} more", &[("count", &(names.len() - shown.len()).to_string())]) } else { String::new() };
+                        widgets::muted(
+                            ui,
+                            palette,
+                            &tf("{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}", &[("count", &names.len().to_string()), ("names", &format!("{}{more}", shown.join(", ")))]),
+                            12.5,
+                        );
+                    }
+                    (Some((_, Err(e))), Some(_)) => widgets::muted(ui, palette, &tf("The furni the download lacks could not be listed: {error}", &[("error", e)]), 12.5),
+                    _ => widgets::muted(ui, palette, t("When the download is finished too, the furni it lacks are listed here."), 12.5),
+                }
+                ui.horizontal(|ui| {
+                    if ui.add(widgets::secondary_button(t("Open the folder"))).on_hover_text(result.folder.display().to_string()).clicked() {
+                        open_folder(&result.folder);
+                    }
+                    let can_merge = download.is_some() && result.folder.join("packets").is_dir() && shared.session().is_some();
+                    let hint = if download.is_none() {
+                        t("Wait for the download to finish.")
+                    } else if shared.session().is_none() {
+                        t("Log in to the hotel's server first")
+                    } else if !result.folder.join("packets").is_dir() {
+                        t("This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.")
+                    } else {
+                        t("Opens the Catalogue manager's Merge a rip with this rip: it is fitted into your catalogue and you see every change first; nothing is written until you click Apply there.")
+                    };
+                    if ui.add_enabled(can_merge, widgets::primary_button(t("Merge into my catalogue"))).on_hover_text(hint).on_disabled_hover_text(hint).clicked() {
+                        click = Some(import_click(&result.folder));
+                    }
+                    if shared.session().is_none() && ui.add(widgets::secondary_button(t("Log in"))).clicked() {
+                        shared.request(crate::gui::Request::Login);
+                    }
+                });
+            }
+            log_view::show(ui, "retro-catalog-rip", &mut state.log, Some(220.0), t("The ripper's log appears here."));
+        });
+        ui.add_space(18.0);
+        click
+    }
+}
+
+/// The running rip's progress bar, or why it stopped (with its folder when it saved what it had).
+fn progress_and_error(ui: &mut egui::Ui, palette: &Palette, state: &State) {
+    if state.running {
+        widgets::muted(ui, palette, &state.stage.text(), 12.5);
+    }
+    if let Some(progress) = state.progress.clone().filter(|_| state.running) {
+        if progress.total > 0 {
+            ui.add(
+                egui::ProgressBar::new(progress.done as f32 / progress.total as f32)
+                    .text(tf("{done} of {total} pages · {page}", &[("done", &progress.done.to_string()), ("total", &progress.total.to_string()), ("page", &progress.label)])),
+            );
+        } else {
+            widgets::indeterminate_bar(ui, 8.0, palette.muted);
+        }
+        ui.add_space(8.0);
+    }
+    if let Some(error) = state.error.clone() {
+        widgets::result_banner(ui, palette, ResultKind::Error, t("The rip stopped"), &error);
+        if let Some(folder) = state.partial.clone() {
+            ui.add_space(4.0);
+            if ui.add(widgets::secondary_button(t("Open the folder"))).on_hover_text(folder.display().to_string()).clicked() {
+                open_folder(&folder);
+            }
+        }
+        ui.add_space(8.0);
+    }
+}
+
+impl CatalogRipView {
     fn options(&mut self, ui: &mut egui::Ui, palette: &Palette, shared: &Shared) {
         widgets::card(ui, palette, egui::Margin::symmetric(24, 18), |ui| {
             ui.label(widgets::title_text(t("Options"), 17.0));
@@ -289,11 +474,19 @@ impl CatalogRipView {
         });
     }
 
-    fn start(&mut self, shared: &Shared) {
+    /// Starts a rip with the page's options; `retro`: started by the Nitro retro page, into its download folder with
+    /// its URLs. False when a rip is running already.
+    pub fn start_with(&mut self, shared: &Shared, retro: Option<RetroRip>) -> bool {
         let cancel = CancellationToken::new();
         {
             let mut state = self.state.lock();
+            if state.running {
+                return false;
+            }
             state.running = true;
+            state.stage = Stage::default();
+            state.retro = retro.clone();
+            state.not_downloaded = None;
             state.log.clear();
             state.progress = None;
             state.result = None;
@@ -311,6 +504,10 @@ impl CatalogRipView {
             hotel_furnidata: Some(self.hotel_furnidata.trim().to_string()).filter(|s| !s.is_empty()),
             own_catalogue_images: Some(self.own_images.trim().to_string()).filter(|s| !s.is_empty()),
             ..RipOptions::default()
+        };
+        let options = match &retro {
+            Some(retro) => retro.apply(options),
+            None => options,
         };
         let choice = match self.profile.as_ref().and_then(|name| self.profiles.iter().find(|p| &p.name == name)) {
             Some(profile) => ProfileChoice::Fixed(profile.clone()),
@@ -343,8 +540,23 @@ impl CatalogRipView {
                 progress_state.lock().progress = Some(p);
                 ctx.request_repaint();
             };
+            let event_state = state.clone();
+            let ctx = shared.ctx.clone();
+            let event = move |e: &rip::RipEvent| {
+                let mut state = event_state.lock();
+                state.stage = std::mem::take(&mut state.stage).after(e);
+                ctx.request_repaint();
+            };
             let items = server.map(HotelItems);
-            let result = rip::rip(&options, choice, items.as_ref().map(|i| i as &dyn rip::ItemsSource), &log, &ask, &progress, &cancel).await;
+            let hooks = rip::RipHooks {
+                items: items.as_ref().map(|i| i as &dyn rip::ItemsSource),
+                event: Some(&event),
+                ..rip::RipHooks::new(&log, &ask, &progress)
+            };
+            let result = rip::rip_with(&options, choice, &hooks, &cancel).await;
+            if let (Ok(result), Some(retro)) = (&result, &retro) {
+                append_readme(&result.folder, &retro_readme_section(&retro.gamedata));
+            }
             let mut state = state.lock();
             state.running = false;
             state.cancel = None;
@@ -365,29 +577,22 @@ impl CatalogRipView {
                 }
             }
         });
+        true
+    }
+}
+
+/// Adds `section` to the rip's README.txt (with the line ends the ripper writes).
+fn append_readme(folder: &Path, section: &str) {
+    use std::io::Write;
+    let section = if cfg!(windows) { section.replace('\n', "\r\n") } else { section.to_string() };
+    if let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(folder.join("README.txt")) {
+        let _ = file.write_all(section.as_bytes());
     }
 }
 
 fn result_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, result: &RipResult) -> Option<Click> {
     let mut click = None;
-    let kind = if result.complete { ResultKind::Success } else { ResultKind::Warning };
-    let heading = if result.complete { tf("The catalogue of {hotel} is copied", &[("hotel", &result.hotel)]) } else { tf("The catalogue of {hotel} is copied, with gaps", &[("hotel", &result.hotel)]) };
-    let mut lines = vec![tf(
-        "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.",
-        &[("pages", &result.pages.to_string()), ("items", &result.items.to_string()), ("profile", &result.profile), ("failed", &result.pages_failed.to_string())],
-    )];
-    if result.images.downloaded + result.images.missing + result.images.failed > 0 {
-        lines.push(tf(
-            "Images: {downloaded} downloaded, {missing} not on the hotel's server, {failed} failed.",
-            &[("downloaded", &result.images.downloaded.to_string()), ("missing", &result.images.missing.to_string()), ("failed", &result.images.failed.to_string())],
-        ));
-    }
-    let manager = &result.manager;
-    lines.push(tf(
-        "For the import: {pages} pages and {offers} offers; {left} offers left out (their furni is not in items_base).",
-        &[("pages", &manager.pages.to_string()), ("offers", &manager.offers.to_string()), ("left", &(manager.offers_unresolved + manager.offers_without_products).to_string())],
-    ));
-    widgets::result_banner(ui, palette, kind, &heading, &lines.join("\n"));
+    result_banner(ui, palette, result);
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         if ui.add(widgets::secondary_button(t("Open the folder"))).on_hover_text(result.folder.display().to_string()).clicked() {
@@ -409,6 +614,28 @@ fn result_card(ui: &mut egui::Ui, palette: &Palette, shared: &Shared, result: &R
         }
     });
     click
+}
+
+/// The rip's summary: pages and offers, images, and what the import gets.
+fn result_banner(ui: &mut egui::Ui, palette: &Palette, result: &RipResult) {
+    let kind = if result.complete { ResultKind::Success } else { ResultKind::Warning };
+    let heading = if result.complete { tf("The catalogue of {hotel} is copied", &[("hotel", &result.hotel)]) } else { tf("The catalogue of {hotel} is copied, with gaps", &[("hotel", &result.hotel)]) };
+    let mut lines = vec![tf(
+        "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.",
+        &[("pages", &result.pages.to_string()), ("items", &result.items.to_string()), ("profile", &result.profile), ("failed", &result.pages_failed.to_string())],
+    )];
+    if result.images.downloaded + result.images.missing + result.images.failed > 0 {
+        lines.push(tf(
+            "Images: {downloaded} downloaded, {missing} not on the hotel's server, {failed} failed.",
+            &[("downloaded", &result.images.downloaded.to_string()), ("missing", &result.images.missing.to_string()), ("failed", &result.images.failed.to_string())],
+        ));
+    }
+    let manager = &result.manager;
+    lines.push(tf(
+        "For the import: {pages} pages and {offers} offers; {left} offers left out (their furni is not in items_base).",
+        &[("pages", &manager.pages.to_string()), ("offers", &manager.offers.to_string()), ("left", &(manager.offers_unresolved + manager.offers_without_products).to_string())],
+    ));
+    widgets::result_banner(ui, palette, kind, &heading, &lines.join("\n"));
 }
 
 /// What "Import into the hotel" asks for: the Catalogue manager's Merge a rip, with the rip folder.
@@ -667,6 +894,68 @@ mod tests {
         let (_, select) = fake_database(5, "ERROR 1142 (42000): SELECT command denied");
         let error = load_existing(&*select, "habbo").await.unwrap_err();
         assert!(format!("{error:#}").contains("1142"), "{error:#}");
+    }
+
+    #[test]
+    fn a_retro_rip_goes_into_the_download_folder_with_the_profile_urls() {
+        let urls = aio_core::settings::RetroUrls {
+            furnidata: " https://cdn.x.com/gamedata/FurnitureData.json ".into(),
+            client_config: "https://x.com/client/renderer-config.json".into(),
+            ..Default::default()
+        };
+        let retro = RetroRip::from_profile(Path::new("A/custom/x"), &urls);
+        assert_eq!(retro.output, Path::new("A/custom/x").join("catalogue"));
+        let options = retro.apply(RipOptions { delay_ms: 777, ..RipOptions::default() });
+        assert_eq!(options.output_folder, Path::new("A/custom/x").join("catalogue"));
+        assert_eq!(options.furnidata_url.as_deref(), Some("https://cdn.x.com/gamedata/FurnitureData.json"));
+        assert_eq!(options.site_config_url.as_deref(), Some("https://x.com/client/renderer-config.json"));
+        assert_eq!(options.delay_ms, 777, "the ripper's own options stay");
+        // Empty fields leave the ripper's (the profile's) choice.
+        let options = RetroRip::from_profile(Path::new("B"), &Default::default()).apply(RipOptions::default());
+        assert_eq!((options.furnidata_url, options.site_config_url), (None, None));
+    }
+
+    #[test]
+    fn the_stage_follows_the_rip_events() {
+        let stage = Stage::WaitingForGearth;
+        let stage = stage.after(&rip::RipEvent::GearthConnected { port: 9092 });
+        assert_eq!(stage, Stage::WaitingForHotel);
+        let stage = stage.after(&rip::RipEvent::Warning("x".into()));
+        assert_eq!(stage, Stage::WaitingForHotel);
+        let stage = stage.after(&rip::RipEvent::HotelConnected { host: "game.x.com".into(), client_type: String::new(), hotel_version: String::new() });
+        assert_eq!(stage, Stage::Ripping("game.x.com".into()));
+    }
+
+    #[test]
+    fn furni_the_rip_sells_but_the_download_lacks() {
+        let dir = tempfile::tempdir().unwrap();
+        let (rip_folder, gamedata) = (dir.path().join("catalogue").join("x_1"), dir.path().join("gamedata"));
+        std::fs::create_dir_all(&rip_folder).unwrap();
+        std::fs::create_dir_all(gamedata.join("config")).unwrap();
+        std::fs::create_dir_all(gamedata.join("furniture")).unwrap();
+        std::fs::write(
+            gamedata.join("config").join("FurnitureData.json"),
+            r#"{"roomitemtypes":{"furnitype":[{"id":1,"classname":"chair_x"},{"id":2,"classname":"lamp_y*3"},{"id":3,"classname":"sofa_z"}]},"wallitemtypes":{"furnitype":[]}}"#,
+        )
+        .unwrap();
+        std::fs::write(gamedata.join("furniture").join("chair_x.hab"), b"").unwrap();
+        let product = |id: i32| serde_json::json!({"product_type": "s", "class_id": id});
+        let catalog = serde_json::json!({"catalogs": [{"mode": "NORMAL", "pages": [{"id": 1, "offers": [{"products": [product(1), product(2), product(3)]}], "children": []}]}]});
+        std::fs::write(rip_folder.join("catalog.json"), catalog.to_string()).unwrap();
+        assert_eq!(not_downloaded(&rip_folder, &gamedata).unwrap(), ["lamp_y*3", "sofa_z"]);
+        // A .nitro counts too (the colour's library is lamp_y).
+        std::fs::write(gamedata.join("furniture").join("lamp_y.nitro"), b"").unwrap();
+        assert_eq!(not_downloaded(&rip_folder, &gamedata).unwrap(), ["sofa_z"]);
+        // Without the download's FurnitureData.json the class ids cannot be named.
+        std::fs::remove_file(gamedata.join("config").join("FurnitureData.json")).unwrap();
+        assert!(not_downloaded(&rip_folder, &gamedata).is_err());
+    }
+
+    #[test]
+    fn the_retro_readme_section_points_at_the_download() {
+        let text = retro_readme_section(Path::new("C:/A/custom/x/gamedata"));
+        assert!(text.contains("NITRO RETRO"), "{text}");
+        assert!(text.contains("C:/A/custom/x/gamedata"), "{text}");
     }
 
     #[test]

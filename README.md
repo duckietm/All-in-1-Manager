@@ -1900,9 +1900,22 @@ is a folder in `configuration/plugins/room-rip/packets/<hotel>_<time>/` (**Open 
 The packets the ripper sends itself (opening boxes for **Read the wired**) are in it too. The recording holds
 everything sent in those rooms, chat too: share it only with people you trust.
 
-4. **Imported rooms → Undo** removes the room again: anyone in it is sent to the hotel view first (Polaris unloads a
-   room when its owner is set again over RCON), then the furni that came with it are deleted (also when they were picked
-   up since), furni placed there later go back to their owner's inventory, and the custom floor plan and the room go.
+4. **Imported rooms → Undo** removes the room again, but only while it is as it was imported: the room is still in the
+   hotel and still of its owner (`rooms.owner_id`), nobody is in it (`rooms.users` is 0; a count left over when the
+   emulator stopped is cleared when it starts), its owner is offline (`users.online`; Polaris keeps a room loaded
+   while its owner is online), no group has it as its home (`rooms.guild_id`), and every furni that came with it is
+   still in it and still the owner's (`items.room_id` and `items.user_id`). Otherwise Undo lists what is in the way
+   (furni picked up, moved to another room, traded or given; people in the room; the owner online; a group) and
+   removes nothing; furni deleted or recycled since are nobody's, so they do not stop it (they are listed as already
+   gone). Then the emulator unloads the room (Polaris does when a room's owner is set again over RCON, saving its
+   furni): when it refuses, or does not answer while it may be running (its service or process, or its RCON port
+   open), Undo stops; when it is surely not running, nothing has the room loaded and Undo goes on. The room and its
+   furni are read again, then one transaction deletes the room only while it is still the owner's with `rooms.users`
+   at 0 (else everything is rolled back), deletes the furni that came with it only while they are in the room and the
+   owner's, sends furni, bots and pets placed there by others back to their owners' inventories, and drops the room's
+   rights, votes and word filter, as Polaris does when a room is deleted; the custom floor plan is dropped once that
+   transaction is committed (should that fail, the room is gone anyway and Undo says so). `rooms.users` is a count
+   the emulator keeps, so these checks narrow the window for someone entering but cannot rule it out.
    The record of each import is kept in `configuration/plugins/room-rip/imports/`.
 
 Use it on rooms you may copy.

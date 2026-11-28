@@ -4102,7 +4102,7 @@
   "{done} of {total} pages · {page}": "{done} / {total} sivua · {page}",
   "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.": "{pages} sivua ja {items} tarjousta ({profile}); {failed} sivua ei voitu lukea.",
   "A new room of the owner you choose, open to everyone, with the floor plan, decoration and furni of the capture. The furni are matched with your items_base by class name; LTD serials, engravings, group links and ads of the other hotel are removed. Nothing is written before you click Import, and Undo removes the room again.": "Valitsemasi omistajan uusi huone, avoin kaikille, tallennuksen pohjapiirroksella, sisustuksella ja kalusteilla. Kalusteet yhdistetään items_baseesi luokkanimen perusteella; toisen hotellin LTD-numerot, kaiverrukset, ryhmälinkit ja mainokset poistetaan. Mitään ei kirjoiteta ennen kuin napsautat Tuo, ja Kumoa poistaa huoneen taas.",
-  "Anyone in the room is sent to the hotel view.": "Kaikki huoneessa olevat lähetetään hotellinäkymään.",
+  "Nothing is removed when someone is in the room or a furni of the import was picked up, moved or traded since.": "Mitään ei poisteta, jos huoneessa on joku tai jokin tuonnin kaluste on sen jälkeen poimittu, siirretty tai vaihdettu.",
   "Capture rooms": "Tallenna huoneita",
   "Captured rooms": "Tallennetut huoneet",
   "Capturing rooms: enter the rooms you want to copy.": "Huoneita tallennetaan: mene huoneisiin, jotka haluat kopioida.",
@@ -4127,6 +4127,8 @@
   "Official Habbo and retros (Flash and Nitro) work. Nothing in the other hotel is changed: the capture only listens, and reading the wired opens the boxes the way their owner does. Copy only rooms you may copy.": "Virallinen Habbo ja retrot (Flash ja Nitro) toimivat. Toisessa hotellissa mikään ei muutu: tallennus vain kuuntelee, ja wiredien lukeminen avaa laatikot kuten niiden omistaja. Kopioi vain huoneita, joita saat kopioida.",
   "Owner (user name)": "Omistaja (käyttäjänimi)",
   "Read the wired": "Lue wiredit",
+  "Double click where Open does not work": "Kaksoisnapsauta, jos Open ei toimi",
+  "Off: the boxes are opened only with Open, which nobody sees. On: where the hotel does not answer Open, each box is double clicked instead, and its light blinks for everyone in the room.": "Pois: laatikot avataan vain Openilla, jota kukaan ei näe. Päällä: jos hotelli ei vastaa Openiin, jokaista laatikkoa kaksoisnapsautetaan, ja sen valo vilkkuu kaikille huoneessa.",
   "Remove the room": "Poista huone",
   "Remove {room} (room {id}) from the hotel again?": "Poistetaanko {room} (huone {id}) hotellista?",
   "Room name": "Huoneen nimi",
@@ -4145,7 +4147,7 @@
   "The room capture stopped.": "Huonetallennus pysähtyi.",
   "The room, its floor plan and the furni that came with it are deleted.": "Huone, sen pohjapiirros ja sen mukana tulleet kalusteet poistetaan.",
   "Undo failed: nothing was removed": "Kumoaminen epäonnistui: mitään ei poistettu",
-  "Undo removes the room and the furni that came with it (also when they were picked up since). Anyone in the room is sent to the hotel view first.": "Kumoa poistaa huoneen ja sen mukana tulleet kalusteet (myös jos ne on sittemmin poimittu). Kaikki huoneessa olevat lähetetään ensin hotellinäkymään.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Kumoa poistaa huoneen ja sen mukana tulleet kalusteet vain, kun huoneessa ei ole ketään, omistaja on poissa linjoilta ja jokainen niistä on yhä huoneessa ja yhä omistajan; botit, lemmikit ja muiden sinne asettamat kalusteet palaavat omistajilleen. Jos huonetta on käytetty sen jälkeen (kalusteita poimittu, siirretty tai vaihdettu), Kumoa luettelee mikä on esteenä eikä poista mitään.",
   "Undo the import": "Kumoa tuonti",
   "Undone": "Kumottu",
   "What the import makes": "Mitä tuonti luo",
@@ -4163,6 +4165,8 @@
   "{room} is imported as room {id}.": "{room} tuotiin huoneeksi {id}.",
   "{room} is in the hotel": "{room} on hotellissa",
   "{room} is removed from the hotel.": "{room} poistettiin hotellista.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Jo aiemmin poissa (poistettu tai kierrätetty), ohitettu: {ids}.",
+  "Its custom floor plan (room_models_custom {id}) could not be deleted: {error}": "Sen oman pohjapiirroksen (room_models_custom {id}) poisto epäonnistui: {error}",
   "Open the recording": "Avaa tallenne",
   "Packet recording saved in {folder}": "Pakettitallenne tallennettu kansioon {folder}",
   "Record every packet (developers)": "Tallenna jokainen paketti (kehittäjät)",
@@ -4171,6 +4175,7 @@
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Tallentaa jokaisen paketin clientisi ja hotellin välillä molempiin suuntiin seuraavasta huoneesta alkaen: packets.jsonl (kaikki) ja wired.txt (wired-paketit purettuina). Wiredien rakentamiseen emulaattoriin.",
   "Stop recording": "Lopeta tallennus",
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille.",
+  "Valuables (LTD, rares and currency furni): {left} of {count} left out": "Arvoesineet (LTD:t, harvinaiset ja valuuttakalusteet): {left}/{count} jätetty pois",
   "Your hotel's FurnitureData.json": "Hotellisi FurnitureData.json",
   "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Valinnainen. Huonekalut, jotka siinä jo on, jätetään pois tiedostosta missing_furnidata.json, ja tunnukset, jotka se antaa muille huonekaluille, numeroidaan uudelleen.",
   "Empty: ids are not checked": "Tyhjä: tunnuksia ei tarkisteta",
@@ -4244,4 +4249,20 @@
   "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Omat huonekalut eivät kuuluneet tähän lataukseen, joten siitä puuttuvia huonekaluja ei luetella.",
   "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Kytke ensin Normaali ja/tai Builders Club päälle Catalogue ripperin asetuksista.",
   "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} on säilytetty .swf-tiedostoina kansiossa source/: Muunna säilytetyt .swf-tiedostot tekee niiden .hab-tiedostot: {names}"
+}
+  "Undo the interactions only": "Peru vain vuorovaikutukset"
+}
+  "Empty: everything is downloaded": "Tyhjä: kaikki ladataan"
+}
+  "Valuables (LTD and rares): {left} of {count} left out": "Arvoesineet (LTD:t ja harvinaiset): {left}/{count} jätetty pois",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris ei voi merkitä yksittäistä kalustetta ei-vaihdettavaksi: mukaan ottamasi arvoesine muuttuu hotellissasi tavalliseksi, vaihdettavaksi kopioksi (LTD menettää sarjanumeronsa).",
+  "Include all": "Ota kaikki mukaan",
+  "Every LTD, rare and currency furni of the room becomes a tradeable copy in your hotel.": "Jokainen huoneen LTD, harvinainen ja valuuttakaluste muuttuu hotellissasi vaihdettavaksi kopioksi.",
+  "Leave all out": "Jätä kaikki pois",
+  "rare in the other hotel's furnidata": "harvinainen toisen hotellin furnidatassa",
+  "your catalogue sells it only as LTD": "luettelosi myy sitä vain LTD:nä",
+  "your catalogue does not sell it": "luettelosi ei myy sitä",
+  "Include every one: {reason}": "Ota kaikki mukaan: {reason}",
+  "LTD in the other hotel": "LTD toisessa hotellissa",
+  "can be redeemed for currency": "voidaan lunastaa valuutaksi"
 }

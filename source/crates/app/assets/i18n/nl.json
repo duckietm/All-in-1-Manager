@@ -4102,7 +4102,7 @@
   "{done} of {total} pages · {page}": "{done} van {total} pagina's · {page}",
   "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.": "{pages} pagina's en {items} aanbiedingen ({profile}); {failed} pagina's konden niet worden gelezen.",
   "A new room of the owner you choose, open to everyone, with the floor plan, decoration and furni of the capture. The furni are matched with your items_base by class name; LTD serials, engravings, group links and ads of the other hotel are removed. Nothing is written before you click Import, and Undo removes the room again.": "Een nieuwe kamer van de eigenaar die je kiest, open voor iedereen, met de plattegrond, inrichting en meubels van de opname. De meubels worden op klassenaam gekoppeld aan je items_base; LTD-nummers, gravures, groepskoppelingen en advertenties van het andere hotel worden verwijderd. Er wordt niets geschreven voordat je op Importeren klikt, en Ongedaan maken verwijdert de kamer weer.",
-  "Anyone in the room is sent to the hotel view.": "Iedereen in de kamer wordt naar het hotelaanzicht gestuurd.",
+  "Nothing is removed when someone is in the room or a furni of the import was picked up, moved or traded since.": "Er wordt niets verwijderd als er iemand in de kamer is of een meubel van de import sindsdien is opgepakt, verplaatst of geruild.",
   "Capture rooms": "Kamers opnemen",
   "Captured rooms": "Opgenomen kamers",
   "Capturing rooms: enter the rooms you want to copy.": "Kamers opnemen: ga de kamers in die je wilt kopiëren.",
@@ -4127,6 +4127,8 @@
   "Official Habbo and retros (Flash and Nitro) work. Nothing in the other hotel is changed: the capture only listens, and reading the wired opens the boxes the way their owner does. Copy only rooms you may copy.": "Officieel Habbo en retro's (Flash en Nitro) werken. In het andere hotel verandert niets: de opname luistert alleen, en wired lezen opent de boxen zoals hun eigenaar dat doet. Kopieer alleen kamers die je mag kopiëren.",
   "Owner (user name)": "Eigenaar (gebruikersnaam)",
   "Read the wired": "Wired lezen",
+  "Double click where Open does not work": "Dubbelklikken waar Open niet werkt",
+  "Off: the boxes are opened only with Open, which nobody sees. On: where the hotel does not answer Open, each box is double clicked instead, and its light blinks for everyone in the room.": "Uit: de boxen worden alleen met Open geopend, wat niemand ziet. Aan: waar het hotel niet op Open antwoordt, wordt elke box in plaats daarvan dubbelgeklikt, en het lampje knippert voor iedereen in de kamer.",
   "Remove the room": "De kamer verwijderen",
   "Remove {room} (room {id}) from the hotel again?": "{room} (kamer {id}) weer uit het hotel verwijderen?",
   "Room name": "Kamernaam",
@@ -4145,7 +4147,7 @@
   "The room capture stopped.": "De kameropname is gestopt.",
   "The room, its floor plan and the furni that came with it are deleted.": "De kamer, de plattegrond en de meubels die ermee kwamen worden verwijderd.",
   "Undo failed: nothing was removed": "Ongedaan maken is mislukt: er is niets verwijderd",
-  "Undo removes the room and the furni that came with it (also when they were picked up since). Anyone in the room is sent to the hotel view first.": "Ongedaan maken verwijdert de kamer en de meubels die ermee kwamen (ook als ze sindsdien zijn opgepakt). Iedereen in de kamer wordt eerst naar het hotelaanzicht gestuurd.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Ongedaan maken verwijdert de kamer en de meubels die ermee kwamen alleen zolang er niemand in de kamer is, de eigenaar offline is en elk van die meubels er nog staat en nog van de eigenaar is; bots, huisdieren en meubels die anderen er neerzetten gaan terug naar hun eigenaars. Is de kamer sindsdien gebruikt (meubels opgepakt, verplaatst of geruild), dan toont Ongedaan maken wat in de weg zit en verwijdert het niets.",
   "Undo the import": "Het importeren ongedaan maken",
   "Undone": "Ongedaan gemaakt",
   "What the import makes": "Wat het importeren maakt",
@@ -4163,6 +4165,8 @@
   "{room} is imported as room {id}.": "{room} is geïmporteerd als kamer {id}.",
   "{room} is in the hotel": "{room} staat in het hotel",
   "{room} is removed from the hotel.": "{room} is uit het hotel verwijderd.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Al eerder weg (verwijderd of gerecycled), overgeslagen: {ids}.",
+  "Its custom floor plan (room_models_custom {id}) could not be deleted: {error}": "Zijn eigen plattegrond (room_models_custom {id}) kon niet worden verwijderd: {error}",
   "Open the recording": "De opname openen",
   "Packet recording saved in {folder}": "Pakketopname opgeslagen in {folder}",
   "Record every packet (developers)": "Elk pakket opnemen (ontwikkelaars)",
@@ -4171,6 +4175,7 @@
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Neemt elk pakket tussen je client en het hotel op, beide kanten op, vanaf de volgende kamer die je binnengaat: packets.jsonl (allemaal) en wired.txt (de wired-pakketten, ontleed). Om de wired in de emulator te bouwen.",
   "Stop recording": "Opname stoppen",
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "De opname bevat alles wat je client en het hotel in die kamers sturen, ook chat: deel hem alleen met mensen die je vertrouwt.",
+  "Valuables (LTD, rares and currency furni): {left} of {count} left out": "Waardevolle items (LTD, zeldzaam en valutameubels): {left} van {count} weggelaten",
   "Your hotel's FurnitureData.json": "FurnitureData.json van je hotel",
   "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Optioneel. Meubi die er al in staan, worden uit missing_furnidata.json weggelaten, en id's die het aan andere meubi geeft, worden hernummerd.",
   "Empty: ids are not checked": "Leeg: id's worden niet gecontroleerd",
@@ -4244,4 +4249,20 @@
   "The custom furniture was not part of this download, so the furni it lacks are not listed.": "De eigen meubels hoorden niet bij deze download, dus de meubels die hij mist worden niet opgesomd.",
   "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Zet eerst Normaal en/of Builders Club aan in de opties van de Catalogue ripper.",
   "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} zijn als .swf bewaard in source/: De bewaarde .swf-bestanden omzetten maakt hun .hab: {names}"
+}
+  "Undo the interactions only": "Alleen de interacties ongedaan maken"
+}
+  "Empty: everything is downloaded": "Leeg: alles wordt gedownload"
+}
+  "Valuables (LTD and rares): {left} of {count} left out": "Waardevolle items (LTD en zeldzaam): {left} van {count} weggelaten",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris kan geen los meubel als niet-ruilbaar markeren: een waardevol item dat je meeneemt wordt een normale, ruilbare kopie in je hotel (een LTD verliest zijn serienummer).",
+  "Include all": "Alles meenemen",
+  "Every LTD, rare and currency furni of the room becomes a tradeable copy in your hotel.": "Elk LTD, zeldzaam item en valutameubel van de kamer wordt een ruilbare kopie in je hotel.",
+  "Leave all out": "Alles weglaten",
+  "rare in the other hotel's furnidata": "zeldzaam in de furnidata van het andere hotel",
+  "your catalogue sells it only as LTD": "je catalogus verkoopt het alleen als LTD",
+  "your catalogue does not sell it": "je catalogus verkoopt het niet",
+  "Include every one: {reason}": "Alles meenemen: {reason}",
+  "LTD in the other hotel": "LTD in het andere hotel",
+  "can be redeemed for currency": "kan ingewisseld worden voor valuta"
 }

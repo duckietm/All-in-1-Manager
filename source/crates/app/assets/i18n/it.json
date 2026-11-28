@@ -4102,7 +4102,7 @@
   "{done} of {total} pages · {page}": "{done} di {total} pagine · {page}",
   "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.": "{pages} pagine e {items} offerte ({profile}); {failed} pagine non sono state lette.",
   "A new room of the owner you choose, open to everyone, with the floor plan, decoration and furni of the capture. The furni are matched with your items_base by class name; LTD serials, engravings, group links and ads of the other hotel are removed. Nothing is written before you click Import, and Undo removes the room again.": "Una nuova stanza del proprietario scelto, aperta a tutti, con pianta, arredamento e furni della cattura. I furni sono abbinati al tuo items_base per nome di classe; numeri LTD, incisioni, legami di gruppo e pubblicità dell'altro hotel vengono rimossi. Nulla viene scritto prima di cliccare Importa, e Annulla rimuove di nuovo la stanza.",
-  "Anyone in the room is sent to the hotel view.": "Chi è nella stanza viene mandato alla vista dell'hotel.",
+  "Nothing is removed when someone is in the room or a furni of the import was picked up, moved or traded since.": "Non viene rimosso nulla se qualcuno è nella stanza o se un furni dell'importazione è stato raccolto, spostato o scambiato nel frattempo.",
   "Capture rooms": "Cattura stanze",
   "Captured rooms": "Stanze catturate",
   "Capturing rooms: enter the rooms you want to copy.": "Cattura delle stanze: entra nelle stanze da copiare.",
@@ -4127,6 +4127,8 @@
   "Official Habbo and retros (Flash and Nitro) work. Nothing in the other hotel is changed: the capture only listens, and reading the wired opens the boxes the way their owner does. Copy only rooms you may copy.": "Habbo ufficiale e i retro (Flash e Nitro) funzionano. Nell'altro hotel non cambia nulla: la cattura ascolta soltanto, e leggere i wired apre i box come fa il loro proprietario. Copia solo stanze che puoi copiare.",
   "Owner (user name)": "Proprietario (nome utente)",
   "Read the wired": "Leggi i wired",
+  "Double click where Open does not work": "Doppio clic dove Open non funziona",
+  "Off: the boxes are opened only with Open, which nobody sees. On: where the hotel does not answer Open, each box is double clicked instead, and its light blinks for everyone in the room.": "Spento: i box si aprono solo con Open, che nessuno vede. Acceso: dove l'hotel non risponde a Open, ogni box riceve invece un doppio clic e la sua luce lampeggia per tutti nella stanza.",
   "Remove the room": "Rimuovi la stanza",
   "Remove {room} (room {id}) from the hotel again?": "Rimuovere {room} (stanza {id}) dall'hotel?",
   "Room name": "Nome della stanza",
@@ -4145,7 +4147,7 @@
   "The room capture stopped.": "La cattura delle stanze si è fermata.",
   "The room, its floor plan and the furni that came with it are deleted.": "La stanza, la sua pianta e i furni arrivati con essa vengono eliminati.",
   "Undo failed: nothing was removed": "Annullamento fallito: nulla è stato rimosso",
-  "Undo removes the room and the furni that came with it (also when they were picked up since). Anyone in the room is sent to the hotel view first.": "Annulla rimuove la stanza e i furni arrivati con essa (anche se raccolti nel frattempo). Chi è nella stanza viene prima mandato alla vista dell'hotel.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Annulla rimuove la stanza e i furni arrivati con essa solo se nella stanza non c'è nessuno, il proprietario è offline e ognuno di quei furni è ancora lì e ancora del proprietario; bot, animali e furni messi lì da altri tornano ai loro proprietari. Se la stanza è stata usata nel frattempo (furni raccolti, spostati o scambiati), Annulla elenca cosa lo impedisce e non rimuove nulla.",
   "Undo the import": "Annulla l'importazione",
   "Undone": "Annullato",
   "What the import makes": "Cosa crea l'importazione",
@@ -4163,6 +4165,8 @@
   "{room} is imported as room {id}.": "{room} è importata come stanza {id}.",
   "{room} is in the hotel": "{room} è nell'hotel",
   "{room} is removed from the hotel.": "{room} è rimossa dall'hotel.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Già spariti prima (eliminati o riciclati), saltati: {ids}.",
+  "Its custom floor plan (room_models_custom {id}) could not be deleted: {error}": "Non è stato possibile eliminare la sua pianta personalizzata (room_models_custom {id}): {error}",
   "Open the recording": "Apri la registrazione",
   "Packet recording saved in {folder}": "Registrazione dei pacchetti salvata in {folder}",
   "Record every packet (developers)": "Registra ogni pacchetto (sviluppatori)",
@@ -4171,6 +4175,7 @@
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Registra ogni pacchetto tra il tuo client e l'hotel, in entrambe le direzioni, dalla prossima stanza in cui entri: packets.jsonl (tutti) e wired.txt (quelli wired, decodificati). Per realizzare i wired nell'emulatore.",
   "Stop recording": "Ferma la registrazione",
   "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "La registrazione contiene tutto ciò che il tuo client e l'hotel inviano in quelle stanze, anche la chat: condividila solo con persone di fiducia.",
+  "Valuables (LTD, rares and currency furni): {left} of {count} left out": "Oggetti di valore (LTD, rari e furni moneta): {left} di {count} esclusi",
   "Your hotel's FurnitureData.json": "FurnitureData.json del tuo hotel",
   "Optional. The furni it already lists are left out of missing_furnidata.json, and ids it gives other furni are renumbered.": "Facoltativo. I furni che contiene già vengono esclusi da missing_furnidata.json e gli id che assegna ad altri furni vengono rinumerati.",
   "Empty: ids are not checked": "Vuoto: gli id non vengono controllati",
@@ -4244,4 +4249,20 @@
   "The custom furniture was not part of this download, so the furni it lacks are not listed.": "I furni personalizzati non facevano parte di questo download, quindi i furni che gli mancano non sono elencati.",
   "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Attiva prima Normale e/o Builders Club nelle opzioni del Catalogue ripper.",
   "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} sono conservati come .swf in source/: Converti i file .swf conservati crea i loro .hab: {names}"
+}
+  "Undo the interactions only": "Annulla solo le interazioni"
+}
+  "Empty: everything is downloaded": "Vuoto: viene scaricato tutto"
+}
+  "Valuables (LTD and rares): {left} of {count} left out": "Oggetti di valore (LTD e rari): {left} di {count} esclusi",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris non può segnare un singolo furni come non scambiabile: un oggetto di valore che includi diventa una copia normale e scambiabile nel tuo hotel (un LTD perde il suo numero di serie).",
+  "Include all": "Includi tutti",
+  "Every LTD, rare and currency furni of the room becomes a tradeable copy in your hotel.": "Ogni LTD, raro e furni moneta della stanza diventa una copia scambiabile nel tuo hotel.",
+  "Leave all out": "Escludi tutti",
+  "rare in the other hotel's furnidata": "raro nel furnidata dell'altro hotel",
+  "your catalogue sells it only as LTD": "il tuo catalogo lo vende solo come LTD",
+  "your catalogue does not sell it": "il tuo catalogo non lo vende",
+  "Include every one: {reason}": "Includi tutti: {reason}",
+  "LTD in the other hotel": "LTD nell'altro hotel",
+  "can be redeemed for currency": "si può convertire in valuta"
 }

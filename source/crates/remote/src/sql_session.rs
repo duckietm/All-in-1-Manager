@@ -744,12 +744,24 @@ impl SqlSession {
     /// Like [`SqlSession::execute`], but a statement can use what an earlier one inserted ([`Linked`]): one
     /// transaction, all or none. Returns the id each statement inserted (0 when it inserted none).
     pub async fn execute_linked(&self, statements: &[(String, Vec<Linked>)]) -> Result<Vec<u64>> {
+        self.execute_linked_guarded(statements, &[]).await
+    }
+
+    /// Like [`SqlSession::execute_linked`], but each statement of `guarded` (its index, and the error when it does
+    /// not hold) must change a row: when one changes none, the transaction is rolled back and that error returned.
+    pub async fn execute_linked_guarded(&self, statements: &[(String, Vec<Linked>)], guarded: &[(usize, &str)]) -> Result<Vec<u64>> {
         let mut conn = self.browse.lock().await;
         let mut transaction = conn.start_transaction(TxOpts::default()).await?;
         let mut ids: Vec<u64> = Vec::with_capacity(statements.len());
-        for (sql, params) in statements {
+        for (index, (sql, params)) in statements.iter().enumerate() {
             let params: Vec<Value> = params.iter().map(|p| p.resolve(&ids).map(|v| v.to_param())).collect::<std::result::Result<_, String>>().map_err(ServerError)?;
             transaction.exec_drop(sql.as_str(), params).await?;
+            if let Some((_, error)) = guarded.iter().find(|(i, _)| *i == index) {
+                if transaction.affected_rows() == 0 {
+                    transaction.rollback().await?;
+                    return Err(ServerError(error.to_string()).into());
+                }
+            }
             ids.push(transaction.last_insert_id().unwrap_or(0));
         }
         transaction.commit().await?;

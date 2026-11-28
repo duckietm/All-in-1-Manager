@@ -1898,19 +1898,38 @@ you read them. It shares the Catalogue ripper's G-Earth connection, hotel profil
    **furnidata** URL for the class names (official Habbo finds its own).
 2. **Read the wired** (optional, in the room you are in). The hotel sends a wired box's settings only to someone who may
    inspect the room's wired: its owner, someone with rights, or everyone when the owner allows it. The ripper opens the
-   boxes one at a time (400 ms apart) with *Open* where the hotel has it (Polaris and official Habbo: nothing visible), else
-   with a double click (the box's light flips for everyone in the room). When the first box does not answer, it stops and
-   says you may not read the wired there. Boxes you open by hand while capturing are kept too.
+   boxes one at a time (400 ms apart) with *Open* only (Polaris and official Habbo: nothing visible). **Double click
+   where Open does not work** (off by default) lets it double click the boxes instead where the hotel does not know
+   *Open* or the first box does not answer it: each box's light then **blinks for everyone in the room**. When the
+   first box does not answer, it stops and says you may not read the wired there (or, with the option off, that you
+   can try again with it). Boxes you open by hand while capturing are kept too.
 3. **Import ...** (logged in to your server; the MariaDB account the other database pages use). Choose the **owner** (a
    user of your hotel), the **room name** and, if needed, the **door**. **Preview** shows what the import makes and leaves
    out; **Import** writes it all in one transaction (all or nothing):
-   - a new room of that owner, **open to everyone**, with the hotel's default category, trade and chat settings;
+   - a new room of that owner, **open to everyone** (no doorbell or password) with the hotel's default trade setting.
+     Its **category** is chosen in the preview from the hotel's `navigator_flatcats` a normal user may pick
+     (`min_rank` 1, not `public`), the first one by default. The **most users** come from the capture, at most the
+     category's `max_user_count` and Polaris' 200; the **chat settings** (mode, bubble width, speed, hearing distance,
+     flood protection) come from the capture within the ranges Polaris accepts. A room captured before this version
+     has no chat settings: it gets the hotel's;
    - the hotel's model when it has the same floor plan and door, else a custom one (`room_models_custom`,
      `override_model`);
    - the furni, matched with your `items_base` by **class name** (by sprite id when the class name was not known);
      furni you do not have are left out and listed. They become normal items of the owner, **cleaned** of what belongs
      to the other hotel: LTD serials (the item is no LTD here), trophy engravings, group links, ads and badge displays,
      all listed;
+   - **valuables are left out** unless you include them: Polaris has no per-furni "not tradeable" mark (trading checks
+     only `items_base.allow_trade`), so a copied LTD or rare would be one more tradeable piece in your hotel. A valuable
+     is an **LTD** in the capture (it shows a serial); a furni Polaris **redeems for currency** (`CF_`, `CFC_`,
+     `CF_diamond_`, `DF_`, `PF_`, `nft_emerald...`); or a furni that can change hands here (`allow_trade`,
+     `allow_marketplace_sell` or `allow_recycle` in your `items_base`) which the other hotel's furnidata marks `rare`,
+     or which your catalogue sells **only as LTD** or **does not sell** at all. Only offers on pages a player reaches
+     count as sold: the page and every parent up to the root enabled, visible and open to rank 1, and no Builders Club
+     page (`catalog_mode` BUILDER). A name is sold when any `items_base` row of that name is; a colour variant
+     (`name*2`) is a name of its own. The furnidata's rares are known only for rooms captured with the furnidata (the
+     preview says when they could not be checked). The preview lists them by class name and reason; tick a group,
+     every one of a reason, or **Include all**: an included one becomes a normal, tradeable copy (an LTD keeps no
+     serial). A wired box that selected a furni left out points at the others only, and the preview says so;
    - the wired settings that were read, as Polaris' `wired_data`, their furni pointing at the new items. Converted now:
      walks on/off furni, enters room, says something, periodically, at a set time, toggle state, move/rotate, show
      message, teleport, match snapshot (action and condition), furni have users, trigger on furni, reset timers, give
@@ -1931,9 +1950,22 @@ is a folder in `configuration/plugins/room-rip/packets/<hotel>_<time>/` (**Open 
 The packets the ripper sends itself (opening boxes for **Read the wired**) are in it too. The recording holds
 everything sent in those rooms, chat too: share it only with people you trust.
 
-4. **Imported rooms → Undo** removes the room again: anyone in it is sent to the hotel view first (Polaris unloads a
-   room when its owner is set again over RCON), then the furni that came with it are deleted (also when they were picked
-   up since), furni placed there later go back to their owner's inventory, and the custom floor plan and the room go.
+4. **Imported rooms → Undo** removes the room again, but only while it is as it was imported: the room is still in the
+   hotel and still of its owner (`rooms.owner_id`), nobody is in it (`rooms.users` is 0; a count left over when the
+   emulator stopped is cleared when it starts), its owner is offline (`users.online`; Polaris keeps a room loaded
+   while its owner is online), no group has it as its home (`rooms.guild_id`), and every furni that came with it is
+   still in it and still the owner's (`items.room_id` and `items.user_id`). Otherwise Undo lists what is in the way
+   (furni picked up, moved to another room, traded or given; people in the room; the owner online; a group) and
+   removes nothing; furni deleted or recycled since are nobody's, so they do not stop it (they are listed as already
+   gone). Then the emulator unloads the room (Polaris does when a room's owner is set again over RCON, saving its
+   furni): when it refuses, or does not answer while it may be running (its service or process, or its RCON port
+   open), Undo stops; when it is surely not running, nothing has the room loaded and Undo goes on. The room and its
+   furni are read again, then one transaction deletes the room only while it is still the owner's with `rooms.users`
+   at 0 (else everything is rolled back), deletes the furni that came with it only while they are in the room and the
+   owner's, sends furni, bots and pets placed there by others back to their owners' inventories, and drops the room's
+   rights, votes and word filter, as Polaris does when a room is deleted; the custom floor plan is dropped once that
+   transaction is committed (should that fail, the room is gone anyway and Undo says so). `rooms.users` is a count
+   the emulator keeps, so these checks narrow the window for someone entering but cannot rule it out.
    The record of each import is kept in `configuration/plugins/room-rip/imports/`.
 
 Use it on rooms you may copy.

@@ -4172,5 +4172,16 @@
   "Recording: {packets} packets, {wired} of them wired": "Tallennetaan: {packets} pakettia, joista {wired} wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "Tallentaa jokaisen paketin clientisi ja hotellin välillä molempiin suuntiin seuraavasta huoneesta alkaen: packets.jsonl (kaikki) ja wired.txt (wired-paketit purettuina). Wiredien rakentamiseen emulaattoriin.",
   "Stop recording": "Lopeta tallennus",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Tallenne sisältää kaiken, mitä clientisi ja hotelli lähettävät niissä huoneissa, myös chatin: jaa se vain luotetuille ihmisille.",
+  "Valuables (LTD and rares): {left} of {count} left out": "Arvoesineet (LTD:t ja harvinaiset): {left}/{count} jätetty pois",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris ei voi merkitä yksittäistä kalustetta ei-vaihdettavaksi: mukaan ottamasi arvoesine muuttuu hotellissasi tavalliseksi, vaihdettavaksi kopioksi (LTD menettää sarjanumeronsa).",
+  "Include all": "Ota kaikki mukaan",
+  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Jokainen huoneen LTD ja harvinainen muuttuu hotellissasi vaihdettavaksi kopioksi.",
+  "Leave all out": "Jätä kaikki pois",
+  "rare in the other hotel's furnidata": "harvinainen toisen hotellin furnidatassa",
+  "your catalogue sells it only as LTD": "luettelosi myy sitä vain LTD:nä",
+  "your catalogue does not sell it": "luettelosi ei myy sitä",
+  "Include every one: {reason}": "Ota kaikki mukaan: {reason}",
+  "LTD in the other hotel": "LTD toisessa hotellissa",
+  "can be redeemed for currency": "voidaan lunastaa valuutaksi"
 }

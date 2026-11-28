@@ -4172,5 +4172,16 @@
   "Recording: {packets} packets, {wired} of them wired": "Kaydediliyor: {packets} paket, {wired} tanesi wired",
   "Records every packet between your client and the hotel, both ways, from the next room you enter: packets.jsonl (all of them) and wired.txt (the wired ones, decoded). For building the wired into the emulator.": "İstemcin ile otel arasındaki her paketi iki yönde de, gireceğin bir sonraki odadan itibaren kaydeder: packets.jsonl (hepsi) ve wired.txt (wired paketleri, çözümlenmiş). Wired'ı emülatöre eklemek için.",
   "Stop recording": "Kaydı durdur",
-  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Kayıt, istemcinin ve otelin o odalarda gönderdiği her şeyi, sohbet dahil, içerir: yalnızca güvendiğin kişilerle paylaş."
+  "The recording holds everything your client and the hotel send in those rooms, chat too: share it only with people you trust.": "Kayıt, istemcinin ve otelin o odalarda gönderdiği her şeyi, sohbet dahil, içerir: yalnızca güvendiğin kişilerle paylaş.",
+  "Valuables (LTD and rares): {left} of {count} left out": "Değerli eşyalar (LTD ve nadirler): {count} eşyadan {left} tanesi dışarıda",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris tek bir mobilyayı takas edilemez olarak işaretleyemez: dahil ettiğin değerli bir eşya otelinde normal, takas edilebilir bir kopya olur (bir LTD seri numarasını kaybeder).",
+  "Include all": "Hepsini dahil et",
+  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Odanın her LTD ve nadir eşyası otelinde takas edilebilir bir kopya olur.",
+  "Leave all out": "Hepsini dışarıda bırak",
+  "rare in the other hotel's furnidata": "diğer otelin furnidata'sında nadir",
+  "your catalogue sells it only as LTD": "kataloğun onu yalnızca LTD olarak satıyor",
+  "your catalogue does not sell it": "kataloğun onu satmıyor",
+  "Include every one: {reason}": "Hepsini dahil et: {reason}",
+  "LTD in the other hotel": "diğer otelde LTD",
+  "can be redeemed for currency": "para birimine çevrilebilir"
 }

@@ -4,10 +4,14 @@
 //! the hotel lets the user read them. The import shows what it will make first (furni matched by class name, what
 //! is cleaned off, wired converted or empty), writes everything in one transaction, and keeps a record for Undo.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use aio_catalog_rip::room::{self, BaseItem, CaptureEvent, CaptureOptions, Command, Door, ImportChoice, ImportPlan, ImportRecord, PlanValue, Recording, RoomCapture, Target};
+use aio_catalog_rip::room::{
+    self, BaseItem, CaptureEvent, CaptureOptions, CatalogPage, Catalogue, Command, Door, ImportChoice, ImportPlan, ImportRecord, PlanValue, Recording, RoomCapture, Target, Valuable,
+    ValuableItem,
+};
 use aio_catalog_rip::{HotelProfile, ProfileChoice};
 use aio_remote::sql_session::{Linked, SqlSession, SqlValue};
 use aio_remote::Server;
@@ -87,6 +91,8 @@ struct Form {
     owner: String,
     name: String,
     door: Door,
+    /// The valuables (LTD and rares) to import all the same, by their key in the preview.
+    include: BTreeSet<(char, i32)>,
 }
 
 pub struct RoomRipView {
@@ -419,7 +425,7 @@ impl RoomRipView {
         if let Some(index) = open {
             let (path, capture) = self.captures[index].clone();
             let door = capture.door_or_guess().unwrap_or(Door { x: 0, y: 0, dir: 2 });
-            self.form = Some(Form { path, owner: String::new(), name: capture.name(), door, capture });
+            self.form = Some(Form { path, owner: String::new(), name: capture.name(), door, capture, include: BTreeSet::new() });
             self.state.lock().plan = None;
             self.state.lock().banner = None;
         }
@@ -498,6 +504,10 @@ impl RoomRipView {
             if let Some((_, plan)) = plan.filter(|(p, _)| p == &form.path) {
                 ui.add_space(8.0);
                 report(ui, palette, &plan);
+                // Disabled while a preview runs: a tick then would be lost or shown against the old plan.
+                if ui.add_enabled_ui(!working, |ui| valuables(ui, palette, &plan, &mut form.include)).inner {
+                    preview = true;
+                }
             }
             if let Some((kind, heading, message)) = &banner {
                 ui.add_space(8.0);
@@ -517,7 +527,8 @@ impl RoomRipView {
 
     fn run_import(&mut self, shared: &Shared, server: Arc<dyn Server>, write: bool) {
         let Some(form) = &self.form else { return };
-        let (capture, path, owner, name, door) = (form.capture.clone(), form.path.clone(), form.owner.trim().to_string(), form.name.trim().to_string(), form.door);
+        let (capture, path, owner, name, door, include) =
+            (form.capture.clone(), form.path.clone(), form.owner.trim().to_string(), form.name.trim().to_string(), form.door, form.include.clone());
         let state = self.state.clone();
         let shared_task = shared.clone();
         {
@@ -526,7 +537,7 @@ impl RoomRipView {
             s.banner = None;
         }
         shared.spawn(async move {
-            let result = import_task(&*server, &capture, &owner, &name, door, write).await;
+            let result = import_task(&*server, &capture, &owner, &name, door, include, write).await;
             let mut s = state.lock();
             s.working = false;
             match result {
@@ -645,6 +656,95 @@ fn report(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan) {
     list(ui, t("Notes"), r.notes.clone());
 }
 
+/// The valuables of the preview (LTD, currency furni and rares), grouped by class name and reason: left out unless
+/// ticked, a group at a time, every one of a reason, or all. True when the choice changed (the preview is made again).
+fn valuables(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan, include: &mut BTreeSet<(char, i32)>) -> bool {
+    let items = &plan.report.valuables;
+    if items.is_empty() {
+        return false;
+    }
+    let mut changed = false;
+    let mut set = |include: &mut BTreeSet<(char, i32)>, keys: &mut dyn Iterator<Item = (char, i32)>, on: bool| {
+        for key in keys {
+            if on {
+                include.insert(key);
+            } else {
+                include.remove(&key);
+            }
+        }
+        changed = true;
+    };
+    // By reason, then class name.
+    let mut groups: BTreeMap<(u8, &str), Vec<&ValuableItem>> = BTreeMap::new();
+    for v in items {
+        groups.entry((reason_order(v.why), v.name.as_str())).or_default().push(v);
+    }
+    let reasons: BTreeMap<u8, Valuable> = items.iter().map(|v| (reason_order(v.why), v.why)).collect();
+    let left_out = items.iter().filter(|v| !include.contains(&v.key)).count();
+    let heading = tf("Valuables (LTD and rares): {left} of {count} left out", &[("left", &left_out.to_string()), ("count", &items.len().to_string())]);
+    egui::CollapsingHeader::new(RichText::new(heading).size(12.5).color(palette.warning_text)).default_open(true).show(ui, |ui| {
+        ui.label(
+            RichText::new(t("Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial)."))
+                .size(12.0)
+                .color(palette.warning_text),
+        );
+        ui.horizontal_wrapped(|ui| {
+            if ui
+                .add_enabled(left_out > 0, widgets::secondary_button(t("Include all")))
+                .on_hover_text(t("Every LTD and rare of the room becomes a tradeable copy in your hotel."))
+                .clicked()
+            {
+                set(include, &mut items.iter().map(|v| v.key), true);
+            }
+            if ui.add_enabled(left_out < items.len(), widgets::secondary_button(t("Leave all out"))).clicked() {
+                set(include, &mut items.iter().map(|v| v.key), false);
+            }
+            // Every one of a reason: an LTD or a furnidata rare is never in another reason's group.
+            for (order, why) in &reasons {
+                let keys: Vec<(char, i32)> = items.iter().filter(|v| reason_order(v.why) == *order).map(|v| v.key).collect();
+                let all_in = keys.iter().all(|k| include.contains(k));
+                if ui.add_enabled(!all_in, widgets::secondary_button(&tf("Include every one: {reason}", &[("reason", reason_text(*why))]))).clicked() {
+                    set(include, &mut keys.into_iter(), true);
+                }
+            }
+        });
+        for ((_, name), group) in groups.iter().take(500) {
+            let mut on = group.iter().all(|v| include.contains(&v.key));
+            let mut label = format!("{} × {name}: {}", group.len(), reason_text(group[0].why));
+            let serials: Vec<String> = group.iter().filter_map(|v| if let Valuable::Limited { serial, size } = v.why { Some(format!("{serial}/{size}")) } else { None }).collect();
+            if !serials.is_empty() {
+                label.push_str(&format!(" ({})", serials.join(", ")));
+            }
+            if ui.checkbox(&mut on, RichText::new(label).size(12.0)).changed() {
+                set(include, &mut group.iter().map(|v| v.key), on);
+            }
+        }
+    });
+    changed
+}
+
+/// The order of a reason in the preview (its groups and buttons).
+fn reason_order(why: Valuable) -> u8 {
+    match why {
+        Valuable::Limited { .. } => 0,
+        Valuable::Currency => 1,
+        Valuable::Rare => 2,
+        Valuable::SoldAsLimited => 3,
+        Valuable::NotSold => 4,
+    }
+}
+
+/// Why a furni is a valuable, for the preview.
+fn reason_text(why: Valuable) -> &'static str {
+    match why {
+        Valuable::Limited { .. } => t("LTD in the other hotel"),
+        Valuable::Currency => t("can be redeemed for currency"),
+        Valuable::Rare => t("rare in the other hotel's furnidata"),
+        Valuable::SoldAsLimited => t("your catalogue sells it only as LTD"),
+        Valuable::NotSold => t("your catalogue does not sell it"),
+    }
+}
+
 fn to_linked(value: &PlanValue) -> Linked {
     match value {
         PlanValue::Int(i) => Linked::Value(SqlValue::Int(*i)),
@@ -663,6 +763,11 @@ fn int(value: &SqlValue) -> Option<i64> {
         SqlValue::Bytes(b) => String::from_utf8_lossy(b).trim().parse().ok(),
         _ => None,
     }
+}
+
+/// A yes/no column (None: NULL or missing).
+fn flag(value: Option<&SqlValue>) -> Option<bool> {
+    value.and_then(int).map(|v| v != 0)
 }
 
 fn text(value: &SqlValue) -> String {
@@ -687,7 +792,15 @@ async fn open_hotel(server: &dyn Server) -> anyhow::Result<(SqlSession, String)>
 }
 
 /// Reads what the plan needs from the hotel and plans the import; with `write`, runs it and keeps the record.
-async fn import_task(server: &dyn Server, capture: &RoomCapture, owner: &str, name: &str, door: Door, write: bool) -> anyhow::Result<(ImportPlan, Option<ImportRecord>)> {
+async fn import_task(
+    server: &dyn Server,
+    capture: &RoomCapture,
+    owner: &str,
+    name: &str,
+    door: Door,
+    include: BTreeSet<(char, i32)>,
+    write: bool,
+) -> anyhow::Result<(ImportPlan, Option<ImportRecord>)> {
     let (session, database) = open_hotel(server).await?;
     let result = async {
         let db = aio_remote::sql_session::quote(&database);
@@ -697,7 +810,10 @@ async fn import_task(server: &dyn Server, capture: &RoomCapture, owner: &str, na
         };
         let (owner_id, owner_name) = (owner_row.first().and_then(int).unwrap_or(0), owner_row.get(1).map(text).unwrap_or_default());
         let items_base = session
-            .select(&format!("SELECT `id`, `sprite_id`, `item_name`, `type`, `interaction_type` FROM {db}.`items_base`"), Vec::new())
+            .select(
+                &format!("SELECT `id`, `sprite_id`, `item_name`, `type`, `interaction_type`, `allow_trade`, `allow_marketplace_sell`, `allow_recycle` FROM {db}.`items_base`"),
+                Vec::new(),
+            )
             .await?
             .into_iter()
             .filter_map(|row| {
@@ -707,10 +823,35 @@ async fn import_task(server: &dyn Server, capture: &RoomCapture, owner: &str, na
                     item_name: text(row.get(2)?),
                     item_type: text(row.get(3)?),
                     interaction_type: text(row.get(4)?),
+                    tradeable: room::can_change_hands(flag(row.get(5)), flag(row.get(6)), flag(row.get(7))),
                 })
             })
             .collect();
-        let mut target = Target { database: database.clone(), items_base, ..Target::default() };
+        // What players can buy: offers on the pages they reach (catalog_rip works it out; catalog_mode may be missing).
+        let catalogue_error = |e: anyhow::Error| anyhow::anyhow!("The catalogue could not be read, and the import needs it to tell the rares apart: {e:#}");
+        let pages = match session.select(&room::catalog_pages_query(&database, true), Vec::new()).await {
+            Ok(rows) => rows,
+            Err(_) => session.select(&room::catalog_pages_query(&database, false), Vec::new()).await.map_err(catalogue_error)?,
+        };
+        let pages: Vec<CatalogPage> = pages
+            .iter()
+            .filter_map(|row| {
+                let n = |i: usize| row.get(i).and_then(int);
+                Some(CatalogPage {
+                    id: n(0)?,
+                    parent_id: n(1).unwrap_or(0),
+                    enabled: n(2) == Some(1),
+                    visible: n(3) == Some(1),
+                    min_rank: n(4).unwrap_or(i64::MAX),
+                    builder: row.get(5).map(text).is_some_and(|m| m.trim().eq_ignore_ascii_case("BUILDER")),
+                })
+            })
+            .collect();
+        let offers = session.select(&room::catalog_offers_query(&database), Vec::new()).await.map_err(catalogue_error)?;
+        let offers: Vec<(i64, String, i64)> =
+            offers.iter().map(|row| (row.first().and_then(int).unwrap_or(0), row.get(1).map(text).unwrap_or_default(), row.get(2).and_then(int).unwrap_or(0))).collect();
+        let catalogue = Catalogue::new(&pages, offers.iter().map(|(page, ids, limited)| (*page, ids.as_str(), *limited)));
+        let mut target = Target { database: database.clone(), items_base, catalogue: Some(catalogue), ..Target::default() };
         let columns = session
             .select(
                 "SELECT `TABLE_NAME`, `COLUMN_NAME`, `CHARACTER_MAXIMUM_LENGTH` FROM information_schema.`COLUMNS` WHERE `TABLE_SCHEMA` = ? AND `TABLE_NAME` IN ('rooms', 'items')",
@@ -739,7 +880,7 @@ async fn import_task(server: &dyn Server, capture: &RoomCapture, owner: &str, na
             let n = |i: usize| row.get(i).and_then(int).unwrap_or(0) as i32;
             (row.first().map(text).unwrap_or_default(), Door { x: n(1), y: n(2), dir: n(3) })
         });
-        let choice = ImportChoice { owner_id, owner_name: owner_name.clone(), room_name: name.to_string(), door, now: chrono::Utc::now().timestamp() };
+        let choice = ImportChoice { owner_id, owner_name: owner_name.clone(), room_name: name.to_string(), door, now: chrono::Utc::now().timestamp(), include };
         let plan = room::plan(capture, &target, &choice)?;
         if !write {
             return Ok((plan, None));

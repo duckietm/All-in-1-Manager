@@ -45,7 +45,8 @@ impl Packet {
     }
 }
 
-/// Reads a packet body field by field.
+/// Reads a packet body field by field (a clone reads ahead without moving this one).
+#[derive(Clone)]
 pub struct Reader<'a> {
     data: &'a [u8],
     pos: usize,

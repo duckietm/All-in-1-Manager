@@ -248,7 +248,96 @@ pub struct WallItem {
 /// How many ints follow the owner id: 7 on Polaris/Octane, 0 elsewhere.
 const POLARIS_EXTRA_INTS: usize = 7;
 
-fn read_floor_item(r: &mut Reader<'_>, extra_ints: usize) -> Result<FloorItem> {
+/// How far a floor item's stuff data may run past what its format says before the reader gives up on it.
+const RESYNC_BYTES: usize = 4096;
+
+/// Whether what `r` reads next looks like a floor item's tail: expires (-1 or more), usage policy (0..=2) and an owner
+/// id the packet lists.
+fn tail_fits(r: &Reader<'_>, owners: &BTreeMap<i32, String>) -> bool {
+    let mut r = r.clone();
+    matches!(
+        (r.i32("expires"), r.i32("usage policy"), r.i32("owner id")),
+        (Ok(expires), Ok(policy), Ok(owner)) if expires >= -1 && (0..=2).contains(&policy) && owners.contains_key(&owner)
+    )
+}
+
+/// Whether the furni can end at `r`: a plausible tail (expires, usage policy, owner id, the layout's extra ints, the
+/// class name), then the end of the packet for the `last` furni, or else the start of the next one (its position, a
+/// number for z, a stack height and a known stuff data format).
+fn item_ends_at(r: &Reader<'_>, extra_ints: usize, type_id: i32, last: bool) -> bool {
+    let mut r = r.clone();
+    let mut read = || -> Result<bool> {
+        let (expires, policy) = (r.i32("expires")?, r.i32("usage policy")?);
+        r.i32("owner id")?;
+        for _ in 0..extra_ints {
+            r.i32("polaris field")?;
+        }
+        if type_id < 0 {
+            r.string("class name")?;
+        }
+        if expires < -1 || !(0..=2).contains(&policy) {
+            return Ok(false);
+        }
+        if last {
+            return Ok(r.is_empty());
+        }
+        for what in ["item id", "type id", "x", "y", "direction"] {
+            r.i32(what)?;
+        }
+        let z = r.string_bytes("z")?;
+        let z_is_number = z.len() <= 32 && std::str::from_utf8(z).is_ok_and(|z| z.replace(',', ".").trim().parse::<f64>().is_ok());
+        r.string("stack height")?;
+        r.i32("extra")?;
+        Ok(z_is_number && (r.i32("stuff data flags")? & 0xFF) <= 7)
+    };
+    read().unwrap_or(false)
+}
+
+/// Where a floor item is in its packet, for checking where its stuff data ends.
+#[derive(Clone, Copy)]
+struct InList<'o> {
+    owners: &'o BTreeMap<i32, String>,
+    extra_ints: usize,
+    type_id: i32,
+    last: bool,
+}
+
+impl InList<'_> {
+    /// A tail with a listed owner, or one the next furni (or the end of the packet) follows.
+    fn may_end_at(&self, r: &Reader<'_>) -> bool {
+        tail_fits(r, self.owners) || item_ends_at(r, self.extra_ints, self.type_id, self.last)
+    }
+
+    /// Stricter, for a place found by skipping bytes: a tail with a listed owner that the next furni follows.
+    fn ends_at(&self, r: &Reader<'_>) -> bool {
+        tail_fits(r, self.owners) && item_ends_at(r, self.extra_ints, self.type_id, self.last)
+    }
+}
+
+/// Stuff data whose payload is not in the layout its format says (some hotels send a highscore board with more
+/// fields): reads the flags and the state string, then skips to where the item's tail fits. Only the state is kept.
+fn resync_stuff(r: &mut Reader<'_>, at: InList<'_>) -> Result<(i32, String)> {
+    let flags = r.i32("stuff data flags")?;
+    if !matches!(flags & 0xFF, 0 | 3 | 6 | 7) {
+        bail!("stuff data format {} has no state string to skip from", flags & 0xFF);
+    }
+    let state = r.string("stuff data state")?;
+    let mut probe = r.clone();
+    for _ in 0..=RESYNC_BYTES.min(r.remaining()) {
+        if at.ends_at(&probe) {
+            *r = probe;
+            return Ok((flags, state));
+        }
+        if probe.bytes(1, "stuff data").is_err() {
+            break;
+        }
+    }
+    bail!("no expires, usage policy and owner id followed by the next furni within {RESYNC_BYTES} bytes after its state")
+}
+
+/// Reads a floor item. Within a furni list (`last`: whether it is the list's last one), stuff data the reader does not
+/// know the layout of is read loosely (see [`resync_stuff`]) and the second value says how.
+fn read_floor_item(r: &mut Reader<'_>, extra_ints: usize, list: Option<(&BTreeMap<i32, String>, bool)>) -> Result<(FloorItem, Option<String>)> {
     let id = r.i32("item id")?;
     let type_id = r.i32("type id")?;
     let x = r.i32("x")?;
@@ -257,7 +346,43 @@ fn read_floor_item(r: &mut Reader<'_>, extra_ints: usize) -> Result<FloorItem> {
     let z = r.string("z")?;
     r.string("stack height")?;
     r.i32("extra")?;
-    let (stuff, limited) = read_stuff(r)?;
+    let (stuff, limited, loose) = match list {
+        None => {
+            let (stuff, limited) = read_stuff(r)?;
+            (stuff, limited, None)
+        }
+        Some((owners, last)) => {
+            let at = InList { owners, extra_ints, type_id, last };
+            let mut strict = r.clone();
+            let read = read_stuff(&mut strict);
+            match read {
+                Ok((stuff, limited)) if at.may_end_at(&strict) => {
+                    *r = strict;
+                    (stuff, limited, None)
+                }
+                read => {
+                    let mut loose = r.clone();
+                    match (resync_stuff(&mut loose, at), read) {
+                        (Ok((flags, state)), _) => {
+                            *r = loose;
+                            let ltd = if flags & 256 != 0 { " (its LTD number is dropped)" } else { "" };
+                            let note = format!("stuff data (flags {flags}) not in a known layout, only its state \"{state}\" kept{ltd}");
+                            (StuffData::Legacy { data: state }, None, Some(note))
+                        }
+                        // Read as before when only the tail looks odd.
+                        (Err(_), Ok((stuff, limited))) => {
+                            *r = strict;
+                            (stuff, limited, None)
+                        }
+                        (Err(resync), Err(e)) => {
+                            *r = strict;
+                            bail!("{e:#} ({resync:#})")
+                        }
+                    }
+                }
+            }
+        }
+    };
     r.i32("expires")?;
     r.i32("usage policy")?;
     let owner_id = r.i32("owner id")?;
@@ -266,7 +391,7 @@ fn read_floor_item(r: &mut Reader<'_>, extra_ints: usize) -> Result<FloorItem> {
     }
     let class_name = if type_id < 0 { Some(r.string("class name")?) } else { None };
     let z = z.replace(',', ".").trim().parse::<f64>().unwrap_or(0.0);
-    Ok(FloorItem { id, type_id, class_name, x, y, z, dir: dir.rem_euclid(8), stuff, limited, owner_id })
+    Ok((FloorItem { id, type_id, class_name, x, y, z, dir: dir.rem_euclid(8), stuff, limited, owner_id }, loose))
 }
 
 fn read_wall_item(r: &mut Reader<'_>, extra_ints: usize) -> Result<WallItem> {
@@ -283,18 +408,34 @@ fn read_wall_item(r: &mut Reader<'_>, extra_ints: usize) -> Result<WallItem> {
     Ok(WallItem { id, type_id, class_name: None, location, data, owner_id })
 }
 
+fn layout_name(extra_ints: usize) -> &'static str {
+    if extra_ints == 0 {
+        "plain"
+    } else {
+        "Polaris"
+    }
+}
+
+/// Both layouts' errors (`extra ints, how far it got, error`), the one that got furthest first. A layout that read
+/// everything it expected and found more counts as having got to the end.
+fn layouts_error(mut failures: Vec<(usize, usize, anyhow::Error)>) -> anyhow::Error {
+    failures.sort_by_key(|(_, reached, _)| std::cmp::Reverse(*reached));
+    let text = failures.iter().map(|(extra, _, e)| format!("{} layout: {e:#}", layout_name(*extra))).collect::<Vec<_>>();
+    anyhow::anyhow!(text.join("; "))
+}
+
 /// Reads with both layouts (with and without Polaris' seven ints) and keeps the one that reads `body` to its end.
 fn either_layout<T>(body: &[u8], read: impl Fn(&mut Reader<'_>, usize) -> Result<T>) -> Result<(T, usize)> {
-    let mut first_error = None;
+    let mut failures = Vec::new();
     for extra in [POLARIS_EXTRA_INTS, 0] {
         let mut r = Reader::new(body);
         match read(&mut r, extra) {
             Ok(value) if r.is_empty() => return Ok((value, extra)),
-            Ok(_) => first_error = first_error.or_else(|| Some(anyhow::anyhow!("{} bytes left over", r.remaining()))),
-            Err(e) => first_error = first_error.or(Some(e)),
+            Ok(_) => failures.push((extra, body.len(), anyhow::anyhow!("{} bytes left over after byte {}", r.remaining(), r.position()))),
+            Err(e) => failures.push((extra, r.position(), e)),
         }
     }
-    Err(first_error.unwrap_or_else(|| anyhow::anyhow!("unreadable")))
+    Err(layouts_error(failures))
 }
 
 /// Like [`either_layout`], but a packet may carry more after the item (an owner name, Polaris' user id): the first
@@ -317,15 +458,84 @@ fn owners(r: &mut Reader<'_>) -> Result<BTreeMap<i32, String>> {
     Ok(map)
 }
 
-/// Objects (the floor furni list; Polaris sends it in parts of 250): the owners and the furni.
-pub fn parse_objects(body: &[u8]) -> Result<(BTreeMap<i32, String>, Vec<FloorItem>)> {
-    either_layout(body, |r, extra| {
-        let owners = owners(r)?;
-        let n = r.count(30, "floor furni")?;
-        let items = (0..n).map(|_| read_floor_item(r, extra)).collect::<Result<Vec<_>>>()?;
-        Ok((owners, items))
-    })
-    .map(|(v, _)| v)
+/// One layout's reading of Objects: the furni up to the first it could not read, notes on furni read loosely, and
+/// where and why it stopped.
+struct ObjectsRead {
+    owners: BTreeMap<i32, String>,
+    items: Vec<FloorItem>,
+    notes: Vec<String>,
+    stopped: Option<(usize, anyhow::Error)>,
+    count: usize,
+}
+
+/// Reads Objects in one layout; the error (with the byte reached) when not even the furni count could be read.
+fn read_objects(body: &[u8], extra: usize) -> std::result::Result<ObjectsRead, (usize, anyhow::Error)> {
+    let mut r = Reader::new(body);
+    let owners = owners(&mut r).map_err(|e| (r.position(), e))?;
+    let count = r.count(30, "floor furni").map_err(|e| (r.position(), e))?;
+    let mut items = Vec::with_capacity(count);
+    let mut notes = Vec::new();
+    let mut stopped = None;
+    for n in 1..=count {
+        let (start, id) = (r.position(), r.clone().i32("item id").unwrap_or(0));
+        match read_floor_item(&mut r, extra, Some((&owners, n == count))) {
+            Ok((item, note)) => {
+                if let Some(note) = note {
+                    notes.push(format!("item {n} (id {id}) read loosely: {note}"));
+                }
+                items.push(item);
+            }
+            Err(e) => {
+                stopped = Some((r.position(), e.context(format!("item {n} (id {id}, byte {start}) skipped"))));
+                break;
+            }
+        }
+    }
+    if stopped.is_none() && !r.is_empty() {
+        stopped = Some((body.len(), anyhow::anyhow!("{} bytes left over after byte {}", r.remaining(), r.position())));
+    }
+    Ok(ObjectsRead { owners, items, notes, stopped, count })
+}
+
+/// Objects (the floor furni list; Polaris sends it in parts of 250): the owners, the furni, and notes on furni read
+/// loosely or skipped. A furni that cannot be read costs the ones after it, not the packet: it fails only when no
+/// furni could be read.
+pub fn parse_objects(body: &[u8]) -> Result<(BTreeMap<i32, String>, Vec<FloorItem>, Vec<String>)> {
+    let mut reads = Vec::new();
+    let mut failures = Vec::new();
+    for extra in [POLARIS_EXTRA_INTS, 0] {
+        match read_objects(body, extra) {
+            Ok(read) => reads.push((extra, read)),
+            Err((reached, e)) => failures.push((extra, reached, e)),
+        }
+    }
+    // A layout that reads the packet to its end wins (the fewer loose furni the better), else the one that kept the
+    // most furni and got furthest.
+    let complete = reads.iter().enumerate().filter(|(_, (_, read))| read.stopped.is_none()).min_by_key(|(_, (_, read))| read.notes.len()).map(|(i, _)| i);
+    if let Some(best) = complete {
+        let (_, read) = reads.swap_remove(best);
+        return Ok((read.owners, read.items, read.notes));
+    }
+    let reached = |read: &ObjectsRead| read.stopped.as_ref().map_or(usize::MAX, |(at, _)| *at);
+    let best = reads.iter().enumerate().filter(|(_, (_, read))| !read.items.is_empty()).max_by_key(|(_, (_, read))| (read.items.len(), reached(read))).map(|(i, _)| i);
+    let Some(best) = best else {
+        failures.extend(reads.into_iter().filter_map(|(extra, read)| read.stopped.map(|(at, e)| (extra, at, e))));
+        return Err(layouts_error(failures));
+    };
+    let (extra, read) = reads.swap_remove(best);
+    let mut notes = read.notes;
+    if let Some((at, e)) = read.stopped {
+        let lost = read.count.saturating_sub(read.items.len() + 1);
+        let after = if lost > 0 { format!(" (and the {lost} furni after it)") } else { String::new() };
+        // When the other layout kept as many furni it is not clear which one is right: both say why they stopped.
+        let tied = reads.into_iter().find(|(_, other)| other.items.len() == read.items.len()).and_then(|(other, r)| r.stopped.map(|(at, e)| (other, at, e)));
+        let text = match tied {
+            Some(other) => format!("{:#}", layouts_error(vec![(extra, at, e), other])),
+            None => format!("{e:#}"),
+        };
+        notes.push(format!("{text}{after}"));
+    }
+    Ok((read.owners, read.items, notes))
 }
 
 /// Items (the wall furni list).
@@ -342,7 +552,7 @@ pub fn parse_items(body: &[u8]) -> Result<(BTreeMap<i32, String>, Vec<WallItem>)
 /// ObjectAdd (then an owner name) and ObjectUpdate.
 pub fn parse_object(body: &[u8]) -> Result<FloorItem> {
     either_layout_loose(body, |r, extra| {
-        let item = read_floor_item(r, extra)?;
+        let (item, _) = read_floor_item(r, extra, None)?;
         if !r.is_empty() {
             r.string("owner name")?;
         }
@@ -694,7 +904,8 @@ pub(crate) mod tests {
             let w = floor_entry(w, 11, 201, polaris, |w| w.i32(1 | 256).i32(1).string("state").string("2").i32(5).i32(100));
             let w = floor_entry(w, 12, -1, polaris, |w| w.i32(5).i32(4).i32(1).i32(2).i32(3).i32(4));
             let packet = w.packet();
-            let (owners, items) = parse_objects(&packet.body).unwrap();
+            let (owners, items, notes) = parse_objects(&packet.body).unwrap();
+            assert!(notes.is_empty(), "{notes:?}");
             assert_eq!(owners.get(&77).map(String::as_str), Some("owner"));
             assert_eq!(items.len(), 3, "polaris {polaris}");
             assert_eq!((items[0].x, items[0].y, items[0].z, items[0].dir), (3, 4, 0.5, 2));
@@ -704,6 +915,86 @@ pub(crate) mod tests {
             assert_eq!(items[2].class_name.as_deref(), Some("some_class"));
             assert_eq!(items[2].stuff, StuffData::Ints { values: vec![1, 2, 3, 4] });
         }
+    }
+
+    /// A plain-layout floor entry with owner 7: legacy state "0" unless `stuff` writes something else.
+    fn plain_entry(w: Writer, id: i32, stuff: impl Fn(Writer) -> Writer) -> Writer {
+        let w = w.i32(id).i32(3736).i32(1).i32(2).i32(0).string("0.0").string("0.01").i32(1);
+        stuff(w).i32(-1).i32(0).i32(7)
+    }
+
+    /// A highscore board the way some hotels send it: 18 bytes after the state instead of the two ints, and four
+    /// more bytes before each entry's names.
+    fn odd_highscore(w: Writer) -> Writer {
+        w.i32(6).string("1").raw(&[0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]).i32(1).i32(0).i32(0x55).i32(1).string("Greg")
+    }
+
+    #[test]
+    fn a_board_in_an_unknown_layout_does_not_lose_the_room() {
+        let w = Writer::new(1).i32(1).i32(7).string("a").i32(5);
+        let w = (1..=3).fold(w, |w, id| plain_entry(w, id, |w| w.i32(0).string("0")));
+        // The board's tail is the usual one, but with usage policy 1.
+        let w = w.i32(4).i32(3736).i32(1).i32(2).i32(0).string("0.0").string("0.01").i32(1);
+        let w = odd_highscore(w).i32(-1).i32(1).i32(7);
+        let w = plain_entry(w, 5, |w| w.i32(0).string("0"));
+        let (owners, items, warnings) = parse_objects(&w.packet().body).unwrap();
+        assert_eq!(owners.len(), 1);
+        assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(items[3].stuff, StuffData::Legacy { data: "1".into() });
+        assert_eq!(items[4].stuff.state(), "0");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("item 4 (id 4)"), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_owner_missing_from_the_list_does_not_swallow_the_next_furni() {
+        // Owner 8 owns items 2 and 4 but the packet only lists owner 7: the stuff data is standard, so the reader must
+        // not skip ahead to the next item's tail.
+        let entry = |w: Writer, id: i32, owner: i32| {
+            w.i32(id).i32(3736).i32(1).i32(2).i32(0).string("0.0").string("0.01").i32(1).i32(0).string("0").i32(-1).i32(0).i32(owner)
+        };
+        let w = Writer::new(1).i32(1).i32(7).string("a").i32(4);
+        let w = entry(entry(entry(entry(w, 1, 7), 2, 8), 3, 7), 4, 8);
+        let (_, items, notes) = parse_objects(&w.packet().body).unwrap();
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(items.iter().map(|i| (i.id, i.owner_id)).collect::<Vec<_>>(), vec![(1, 7), (2, 8), (3, 7), (4, 8)]);
+    }
+
+    #[test]
+    fn a_standard_board_reads_exactly() {
+        let w = Writer::new(1).i32(1).i32(7).string("a").i32(2);
+        let w = plain_entry(w, 1, |w| w.i32(6).string("2").i32(1).i32(2).i32(1).i32(300).i32(2).string("x").string("y"));
+        let w = plain_entry(w, 2, |w| w.i32(0).string("0"));
+        let (_, items, warnings) = parse_objects(&w.packet().body).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(items[0].stuff, StuffData::HighScore { state: "2".into(), score_type: 1, clear_type: 2 });
+        assert_eq!(items[1].stuff.state(), "0");
+    }
+
+    #[test]
+    fn a_bad_item_keeps_the_items_before_it() {
+        let w = Writer::new(1).i32(1).i32(7).string("a").i32(3);
+        let w = plain_entry(w, 1, |w| w.i32(0).string("0"));
+        // An unknown stuff data format: nothing to resync on, so this item and the one after it are lost.
+        let w = plain_entry(w, 2, |w| w.i32(0x63).i32(0));
+        let w = plain_entry(w, 3, |w| w.i32(0).string("0"));
+        let (_, items, warnings) = parse_objects(&w.packet().body).unwrap();
+        assert_eq!(items.iter().map(|i| i.id).collect::<Vec<_>>(), vec![1]);
+        assert!(warnings.iter().any(|w| w.contains("plain layout: item 2 (id 2,") && w.contains("skipped")), "{warnings:?}");
+    }
+
+    #[test]
+    fn the_error_names_the_layout_that_read_furthest() {
+        // A plain wall item and three stray bytes: the plain layout reads to the end, Polaris' runs out after the owner.
+        let w = Writer::new(1).i32(0).i32(1).string("55").i32(300).string(":w=2,3 l=10,20 r").string("ff").i32(-1).i32(0).i32(9).raw(&[1, 2, 3]);
+        let error = parse_items(&w.packet().body).unwrap_err().to_string();
+        assert!(error.starts_with("plain layout"), "{error}");
+        assert!(error.contains("Polaris layout"), "{error}");
+        // Nothing readable at all in Objects: both layouts are named.
+        let w = Writer::new(1).i32(1).i32(7).string("a").i32(1);
+        let w = plain_entry(w, 1, |w| w.i32(0x98).i32(0));
+        let error = parse_objects(&w.packet().body).unwrap_err().to_string();
+        assert!(error.contains("plain layout") && error.contains("Polaris layout"), "{error}");
     }
 
     #[test]

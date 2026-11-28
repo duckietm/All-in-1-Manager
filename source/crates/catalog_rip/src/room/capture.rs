@@ -402,6 +402,17 @@ impl Capturer<'_> {
     fn problem(&mut self, what: &str, error: anyhow::Error) {
         let text = format!("{what}: {error:#}");
         (self.log)(&format!("  A packet could not be read ({text})."));
+        self.keep_problem(text);
+    }
+
+    /// A packet that was read, with one part read loosely or skipped (the rest is kept).
+    fn note(&mut self, what: &str, note: &str) {
+        let text = format!("{what}: {note}");
+        (self.log)(&format!("  Note: {text}."));
+        self.keep_problem(text);
+    }
+
+    fn keep_problem(&mut self, text: String) {
         if let Some(room) = &mut self.room {
             if room.problems.len() < 50 {
                 room.problems.push(text);
@@ -478,7 +489,11 @@ impl Capturer<'_> {
                     }
                 }
                 k if k == p::OBJECTS.key => {
-                    let (owners, items) = p::parse_objects(body)?;
+                    let (owners, items, notes) = p::parse_objects(body)?;
+                    // A furni read loosely or skipped is noted; the others are kept.
+                    for note in notes {
+                        self.note(p::OBJECTS.key, &note);
+                    }
                     let items: Vec<FloorItem> = items.into_iter().map(|i| self.name_floor(i)).collect();
                     let room = self.room.as_mut().unwrap();
                     room.owners.extend(owners);

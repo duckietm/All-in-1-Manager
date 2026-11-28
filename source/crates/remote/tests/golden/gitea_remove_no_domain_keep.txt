@@ -115,7 +115,7 @@ if [ no = yes ]; then
     echo "> Deleting $g ($(du -sh "$g" 2>/dev/null | cut -f1)): the repositories, accounts and settings"
     rm -rf -- "$g"
   fi
-  docker image rm docker.gitea.com/gitea:latest >/dev/null 2>&1 && echo "  image docker.gitea.com/gitea:latest removed" || true
+  docker image rm gitea/gitea:1 >/dev/null 2>&1 && echo "  image gitea/gitea:1 removed" || true
 elif [ -d "$g/data" ]; then
   echo "  $g stays (repositories, accounts, settings, $(du -sh "$g/data" 2>/dev/null | cut -f1)): installing Gitea again uses it"
 fi

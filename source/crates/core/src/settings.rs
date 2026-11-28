@@ -36,6 +36,9 @@ pub struct InstallerSettings {
     /// The name of the profile last worked with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retro_selected: Option<String>,
+    /// Nitro retro: a download also rips the hotel's catalogue (through G-Earth). New in the Rust port.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub retro_catalog_rip: bool,
     /// The hotel's name, filled in for %hotel_name% in the default catalogue's texts. New in the Rust port.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hotel_name: Option<String>,
@@ -69,6 +72,10 @@ pub struct InstallerSettings {
     /// The sections folded in the window (the sidebar's groups, the Tools page's sections). New in the Rust port.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub collapsed: Vec<String>,
+    /// The hotel's bundled/furniture folder on this computer (.nitro / .hab, as in Nitro-Files), which the Catalogue
+    /// manager's "Merge a rip" reads the furni interactions from. New in the Rust port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_furniture: Option<String>,
 }
 
 /// A named set of server paths (Settings → Server layout), for servers laid out differently from the Default one.
@@ -148,6 +155,10 @@ pub struct RetroUrls {
     /// Downloads at the same time; 0 is the default (16).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub parallel: u8,
+    /// The retro's renderer-config.json (or the site / folder that has it): where the catalogue rip finds the
+    /// catalogue images (c_images/catalogue). Optional; not used by the downloads.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub client_config: String,
 }
 
 fn is_zero(n: &u8) -> bool {
@@ -387,6 +398,21 @@ mod tests {
         let profile = RetroProfile { name: " My: Hotel. ".into(), urls: RetroUrls::default() };
         assert_eq!(profile.folder_name(), "My_ Hotel");
         assert_eq!(RetroProfile::default().folder_name(), "retro");
+    }
+
+    #[test]
+    fn retro_catalogue_rip_settings_are_kept_only_when_set() {
+        let empty = serde_json::to_string(&InstallerSettings::default()).unwrap();
+        assert!(!empty.contains("RetroCatalogRip"), "{empty}");
+        assert!(!serde_json::to_string(&RetroUrls::default()).unwrap().contains("client_config"));
+        let settings = InstallerSettings {
+            retro_catalog_rip: true,
+            retros: vec![RetroProfile { name: "x".into(), urls: RetroUrls { client_config: "https://x/client/renderer-config.json".into(), ..RetroUrls::default() } }],
+            ..InstallerSettings::default()
+        };
+        let read: InstallerSettings = serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+        assert!(read.retro_catalog_rip);
+        assert_eq!(read.retros[0].urls.client_config, "https://x/client/renderer-config.json");
     }
 
     #[test]

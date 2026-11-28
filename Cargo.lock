@@ -120,10 +120,9 @@ dependencies = [
 
 [[package]]
 name = "aio-app"
-version = "2.0.31"
+version = "2.0.30"
 dependencies = [
  "aio-assets",
- "aio-catalog-rip",
  "aio-core",
  "aio-remote",
  "aio-terminal",
@@ -150,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "aio-assets"
-version = "2.0.31"
+version = "2.0.30"
 dependencies = [
  "anyhow",
  "flate2",
@@ -164,29 +163,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "aio-catalog-rip"
-version = "2.0.31"
-dependencies = [
- "aio-remote",
- "anyhow",
- "async-trait",
- "chrono",
- "flate2",
- "futures",
- "reqwest",
- "serde",
- "serde_json",
- "tar",
- "tempfile",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "zip",
-]
-
-[[package]]
 name = "aio-core"
-version = "2.0.31"
+version = "2.0.30"
 dependencies = [
  "aes 0.8.4",
  "aes-gcm 0.10.3",
@@ -215,7 +193,7 @@ dependencies = [
 
 [[package]]
 name = "aio-remote"
-version = "2.0.31"
+version = "2.0.30"
 dependencies = [
  "aio-assets",
  "aio-core",
@@ -246,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "aio-terminal"
-version = "2.0.31"
+version = "2.0.30"
 
 [[package]]
 name = "allocator-api2"

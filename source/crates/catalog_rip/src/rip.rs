@@ -83,6 +83,13 @@ pub struct RipOptions {
     /// The source hotel's productdata (URL or file): product names for the reports. Official
     /// Habbo hotels need none.
     pub productdata_url: Option<String>,
+    /// The target hotel's own FurnitureData.json (a file or URL; empty: none). The furni it
+    /// already lists are left out of missing_furnidata.json, and an id it gives another furni is
+    /// renumbered (renumbered.json).
+    pub hotel_furnidata: Option<String>,
+    /// The owner's own c_images/catalogue folder (empty: none). Images already in it are not
+    /// downloaded again (reported as "already in your folder").
+    pub own_catalogue_images: Option<String>,
     /// Read only the catalogue indexes (the page trees), no pages: for choosing branches, then
     /// [`RipOptions::only_pages`] with [`RipOptions::resume_from`] set to this rip's folder.
     pub index_only: bool,
@@ -134,6 +141,8 @@ impl Default for RipOptions {
             adaptive_delay: true,
             max_delay_ms: 5_000,
             productdata_url: None,
+            hotel_furnidata: None,
+            own_catalogue_images: None,
             index_only: false,
             only_pages: None,
             diff_with_previous: true,
@@ -1099,6 +1108,12 @@ pub async fn rip_with(
         profile: HotelProfile {
             builtin: false,
             file: None,
+            // The furnidata the rip uses, so a later merge or re-export matches the products the same way.
+            furnidata_url: options
+                .furnidata_url
+                .clone()
+                .filter(|u| !u.trim().is_empty())
+                .or_else(|| profile.furnidata_url.clone()),
             ..profile.clone()
         },
         headers: Some(headers),
@@ -1449,6 +1464,81 @@ pub async fn reexport(
     Ok(result)
 }
 
+/// A rip fitted into the hotel's catalogue ([`ManagerMode::Merge`]): the import file and what it
+/// references, for the Manager's "Merge a rip" tool.
+#[derive(Debug, Clone)]
+pub struct MergePlan {
+    /// The ripped hotel's name (the "Imported from <hotel>" folder).
+    pub hotel: String,
+    /// The import file (Catalog Studio restricted SQL), its stats and the merge summary.
+    pub text: String,
+    pub stats: ManagerStats,
+    /// `note:` lines (the furnidata could not be read, ...), then the `merge:` and `skipped:` lines
+    /// of the file: pages joined or new, offers skipped with the reason.
+    pub notes: Vec<String>,
+    /// The items_base ids of the offers the merge adds (not of the ones it skips as already sold:
+    /// the hotel's own furni are left as they are).
+    pub items: std::collections::BTreeSet<i64>,
+}
+
+/// Builds the merge of the rip in `folder` (its recorded packets) into the hotel's catalogue:
+/// items_base and the catalogue (normal and Builders Club) come from `items`, the source hotel's
+/// furnidata from `options` or the rip's profile, as when it was ripped. Writes nothing.
+pub async fn merge_plan(folder: &Path, options: &RipOptions, items: &dyn ItemsSource, log: Log<'_>) -> Result<MergePlan> {
+    let recording = recording::read(folder)?;
+    let catalog = recording.catalog();
+    if catalog.modes.is_empty() {
+        bail!("{} holds no catalogue index: nothing to merge.", folder.display());
+    }
+    let existing = items
+        .existing_catalogue()
+        .await
+        .context("reading the hotel's catalogue")?
+        .filter(|e| e.has_tree())
+        .ok_or_else(|| anyhow!("the hotel's catalogue pages could not be read, so the rip cannot be merged into it"))?;
+    let rows = items.items_base().await.context("reading items_base")?;
+    let mut base = ItemsBase::default();
+    for row in &rows {
+        base.add(row.id, row.sprite_id, &row.item_type, &row.item_name, row.effect_id);
+    }
+    log(&format!("items_base: {} rows.", n0(rows.len())));
+    let ask = |_: String| -> futures::future::BoxFuture<'static, bool> { Box::pin(async { false }) };
+    let progress = |_: RipProgress| {};
+    // The warnings (the furnidata could not be read, ...) go to the preview too.
+    let warnings = std::sync::Mutex::new(Vec::new());
+    let logged = |line: &str| {
+        if let Some(warning) = line.strip_prefix("Warning: ") {
+            if let Ok(mut list) = warnings.lock() {
+                list.push(format!("note: {warning}"));
+            }
+        }
+        log(line);
+    };
+    let hooks = RipHooks::new(&logged, &ask, &progress);
+    let cancel = CancellationToken::new();
+    let output = Output { options, profile: &recording.session.profile, hooks: &hooks, cancel: &cancel };
+    let furnidata = output.furnidata(&catalog.host).await;
+    let mut notes: Vec<String> = warnings.into_inner().unwrap_or_default();
+    if furnidata.is_none() {
+        notes.push(format!(
+            "note: no furnidata of {} was read: products are matched with your items_base by sprite id, which is right only when both hotels use the same furnidata ids.",
+            catalog.host
+        ));
+    }
+    let export = ManagerExport { items: Some(&base), furnidata: furnidata.as_ref(), mode: ManagerMode::Merge, existing: Some(&existing) };
+    let sql = manager::manager_sql_with(&catalog, &export);
+    notes.extend(
+        sql.text
+            .lines()
+            .filter_map(|l| l.strip_prefix("-- "))
+            .filter(|l| l.starts_with("merge:") || l.starts_with("skipped:"))
+            .map(str::to_string),
+    );
+    let hotel = if catalog.hotel.trim().is_empty() { catalog.host.clone() } else { catalog.hotel.clone() };
+    let items = sql.stats.merge.as_ref().map(|m| m.added_items.clone()).unwrap_or_default();
+    Ok(MergePlan { hotel, items, text: sql.text, stats: sql.stats, notes })
+}
+
 struct Output<'a> {
     options: &'a RipOptions,
     profile: &'a HotelProfile,
@@ -1508,6 +1598,34 @@ impl Output<'_> {
                     "the furnidata could not be read ({e:#}); products are matched by sprite id."
                 ));
                 None
+            }
+        }
+    }
+
+    /// The target hotel's own FurnitureData.json, when the settings name one: `Err` with the
+    /// reason when it cannot be read.
+    async fn hotel_furnidata(&self) -> Result<Option<Furnidata>, String> {
+        let Some(source) = self
+            .options
+            .hotel_furnidata
+            .clone()
+            .filter(|s| !s.trim().is_empty())
+        else {
+            return Ok(None);
+        };
+        match furnidata::load(&source).await {
+            Ok(data) => {
+                (self.hooks.log)(&format!(
+                    "Your hotel's furnidata ({source}): {} furni; missing_furnidata.json is checked against it.",
+                    n0(data.len())
+                ));
+                Ok(Some(data))
+            }
+            Err(e) => {
+                self.hooks.warn(&format!(
+                    "your hotel's furnidata could not be read ({e:#}); the ids of missing_furnidata.json are not checked."
+                ));
+                Err(format!("{e:#}"))
             }
         }
     }
@@ -1672,7 +1790,7 @@ impl Output<'_> {
             log(&format!(
                 "{} products are not in the hotel's items_base: missing_furni.json{}.",
                 n0(missing_furni.len()),
-                if furnidata.is_some() { " and missing_furnidata.json (for the furni import)" } else { "" }
+                if furnidata.is_some() { " and missing_furnidata.json + missing_productdata.json (Nitro gamedata, for the furni import)" } else { "" }
             ));
             write(
                 "missing_furni.json",
@@ -1681,13 +1799,39 @@ impl Output<'_> {
                     "furni": missing_furni,
                 }))?,
             )?;
-            if let Some(data) = &furnidata {
-                write(
-                    "missing_furnidata.json",
-                    &serde_json::to_string_pretty(&missing::missing_furnidata(&missing_furni, data))?,
-                )?;
-            }
         }
+        let gamedata = match (&furnidata, missing_furni.is_empty()) {
+            (Some(data), false) => {
+                let (hotel, hotel_error) = match self.hotel_furnidata().await {
+                    Ok(hotel) => (hotel, None),
+                    Err(e) => (None, Some(e)),
+                };
+                let mut out = missing::missing_gamedata(
+                    &missing_furni,
+                    data,
+                    products.as_ref(),
+                    hotel.as_ref(),
+                );
+                out.hotel_error = hotel_error;
+                write("missing_furnidata.json", &crate::gamedata::to_text(&out.furnidata))?;
+                write("missing_productdata.json", &crate::gamedata::to_text(&out.productdata))?;
+                if !out.in_hotel_furnidata.is_empty() {
+                    log(&format!(
+                        "{} of them are in your hotel's furnidata already (only items_base lacks them): left out of missing_furnidata.json.",
+                        n0(out.in_hotel_furnidata.len())
+                    ));
+                }
+                if !out.renumbered.is_empty() {
+                    log(&format!(
+                        "{} ids of missing_furnidata.json are taken in your hotel's furnidata: renumbered (renumbered.json).",
+                        n0(out.renumbered.len())
+                    ));
+                    write("renumbered.json", &serde_json::to_string_pretty(&out.renumbered)?)?;
+                }
+                Some(out)
+            }
+            _ => None,
+        };
 
         let changes = match self.previous(catalog, folder) {
             Some((earlier, old)) => {
@@ -1734,10 +1878,26 @@ impl Output<'_> {
         } else if self.cancel.is_cancelled() {
             (images::ImageStats::default(), "not downloaded (the rip was cancelled)".to_string())
         } else {
-            log("Downloading page images and icons ...");
-            let stats =
-                images::download(catalog, folder, &catalog_url, &icon_url, log, self.cancel)
-                    .await;
+            log("Downloading page images, icons and thumbnails ...");
+            let have_dir = options
+                .own_catalogue_images
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from);
+            if let Some(dir) = have_dir.as_deref().filter(|d| !d.is_dir()) {
+                self.hooks.warn(&format!("your catalogue images folder {} does not exist; everything is downloaded.", dir.display()));
+            }
+            if furnidata.is_none() {
+                log("No furnidata: the wallpaper, floor and landscape thumbnails (th_*) are not downloaded.");
+            }
+            let sources = images::Sources {
+                furnidata: furnidata.as_ref(),
+                catalog_url: &catalog_url,
+                icon_url: &icon_url,
+                have_dir: have_dir.as_deref().filter(|d| d.is_dir()),
+            };
+            let stats = images::download(catalog, folder, &sources, log, self.cancel).await;
             let text = if self.cancel.is_cancelled() {
                 format!("{} (stopped: cancelled)", stats.describe())
             } else {
@@ -1769,11 +1929,14 @@ impl Output<'_> {
                 "\nMISSING FURNI (missing_furni.json)\n  {} products are not in the hotel's items_base, so their offers are not in catalog_manager.sql.\n  {}\n",
                 missing_furni.len(),
                 if furnidata.is_some() {
-                    "missing_furnidata.json lists them as a furnidata: give it to the Manager's furni import first."
+                    "missing_furnidata.json lists them as a furnidata (see NITRO GAMEDATA): give it to the Manager's furni import first."
                 } else {
                     "With the source hotel's furnidata they would also be written as a furnidata for the furni import."
                 }
             ));
+        }
+        if let Some(out) = &gamedata {
+            readme.push_str(&missing::readme_section(out));
         }
         if let Some(data) = &furnidata {
             readme.push_str(&format!(

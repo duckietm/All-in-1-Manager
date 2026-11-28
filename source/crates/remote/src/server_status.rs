@@ -422,7 +422,7 @@ const IMAGE_BLOCK: &str = r#"if docker inspect {{Container}} >/dev/null 2>&1; th
   mine=$(docker image inspect -f '{{GoDigests}}' {{Image}} 2>/dev/null | sed -n 's/.*@//p' | head -1)
   newest=
   if [ -z "$remote" ]; then
-    newer=; problem="$hub_registry did not answer${hub_limited:+ (it limits the requests from this server right now)}"
+    newer=; problem="Docker Hub did not answer${hub_limited:+ (it limits the requests from this server right now)}"
   else
     problem=
     newer=$([ "$remote" != "$mine" ] && echo yes)
@@ -432,44 +432,13 @@ const IMAGE_BLOCK: &str = r#"if docker inspect {{Container}} >/dev/null 2>&1; th
   echo "image{{i}} $running|$version|$newer|$restart|$newest|$problem"
 fi"#;
 
-// The digest the registry has for an image's tag, from a HEAD request of its manifest: the same digest docker pull
-// records in RepoDigests, without counting as a pull. Sets hub_remote, hub_registry (its name for messages), and
-// hub_limited when the registry answers 429. Docker Hub (`repo:tag`) gets its token from auth.docker.io; another
-// registry (`host/repo:tag`, e.g. docker.gitea.com/gitea:latest) is asked first, and when it answers 401 its
-// WWW-Authenticate challenge names where an anonymous token comes from.
+// The digest Docker Hub has for an image's tag, from a HEAD request of its manifest: the same digest docker pull
+// records in RepoDigests, without counting as a pull. Sets hub_remote, and hub_limited when Docker Hub answers 429.
 const HUB_DIGEST: &str = r#"hub_digest() {
-  hub_remote=; hub_limited=; hub_registry="Docker Hub"
+  hub_remote=; hub_limited=
   command -v curl >/dev/null 2>&1 || return 0
-  local ref=$1 repo tag token head try host challenge realm service scope accept
-  accept='Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json'
-  repo=${ref%:*}; tag=${ref##*:}
-  case $tag in */*) repo=$ref; tag=latest ;; esac
-  [ "$repo" = "$ref" ] && tag=latest
-  host=${repo%%/*}
-  case $host in
-    *.*|*:*|localhost)
-      hub_registry=$host
-      repo=${repo#*/}
-      for try in 1 2; do
-        head=$(curl -sS -I -m 15 -H "$accept" "https://$host/v2/$repo/manifests/$tag" 2>/dev/null | tr -d '\r')
-        if echo "$head" | grep -q '^HTTP/[0-9.]* 401'; then
-          challenge=$(echo "$head" | sed -n 's/^[Ww][Ww][Ww]-[Aa]uthenticate: *[Bb]earer *//p' | head -1)
-          realm=$(echo "$challenge" | sed -n 's/.*realm="\([^"]*\)".*/\1/p')
-          service=$(echo "$challenge" | sed -n 's/.*service="\([^"]*\)".*/\1/p')
-          scope=$(echo "$challenge" | sed -n 's/.*scope="\([^"]*\)".*/\1/p')
-          [ -n "$scope" ] || scope="repository:$repo:pull"
-          [ -n "$realm" ] || continue
-          token=$(curl -fsS -m 15 -G "$realm" --data-urlencode "service=$service" --data-urlencode "scope=$scope" 2>/dev/null \
-            | sed -n 's/.*"\(access_\)\{0,1\}token": *"\([^"]*\)".*/\2/p' | head -1)
-          [ -n "$token" ] || continue
-          head=$(curl -sS -I -m 15 -H "Authorization: Bearer $token" -H "$accept" "https://$host/v2/$repo/manifests/$tag" 2>/dev/null | tr -d '\r')
-        fi
-        echo "$head" | grep -q '^HTTP/[0-9.]* 429' && { hub_limited=yes; return 0; }
-        hub_remote=$(echo "$head" | sed -n 's/^[Dd]ocker-[Cc]ontent-[Dd]igest: *//p' | head -1)
-        [ -n "$hub_remote" ] && return 0
-      done
-      return 0 ;;
-  esac
+  local ref=$1 repo tag token head try
+  repo=${ref%%:*}; tag=${ref##*:}; [ "$repo" = "$ref" ] && tag=latest
   case $repo in */*) ;; *) repo=library/$repo ;; esac
   # Twice: a slow answer on a busy connection is not a verdict.
   for try in 1 2; do

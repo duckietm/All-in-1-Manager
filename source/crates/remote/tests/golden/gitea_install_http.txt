@@ -163,7 +163,7 @@ cat > "$g/compose.yaml" <<'EOF'
 # meet the server's SSH. Only the web port is published, on 127.0.0.1, for Traefik.
 services:
   gitea:
-    image: docker.gitea.com/gitea:latest
+    image: gitea/gitea:1
     container_name: gitea
     restart: unless-stopped
     networks: [gitea]
@@ -194,7 +194,7 @@ networks:
     name: gitea
 EOF
 
-echo "> docker compose pull (docker.gitea.com/gitea:latest)"
+echo "> docker compose pull (gitea/gitea:1)"
 pulled=
 for i in 1 2 3; do
   if docker compose -f "$g/compose.yaml" pull -q 2>"$g/pull.log"; then pulled=yes; break; fi
@@ -203,8 +203,8 @@ for i in 1 2 3; do
 done
 rm -f "$g/pull.log"
 if [ -z "$pulled" ]; then
-  docker image inspect docker.gitea.com/gitea:latest >/dev/null 2>&1 || fail "Could not download the Gitea image from docker.gitea.com (see above). Try again later."
-  echo "  docker.gitea.com did not answer: using the docker.gitea.com/gitea:latest image that is already on this server"
+  docker image inspect gitea/gitea:1 >/dev/null 2>&1 || fail "Could not download the Gitea image from Docker Hub (see above). Try again later."
+  echo "  Docker Hub did not answer: using the gitea/gitea:1 image that is already on this server"
 fi
 echo "> docker compose up -d"
 docker compose -f "$g/compose.yaml" up -d 2>&1 | grep -v '^ *$'

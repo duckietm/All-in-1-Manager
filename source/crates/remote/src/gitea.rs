@@ -3,11 +3,7 @@
 //! PORTING: the items above the line are used by other modules; keep their names and signatures.
 
 pub const CONTAINER: &str = "gitea";
-/// Gitea's own registry, the newest release.
-pub const IMAGE: &str = "docker.gitea.com/gitea:latest";
-
-/// The image of installs from before (Docker Hub, the newest 1.x): Update Gitea moves them to [`IMAGE`].
-pub const OLD_IMAGE: &str = "gitea/gitea:1";
+pub const IMAGE: &str = "gitea/gitea:1";
 
 // ---------------------------------------------------------------------------------------------------------------
 //
@@ -265,8 +261,8 @@ for i in 1 2 3; do
 done
 rm -f "$g/pull.log"
 if [ -z "$pulled" ]; then
-  docker image inspect {{Image}} >/dev/null 2>&1 || fail "Could not download the Gitea image from docker.gitea.com (see above). Try again later."
-  echo "  docker.gitea.com did not answer: using the {{Image}} image that is already on this server"
+  docker image inspect {{Image}} >/dev/null 2>&1 || fail "Could not download the Gitea image from Docker Hub (see above). Try again later."
+  echo "  Docker Hub did not answer: using the {{Image}} image that is already on this server"
 fi
 echo "> docker compose up -d"
 docker compose -f "$g/compose.yaml" up -d 2>&1 | grep -v '^ *$'
@@ -360,24 +356,11 @@ pub async fn install(server: &dyn Server, settings: &GiteaSettings, log: Log<'_>
     })
 }
 
-const MOVE_IMAGE: &str = r#"c={{Directory}}/compose.yaml
-if [ -f "$c" ] && grep -qE '^ *image: *{{OldImage}} *$' "$c"; then
-  cp -p "$c" "$c.bak-$(date +%Y%m%d-%H%M%S)"
-  sed -i -E 's#^( *image: *){{OldImage}} *$#\1{{Image}}#' "$c"
-  echo "> $c: image {{OldImage}} -> {{Image}} (Gitea's own registry, the newest release; a backup was made)"
-fi"#;
-
-/// Pulls the newest docker.gitea.com/gitea:latest and recreates the container when it changed; the data stays. An
-/// install with the older gitea/gitea:1 is moved to it first.
+/// Pulls the newest gitea/gitea:1 and recreates the container when it changed; the data stays.
 pub async fn update(server: &dyn Server, log: Log<'_>) -> Result<()> {
-    let move_image = fill(MOVE_IMAGE, &[("Directory", directory()), ("OldImage", OLD_IMAGE), ("Image", IMAGE)]);
-    script::run(server, &script::with_prelude(&move_image), log, "Updating the Gitea image name failed", None).await?;
     let version = format!("docker exec {CONTAINER} gitea --version 2>/dev/null | awk '{{print $3}}'");
     let ready = format!("curl -fs --noproxy '*' --max-time 3 \"http://127.0.0.1:$(sed -n 's/^PORT=//p' {}/.env)/api/healthz\" >/dev/null 2>&1", directory());
-    server_tools::update_image(server, "Gitea", directory(), CONTAINER, &version, &ready, log).await?;
-    // The image of before is not used any more.
-    let _ = server.run_as_root(&format!("docker image rm {OLD_IMAGE} >/dev/null 2>&1 || true")).await;
-    Ok(())
+    server_tools::update_image(server, "Gitea", directory(), CONTAINER, &version, &ready, log).await
 }
 
 const REMOVE_CHECK: &str = r#"echo "> {{scheme}}://{{domain}}/ (through Traefik)"

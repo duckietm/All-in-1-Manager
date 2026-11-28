@@ -5,6 +5,7 @@
 //! shows what would change; applying writes those changes in one transaction and records them in the shared history.
 
 use std::collections::BTreeMap;
+use std::sync::LazyLock;
 
 use regex::Regex;
 use serde_json::{json, Map, Value};
@@ -282,6 +283,16 @@ fn check_column(page: bool, column: &str) -> std::result::Result<(), String> {
     }
 }
 
+// Compiled once: a Habbo-size file has tens of thousands of statements.
+static INSERT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)^INSERT\s+INTO\s+(catalog_pages|catalog_items)\s*\(([^)]*)\)\s*VALUES\s*\((.*)\)$").unwrap());
+static UPDATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^UPDATE\s+(catalog_pages|catalog_items)\s+SET\s+(.+)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap()
+});
+static DELETE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap()
+});
+static DELETE_ALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s*$").unwrap());
+
 /// One statement, as the emulator's import reads it.
 pub fn parse_statement(sql: &str) -> std::result::Result<Statement, String> {
     let upper = outside_literals(sql).to_uppercase();
@@ -290,10 +301,7 @@ pub fn parse_statement(sql: &str) -> std::result::Result<Statement, String> {
             return Err(format!("Forbidden SQL: {}", token.trim()));
         }
     }
-    let insert = Regex::new(r"(?is)^INSERT\s+INTO\s+(catalog_pages|catalog_items)\s*\(([^)]*)\)\s*VALUES\s*\((.*)\)$").unwrap();
-    let update = Regex::new(r"(?is)^UPDATE\s+(catalog_pages|catalog_items)\s+SET\s+(.+)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap();
-    let delete = Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s+WHERE\s+id\s*=\s*(\d+)(?:\s+AND\s+catalog_type\s*=\s*('[^']*'|[A-Za-z_]+))?\s*$").unwrap();
-    let delete_all = Regex::new(r"(?is)^DELETE\s+FROM\s+(catalog_pages|catalog_items)\s*$").unwrap();
+    let (insert, update, delete, delete_all) = (&*INSERT, &*UPDATE, &*DELETE, &*DELETE_ALL);
     if let Some(m) = insert.captures(sql) {
         let page = m[1].eq_ignore_ascii_case("catalog_pages");
         let columns = split_comma(&m[2])?;
@@ -454,6 +462,15 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
     if journal::capture_all(session, database).await? != *previewed {
         return Err(ServerError("The catalogue changed since the preview: preview the file again.".into()).into());
     }
+    let history = journal::has_history(session, database).await;
+    let summary = format!("All-in-1 Manager: SQL import, {} changes", changes.len());
+    session.execute(&apply_statements(database, changes, history.then_some(summary.as_str()))).await?;
+    Ok(())
+}
+
+/// The statements that write `changes` (pages before their offers when added, offers before their pages when
+/// deleted) and, with a `summary` (the database has the history), raise the id sequences and add one history row.
+pub fn apply_statements(database: &str, changes: &[Change], summary: Option<&str>) -> Vec<(String, Vec<SqlValue>)> {
     let mut ordered: Vec<&Change> = changes.iter().collect();
     // Pages before their offers when added; offers before their pages when deleted.
     ordered.sort_by_key(|c| match (c.after.is_some(), c.entity.page) {
@@ -462,8 +479,18 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
         (false, false) => 2,
         (false, true) => 3,
     });
-    let mut statements: Vec<(String, Vec<SqlValue>)> = ordered.iter().map(|c| journal::write_statement(database, c.entity, c.after.as_ref())).collect();
-    if journal::has_history(session, database).await {
+    let mut statements: Vec<(String, Vec<SqlValue>)> = Vec::new();
+    if summary.is_some() {
+        // Holds Catalog Studio's writes (they raise the revision too) until this transaction ends.
+        statements.push((format!("SELECT revision FROM {}.catalog_manager_state WHERE singleton_id = 1 FOR UPDATE", quote(database)), Vec::new()));
+    }
+    // New rows with a plain INSERT: a page or offer made at the same id since the preview fails the whole transaction
+    // (nothing is written) instead of being overwritten.
+    statements.extend(ordered.iter().map(|c| match (&c.before, &c.after) {
+        (None, Some(after)) => journal::insert_statement(database, c.entity, after),
+        _ => journal::write_statement(database, c.entity, c.after.as_ref()),
+    }));
+    if let Some(summary) = summary {
         let db = quote(database);
         for (kind, cat, table) in [("PAGE", "NORMAL", "catalog_pages"), ("OFFER", "NORMAL", "catalog_items"), ("PAGE", "BUILDER", "catalog_pages_bc"), ("OFFER", "BUILDER", "catalog_items_bc")] {
             statements.push((
@@ -474,7 +501,7 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
         let before: BTreeMap<Entity, Option<Value>> = changes.iter().map(|c| (c.entity, c.before.clone())).collect();
         let after: BTreeMap<Entity, Option<Value>> = changes.iter().map(|c| (c.entity, c.after.clone())).collect();
         let entries = journal::entries(&before, &after);
-        let summary = format!("All-in-1 Manager: SQL import, {} changes", changes.len());
+        let summary: String = summary.chars().take(255).collect();
         statements.push((format!("UPDATE {db}.catalog_manager_state SET revision = revision + 1 WHERE singleton_id = 1"), Vec::new()));
         statements.push((
             format!(
@@ -484,8 +511,7 @@ pub async fn apply(session: &SqlSession, database: &str, previewed: &BTreeMap<En
             vec![SqlValue::Text(summary), SqlValue::Text(Value::Array(entries).to_string())],
         ));
     }
-    session.execute(&statements).await?;
-    Ok(())
+    statements
 }
 
 #[cfg(test)]
@@ -557,5 +583,47 @@ mod tests {
             assert!(target(&all, bad).is_err(), "{bad} was accepted");
         }
         assert_eq!(statements("SELECT 'a;b'; -- c\nx").unwrap(), vec!["SELECT 'a;b'".to_string(), "x".to_string()]);
+    }
+
+    #[test]
+    fn new_rows_never_overwrite_one_made_since_the_preview() {
+        let all = catalogue();
+        let file = "INSERT INTO catalog_items (id, catalog_type, item_ids, page_id, catalog_name) VALUES (6, 'NORMAL', '11', 1, 'lamp');\n\
+                    UPDATE catalog_items SET cost_credits = 10 WHERE id = 5";
+        let found = changes(&all, &target(&all, file).unwrap());
+        let statements = apply_statements("hotel", &found, Some("import"));
+        assert!(statements[0].0.ends_with("FOR UPDATE"), "the history's state row is locked first");
+        let create = statements.iter().find(|(_, p)| p.first() == Some(&SqlValue::Int(6))).unwrap();
+        // A plain INSERT: if offer 6 was made meanwhile, MariaDB refuses it (duplicate key) and the transaction is
+        // rolled back as a whole, so nothing of the import is written and the other row stays as it is.
+        assert!(create.0.starts_with("INSERT INTO `hotel`.catalog_items (") && !create.0.contains("ON DUPLICATE KEY"), "{}", create.0);
+        assert_eq!(create.1.len(), create.0.matches('?').count());
+        let update = statements.iter().find(|(_, p)| p.first() == Some(&SqlValue::Int(5))).unwrap();
+        assert!(update.0.contains("ON DUPLICATE KEY UPDATE"), "a change of an existing row is written as before");
+        // Without the history: no lock, no history row.
+        let plain = apply_statements("hotel", &found, None);
+        assert_eq!(plain.len(), 2);
+    }
+
+    #[test]
+    fn a_habbo_size_file_reads_quickly() {
+        let mut file = String::new();
+        for id in 1..=3_550 {
+            file.push_str(&format!(
+                "INSERT INTO catalog_pages (id, catalog_type, parent_id, caption, page_layout, visible, enabled) VALUES ({id}, 'NORMAL', -1, 'Page {id}', 'default_3x3', 1, 1);\n"
+            ));
+        }
+        for id in 1..=31_500 {
+            let page = id % 3_550 + 1;
+            file.push_str(&format!(
+                "INSERT INTO catalog_items (id, catalog_type, item_ids, page_id, catalog_name, cost_credits, amount, offer_id) VALUES ({id}, 'NORMAL', '{id}', {page}, 'furni_{id}', 3, 1, -1);\n"
+            ));
+        }
+        let started = std::time::Instant::now();
+        let result = target(&BTreeMap::new(), &file).unwrap();
+        let took = started.elapsed();
+        eprintln!("habbo-size target(): {took:?}");
+        assert_eq!(result.len(), 3_550 + 31_500);
+        assert!(took.as_secs() < 10, "took {took:?}");
     }
 }

@@ -955,8 +955,27 @@ impl App {
             Page::AssetExplorer => self.explorer.show(ui, palette, &shared),
             Page::AssetTools => scroll(ui, |ui| self.asset_tools.show(ui, palette, &shared)),
             Page::GetAssets | Page::RetroAssets => {
-                self.get_assets.set_retro(page == Page::RetroAssets);
-                scroll(ui, |ui| self.get_assets.show(ui, palette, &shared))
+                let retro = page == Page::RetroAssets;
+                self.get_assets.set_retro(retro);
+                let mut click = None;
+                scroll(ui, |ui| {
+                    self.get_assets.show(ui, palette, &shared);
+                    // Nitro retro: the catalogue rip that goes with the download, with the Catalogue ripper's job.
+                    if retro {
+                        if let Some(request) = self.get_assets.take_rip_request() {
+                            // Not started (a rip is running, or no catalogue is chosen): the card says why.
+                            let _ = self.catalog_rip.start_with(&shared, Some(request));
+                        }
+                        let download = self.get_assets.finished_retro_download();
+                        click = self.catalog_rip.retro_panel(ui, palette, &shared, download.as_ref());
+                    }
+                });
+                if let Some(views::catalog_rip::Click::Merge(folder)) = click {
+                    self.go(Page::CatalogManager);
+                    if self.page == Page::CatalogManager {
+                        self.catalog.merge_rip(folder);
+                    }
+                }
             }
             Page::SqlEditor => self.sql.show(ui, palette, &shared),
             Page::CatalogManager => self.catalog.show(ui, palette, &shared),
@@ -984,10 +1003,10 @@ impl App {
             Page::CatalogRip => {
                 let mut click = None;
                 scroll(ui, |ui| click = self.catalog_rip.show(ui, palette, &shared));
-                if let Some(views::catalog_rip::Click::Import(path)) = click {
+                if let Some(views::catalog_rip::Click::Merge(folder)) = click {
                     self.go(Page::CatalogManager);
                     if self.page == Page::CatalogManager {
-                        self.catalog.import_file(path);
+                        self.catalog.merge_rip(folder);
                     }
                 }
             }

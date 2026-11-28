@@ -974,7 +974,7 @@ It asks for:
 
 What it sets up:
 
-- **Docker** in `/opt/gitea` (`compose.yaml`, `.env`, `data/`), image `docker.gitea.com/gitea:latest` (Gitea's own registry, the newest release), with SQLite: no database to set up.
+- **Docker** in `/opt/gitea` (`compose.yaml`, `.env`, `data/`), image `gitea/gitea:1`, with SQLite: no database to set up.
   Gitea has a Docker network of its own (the image always starts an SSH server inside, which must not meet the
   server's SSH), and only its web port is published, on **127.0.0.1**, on the first free port from 85 to 95 (the
   same check as for a CMS, which also recognises Gitea's own port on a later run).
@@ -1233,6 +1233,16 @@ compilers ported to Rust, the JSON and sprite sheet as it makes them; the sheet 
 converted is kept in `custom/<name>/source/`; **Convert the kept .swf files** tries those again without downloading. The bundle formats and conversions live in their own crate, `aio-assets`, so other parts of the
 installer can use them too.
 
+**Also rip the catalogue (needs G-Earth with the hotel open)** (off by default, remembered) makes **Download** also
+start the [Catalogue ripper](#catalogue-ripper) with its own options, for the same hotel: the profile's
+FurnitureData.json matches the products by class name, and the optional **Client configuration** (the retro's
+`renderer-config.json` or its site, saved with the profile) gives the catalogue image URLs. The rip goes into
+`custom/<name>/catalogue/<hotel>_<time>/`, next to `custom/<name>/gamedata/`. The download never waits for it:
+without G-Earth the rip says what to do and waits, and the page shows its G-Earth state, progress and **Cancel**.
+When both are done, the page lists the furni the ripped catalogue sells that the download did not get (no `.hab` or
+`.nitro` in `gamedata/furniture/`), and **Merge into my catalogue** opens the Catalogue manager's **Merge a rip**
+with that rip (preview, then Apply, then Undo, as always).
+
 ### Asset tools
 
 **Asset tools** (sidebar → ASSETS) works on files on this computer, in `Habbo_Assets/Assets_tools`, the All-in-1
@@ -1274,7 +1284,9 @@ afterwards `gamedata-permissions` gives the emulator and NGINX access again.
 The config JSON files are only added when they are missing: hotels and the emulator edit them (custom furniture,
 badge texts). Tick **Also replace config JSON files** to overwrite them with the downloaded ones. New furniture also
 needs its rows in `items_base` and `catalog_items`: **Import Assets** adds them (**Import custom furniture** for a
-retro's own furni).
+retro's own furni). It reads each furni's `.hab`, or its `.nitro` when there is no `.hab`, and sets
+`interaction_type` from the bundle's logic type (dice, trophy, clothing, ...). Guild furni and badge displays can
+only be bought from a catalogue page with the matching layout (guild_custom_furni / badge_display): move them there.
 
 #### UI texts
 
@@ -1473,6 +1485,33 @@ page has the rest:
   optional name. **Roll back** first makes a `before-rollback` backup of the catalogue as it is, then puts the chosen
   one back; publish afterwards. Sold limited numbers (`catalog_items_limited`) and voucher uses (`voucher_history`) are
   never in a backup, so a rollback never takes back what players own or used. **Delete** removes a backup file.
+- **Merge a rip** (the ninth tab) fits a catalogue copied with the [Catalogue ripper](#catalogue-ripper) into this
+  hotel's catalogue (normal and Builders Club apart). Choose the rip folder (the one with `packets/`; the ripper's
+  **Import into the hotel** opens this tab with it) and **Preview the merge**: the Manager reads your pages, offers and
+  `items_base`, and fits the rip into them. A ripped page with the same path as one of yours (the same captions from
+  the root, trimmed, any case) is **joined**: only offers are added to it, never its own settings. The other pages go
+  under a new page **Imported from <hotel>** at the end of the catalogue, keeping the rip's shape. An offer whose furni
+  that page already sells (the same `items_base` ids, a poster, wallpaper, floor or landscape also with the same
+  number; amounts are not compared, so a 5-pack of a furni sold there singly is skipped) is **skipped**; offers whose furni is
+  not in `items_base` are **left out** (give the rip's `missing_furnidata.json` to the furni import first, then merge
+  again). Merging the same rip twice adds nothing. The preview lists the joined and new pages, the skipped and left out
+  offers with the reason, and every page and offer created.
+  **Furniture bundles**: your hotel's `bundled/furniture` folder on this computer (the `.nitro` / `.hab` files, as in
+  Nitro-Files; remembered). With it, the preview also lists **furni interactions**: for every furni of the offers the
+  merge adds (never the furni of offers skipped as already sold) whose `items_base.interaction_type` is `default` (or
+  empty), the interaction its bundle's logic gives (the same mapping as the furni import: dice, trophy, postit, ...).
+  A furni with an interaction of its own is never changed. The preview also says when the ripped hotel's furnidata
+  could not be read (then products are matched by sprite id). **Apply N changes** writes the pages, offers and
+  interactions in one transaction, when nothing changed since the preview (a merge only creates pages and offers:
+  anything else is refused), and records it in the History tab. **Publish** afterwards also asks the emulator to load
+  `items_base` again (RCON `updateitems`), so the new interactions count; if that fails, restart the emulator.
+  **Undo** in the History tab puts the pages and offers back and, in the same go, the old interactions (only where
+  `items_base` still holds what the merge wrote): the Manager keeps them in a small table of its own,
+  `aio_manager_items_history`, made the first time a merge changes an interaction (the MariaDB account needs the
+  CREATE privilege for that; without it the merge says so and writes nothing). Octane's Catalog Studio undoes only
+  pages and offers: after that, **Undo ...** here offers **Undo the interactions only**. When that table exists but
+  cannot be read, the History tab says so and allows no undo. **Import catalog_manager.sql as written ...** imports the file the
+  ripper wrote instead, in its own mode (Replace deletes your whole catalogue first), through the usual import preview.
 - In **Checks**, **Merge into #id** moves the offers, sub-pages and front page tiles of pages that share an internal
   name to the first one, then deletes the others, after asking.
 - **Publish** asks the running emulator over its RCON port (`rcon.port` in `config.ini`, on 127.0.0.1 of the server) to
@@ -1839,12 +1878,17 @@ Rosetta).
   `configuration/plugins/catalog-rip/profiles/` (**Profiles folder**); one with a built-in profile's name replaces it.
 - **Output**, in `Catalog/<hotel>_<time>/` next to the configuration folder: `catalog.json`, Arcturus SQL
   (`catalog_pages.sql`, `catalog_items.sql`), `catalog_manager.sql`, the page images and icons, and `README.txt`.
-  A rip that stops early still saves what it read.
-- **Import into the hotel** (when logged in) opens the [Catalogue](#catalogue) manager with `catalog_manager.sql` as an
-  import preview: nothing is written until **Apply**, and it is recorded in the history. The file replaces the whole
-  catalogue (normal and Builders Club). With **Match the furni with items_base** the ripper reads the server's
-  items_base (with the saved MariaDB account) so the offers point at your furni; offers whose furni is not in
-  items_base are left out and listed in the file.
+  A rip that stops early still saves what it read. A rip started from [Nitro retro](#nitro-retro-custom-assets) goes
+  into that profile's `custom/<name>/catalogue/` instead, and its `README.txt` gets a NITRO RETRO section that points
+  at the download's `gamedata/`. The ripper page shows where a running rip is (waiting for G-Earth, for the hotel,
+  ripping).
+- **Import into the hotel** (when logged in) opens the [Catalogue](#catalogue) manager's **Merge a rip** with the rip
+  folder: the rip is merged into your catalogue (joined pages, new pages under "Imported from <hotel>", offers already
+  sold skipped) and, with your furniture bundles folder, the furni interactions are fixed in the same go. Nothing is
+  written until **Apply**, and it is recorded in the history. The file `catalog_manager.sql` as the ripper wrote it
+  (which replaces the whole catalogue in Replace mode) can still be imported from there. With **Match the furni with
+  items_base** the ripper reads the server's items_base (with the saved MariaDB account) so the offers point at your
+  furni; offers whose furni is not in items_base are left out and listed in the file.
 
 Use it on hotels whose catalogue you may copy, and keep the pause between pages reasonable: a hotel may disconnect a
 client that asks too fast.
@@ -1867,19 +1911,38 @@ you read them. It shares the Catalogue ripper's G-Earth connection, hotel profil
    **furnidata** URL for the class names (official Habbo finds its own).
 2. **Read the wired** (optional, in the room you are in). The hotel sends a wired box's settings only to someone who may
    inspect the room's wired: its owner, someone with rights, or everyone when the owner allows it. The ripper opens the
-   boxes one at a time (400 ms apart) with *Open* where the hotel has it (Polaris and official Habbo: nothing visible), else
-   with a double click (the box's light flips for everyone in the room). When the first box does not answer, it stops and
-   says you may not read the wired there. Boxes you open by hand while capturing are kept too.
+   boxes one at a time (400 ms apart) with *Open* only (Polaris and official Habbo: nothing visible). **Double click
+   where Open does not work** (off by default) lets it double click the boxes instead where the hotel does not know
+   *Open* or the first box does not answer it: each box's light then **blinks for everyone in the room**. When the
+   first box does not answer, it stops and says you may not read the wired there (or, with the option off, that you
+   can try again with it). Boxes you open by hand while capturing are kept too.
 3. **Import ...** (logged in to your server; the MariaDB account the other database pages use). Choose the **owner** (a
    user of your hotel), the **room name** and, if needed, the **door**. **Preview** shows what the import makes and leaves
    out; **Import** writes it all in one transaction (all or nothing):
-   - a new room of that owner, **open to everyone**, with the hotel's default category, trade and chat settings;
+   - a new room of that owner, **open to everyone** (no doorbell or password) with the hotel's default trade setting.
+     Its **category** is chosen in the preview from the hotel's `navigator_flatcats` a normal user may pick
+     (`min_rank` 1, not `public`), the first one by default. The **most users** come from the capture, at most the
+     category's `max_user_count` and Polaris' 200; the **chat settings** (mode, bubble width, speed, hearing distance,
+     flood protection) come from the capture within the ranges Polaris accepts. A room captured before this version
+     has no chat settings: it gets the hotel's;
    - the hotel's model when it has the same floor plan and door, else a custom one (`room_models_custom`,
      `override_model`);
    - the furni, matched with your `items_base` by **class name** (by sprite id when the class name was not known);
      furni you do not have are left out and listed. They become normal items of the owner, **cleaned** of what belongs
      to the other hotel: LTD serials (the item is no LTD here), trophy engravings, group links, ads and badge displays,
      all listed;
+   - **valuables are left out** unless you include them: Polaris has no per-furni "not tradeable" mark (trading checks
+     only `items_base.allow_trade`), so a copied LTD or rare would be one more tradeable piece in your hotel. A valuable
+     is an **LTD** in the capture (it shows a serial); a furni Polaris **redeems for currency** (`CF_`, `CFC_`,
+     `CF_diamond_`, `DF_`, `PF_`, `nft_emerald...`); or a furni that can change hands here (`allow_trade`,
+     `allow_marketplace_sell` or `allow_recycle` in your `items_base`) which the other hotel's furnidata marks `rare`,
+     or which your catalogue sells **only as LTD** or **does not sell** at all. Only offers on pages a player reaches
+     count as sold: the page and every parent up to the root enabled, visible and open to rank 1, and no Builders Club
+     page (`catalog_mode` BUILDER). A name is sold when any `items_base` row of that name is; a colour variant
+     (`name*2`) is a name of its own. The furnidata's rares are known only for rooms captured with the furnidata (the
+     preview says when they could not be checked). The preview lists them by class name and reason; tick a group,
+     every one of a reason, or **Include all**: an included one becomes a normal, tradeable copy (an LTD keeps no
+     serial). A wired box that selected a furni left out points at the others only, and the preview says so;
    - the wired settings that were read, as Polaris' `wired_data`, their furni pointing at the new items. Converted now:
      walks on/off furni, enters room, says something, periodically, at a set time, toggle state, move/rotate, show
      message, teleport, match snapshot (action and condition), furni have users, trigger on furni, reset timers, give
@@ -1900,9 +1963,22 @@ is a folder in `configuration/plugins/room-rip/packets/<hotel>_<time>/` (**Open 
 The packets the ripper sends itself (opening boxes for **Read the wired**) are in it too. The recording holds
 everything sent in those rooms, chat too: share it only with people you trust.
 
-4. **Imported rooms → Undo** removes the room again: anyone in it is sent to the hotel view first (Polaris unloads a
-   room when its owner is set again over RCON), then the furni that came with it are deleted (also when they were picked
-   up since), furni placed there later go back to their owner's inventory, and the custom floor plan and the room go.
+4. **Imported rooms → Undo** removes the room again, but only while it is as it was imported: the room is still in the
+   hotel and still of its owner (`rooms.owner_id`), nobody is in it (`rooms.users` is 0; a count left over when the
+   emulator stopped is cleared when it starts), its owner is offline (`users.online`; Polaris keeps a room loaded
+   while its owner is online), no group has it as its home (`rooms.guild_id`), and every furni that came with it is
+   still in it and still the owner's (`items.room_id` and `items.user_id`). Otherwise Undo lists what is in the way
+   (furni picked up, moved to another room, traded or given; people in the room; the owner online; a group) and
+   removes nothing; furni deleted or recycled since are nobody's, so they do not stop it (they are listed as already
+   gone). Then the emulator unloads the room (Polaris does when a room's owner is set again over RCON, saving its
+   furni): when it refuses, or does not answer while it may be running (its service or process, or its RCON port
+   open), Undo stops; when it is surely not running, nothing has the room loaded and Undo goes on. The room and its
+   furni are read again, then one transaction deletes the room only while it is still the owner's with `rooms.users`
+   at 0 (else everything is rolled back), deletes the furni that came with it only while they are in the room and the
+   owner's, sends furni, bots and pets placed there by others back to their owners' inventories, and drops the room's
+   rights, votes and word filter, as Polaris does when a room is deleted; the custom floor plan is dropped once that
+   transaction is committed (should that fail, the room is gone anyway and Undo says so). `rooms.users` is a count
+   the emulator keeps, so these checks narrow the window for someone entering but cannot rule it out.
    The record of each import is kept in `configuration/plugins/room-rip/imports/`.
 
 Use it on rooms you may copy.
@@ -1913,10 +1989,9 @@ Use it on rooms you may copy.
 **Octane and Octane Renderer** as one row (they depend on each other: both versions are shown, the new commits of both
 are counted together, and **Update** updates the renderer first, then Octane, then builds the client); AtomCMS when it is
 installed; and the Docker services **Traefik** and, once installed, **Gitea**. For those the check compares the image on
-the server with its registry's newest for the same tag (Docker Hub; for Gitea its own registry `docker.gitea.com`,
-with the anonymous token its `WWW-Authenticate` answer points to): a `HEAD` request of the tag's manifest, which does
-not count against Docker Hub's pull limit; `docker buildx imagetools inspect` only when that gives nothing, and to read
-the newest version number; nothing is downloaded or changed. It shows **NOT CHECKED** with the reason when the registry does not answer
+the server with Docker Hub's newest for the same tag (a `HEAD` request of the tag's manifest, which does not count
+against Docker Hub's pull limit; `docker buildx imagetools inspect` only when that gives nothing, and to read the newest
+version number; nothing is downloaded or changed), shows **NOT CHECKED** with the reason when Docker Hub does not answer
 or limits the server's requests, and shows **NEW IMAGE WAITING** when a newer image is downloaded but
 the old container still runs (a `docker restart` keeps the image the container was made from; **Update** and
 **Restart Traefik** make a new container from it). **Update** runs the matching tool on the Tools page. For Traefik
@@ -2063,7 +2138,7 @@ backup at the bottom. Without a login the server tools are greyed out, with a **
 | **Update Octane** | `git pull` of Octane-Renderer and Octane, both on the branch chosen in **Settings → Repository branches** (a clone on another branch is switched over first), then in both `rm -rf node_modules yarn.lock` and `yarn install`, then the configuration for the site (keeps AtomCMS' `/client` layout), `yarn build` and a test. The next pull puts the repository's `yarn.lock` back first |
 | **Update AtomCMS** | `git pull` in `/var/www/atomcms`, `composer install`, `php artisan migrate` (an installed AtomCMS only runs the new migrations; its settings and the hotel name stay) and the theme build. Octane is not touched |
 | **Update Traefik** | `docker compose pull` and `up -d` in `/opt/traefik`: the newest `traefik:v3` image, and a restart only when it changed (routes, settings and certificates stay; the players are disconnected for a few seconds). When Docker Hub does not answer nothing is changed, and it says so (also for Gitea and CrowdSec) |
-| **Update Gitea** | the same for Gitea in `/opt/gitea` (`docker.gitea.com/gitea:latest`, Gitea's own registry); an install from before with `gitea/gitea:1` is moved to it first (`compose.yaml` is kept as `.bak-<time>`, the old image is removed afterwards); the repositories and accounts stay |
+| **Update Gitea** | the same for Gitea in `/opt/gitea` (`gitea/gitea:1`); the repositories and accounts stay |
 | **Update CrowdSec** | the same for CrowdSec in `/opt/crowdsec` (`crowdsecurity/crowdsec:latest`), then the newest detection rules (`cscli hub update` and `upgrade`; CrowdSec restarts only when a rule changed). The bans, whitelist and enrollment stay, Traefik is not restarted and the hotel stays reachable. It also says when Traefik's CrowdSec plugin is older than the one this installer knows (run Addons → CrowdSec again to update it) |
 
 ### Import Plus database

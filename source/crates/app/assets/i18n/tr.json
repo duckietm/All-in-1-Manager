@@ -4229,6 +4229,27 @@
   "The record of the merges' furni interactions cannot be read, so nothing can be undone here until it can: {error}": "Birleştirmelerin furni etkileşimleri kaydı okunamıyor, bu yüzden okunabilene kadar burada hiçbir şey geri alınamaz: {error}",
   "The rip of {hotel} is merged. Publish to show it in the hotel: Publish also makes the emulator load the furni again, so the new interactions count (else restart the emulator).": "{hotel} rip'i birleştirildi. Otelde göstermek için yayınla: Yayınlamak emülatörün furnileri de yeniden yüklemesini sağlar, böylece yeni etkileşimler geçerli olur (yoksa emülatörü yeniden başlat).",
   "This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.": "Bu rip'in packets/ klasörü yok (paketler kaydedilmeden yapıldı), bu yüzden birleştirilemez: Katalog yöneticisinin Rip birleştir aracını aç ve onun yerine catalog_manager.sql dosyasını olduğu gibi içe aktar'ı kullan.",
+  "Undo the interactions only": "Yalnızca etkileşimleri geri al",
+  "Also rip the catalogue (needs G-Earth with the hotel open)": "Kataloğu da kopyala (otel açıkken G-Earth gerekir)",
+  "Catalogue rip": "Katalog kopyası",
+  "Every furni the catalogue sells was downloaded.": "Kataloğun sattığı her mobilya indirildi.",
+  "G-Earth is connected: log in to the hotel with your own client, through G-Earth.": "G-Earth bağlı: kendi istemcinle, G-Earth üzerinden otele giriş yap.",
+  "Merge into my catalogue": "Kataloğumla birleştir",
+  "Optional: the retro's renderer-config.json (or its site), where the catalogue images are found. Empty: the hotel profile's. Saved with the profile.": "İsteğe bağlı: retronun renderer-config.json dosyası (veya sitesi), katalog resimlerinin bulunduğu yer. Boş: otel profilininkiler. Profille birlikte kaydedilir.",
+  "Ripping the catalogue of {host} ...": "{host} kataloğu kopyalanıyor ...",
+  "The Catalogue ripper copies the hotel's catalogue through G-Earth while the files download, into {folder}. Without G-Earth the download still runs; the rip waits for it.": "Catalogue ripper, dosyalar inerken otelin kataloğunu G-Earth üzerinden {folder} klasörüne kopyalar. G-Earth olmadan da indirme sürer; kopya onu bekler.",
+  "The furni the download lacks could not be listed: {error}": "İndirmede eksik olan mobilyalar listelenemedi: {error}",
+  "Wait for the download to finish.": "İndirmenin bitmesini bekle.",
+  "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "G-Earth bekleniyor: başlat ve otele bağla (ripper senin için indirip başlatabilir).",
+  "When the download is finished too, the furni it lacks are listed here.": "İndirme de bitince, eksik mobilyalar burada listelenir.",
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "Kataloğun sattığı {count} mobilya indirilmedi (.hab veya .nitro yok): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Zaten bir katalog kopyası çalışıyor (Catalogue ripper sayfası).",
+  "No catalogue rip with this download": "Bu indirmeyle katalog kopyası yok",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "Özel mobilya indirmesi başarısız oldu, bu yüzden eksik mobilyalar listelenmiyor.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Özel mobilyalar bu indirmenin parçası değildi, bu yüzden eksik mobilyalar listelenmiyor.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Önce Catalogue ripper seçeneklerinde Normal ve/veya Builders Club'ı aç.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} tanesi source/ içinde .swf olarak saklanıyor: Saklanan .swf dosyalarını dönüştür onların .hab dosyasını yapar: {names}"
+}
   "Undo the interactions only": "Yalnızca etkileşimleri geri al"
 }
   "Empty: everything is downloaded": "Boş: her şey indirilir"

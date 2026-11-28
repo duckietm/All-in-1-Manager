@@ -4229,6 +4229,27 @@
   "The record of the merges' furni interactions cannot be read, so nothing can be undone here until it can: {error}": "Yhdistämisten huonekaluvuorovaikutusten kirjausta ei voi lukea, joten täällä ei voi perua mitään ennen kuin se onnistuu: {error}",
   "The rip of {hotel} is merged. Publish to show it in the hotel: Publish also makes the emulator load the furni again, so the new interactions count (else restart the emulator).": "Hotellin {hotel} rip on yhdistetty. Julkaise, niin se näkyy hotellissa: julkaisu saa emulaattorin myös lataamaan huonekalut uudelleen, joten uudet vuorovaikutukset ovat voimassa (muuten käynnistä emulaattori uudelleen).",
   "This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.": "Tällä ripillä ei ole packets/-kansiota (se tehtiin tallentamatta paketteja), joten sitä ei voi yhdistää: avaa luettelon hallinnan Yhdistä rip ja käytä sen sijaan Tuo catalog_manager.sql sellaisenaan.",
+  "Undo the interactions only": "Peru vain vuorovaikutukset",
+  "Also rip the catalogue (needs G-Earth with the hotel open)": "Kopioi myös katalogi (tarvitsee G-Earthin hotelli auki)",
+  "Catalogue rip": "Katalogin kopio",
+  "Every furni the catalogue sells was downloaded.": "Jokainen katalogin myymä huonekalu ladattiin.",
+  "G-Earth is connected: log in to the hotel with your own client, through G-Earth.": "G-Earth on yhdistetty: kirjaudu hotelliin omalla asiakasohjelmallasi G-Earthin kautta.",
+  "Merge into my catalogue": "Yhdistä omaan katalogiini",
+  "Optional: the retro's renderer-config.json (or its site), where the catalogue images are found. Empty: the hotel profile's. Saved with the profile.": "Valinnainen: retron renderer-config.json (tai sen sivusto), josta katalogin kuvat löytyvät. Tyhjä: hotelliprofiilin omat. Tallennetaan profiilin mukana.",
+  "Ripping the catalogue of {host} ...": "Kopioidaan hotellin {host} katalogia ...",
+  "The Catalogue ripper copies the hotel's catalogue through G-Earth while the files download, into {folder}. Without G-Earth the download still runs; the rip waits for it.": "Catalogue ripper kopioi hotellin katalogin G-Earthin kautta tiedostojen latautuessa kansioon {folder}. Ilman G-Earthia lataus jatkuu silti; kopio odottaa sitä.",
+  "The furni the download lacks could not be listed: {error}": "Latauksesta puuttuvia huonekaluja ei voitu luetella: {error}",
+  "Wait for the download to finish.": "Odota, että lataus valmistuu.",
+  "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "Odotetaan G-Earthia: käynnistä se ja yhdistä se hotelliin (ripper voi ladata ja käynnistää sen puolestasi).",
+  "When the download is finished too, the furni it lacks are listed here.": "Kun myös lataus on valmis, siitä puuttuvat huonekalut luetellaan tässä.",
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} katalogin myymää huonekalua jäi lataamatta (ei .hab- tai .nitro-tiedostoa): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Katalogin kopio on jo käynnissä (Catalogue ripper -sivu).",
+  "No catalogue rip with this download": "Tällä latauksella ei kopioida katalogia",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "Omien huonekalujen lataus epäonnistui, joten siitä puuttuvia huonekaluja ei luetella.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Omat huonekalut eivät kuuluneet tähän lataukseen, joten siitä puuttuvia huonekaluja ei luetella.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Kytke ensin Normaali ja/tai Builders Club päälle Catalogue ripperin asetuksista.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} on säilytetty .swf-tiedostoina kansiossa source/: Muunna säilytetyt .swf-tiedostot tekee niiden .hab-tiedostot: {names}"
+}
   "Undo the interactions only": "Peru vain vuorovaikutukset"
 }
   "Empty: everything is downloaded": "Tyhjä: kaikki ladataan"

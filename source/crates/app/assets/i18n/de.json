@@ -4229,6 +4229,27 @@
   "The record of the merges' furni interactions cannot be read, so nothing can be undone here until it can: {error}": "Die Aufzeichnung der Furni-Interaktionen der Zusammenführungen kann nicht gelesen werden, daher kann hier nichts rückgängig gemacht werden, bis das geht: {error}",
   "The rip of {hotel} is merged. Publish to show it in the hotel: Publish also makes the emulator load the furni again, so the new interactions count (else restart the emulator).": "Der Rip von {hotel} ist zusammengeführt. Veröffentliche, um ihn im Hotel zu zeigen: Veröffentlichen lässt den Emulator auch die Furni neu laden, damit die neuen Interaktionen gelten (sonst starte den Emulator neu).",
   "This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.": "Dieser Rip hat keinen Ordner packets/ (er wurde ohne Aufzeichnung der Pakete gemacht) und kann daher nicht zusammengeführt werden: Öffne Rip zusammenführen im Katalog-Manager und nimm stattdessen catalog_manager.sql unverändert importieren.",
+  "Undo the interactions only": "Nur die Interaktionen rückgängig machen",
+  "Also rip the catalogue (needs G-Earth with the hotel open)": "Auch den Katalog kopieren (braucht G-Earth mit geöffnetem Hotel)",
+  "Catalogue rip": "Katalogkopie",
+  "Every furni the catalogue sells was downloaded.": "Jedes Möbel, das der Katalog verkauft, wurde heruntergeladen.",
+  "G-Earth is connected: log in to the hotel with your own client, through G-Earth.": "G-Earth ist verbunden: melde dich mit deinem eigenen Client über G-Earth im Hotel an.",
+  "Merge into my catalogue": "In meinen Katalog übernehmen",
+  "Optional: the retro's renderer-config.json (or its site), where the catalogue images are found. Empty: the hotel profile's. Saved with the profile.": "Optional: die renderer-config.json des Retros (oder seine Website), wo die Katalogbilder liegen. Leer: die des Hotelprofils. Wird mit dem Profil gespeichert.",
+  "Ripping the catalogue of {host} ...": "Kopiere den Katalog von {host} ...",
+  "The Catalogue ripper copies the hotel's catalogue through G-Earth while the files download, into {folder}. Without G-Earth the download still runs; the rip waits for it.": "Der Catalogue ripper kopiert den Katalog des Hotels über G-Earth, während die Dateien heruntergeladen werden, nach {folder}. Ohne G-Earth läuft der Download trotzdem; die Kopie wartet darauf.",
+  "The furni the download lacks could not be listed: {error}": "Die Möbel, die dem Download fehlen, konnten nicht aufgelistet werden: {error}",
+  "Wait for the download to finish.": "Warte, bis der Download fertig ist.",
+  "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "Warte auf G-Earth: starte es und verbinde es mit dem Hotel (der Ripper kann es für dich herunterladen und starten).",
+  "When the download is finished too, the furni it lacks are listed here.": "Wenn auch der Download fertig ist, werden hier die Möbel aufgelistet, die ihm fehlen.",
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} Möbel, die der Katalog verkauft, wurden nicht heruntergeladen (kein .hab oder .nitro): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Eine Katalogkopie läuft bereits (Seite Catalogue ripper).",
+  "No catalogue rip with this download": "Keine Katalogkopie mit diesem Download",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "Der Download der eigenen Möbel ist fehlgeschlagen, daher werden die fehlenden Möbel nicht aufgelistet.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Die eigenen Möbel waren nicht Teil dieses Downloads, daher werden die fehlenden Möbel nicht aufgelistet.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Schalte zuerst Normal und/oder Builders Club in den Optionen des Catalogue rippers ein.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} sind als .swf in source/ aufbewahrt: Die aufbewahrten .swf-Dateien umwandeln erstellt ihre .hab: {names}"
+}
   "Undo the interactions only": "Nur die Interaktionen rückgängig machen"
 }
   "Empty: everything is downloaded": "Leer: alles wird heruntergeladen"

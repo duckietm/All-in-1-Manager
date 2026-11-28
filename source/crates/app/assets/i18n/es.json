@@ -4229,6 +4229,27 @@
   "The record of the merges' furni interactions cannot be read, so nothing can be undone here until it can: {error}": "No se puede leer el registro de las interacciones de furnis de las fusiones, así que aquí no se puede deshacer nada hasta que se pueda: {error}",
   "The rip of {hotel} is merged. Publish to show it in the hotel: Publish also makes the emulator load the furni again, so the new interactions count (else restart the emulator).": "El rip de {hotel} está fusionado. Publica para mostrarlo en el hotel: Publicar también hace que el emulador vuelva a cargar los furnis, para que cuenten las nuevas interacciones (si no, reinicia el emulador).",
   "This rip has no packets/ folder (it was made without recording the packets), so it cannot be merged: open the Catalogue manager's Merge a rip and use Import catalog_manager.sql as written instead.": "Este rip no tiene carpeta packets/ (se hizo sin grabar los paquetes), así que no se puede fusionar: abre Fusionar un rip del gestor del catálogo y usa en su lugar Importar catalog_manager.sql tal cual.",
+  "Undo the interactions only": "Deshacer solo las interacciones",
+  "Also rip the catalogue (needs G-Earth with the hotel open)": "Copiar también el catálogo (necesita G-Earth con el hotel abierto)",
+  "Catalogue rip": "Copia del catálogo",
+  "Every furni the catalogue sells was downloaded.": "Se ha descargado cada furni que vende el catálogo.",
+  "G-Earth is connected: log in to the hotel with your own client, through G-Earth.": "G-Earth está conectado: entra en el hotel con tu propio cliente, a través de G-Earth.",
+  "Merge into my catalogue": "Fusionar con mi catálogo",
+  "Optional: the retro's renderer-config.json (or its site), where the catalogue images are found. Empty: the hotel profile's. Saved with the profile.": "Opcional: el renderer-config.json del retro (o su sitio), donde están las imágenes del catálogo. Vacío: las del perfil del hotel. Se guarda con el perfil.",
+  "Ripping the catalogue of {host} ...": "Copiando el catálogo de {host} ...",
+  "The Catalogue ripper copies the hotel's catalogue through G-Earth while the files download, into {folder}. Without G-Earth the download still runs; the rip waits for it.": "El Catalogue ripper copia el catálogo del hotel a través de G-Earth mientras se descargan los archivos, en {folder}. Sin G-Earth la descarga sigue; la copia lo espera.",
+  "The furni the download lacks could not be listed: {error}": "No se pudieron listar los furnis que le faltan a la descarga: {error}",
+  "Wait for the download to finish.": "Espera a que termine la descarga.",
+  "Waiting for G-Earth: start it and connect it to the hotel (the ripper can download and start it for you).": "Esperando a G-Earth: inícialo y conéctalo al hotel (el ripper puede descargarlo e iniciarlo por ti).",
+  "When the download is finished too, the furni it lacks are listed here.": "Cuando la descarga también termine, aquí se listarán los furnis que le faltan.",
+  "{count} furni the catalogue sells were not downloaded (no .hab or .nitro): {names}": "{count} furnis que vende el catálogo no se descargaron (ningún .hab o .nitro): {names}",
+  "A catalogue rip is already running (Catalogue ripper page).": "Ya hay una copia del catálogo en curso (página Catalogue ripper).",
+  "No catalogue rip with this download": "Sin copia del catálogo con esta descarga",
+  "The custom furniture download failed, so the furni it lacks are not listed.": "La descarga de los furnis personalizados falló, así que no se listan los furnis que le faltan.",
+  "The custom furniture was not part of this download, so the furni it lacks are not listed.": "Los furnis personalizados no formaban parte de esta descarga, así que no se listan los furnis que le faltan.",
+  "Turn on Normal and/or Builders Club in the Catalogue ripper's options first.": "Activa primero Normal y/o Builders Club en las opciones del Catalogue ripper.",
+  "{count} are kept as .swf in source/: Convert the kept .swf files makes their .hab: {names}": "{count} se guardan como .swf en source/: Convertir los .swf guardados crea su .hab: {names}"
+}
   "Undo the interactions only": "Deshacer solo las interacciones"
 }
   "Empty: everything is downloaded": "Vacío: se descarga todo"

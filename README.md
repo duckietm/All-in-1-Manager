@@ -1869,13 +1869,20 @@ you read them. It shares the Catalogue ripper's G-Earth connection, hotel profil
    **furnidata** URL for the class names (official Habbo finds its own).
 2. **Read the wired** (optional, in the room you are in). The hotel sends a wired box's settings only to someone who may
    inspect the room's wired: its owner, someone with rights, or everyone when the owner allows it. The ripper opens the
-   boxes one at a time (400 ms apart) with *Open* where the hotel has it (Polaris and official Habbo: nothing visible), else
-   with a double click (the box's light flips for everyone in the room). When the first box does not answer, it stops and
-   says you may not read the wired there. Boxes you open by hand while capturing are kept too.
+   boxes one at a time (400 ms apart) with *Open* only (Polaris and official Habbo: nothing visible). **Double click
+   where Open does not work** (off by default) lets it double click the boxes instead where the hotel does not know
+   *Open* or the first box does not answer it: each box's light then **blinks for everyone in the room**. When the
+   first box does not answer, it stops and says you may not read the wired there (or, with the option off, that you
+   can try again with it). Boxes you open by hand while capturing are kept too.
 3. **Import ...** (logged in to your server; the MariaDB account the other database pages use). Choose the **owner** (a
    user of your hotel), the **room name** and, if needed, the **door**. **Preview** shows what the import makes and leaves
    out; **Import** writes it all in one transaction (all or nothing):
-   - a new room of that owner, **open to everyone**, with the hotel's default category, trade and chat settings;
+   - a new room of that owner, **open to everyone** (no doorbell or password) with the hotel's default trade setting.
+     Its **category** is chosen in the preview from the hotel's `navigator_flatcats` a normal user may pick
+     (`min_rank` 1, not `public`), the first one by default. The **most users** come from the capture, at most the
+     category's `max_user_count` and Polaris' 200; the **chat settings** (mode, bubble width, speed, hearing distance,
+     flood protection) come from the capture within the ranges Polaris accepts. A room captured before this version
+     has no chat settings: it gets the hotel's;
    - the hotel's model when it has the same floor plan and door, else a custom one (`room_models_custom`,
      `override_model`);
    - the furni, matched with your `items_base` by **class name** (by sprite id when the class name was not known);

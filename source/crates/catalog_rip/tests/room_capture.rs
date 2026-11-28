@@ -182,7 +182,7 @@ async fn captures_a_polaris_room_and_reads_its_wired() {
     };
 
     wait_for(&events, "room", |e| matches!(e, CaptureEvent::Room { summary, .. } if summary.floor_items == 3 && summary.wall_items == 1)).await;
-    commands.send(Command::ReadWired).unwrap();
+    commands.send(Command::ReadWired { double_click: false }).unwrap();
     wait_for(&events, "wired done", |e| matches!(e, CaptureEvent::WiredDone { .. })).await;
     cancel.cancel();
     task.await.unwrap().unwrap();

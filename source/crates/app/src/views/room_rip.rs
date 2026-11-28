@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use aio_catalog_rip::room::{
-    self, BaseItem, CaptureEvent, CaptureOptions, CatalogPage, Catalogue, Command, Door, ImportChoice, ImportPlan, ImportRecord, PlanValue, Recording, RoomCapture, Target, Valuable,
+    self, BaseItem, CaptureEvent, CaptureOptions, CatalogPage, Catalogue, Command, Door, ImportChoice, ImportPlan, ImportRecord, PlanValue, Recording, RoomCapture, RoomCategory, Target, Valuable,
     ValuableItem,
 };
 use aio_catalog_rip::{HotelProfile, ProfileChoice};
@@ -93,6 +93,8 @@ struct Form {
     door: Door,
     /// The valuables (LTD and rares) to import all the same, by their key in the preview.
     include: BTreeSet<(char, i32)>,
+    /// The room category chosen in the preview (None: the first one a user may pick).
+    category: Option<i64>,
 }
 
 pub struct RoomRipView {
@@ -100,6 +102,8 @@ pub struct RoomRipView {
     profiles: Vec<HotelProfile>,
     profile: Option<String>,
     furnidata_url: String,
+    /// "Read the wired" may double click a box where Open is unknown or gets no answer (it blinks for everyone).
+    double_click: bool,
     captures: Vec<(PathBuf, RoomCapture)>,
     imports: Vec<(PathBuf, ImportRecord)>,
     form: Option<Form>,
@@ -116,6 +120,7 @@ impl RoomRipView {
             profiles: aio_catalog_rip::load_profiles(&profiles_folder()).0,
             profile: None,
             furnidata_url: String::new(),
+            double_click: false,
             captures: Vec::new(),
             imports: Vec::new(),
             form: None,
@@ -219,9 +224,13 @@ impl RoomRipView {
                         if ui.add(widgets::secondary_button(t("Stop reading"))).clicked() {
                             self.command(Command::StopReading);
                         }
-                    } else if ui.add_enabled(connected.is_some(), widgets::primary_button(t("Read the wired"))).clicked() {
-                        self.state.lock().reading = true;
-                        self.command(Command::ReadWired);
+                    } else {
+                        if ui.add_enabled(connected.is_some(), widgets::primary_button(t("Read the wired"))).clicked() {
+                            self.state.lock().reading = true;
+                            self.command(Command::ReadWired { double_click: self.double_click });
+                        }
+                        ui.checkbox(&mut self.double_click, t("Double click where Open does not work"))
+                            .on_hover_text(t("Off: the boxes are opened only with Open, which nobody sees. On: where the hotel does not answer Open, each box is double clicked instead, and its light blinks for everyone in the room."));
                     }
                 } else if ui.add(widgets::primary_button(t("Start"))).clicked() {
                     self.start(shared);
@@ -425,7 +434,7 @@ impl RoomRipView {
         if let Some(index) = open {
             let (path, capture) = self.captures[index].clone();
             let door = capture.door_or_guess().unwrap_or(Door { x: 0, y: 0, dir: 2 });
-            self.form = Some(Form { path, owner: String::new(), name: capture.name(), door, capture, include: BTreeSet::new() });
+            self.form = Some(Form { path, owner: String::new(), name: capture.name(), door, capture, include: BTreeSet::new(), category: None });
             self.state.lock().plan = None;
             self.state.lock().banner = None;
         }
@@ -503,6 +512,9 @@ impl RoomRipView {
             });
             if let Some((_, plan)) = plan.filter(|(p, _)| p == &form.path) {
                 ui.add_space(8.0);
+                if ui.add_enabled_ui(!working, |ui| category(ui, &plan, &mut form.category)).inner {
+                    preview = true;
+                }
                 report(ui, palette, &plan);
                 // Disabled while a preview runs: a tick then would be lost or shown against the old plan.
                 if ui.add_enabled_ui(!working, |ui| valuables(ui, palette, &plan, &mut form.include)).inner {
@@ -527,8 +539,8 @@ impl RoomRipView {
 
     fn run_import(&mut self, shared: &Shared, server: Arc<dyn Server>, write: bool) {
         let Some(form) = &self.form else { return };
-        let (capture, path, owner, name, door, include) =
-            (form.capture.clone(), form.path.clone(), form.owner.trim().to_string(), form.name.trim().to_string(), form.door, form.include.clone());
+        let (capture, path, owner, name, door, include, category) =
+            (form.capture.clone(), form.path.clone(), form.owner.trim().to_string(), form.name.trim().to_string(), form.door, form.include.clone(), form.category);
         let state = self.state.clone();
         let shared_task = shared.clone();
         {
@@ -537,7 +549,7 @@ impl RoomRipView {
             s.banner = None;
         }
         shared.spawn(async move {
-            let result = import_task(&*server, &capture, &owner, &name, door, include, write).await;
+            let result = import_task(&*server, &capture, &owner, &name, door, include, category, write).await;
             let mut s = state.lock();
             s.working = false;
             match result {
@@ -656,6 +668,33 @@ fn report(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan) {
     list(ui, t("Notes"), r.notes.clone());
 }
 
+/// The room category of the preview: the ones a user may pick. True when the choice changed (the preview is made again).
+fn category(ui: &mut egui::Ui, plan: &ImportPlan, chosen: &mut Option<i64>) -> bool {
+    let r = &plan.report;
+    let Some(current) = r.categories.iter().find(|c| Some(c.id) == r.category) else { return false };
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(t("Category"));
+        egui::ComboBox::from_id_salt("room-rip-category").selected_text(category_caption(&current.caption)).width(240.0).show_ui(ui, |ui| {
+            for c in &r.categories {
+                if ui.selectable_label(c.id == current.id, category_caption(&c.caption)).clicked() && c.id != current.id {
+                    *chosen = Some(c.id);
+                    changed = true;
+                }
+            }
+        });
+    });
+    changed
+}
+
+/// A category's caption without the client's text key around it (`${navigator.flatcategory.global.CHAT}`: CHAT).
+fn category_caption(caption: &str) -> String {
+    match caption.trim().strip_prefix("${").and_then(|c| c.strip_suffix('}')) {
+        Some(key) => key.rsplit('.').next().unwrap_or(key).to_string(),
+        None => caption.trim().to_string(),
+    }
+}
+
 /// The valuables of the preview (LTD, currency furni and rares), grouped by class name and reason: left out unless
 /// ticked, a group at a time, every one of a reason, or all. True when the choice changed (the preview is made again).
 fn valuables(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan, include: &mut BTreeSet<(char, i32)>) -> bool {
@@ -681,7 +720,7 @@ fn valuables(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan, include: &
     }
     let reasons: BTreeMap<u8, Valuable> = items.iter().map(|v| (reason_order(v.why), v.why)).collect();
     let left_out = items.iter().filter(|v| !include.contains(&v.key)).count();
-    let heading = tf("Valuables (LTD and rares): {left} of {count} left out", &[("left", &left_out.to_string()), ("count", &items.len().to_string())]);
+    let heading = tf("Valuables (LTD, rares and currency furni): {left} of {count} left out", &[("left", &left_out.to_string()), ("count", &items.len().to_string())]);
     egui::CollapsingHeader::new(RichText::new(heading).size(12.5).color(palette.warning_text)).default_open(true).show(ui, |ui| {
         ui.label(
             RichText::new(t("Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial)."))
@@ -691,7 +730,7 @@ fn valuables(ui: &mut egui::Ui, palette: &Palette, plan: &ImportPlan, include: &
         ui.horizontal_wrapped(|ui| {
             if ui
                 .add_enabled(left_out > 0, widgets::secondary_button(t("Include all")))
-                .on_hover_text(t("Every LTD and rare of the room becomes a tradeable copy in your hotel."))
+                .on_hover_text(t("Every LTD, rare and currency furni of the room becomes a tradeable copy in your hotel."))
                 .clicked()
             {
                 set(include, &mut items.iter().map(|v| v.key), true);
@@ -792,6 +831,7 @@ async fn open_hotel(server: &dyn Server) -> anyhow::Result<(SqlSession, String)>
 }
 
 /// Reads what the plan needs from the hotel and plans the import; with `write`, runs it and keeps the record.
+#[allow(clippy::too_many_arguments)]
 async fn import_task(
     server: &dyn Server,
     capture: &RoomCapture,
@@ -799,6 +839,7 @@ async fn import_task(
     name: &str,
     door: Door,
     include: BTreeSet<(char, i32)>,
+    category: Option<i64>,
     write: bool,
 ) -> anyhow::Result<(ImportPlan, Option<ImportRecord>)> {
     let (session, database) = open_hotel(server).await?;
@@ -831,7 +872,12 @@ async fn import_task(
         let catalogue_error = |e: anyhow::Error| anyhow::anyhow!("The catalogue could not be read, and the import needs it to tell the rares apart: {e:#}");
         let pages = match session.select(&room::catalog_pages_query(&database, true), Vec::new()).await {
             Ok(rows) => rows,
-            Err(_) => session.select(&room::catalog_pages_query(&database, false), Vec::new()).await.map_err(catalogue_error)?,
+            // Only an old table without `catalog_mode` gets the query without it: on any other error the Builders
+            // Club pages could not be told apart, and their furni would count as sold.
+            Err(e) if room::missing_catalog_mode(&format!("{e:#}")) => {
+                session.select(&room::catalog_pages_query(&database, false), Vec::new()).await.map_err(catalogue_error)?
+            }
+            Err(e) => return Err(catalogue_error(e)),
         };
         let pages: Vec<CatalogPage> = pages
             .iter()
@@ -880,7 +926,22 @@ async fn import_task(
             let n = |i: usize| row.get(i).and_then(int).unwrap_or(0) as i32;
             (row.first().map(text).unwrap_or_default(), Door { x: n(1), y: n(2), dir: n(3) })
         });
-        let choice = ImportChoice { owner_id, owner_name: owner_name.clone(), room_name: name.to_string(), door, now: chrono::Utc::now().timestamp(), include };
+        // The categories a user may pick; a table without `public` or `order_num` by rank only; not readable at all: the
+        // rooms table's default, and the preview says why.
+        let categories = match session.select(&room::room_categories_query(&database, true), Vec::new()).await {
+            Ok(rows) => Ok(rows),
+            Err(_) => session.select(&room::room_categories_query(&database, false), Vec::new()).await,
+        };
+        match categories {
+            Ok(rows) => {
+                target.categories = rows
+                    .iter()
+                    .filter_map(|row| Some(RoomCategory { id: row.first().and_then(int)?, caption: row.get(1).map(text).unwrap_or_default(), max_users: row.get(2).and_then(int).unwrap_or(0) }))
+                    .collect();
+            }
+            Err(e) => target.categories_error = Some(format!("{e:#}")),
+        }
+        let choice = ImportChoice { owner_id, owner_name: owner_name.clone(), room_name: name.to_string(), door, now: chrono::Utc::now().timestamp(), include, category };
         let plan = room::plan(capture, &target, &choice)?;
         if !write {
             return Ok((plan, None));
@@ -996,6 +1057,12 @@ fn unloaded(answer: Result<aio_remote::rcon::Answer, String>, emulator_running: 
 mod tests {
     use super::*;
     use aio_remote::rcon::{Answer, ROOM_NOT_FOUND, STATUS_OK};
+
+    #[test]
+    fn a_category_shows_its_name_without_the_text_key() {
+        assert_eq!(category_caption("${navigator.flatcategory.global.CHAT}"), "CHAT");
+        assert_eq!(category_caption(" Games "), "Games");
+    }
 
     #[test]
     fn undo_goes_on_only_when_the_emulator_unloaded_the_room_or_is_not_running() {

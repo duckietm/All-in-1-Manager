@@ -3,7 +3,9 @@
 //! anything is written. Pure: the caller reads the hotel and runs the statements.
 //!
 //! What the owner decided (November 2026):
-//! * the room is always a new one; access is reset (open, the hotel's default category, trade and chat settings);
+//! * the room is always a new one; access is reset (open, no password or doorbell, the hotel's trade setting); the
+//!   category is the one chosen in the preview (one a normal user may pick), the most users and the chat settings
+//!   come from the capture, within what the hotel allows;
 //! * furni are matched to items_base by class name (by sprite id when the class name is not known) and become
 //!   normal items of the chosen owner, cleaned of what belongs to the source hotel: LTD serials, trophy
 //!   engravings, group links, ads and badge displays (listed in the report);
@@ -23,6 +25,8 @@ use serde_json::{json, Value};
 
 use super::capture::{rows, RoomCapture};
 use super::packets::{Door, FloorItem, StuffData, WiredSettings};
+#[cfg(test)]
+use super::packets::{ChatSettings, RoomInfo};
 
 /// A parameter of a planned statement: a value, or what an earlier statement of the plan inserted.
 #[derive(Debug, Clone, PartialEq)]
@@ -108,6 +112,14 @@ pub fn catalog_pages_query(database: &str, with_mode: bool) -> String {
     format!("SELECT `id`, `parent_id`, `enabled`, `visible`, `min_rank`, {mode} FROM {}.`catalog_pages`", q(database))
 }
 
+/// Whether the pages query failed only because the table has no `catalog_mode` column (MariaDB 1054, "Unknown column
+/// 'catalog_mode'"): then the query without it may run. Any other error must stop the import, or Builders Club
+/// offers would count as sold.
+pub fn missing_catalog_mode(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("catalog_mode") && (error.contains("1054") || error.contains("unknown column"))
+}
+
 /// The query of the catalogue's offers for [`Catalogue::new`]: page, item_ids and limited_stack.
 pub fn catalog_offers_query(database: &str) -> String {
     format!("SELECT `page_id`, `item_ids`, `limited_stack` FROM {}.`catalog_items`", q(database))
@@ -185,7 +197,30 @@ pub struct Target {
     pub model: Option<(String, Door)>,
     /// The hotel's catalogue (None: not read; then only LTD and furnidata rares are told apart).
     pub catalogue: Option<Catalogue>,
+    /// The room categories a normal user may pick ([`room_categories_query`]), in the navigator's order.
+    pub categories: Vec<RoomCategory>,
+    /// Why the categories could not be read (then the room gets the column's default).
+    pub categories_error: Option<String>,
 }
+
+/// A room category of the navigator (`navigator_flatcats`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomCategory {
+    pub id: i64,
+    pub caption: String,
+    /// The most users a room of this category may take (0: no limit of its own).
+    pub max_users: i64,
+}
+
+/// The categories a normal user (rank 1) may give a room, in the navigator's order: not the staff ("public") ones.
+/// Without `full` (a table without `public` or `order_num`): only by rank, in id order.
+pub fn room_categories_query(database: &str, full: bool) -> String {
+    let (filter, order) = if full { (" AND `public` = '0'", "`order_num`, `id`") } else { ("", "`id`") };
+    format!("SELECT `id`, `caption`, `max_user_count` FROM {}.`navigator_flatcats` WHERE `min_rank` <= 1{filter} ORDER BY {order}", q(database))
+}
+
+/// The most users Polaris lets a room's settings have (RoomSettingsSaveEvent).
+const MAX_USERS: i64 = 200;
 
 /// What the user chose for the new room.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +233,8 @@ pub struct ImportChoice {
     pub now: i64,
     /// The valuables to import all the same, by [`ValuableItem::key`].
     pub include: BTreeSet<(char, i32)>,
+    /// The category chosen (None, or one the hotel does not offer: the first of [`Target::categories`]).
+    pub category: Option<i64>,
 }
 
 /// What the import makes and leaves out.
@@ -220,6 +257,9 @@ pub struct ImportReport {
     pub notes: Vec<String>,
     /// The valuables of the capture (LTD and rares), left out unless included.
     pub valuables: Vec<ValuableItem>,
+    /// The categories to choose from, and the one the room gets (None: the hotel's default).
+    pub categories: Vec<RoomCategory>,
+    pub category: Option<i64>,
 }
 
 /// The statements and their report.
@@ -465,6 +505,29 @@ pub fn plan(capture: &RoomCapture, target: &Target, choice: &ImportChoice) -> Re
         columns.push(("thickness_floor", PlanValue::Int(floor.clamp(-2, 1).into())));
     }
     columns.push(("wall_height", PlanValue::Int(capture.wall_height.clamp(-1, 15).into())));
+    // The category chosen, or the first one; the most users within what it and Polaris allow.
+    let category = choice.category.and_then(|id| target.categories.iter().find(|c| c.id == id)).or(target.categories.first());
+    report.categories = target.categories.clone();
+    report.category = category.map(|c| c.id);
+    match category {
+        Some(category) => columns.push(("category", PlanValue::Int(category.id))),
+        None => report.notes.push(match &target.categories_error {
+            Some(error) => format!("The room categories could not be read ({error}): the room gets the default one."),
+            None => "The hotel has no room category a user may pick: the room gets the default one.".into(),
+        }),
+    }
+    if info.max_users > 0 {
+        let most = category.map(|c| c.max_users).filter(|m| *m > 0).map_or(MAX_USERS, |m| m.min(MAX_USERS));
+        columns.push(("users_max", PlanValue::Int(i64::from(info.max_users).clamp(1, most))));
+    }
+    // The chat settings, within the ranges Polaris accepts when a room's settings are saved.
+    if let Some(chat) = info.chat {
+        columns.push(("chat_mode", PlanValue::Int(chat.mode.clamp(0, 2).into())));
+        columns.push(("chat_weight", PlanValue::Int(chat.weight.clamp(0, 2).into())));
+        columns.push(("chat_speed", PlanValue::Int(chat.speed.clamp(0, 2).into())));
+        columns.push(("chat_hearing_distance", PlanValue::Int(chat.distance.clamp(1, 99).into())));
+        columns.push(("chat_protection", PlanValue::Int(chat.protection.clamp(0, 2).into())));
+    }
     columns.push(("date_created", PlanValue::Int(choice.now)));
     columns.retain(|(column, _)| has(&target.room_columns, column));
     statements.push((
@@ -846,7 +909,71 @@ mod tests {
             door: Door { x: 0, y: 1, dir: 2 },
             now: 1_700_000_000,
             include: BTreeSet::from([('s', 2)]),
+            category: None,
         }
+    }
+
+    /// The value the room's INSERT gives a column.
+    fn room_value(plan: &ImportPlan, column: &str) -> Option<PlanValue> {
+        let (sql, values) = &plan.statements[0];
+        let list = &sql[sql.find('(')? + 1..sql.find(')')?];
+        list.split(", ").position(|c| c == format!("`{column}`")).map(|i| values[i].clone())
+    }
+
+    fn categories() -> Vec<RoomCategory> {
+        vec![RoomCategory { id: 3, caption: "Chat".into(), max_users: 50 }, RoomCategory { id: 5, caption: "Games".into(), max_users: 0 }]
+    }
+
+    #[test]
+    fn the_category_is_the_chosen_one_or_the_first() {
+        let target = Target { categories: categories(), ..target() };
+        let plan = plan_of(&capture(), &target, &choice());
+        assert_eq!(room_value(&plan, "category"), Some(PlanValue::Int(3)));
+        assert_eq!((plan.report.category, plan.report.categories.len()), (Some(3), 2));
+        let plan = plan_of(&capture(), &target, &ImportChoice { category: Some(5), ..choice() });
+        assert_eq!(room_value(&plan, "category"), Some(PlanValue::Int(5)));
+        // One the hotel does not offer (a staff category, or gone): the first.
+        let plan = plan_of(&capture(), &target, &ImportChoice { category: Some(99), ..choice() });
+        assert_eq!(room_value(&plan, "category"), Some(PlanValue::Int(3)));
+        // None at all: the column's default, and a note.
+        let plan = plan_of(&capture(), &Target { categories: Vec::new(), ..target.clone() }, &choice());
+        assert_eq!((room_value(&plan, "category"), plan.report.category), (None, None));
+        assert!(plan.report.notes.iter().any(|n| n.contains("category")), "{:?}", plan.report.notes);
+        assert!(room_categories_query("habbo", true).contains("FROM `habbo`.`navigator_flatcats` WHERE `min_rank` <= 1 AND `public` = '0' ORDER BY `order_num`"));
+        assert!(room_categories_query("habbo", false).ends_with("WHERE `min_rank` <= 1 ORDER BY `id`"));
+        // Not readable: the error is in the notes.
+        let unread = Target { categories: Vec::new(), categories_error: Some("Unknown column 'min_rank'".into()), ..target };
+        let plan = plan_of(&capture(), &unread, &choice());
+        assert!(plan.report.notes.iter().any(|n| n.contains("could not be read (Unknown column 'min_rank')")), "{:?}", plan.report.notes);
+    }
+
+    #[test]
+    fn the_most_users_and_the_chat_settings_come_within_the_hotels_limits_and_access_stays_open() {
+        let mut c = capture();
+        c.info = Some(RoomInfo {
+            max_users: 75,
+            door_mode: 2,
+            trade_mode: 0,
+            chat: Some(ChatSettings { mode: 1, weight: 9, speed: 2, distance: 0, protection: 1 }),
+            ..RoomInfo::default()
+        });
+        let target = Target { categories: categories(), ..target() };
+        // The chat category takes 50 at most.
+        let plan = plan_of(&c, &target, &choice());
+        assert_eq!(room_value(&plan, "users_max"), Some(PlanValue::Int(50)));
+        for (column, value) in [("chat_mode", 1), ("chat_weight", 2), ("chat_speed", 2), ("chat_hearing_distance", 1), ("chat_protection", 1)] {
+            assert_eq!(room_value(&plan, column), Some(PlanValue::Int(value)), "{column}");
+        }
+        assert_eq!(room_value(&plan, "state"), Some(PlanValue::Text("open".into())));
+        assert_eq!(room_value(&plan, "password"), Some(PlanValue::Text(String::new())));
+        assert_eq!(room_value(&plan, "trade_mode"), None);
+        // Games has no limit of its own: Polaris' 200.
+        c.info.as_mut().unwrap().max_users = 500;
+        let plan = plan_of(&c, &target, &ImportChoice { category: Some(5), ..choice() });
+        assert_eq!(room_value(&plan, "users_max"), Some(PlanValue::Int(200)));
+        // Nothing captured: the hotel's defaults.
+        let plan = plan_of(&capture(), &target, &choice());
+        assert_eq!((room_value(&plan, "users_max"), room_value(&plan, "chat_mode")), (None, None));
     }
 
     #[test]
@@ -1170,6 +1297,10 @@ mod tests {
         assert_eq!(c.sold_limited, BTreeSet::from([11, 14]));
         assert_eq!(catalog_pages_query("habbo", true), "SELECT `id`, `parent_id`, `enabled`, `visible`, `min_rank`, `catalog_mode` FROM `habbo`.`catalog_pages`");
         assert!(catalog_pages_query("habbo", false).contains(", 'NORMAL' FROM"));
+        assert!(missing_catalog_mode("ERROR 42S22 (1054): Unknown column 'catalog_mode' in 'field list'"));
+        assert!(!missing_catalog_mode("ERROR 42S22 (1054): Unknown column 'min_rank' in 'field list'"));
+        assert!(!missing_catalog_mode("ERROR 2013 (HY000): Lost connection to MySQL server during query"));
+        assert!(!missing_catalog_mode("ERROR 1142 (42000): SELECT command denied to user for table 'catalog_pages'"));
         assert_eq!(catalog_offers_query("habbo"), "SELECT `page_id`, `item_ids`, `limited_stack` FROM `habbo`.`catalog_items`");
     }
 

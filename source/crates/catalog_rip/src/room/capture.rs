@@ -3,8 +3,8 @@
 //!
 //! It never sends anything that changes the hotel. While capturing it only listens and sends nothing by itself: a
 //! packet sent with the id of another client version can make the hotel close the connection. "Read the wired" opens
-//! the room's wired boxes one at a time, with Open where the hotel has it (no visible effect) and else UseFurniture
-//! (the box's light flips for everyone in the room, as when its owner opens it).
+//! the room's wired boxes one at a time with Open (no visible effect). Only when the user allows it, UseFurniture (a
+//! double click) is used where Open is unknown or gets no answer: the box's light then flips for everyone in the room.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -20,6 +20,7 @@ use super::packet_log::{self, Names, PacketLog};
 use super::packets::{self as p, Door, FloorItem, RoomHeaders, RoomInfo, WallItem, WiredKind, WiredSettings};
 use crate::furnidata::Furnidata;
 use crate::gearth::{Event, ExtensionInfo, Session};
+use crate::wire::Packet;
 use crate::profiles::{HotelKind, HotelProfile};
 use crate::rip::{ProfileChoice, RipOptions};
 use crate::{Ask, Cancelled, Log, RipHooks};
@@ -231,8 +232,9 @@ impl Default for CaptureOptions {
 /// What the page asks a running capture to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    /// Open the wired boxes of the room the user is in.
-    ReadWired,
+    /// Open the wired boxes of the room the user is in; `double_click`: UseFurniture may be used where Open is unknown
+    /// or gets no answer (the boxes blink for everyone in the room).
+    ReadWired { double_click: bool },
     /// Stop reading the wired.
     StopReading,
     /// For developers: record every packet, both ways, from the next room the user enters (true), or stop (false).
@@ -285,6 +287,8 @@ struct WiredReader {
     next_at: Instant,
     /// Open got no answer, UseFurniture is used from now on.
     use_furniture: bool,
+    /// The user allowed UseFurniture.
+    double_click: bool,
     /// Something answered: the hotel lets the user read the wired.
     answered: bool,
 }
@@ -578,7 +582,7 @@ impl Capturer<'_> {
         }
     }
 
-    fn start_reading(&mut self) {
+    fn start_reading(&mut self, double_click: bool) {
         let Some(room) = &self.room else {
             (self.log)("Enter a room first: the wired is read in the room you are in.");
             return;
@@ -599,8 +603,14 @@ impl Capturer<'_> {
             (self.sink)(CaptureEvent::WiredDone { read: room.wired.len(), total: known, no_rights: false });
             return;
         }
-        if self.headers.out(&p::WIRED_OPEN).is_none() && self.headers.out(&p::USE_FURNITURE).is_none() {
-            (self.log)("The id of the packet that opens a wired box is not known for this hotel: open the boxes by hand (double click), the capture keeps what they show.");
+        let open = self.headers.out(&p::WIRED_OPEN).is_some();
+        if !open && !(double_click && self.headers.out(&p::USE_FURNITURE).is_some()) {
+            if self.headers.out(&p::USE_FURNITURE).is_some() {
+                (self.log)("The id of Open is not known for this hotel: open the boxes by hand (double click), or allow the double click for reading (the boxes blink for everyone in the room).");
+            } else {
+                (self.log)("The id of the packet that opens a wired box is not known for this hotel: open the boxes by hand (double click), the capture keeps what they show.");
+            }
+            (self.sink)(CaptureEvent::WiredDone { read: 0, total: 0, no_rights: false });
             return;
         }
         queue.reverse();
@@ -612,7 +622,8 @@ impl Capturer<'_> {
             read: 0,
             waiting: None,
             next_at: Instant::now(),
-            use_furniture: self.headers.out(&p::WIRED_OPEN).is_none(),
+            use_furniture: !open,
+            double_click,
             answered: false,
         });
         (self.sink)(CaptureEvent::WiredProgress { done: 0, total });
@@ -620,19 +631,33 @@ impl Capturer<'_> {
 
     /// Asks the next box when it is time; gives up on a box that does not answer.
     fn step_reading(&mut self, session: &Session) {
-        let Some(reader) = &mut self.reader else { return };
-        let now = Instant::now();
+        if let Some(packet) = self.next_request(Instant::now()) {
+            let _ = session.send_to_server(&packet);
+            // G-Earth does not show an extension its own packets: the recording gets them here.
+            self.record(true, packet.header, &packet.body, session);
+        }
+    }
+
+    /// The packet that asks the next box, when it is time.
+    fn next_request(&mut self, now: Instant) -> Option<Packet> {
+        let reader = self.reader.as_mut()?;
         let timeout = Duration::from_millis(self.options.wired_timeout_ms);
         if let Some((id, asked, by_use)) = reader.waiting {
             if now.duration_since(asked) < timeout {
-                return;
+                return None;
             }
             reader.waiting = None;
             if !reader.answered {
-                if !by_use && self.headers.out(&p::USE_FURNITURE).is_some() {
+                if !by_use && reader.double_click && self.headers.out(&p::USE_FURNITURE).is_some() {
                     (self.log)("Open got no answer: trying a double click (the box's light flips for everyone in the room while it is read).");
                     reader.use_furniture = true;
                     reader.queue.push(id);
+                } else if !by_use && self.headers.out(&p::USE_FURNITURE).is_some() {
+                    // Not taken as "no rights": the hotel may only lack Open, and the user may allow the double click.
+                    (self.log)("Open got no answer: the hotel may not let you read the wired in this room, or may not know Open. Ask the room's owner for rights, or allow the double click for reading (the boxes blink for everyone in the room) and read again.");
+                    self.reader = None;
+                    (self.sink)(CaptureEvent::WiredDone { read: 0, total: 0, no_rights: true });
+                    return None;
                 } else {
                     (self.log)("The first wired box did not answer: the hotel does not let you read the wired in this room. Ask its owner for rights, or to let everyone inspect the wired for a moment.");
                     if let Some(room) = &mut self.room {
@@ -641,14 +666,14 @@ impl Capturer<'_> {
                     self.reader = None;
                     self.dirty = true;
                     (self.sink)(CaptureEvent::WiredDone { read: 0, total: 0, no_rights: true });
-                    return;
+                    return None;
                 }
             } else {
                 (self.log)(&format!("  Box {id} did not answer; skipped."));
             }
         }
         if now < reader.next_at {
-            return;
+            return None;
         }
         let Some(id) = reader.queue.pop() else {
             let (read, total) = (reader.read, reader.total);
@@ -656,18 +681,13 @@ impl Capturer<'_> {
             self.reader = None;
             self.dirty = true;
             (self.sink)(CaptureEvent::WiredDone { read, total, no_rights: false });
-            return;
+            return None;
         };
         let by_use = reader.use_furniture;
         reader.waiting = Some((id, now, by_use));
         reader.next_at = now + Duration::from_millis(self.options.wired_delay_ms);
         let header = if by_use { self.headers.out(&p::USE_FURNITURE) } else { self.headers.out(&p::WIRED_OPEN) };
-        if let Some(header) = header {
-            let packet = p::open_box(header, by_use, id);
-            let _ = session.send_to_server(&packet);
-            // G-Earth does not show an extension its own packets: the recording gets them here.
-            self.record(true, packet.header, &packet.body, session);
-        }
+        header.map(|header| p::open_box(header, by_use, id))
     }
 }
 
@@ -774,7 +794,7 @@ pub async fn capture(
         tokio::select! {
             _ = cancel.cancelled() => break Err(Cancelled.into()),
             command = commands.recv(), if commands_open => match command {
-                Some(Command::ReadWired) => capturer.start_reading(),
+                Some(Command::ReadWired { double_click }) => capturer.start_reading(double_click),
                 Some(Command::StopReading) => {
                     if capturer.reader.take().is_some() {
                         log("Reading the wired stopped.");
@@ -862,6 +882,72 @@ mod tests {
         assert_eq!(guess_door("xx0x\rx000\rx000"), Some(Door { x: 2, y: 0, dir: 4 }));
         assert_eq!(guess_door("xxx\rx00\rx00"), Some(Door { x: 1, y: 1, dir: 2 }));
         assert_eq!(guess_door("xxx"), None);
+    }
+
+    /// A capturer in a room with two wired boxes, its events kept in `events`.
+    fn reading<'a>(options: &'a CaptureOptions, sink: CaptureSink<'a>, headers: RoomHeaders) -> Capturer<'a> {
+        let mut room = RoomCapture { room_id: 1, ..RoomCapture::default() };
+        for id in [5, 6] {
+            let item = FloorItem { id, type_id: 1, class_name: Some("wf_act_toggle_state".into()), x: 0, y: 0, z: 0.0, dir: 0, stuff: p::StuffData::Empty, limited: None, owner_id: 1 };
+            room.floor_items.insert(id, item);
+        }
+        Capturer {
+            options,
+            names: Names::new(&[], &headers, true),
+            headers,
+            furnidata: None,
+            connection_host: String::new(),
+            hotel: String::new(),
+            client_type: String::new(),
+            profile: String::new(),
+            official: false,
+            room: Some(room),
+            dirty: false,
+            last_save: Instant::now(),
+            reader: None,
+            log: &|_| {},
+            sink,
+            hotel_version: String::new(),
+            record_wanted: false,
+            recording: None,
+        }
+    }
+
+    #[test]
+    fn reading_the_wired_sends_only_open_unless_the_double_click_is_allowed() {
+        let options = CaptureOptions::default();
+        let events = std::sync::Mutex::new(Vec::new());
+        let sink = |e: CaptureEvent| events.lock().unwrap().push(e);
+        let retro = RoomHeaders::resolve(&BTreeMap::new(), &[], true);
+        let late = |c: &Capturer<'_>| Instant::now() + Duration::from_millis(c.options.wired_timeout_ms + 1);
+
+        // By default: Open, and when it gets no answer the reading stops; UseFurniture is never sent.
+        let mut c = reading(&options, &sink, retro.clone());
+        c.start_reading(false);
+        let packet = c.next_request(Instant::now()).unwrap();
+        assert_eq!((packet.header, packet.body.len()), (768, 4));
+        assert!(c.next_request(late(&c)).is_none());
+        assert!(c.reader.is_none());
+        // Not marked "no rights": reading again with the double click allowed must stay possible.
+        assert_eq!(c.room.as_ref().unwrap().can_read_wired, None);
+        assert!(matches!(events.lock().unwrap().last(), Some(CaptureEvent::WiredDone { no_rights: true, .. })));
+
+        // Allowed: the same box again with UseFurniture.
+        let mut c = reading(&options, &sink, retro.clone());
+        c.start_reading(true);
+        assert_eq!(c.next_request(Instant::now()).unwrap().header, 768);
+        let packet = c.next_request(late(&c)).unwrap();
+        assert_eq!((packet.header, packet.body.len()), (99, 8));
+
+        // A hotel without Open: nothing is sent unless allowed.
+        let mut no_open = retro.clone();
+        no_open.outgoing.remove(p::WIRED_OPEN.key);
+        let mut c = reading(&options, &sink, no_open.clone());
+        c.start_reading(false);
+        assert!(c.reader.is_none() && c.next_request(Instant::now()).is_none());
+        let mut c = reading(&options, &sink, no_open);
+        c.start_reading(true);
+        assert_eq!(c.next_request(Instant::now()).unwrap().header, 99);
     }
 
     #[test]

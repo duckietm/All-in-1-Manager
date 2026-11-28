@@ -4102,7 +4102,7 @@
   "{done} of {total} pages · {page}": "{done} de {total} páginas · {page}",
   "{pages} pages and {items} offers ({profile}); {failed} pages could not be read.": "{pages} páginas y {items} ofertas ({profile}); no se pudieron leer {failed} páginas.",
   "A new room of the owner you choose, open to everyone, with the floor plan, decoration and furni of the capture. The furni are matched with your items_base by class name; LTD serials, engravings, group links and ads of the other hotel are removed. Nothing is written before you click Import, and Undo removes the room again.": "Una sala nueva del dueño que elijas, abierta a todos, con el plano, la decoración y los furnis de la captura. Los furnis se emparejan con tu items_base por nombre de clase; los números LTD, grabados, vínculos de grupo y anuncios del otro hotel se quitan. No se escribe nada hasta que pulses Importar, y Deshacer vuelve a quitar la sala.",
-  "Anyone in the room is sent to the hotel view.": "Quien esté en la sala es enviado a la vista del hotel.",
+  "Nothing is removed when someone is in the room or a furni of the import was picked up, moved or traded since.": "No se elimina nada si hay alguien en la sala o si un furni de la importación se recogió, movió o intercambió desde entonces.",
   "Capture rooms": "Capturar salas",
   "Captured rooms": "Salas capturadas",
   "Capturing rooms: enter the rooms you want to copy.": "Capturando salas: entra en las salas que quieras copiar.",
@@ -4145,7 +4145,7 @@
   "The room capture stopped.": "La captura de salas se detuvo.",
   "The room, its floor plan and the furni that came with it are deleted.": "Se eliminan la sala, su plano y los furnis que vinieron con ella.",
   "Undo failed: nothing was removed": "Deshacer falló: no se quitó nada",
-  "Undo removes the room and the furni that came with it (also when they were picked up since). Anyone in the room is sent to the hotel view first.": "Deshacer quita la sala y los furnis que vinieron con ella (también si se recogieron después). Quien esté en la sala es enviado primero a la vista del hotel.",
+  "Undo removes the room and the furni that came with it, only while nobody is in the room, its owner is offline and every one of those furni is still in it and still the owner's; bots, pets and furni others placed there go back to their owners. When the room was used since (furni picked up, moved or traded), Undo lists what is in the way and removes nothing.": "Deshacer elimina la sala y los furnis que llegaron con ella solo si no hay nadie en la sala, su dueño está desconectado y cada uno de esos furnis sigue en ella y sigue siendo del dueño; los bots, mascotas y furnis que otros pusieron allí vuelven a sus dueños. Si la sala se usó desde entonces (furnis recogidos, movidos o intercambiados), Deshacer muestra lo que lo impide y no elimina nada.",
   "Undo the import": "Deshacer la importación",
   "Undone": "Deshecho",
   "What the import makes": "Lo que crea la importación",
@@ -4163,6 +4163,8 @@
   "{room} is imported as room {id}.": "{room} se importó como sala {id}.",
   "{room} is in the hotel": "{room} está en el hotel",
   "{room} is removed from the hotel.": "{room} se quitó del hotel.",
+  "Already gone before (deleted or recycled), skipped: {ids}.": "Ya no estaban (eliminados o reciclados), omitidos: {ids}.",
+  "Its custom floor plan (room_models_custom {id}) could not be deleted: {error}": "No se pudo eliminar su plano propio (room_models_custom {id}): {error}",
   "Open the recording": "Abrir la grabación",
   "Packet recording saved in {folder}": "Grabación de paquetes guardada en {folder}",
   "Record every packet (developers)": "Grabar cada paquete (desarrolladores)",
@@ -4177,4 +4179,16 @@
   "Your catalogue images folder": "Tu carpeta de imágenes del catálogo",
   "Optional. Your c_images/catalogue folder: images it already has (including the th_* thumbnails) are not downloaded again.": "Opcional. Tu carpeta c_images/catalogue: las imágenes que ya tiene (incluidas las miniaturas th_*) no se vuelven a descargar.",
   "Empty: everything is downloaded": "Vacío: se descarga todo"
+}
+  "Valuables (LTD and rares): {left} of {count} left out": "Objetos de valor (LTD y raros): {left} de {count} excluidos",
+  "Polaris cannot mark a single furni as not tradeable: a valuable you include becomes a normal, tradeable copy in your hotel (an LTD loses its serial).": "Polaris no puede marcar un solo furni como no intercambiable: un objeto de valor que incluyas se convierte en una copia normal e intercambiable en tu hotel (un LTD pierde su número de serie).",
+  "Include all": "Incluir todos",
+  "Every LTD and rare of the room becomes a tradeable copy in your hotel.": "Cada LTD y raro de la sala se convierte en una copia intercambiable en tu hotel.",
+  "Leave all out": "Excluir todos",
+  "rare in the other hotel's furnidata": "raro en el furnidata del otro hotel",
+  "your catalogue sells it only as LTD": "tu catálogo solo lo vende como LTD",
+  "your catalogue does not sell it": "tu catálogo no lo vende",
+  "Include every one: {reason}": "Incluir todos: {reason}",
+  "LTD in the other hotel": "LTD en el otro hotel",
+  "can be redeemed for currency": "se puede canjear por moneda"
 }

@@ -35,6 +35,7 @@ pub mod diff;
 pub mod export;
 pub mod extras;
 pub mod furnidata;
+pub mod gamedata;
 pub mod gearth;
 pub mod gearth_install;
 pub mod http;

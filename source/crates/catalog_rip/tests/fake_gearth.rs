@@ -615,8 +615,8 @@ async fn rips_an_official_hotel_through_a_fake_gearth() {
     assert!(items_bc.contains("INSERT INTO `catalog_items_bc` (`id`, `item_ids`, `page_id`, `catalog_name`, `order_number`, `extradata`)"), "{items_bc}");
     assert!(items_bc.contains(", 100, 'bc_table', 1, '')"), "{items_bc}");
     assert!(pages_sql.contains("(6, -1, 'slow_page', 'Slow page', 'pets', 1, 7, 1, 3, '1', '1', '0', 'NORMAL', '0', 'pets_h', 'pets_t', '', 'p1', 'p2', 'pd', 'pt'"), "{pages_sql}");
-    assert!(items_sql.contains("(300, CONCAT_WS(';', (SELECT `id` FROM `items_base` WHERE `type` = 's' AND `sprite_id` = 4001 ORDER BY `id` LIMIT 1)), 3, 'rare_dragon_ltd', 50, 0, 0, 1, 100, 37, 1, 300, 0, '', '1', '0')"), "{items_sql}");
-    assert!(items_sql.contains("(302, CONCAT_WS(';', (SELECT CONCAT(`id`, ':2') FROM `items_base` WHERE `type` = 's' AND `sprite_id` = 4002 ORDER BY `id` LIMIT 1), (SELECT CONCAT(`id`, ':1') FROM `items_base` WHERE `type` = 'i' AND `sprite_id` = 5001 ORDER BY `id` LIMIT 1)), 3, 'bundle_o\\'brien', 25, 0, 0, 1, 0, 0, 3, 302, 0, '', '0', '1')"), "{items_sql}");
+    assert!(items_sql.contains("(300, CONCAT_WS(';', (SELECT `id` FROM `items_base` WHERE `type` = 's' AND `sprite_id` = 4001 ORDER BY `id` LIMIT 1)), 3, 'rare_dragon_ltd', 50, 0, 0, 1, 100, 37, 1, 300, 0, '', '1', '0', 0, 0)"), "{items_sql}");
+    assert!(items_sql.contains("(302, CONCAT_WS(';', (SELECT CONCAT(`id`, ':2') FROM `items_base` WHERE `type` = 's' AND `sprite_id` = 4002 ORDER BY `id` LIMIT 1), (SELECT CONCAT(`id`, ':1') FROM `items_base` WHERE `type` = 'i' AND `sprite_id` = 5001 ORDER BY `id` LIMIT 1)), 3, 'bundle_o\\'brien', 25, 0, 0, 1, 0, 0, 3, 302, 0, '', '0', '1', 0, 0)"), "{items_sql}");
     assert!(
         items_sql.contains(", 3, 'chair_x5', 5, 0, 0, 5, 0, 0, 5, 304,"),
         "{items_sql}"

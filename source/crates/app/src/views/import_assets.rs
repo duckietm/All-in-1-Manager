@@ -864,7 +864,7 @@ impl InstallStep for ImportAssetsStep {
             form.set_plan(Some(plan));
         }
         let skipped =
-            if no_bundle > 0 { format!(" {}", tf("{count} more are missing but have no .hab file in the download.", &[("count", &no_bundle.to_string())])) } else { String::new() };
+            if no_bundle > 0 { format!(" {}", tf("{count} more are missing but have no .hab or .nitro file in the download.", &[("count", &no_bundle.to_string())])) } else { String::new() };
         if new == 0 {
             ui.detected(ResultKind::Success, t("Every downloaded Habbo furniture is in the database"), &format!("{now}{skipped}"));
             // Done, unless the option for the furniture without a catalogue item has something to do.
@@ -985,7 +985,8 @@ impl InstallStep for ImportAssetsStep {
             }
         }
         // Which of their files the server lacks: the finish page offers to upload them.
-        let files = furni_import::client_files(&plan.new, &client_gamedata);
+        // Furni that only have a .nitro get a .hab converted into Import_SQL/hab_from_nitro.
+        let files = furni_import::client_files(&plan.new, &client_gamedata, &local_dir.join("hab_from_nitro"));
         match furni_import::missing_on_server(server, &files).await {
             Ok(missing) => {
                 if !missing.is_empty() {

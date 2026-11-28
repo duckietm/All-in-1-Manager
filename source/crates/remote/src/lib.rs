@@ -12,6 +12,7 @@ pub mod asset_sync;
 pub mod catalog_admin;
 pub mod catalog_health;
 pub mod catalog_journal;
+pub mod catalog_merge;
 pub mod catalog_transfer;
 pub mod page_translate;
 pub mod content_admin;

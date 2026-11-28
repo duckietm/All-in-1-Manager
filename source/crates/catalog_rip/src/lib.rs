@@ -59,14 +59,14 @@ use std::path::PathBuf;
 use futures::future::BoxFuture;
 
 pub use export::ItemsBase;
-pub use manager::{ExistingCatalogue, ManagerMode};
+pub use manager::{ExistingCatalogue, ExistingOffer, ExistingPage, ManagerMode};
 pub use packets::Headers;
 pub use profiles::{
     load_profiles, profiles, save_profile, DetectedBy, HeaderMap, HotelKind, HotelProfile,
 };
 pub use diff::CatalogDiff;
 pub use missing::MissingFurni;
-pub use rip::{reexport, rip, rip_every, rip_with, ProfileChoice, RipOptions, RipResult};
+pub use rip::{merge_plan, reexport, rip, rip_every, rip_with, MergePlan, ProfileChoice, RipOptions, RipResult};
 
 /// A log line (the same shape as `aio_remote::server::Log`).
 pub type Log<'a> = &'a (dyn Fn(&str) + Send + Sync);
@@ -237,8 +237,9 @@ pub struct ItemsBaseRow {
 pub trait ItemsSource: Send + Sync {
     async fn items_base(&self) -> anyhow::Result<Vec<ItemsBaseRow>>;
 
-    /// The page and offer ids already in the catalogue, per catalog_type (NORMAL / BUILDER), for
-    /// [`ManagerMode::ReplaceRipped`] and [`ManagerMode::Add`]. `None`: not known.
+    /// The pages and offers already in the catalogue, per catalog_type (NORMAL / BUILDER): their
+    /// ids for [`ManagerMode::ReplaceRipped`] and [`ManagerMode::Add`], and the page tree with the
+    /// furni of each page for [`ManagerMode::Merge`]. `None`: not known.
     async fn existing_catalogue(&self) -> anyhow::Result<Option<ExistingCatalogue>> {
         Ok(None)
     }

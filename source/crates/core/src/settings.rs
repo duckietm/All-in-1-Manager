@@ -69,6 +69,10 @@ pub struct InstallerSettings {
     /// The sections folded in the window (the sidebar's groups, the Tools page's sections). New in the Rust port.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub collapsed: Vec<String>,
+    /// The hotel's bundled/furniture folder on this computer (.nitro / .hab, as in Nitro-Files), which the Catalogue
+    /// manager's "Merge a rip" reads the furni interactions from. New in the Rust port.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_furniture: Option<String>,
 }
 
 /// A named set of server paths (Settings → Server layout), for servers laid out differently from the Default one.

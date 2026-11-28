@@ -1108,6 +1108,12 @@ pub async fn rip_with(
         profile: HotelProfile {
             builtin: false,
             file: None,
+            // The furnidata the rip uses, so a later merge or re-export matches the products the same way.
+            furnidata_url: options
+                .furnidata_url
+                .clone()
+                .filter(|u| !u.trim().is_empty())
+                .or_else(|| profile.furnidata_url.clone()),
             ..profile.clone()
         },
         headers: Some(headers),
@@ -1456,6 +1462,81 @@ pub async fn reexport(
         complete: result.complete,
     });
     Ok(result)
+}
+
+/// A rip fitted into the hotel's catalogue ([`ManagerMode::Merge`]): the import file and what it
+/// references, for the Manager's "Merge a rip" tool.
+#[derive(Debug, Clone)]
+pub struct MergePlan {
+    /// The ripped hotel's name (the "Imported from <hotel>" folder).
+    pub hotel: String,
+    /// The import file (Catalog Studio restricted SQL), its stats and the merge summary.
+    pub text: String,
+    pub stats: ManagerStats,
+    /// `note:` lines (the furnidata could not be read, ...), then the `merge:` and `skipped:` lines
+    /// of the file: pages joined or new, offers skipped with the reason.
+    pub notes: Vec<String>,
+    /// The items_base ids of the offers the merge adds (not of the ones it skips as already sold:
+    /// the hotel's own furni are left as they are).
+    pub items: std::collections::BTreeSet<i64>,
+}
+
+/// Builds the merge of the rip in `folder` (its recorded packets) into the hotel's catalogue:
+/// items_base and the catalogue (normal and Builders Club) come from `items`, the source hotel's
+/// furnidata from `options` or the rip's profile, as when it was ripped. Writes nothing.
+pub async fn merge_plan(folder: &Path, options: &RipOptions, items: &dyn ItemsSource, log: Log<'_>) -> Result<MergePlan> {
+    let recording = recording::read(folder)?;
+    let catalog = recording.catalog();
+    if catalog.modes.is_empty() {
+        bail!("{} holds no catalogue index: nothing to merge.", folder.display());
+    }
+    let existing = items
+        .existing_catalogue()
+        .await
+        .context("reading the hotel's catalogue")?
+        .filter(|e| e.has_tree())
+        .ok_or_else(|| anyhow!("the hotel's catalogue pages could not be read, so the rip cannot be merged into it"))?;
+    let rows = items.items_base().await.context("reading items_base")?;
+    let mut base = ItemsBase::default();
+    for row in &rows {
+        base.add(row.id, row.sprite_id, &row.item_type, &row.item_name, row.effect_id);
+    }
+    log(&format!("items_base: {} rows.", n0(rows.len())));
+    let ask = |_: String| -> futures::future::BoxFuture<'static, bool> { Box::pin(async { false }) };
+    let progress = |_: RipProgress| {};
+    // The warnings (the furnidata could not be read, ...) go to the preview too.
+    let warnings = std::sync::Mutex::new(Vec::new());
+    let logged = |line: &str| {
+        if let Some(warning) = line.strip_prefix("Warning: ") {
+            if let Ok(mut list) = warnings.lock() {
+                list.push(format!("note: {warning}"));
+            }
+        }
+        log(line);
+    };
+    let hooks = RipHooks::new(&logged, &ask, &progress);
+    let cancel = CancellationToken::new();
+    let output = Output { options, profile: &recording.session.profile, hooks: &hooks, cancel: &cancel };
+    let furnidata = output.furnidata(&catalog.host).await;
+    let mut notes: Vec<String> = warnings.into_inner().unwrap_or_default();
+    if furnidata.is_none() {
+        notes.push(format!(
+            "note: no furnidata of {} was read: products are matched with your items_base by sprite id, which is right only when both hotels use the same furnidata ids.",
+            catalog.host
+        ));
+    }
+    let export = ManagerExport { items: Some(&base), furnidata: furnidata.as_ref(), mode: ManagerMode::Merge, existing: Some(&existing) };
+    let sql = manager::manager_sql_with(&catalog, &export);
+    notes.extend(
+        sql.text
+            .lines()
+            .filter_map(|l| l.strip_prefix("-- "))
+            .filter(|l| l.starts_with("merge:") || l.starts_with("skipped:"))
+            .map(str::to_string),
+    );
+    let hotel = if catalog.hotel.trim().is_empty() { catalog.host.clone() } else { catalog.hotel.clone() };
+    let items = sql.stats.merge.as_ref().map(|m| m.added_items.clone()).unwrap_or_default();
+    Ok(MergePlan { hotel, items, text: sql.text, stats: sql.stats, notes })
 }
 
 struct Output<'a> {

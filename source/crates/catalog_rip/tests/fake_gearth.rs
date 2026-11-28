@@ -1159,6 +1159,79 @@ async fn reexports_with_furnidata_and_adds_next_to_the_catalogue() {
 }
 
 
+/// The hotel of [`OtherHotel`] with a catalogue of its own: Furni > Shop 3x3 already selling the dragon (500).
+struct HotelWithCatalogue;
+
+const HOTEL_CATALOGUE: &str = "INSERT INTO catalog_pages (id, catalog_type, parent_id, caption) VALUES (10, 'NORMAL', -1, 'Furni');\n\
+     INSERT INTO catalog_pages (id, catalog_type, parent_id, caption) VALUES (11, 'NORMAL', 10, 'shop 3X3');\n\
+     INSERT INTO catalog_items (id, catalog_type, item_ids, page_id, catalog_name) VALUES (70, 'NORMAL', '500', 11, 'rare_dragon');\n";
+
+#[async_trait::async_trait]
+impl ItemsSource for HotelWithCatalogue {
+    async fn items_base(&self) -> anyhow::Result<Vec<ItemsBaseRow>> {
+        OtherHotel.items_base().await
+    }
+
+    async fn existing_catalogue(&self) -> anyhow::Result<Option<ExistingCatalogue>> {
+        let page = |id, parent_id, caption: &str| aio_catalog_rip::ExistingPage { id, parent_id, caption: caption.into(), catalog_type: "NORMAL".into(), order_num: 1 };
+        let offer = aio_catalog_rip::ExistingOffer { id: 70, page_id: 11, catalog_type: "NORMAL".into(), item_ids: "500".into(), extradata: String::new(), order_number: 1 };
+        Ok(Some(ExistingCatalogue::from_rows(vec![page(10, -1, "Furni"), page(11, 10, "shop 3X3")], vec![offer])))
+    }
+}
+
+/// The Catalogue manager's Merge a rip on a rip folder and a hotel with a catalogue: the preview's counts.
+#[tokio::test]
+async fn merge_preview_of_a_rip_folder() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(fake_gearth(listener, Arc::new(Mutex::new(Seen::default())), flash_retro()));
+    let dir = tempfile::tempdir().unwrap();
+    let mut opts = options(port, dir.path());
+    opts.builders_club = false;
+    let first = run(&opts, detect(), None, &Calls::default(), None).await.unwrap();
+
+    let furnidata = dir.path().join("furnidata.xml");
+    std::fs::write(
+        &furnidata,
+        r#"<furnidata><roomitemtypes><furnitype id="4001" classname="rare_dragon"/><furnitype id="4002" classname="table"/></roomitemtypes>
+           <wallitemtypes><furnitype id="5001" classname="poster"/></wallitemtypes></furnidata>"#,
+    )
+    .unwrap();
+    let options = RipOptions { use_furnidata: true, furnidata_url: Some(furnidata.display().to_string()), ..RipOptions::default() };
+    let log = |_: &str| {};
+    let plan = aio_catalog_rip::merge_plan(&first.folder, &options, &HotelWithCatalogue, &log).await.unwrap();
+    let merge = plan.stats.merge.clone().unwrap();
+    assert_eq!(plan.stats.mode, ManagerMode::Merge);
+    // Furni and Shop 3x3 are the hotel's (captions compared trimmed and case-insensitively).
+    assert_eq!(merge.joined_pages, 2, "{}", plan.text);
+    // The dragon is sold there already; the badge and the bundle are added; three offers lack their furni (wallpaper, chair_x5, color_chair).
+    assert_eq!((merge.offers_added, merge.offers_skipped), (2, 1), "{}", plan.text);
+    assert_eq!(plan.stats.offers_unresolved, 3);
+    assert!(plan.notes.iter().any(|n| n.starts_with("skipped:") && n.contains("already sells items_base 500")), "{:?}", plan.notes);
+    assert!(plan.notes.iter().filter(|n| n.starts_with("skipped:") && n.contains("not in items_base")).count() == 3, "{:?}", plan.notes);
+    // The interactions are looked at only for the furni of the offers added: not the dragon, which the hotel sells.
+    assert_eq!(plan.items.iter().copied().collect::<Vec<_>>(), vec![501, 502, 503]);
+    assert!(!plan.notes.iter().any(|n| n.starts_with("note:")), "the furnidata was read: {:?}", plan.notes);
+
+    // The import preview on the hotel's catalogue: only creations, as many as the merge says.
+    let current = aio_remote::catalog_transfer::target(&Default::default(), HOTEL_CATALOGUE).unwrap();
+    let changes = aio_remote::catalog_merge::catalogue_changes(&current, &plan.text).unwrap_or_else(|e| panic!("{e}\n{}", plan.text));
+    assert!(changes.iter().all(|c| c.operation == "CREATE"), "the hotel's pages and offers are not changed");
+    let pages = changes.iter().filter(|c| c.entity.page).count();
+    let offers = changes.iter().filter(|c| !c.entity.page).count();
+    assert_eq!((pages, offers), (merge.new_pages, merge.offers_added));
+    assert!(changes.iter().any(|c| c.entity.page && c.name() == format!("Imported from {}", plan.hotel)));
+    // The added offers on the joined page 11.
+    assert!(changes.iter().filter(|c| !c.entity.page).any(|c| c.after.as_ref().unwrap()["pageId"] == 11));
+
+    // A furnidata that cannot be read is said in the preview, not only in a log.
+    let broken = RipOptions { use_furnidata: true, furnidata_url: Some(dir.path().join("gone.xml").display().to_string()), ..RipOptions::default() };
+    let plan = aio_catalog_rip::merge_plan(&first.folder, &broken, &HotelWithCatalogue, &log).await.unwrap();
+    let notes: Vec<&String> = plan.notes.iter().filter(|n| n.starts_with("note:")).collect();
+    assert!(notes.iter().any(|n| n.contains("furnidata could not be read")), "{notes:?}");
+    assert!(notes.iter().any(|n| n.contains("by sprite id")), "{notes:?}");
+}
+
 #[tokio::test]
 async fn second_rip_reports_the_changes_and_branches_can_be_chosen() {
     let dir = tempfile::tempdir().unwrap();
